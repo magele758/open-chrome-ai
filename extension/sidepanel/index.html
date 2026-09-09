@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PageLens</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <div class="brand"><span class="mark"></span> PageLens</div>
+      <div class="icon-btns">
+        <button type="button" id="btn-new" title="新对话">新</button>
+        <button type="button" id="btn-history" title="对话历史">历</button>
+        <button type="button" id="btn-settings" title="设置">设</button>
+      </div>
+    </header>
+
+    <section id="view-chat" class="view">
+      <div class="ctx">
+        <div class="ctx-label" id="ctx-label">当前标签</div>
+        <div class="card">
+          <div style="min-width:0">
+            <div class="t" id="ctx-title">尚未读取页面</div>
+            <div class="s" id="ctx-sub">打开任意网页后点总结或直接提问</div>
+          </div>
+          <button type="button" class="x" id="btn-unpin" title="不分享此页">×</button>
+        </div>
+      </div>
+      <div class="msgs" id="msgs"></div>
+      <div class="composer">
+        <div class="attach hidden" id="attach-row">
+          <img id="attach-thumb" alt="附件" />
+          <span id="attach-label">已附加当前画面</span>
+          <button type="button" id="btn-clear-attach">移除</button>
+        </div>
+        <div class="skills" id="skills"></div>
+        <div class="row">
+          <button class="ghost" type="button" id="btn-shot" title="截取当前画面">▣</button>
+          <textarea id="input" placeholder="问这页 · ⌘↵ 发送 · ⇧↵ 换行"></textarea>
+          <button class="send" type="button" id="btn-send" title="发送（⌘↵）">↑</button>
+        </div>
+        <div class="model-line" id="model-line">未配置模型 · 先到设置填 base_url / model / key</div>
+      </div>
+    </section>
+
+    <section id="view-settings" class="settings hidden">
+      <h2>模型设置</h2>
+      <p class="lead">文本模型和多模态模型分开配。接口按 OpenAI 兼容：<code>POST {base_url}/chat/completions</code>。密钥只存在本机。</p>
+
+      <div class="block" id="block-text">
+        <h3>文本模型</h3>
+        <p class="lead" style="margin-top:-4px">摘要、问答、字幕理解走这条。</p>
+      </div>
+
+      <div class="block" id="block-mm">
+        <h3>多模态模型</h3>
+        <label class="check">
+          <input type="checkbox" id="mm-same" />
+          与文本模型相同
+        </label>
+        <p class="lead" id="mm-hint" style="margin-top:-4px">截图、当前视频画面走这条。需要能接受 image_url 的模型。</p>
+        <div id="mm-fields"></div>
+      </div>
+
+      <div class="block" id="block-shortcuts">
+        <h3>快捷问题</h3>
+        <p class="lead" style="margin-top:-4px">出现在输入框上方。点一下就把这段话发给模型。</p>
+        <div id="shortcut-list"></div>
+        <button class="secondary" type="button" id="btn-add-shortcut">添加问题</button>
+      </div>
+
+      <div class="block">
+        <h3>回答</h3>
+        <label class="field">语言
+          <select id="answer-lang">
+            <option value="zh-CN">简体中文</option>
+            <option value="en">English</option>
+            <option value="page">跟随页面</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="row-btns">
+        <button class="primary" type="button" id="btn-save">保存</button>
+        <button class="secondary" type="button" id="btn-back">返回对话</button>
+        <span class="status" id="save-status"></span>
+      </div>
+    </section>
+
+    <section id="view-history" class="settings hidden">
+      <h2>对话历史</h2>
+      <p class="lead">每场对话自动保存在本机，带上当时的网页和全文。可打开续聊、导出或删除。</p>
+      <label class="field">搜索
+        <input id="hist-q" placeholder="标题、网站或网址" />
+      </label>
+      <div class="row-btns hist-actions">
+        <button class="secondary" type="button" id="btn-export-all-md">全部导出 Markdown</button>
+        <button class="secondary" type="button" id="btn-export-all-json">全部导出 JSON</button>
+        <span class="status" id="hist-status"></span>
+      </div>
+      <div id="hist-list"></div>
+      <div class="row-btns">
+        <button class="secondary" type="button" id="btn-hist-back">返回对话</button>
+      </div>
+    </section>
+  </div>
+  <script src="../vendor/marked.min.js"></script>
+  <script src="../vendor/purify.min.js"></script>
+  <script src="../vendor/mermaid.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

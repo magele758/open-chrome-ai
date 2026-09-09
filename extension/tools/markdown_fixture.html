@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>markdown fixture</title>
+  <link rel="stylesheet" href="../sidepanel/styles.css" />
+  <style>
+    body { height: auto; padding: 16px; }
+    .msg { max-width: 520px; }
+  </style>
+</head>
+<body>
+  <div class="msg bot"><div class="body" id="out"></div></div>
+  <script src="../vendor/marked.min.js"></script>
+  <script src="../vendor/purify.min.js"></script>
+  <script src="../vendor/mermaid.min.js"></script>
+  <script type="module">
+    import { initMarkdown, formatAnswer, decorateInlines, enhanceMermaid } from "../lib/markdown.js";
+    initMarkdown();
+    const src = [
+      "## 结论",
+      "",
+      "这是 **加粗** 和 `code`，还有 〔1〕。[文档](https://example.com/docs) 以及 https://example.com/raw。",
+      "",
+      "- 要点一",
+      "- 时间 12:04",
+      "",
+      "| 项 | 值 |",
+      "| --- | --- |",
+      "| A | 1 |",
+      "",
+      "```mermaid",
+      "graph TD",
+      "  A[抽取] --> B[模型]",
+      "  B --> C[Markdown]",
+      "```",
+      "",
+    ].join("\n");
+    const out = document.getElementById("out");
+    out.innerHTML = formatAnswer(src);
+    decorateInlines(out, { baseUrl: "https://example.com/page" });
+    await enhanceMermaid(out);
+    const ok =
+      out.querySelector("h2") &&
+      out.querySelector("strong") &&
+      out.querySelector("table") &&
+      out.querySelector(".ref") &&
+      out.querySelector(".ts") &&
+      out.querySelector(".mermaid-wrap svg") &&
+      [...out.querySelectorAll("a")].some(
+        (a) => a.target === "_blank" && a.rel.includes("noopener") && a.href.includes("example.com/docs"),
+      ) &&
+      [...out.querySelectorAll("a")].some((a) => a.href.includes("example.com/raw"));
+    document.body.dataset.result = ok ? "PASS" : "FAIL";
+    document.body.dataset.note = [
+      "h2=" + !!out.querySelector("h2"),
+      "strong=" + !!out.querySelector("strong"),
+      "table=" + !!out.querySelector("table"),
+      "ref=" + !!out.querySelector(".ref"),
+      "ts=" + !!out.querySelector(".ts"),
+      "svg=" + !!out.querySelector(".mermaid-wrap svg"),
+      "links=" + out.querySelectorAll("a[target='_blank']").length,
+      "err=" + (out.querySelector(".mermaid-error-msg")?.textContent || ""),
+    ].join(" ");
+  </script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>extract fixture</title>
+</head>
+<body>
+  <header>Home Explore Notifications</header>
+  <aside>Who to follow · Subscribe</aside>
+  <main>
+    <article data-testid="tweet">
+      <div data-testid="User-Name">
+        <span>Alice</span>
+        <span>@alice</span>
+      </div>
+      <a href="/alice/status/2095876609689498067"><time datetime="2026-09-08T12:00:00.000Z">Sep 8</time></a>
+      <div data-testid="tweetText"><span>HELLO_TWEET 这是主贴正文，用来验证抽取。</span></div>
+      <div data-testid="tweetPhoto"><img alt="一只猫坐在键盘上" /></div>
+      <div>Like 12 Repost 3 Reply 4</div>
+    </article>
+    <article data-testid="tweet">
+      <div data-testid="User-Name"><span>Bob</span><span>@bob</span></div>
+      <div data-testid="tweetText"><span>REPLY_ONE 这是一条回复。</span></div>
+    </article>
+  </main>
+  <script type="module">
+    import { extractPage } from "../lib/extract.js";
+    const r = await extractPage();
+    const ok =
+      r.kind === "x" &&
+      r.text.includes("HELLO_TWEET") &&
+      r.text.includes("REPLY_ONE") &&
+      !r.text.includes("Who to follow") &&
+      r.quotes?.[0]?.text.includes("HELLO_TWEET");
+    document.body.dataset.result = ok ? "PASS" : "FAIL";
+    document.body.dataset.pack = r.text;
+    console.log(ok ? "PASS" : "FAIL", r);
+  </script>
+</body>
+</html>
