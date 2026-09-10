@@ -11,7 +11,10 @@
   --teal-soft: #d1f4ef;
   --danger: #b42318;
   --ok: #3f7d4e;
+  --ui-font: 13px;
 }
+html[data-font="lg"] { --ui-font: 15px; }
+html[data-font="xl"] { --ui-font: 17px; }
 
 * { box-sizing: border-box; }
 html, body {
@@ -19,7 +22,7 @@ html, body {
   height: 100%;
   background: var(--surface);
   color: var(--ink);
-  font: 13px/1.5 "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
+  font: var(--ui-font)/1.5 "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
 }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
@@ -111,7 +114,7 @@ button { cursor: pointer; }
   overflow: auto;
   padding: 14px 14px 8px;
 }
-.empty { color: var(--muted); font-size: 13px; line-height: 1.55; padding: 4px 2px 12px; }
+.empty { color: var(--muted); font-size: 1em; line-height: 1.55; padding: 4px 2px 12px; }
 .big-actions { display: grid; gap: 8px; }
 .big-actions button, .skill-btn {
   text-align: left;
@@ -141,7 +144,7 @@ button { cursor: pointer; }
 .msg.bot .body p { margin: 0 0 0.55em; }
 .msg.bot .body p:last-child { margin-bottom: 0; }
 .msg.bot .body h1, .msg.bot .body h2, .msg.bot .body h3, .msg.bot .body h4 {
-  font-size: 13px;
+  font-size: 1em;
   font-weight: 650;
   margin: 0.75em 0 0.35em;
   line-height: 1.35;

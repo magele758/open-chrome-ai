@@ -28,6 +28,7 @@ export function defaultSettings() {
     multimodal: emptyModel(),
     multimodalSameAsText: false,
     answerLanguage: "zh-CN",
+    uiFont: "md",
     shareActiveTab: true,
     shortcuts: [],
   };
@@ -38,6 +39,7 @@ export function normalizeSettings(raw) {
   const merged = { ...base, ...(raw || {}) };
   merged.text = { ...base.text, ...(raw?.text || {}) };
   merged.multimodal = { ...base.multimodal, ...(raw?.multimodal || {}) };
+  merged.uiFont = ["md", "lg", "xl"].includes(raw?.uiFont) ? raw.uiFont : "md";
   merged.shortcuts = Array.isArray(raw?.shortcuts)
     ? raw.shortcuts.map((s) => ({
         id: String(s?.id || crypto.randomUUID()),

@@ -83,6 +83,11 @@ function renderContext() {
   $("ctx-sub").textContent = bits.filter(Boolean).join(" · ");
 }
 
+function applyUiFont(size) {
+  const next = ["md", "lg", "xl"].includes(size) ? size : "md";
+  document.documentElement.dataset.font = next;
+}
+
 function fitInput() {
   const el = $("input");
   if (!el) return;
@@ -514,6 +519,7 @@ function renderSettingsForm() {
   $("mm-fields").innerHTML = fieldBlock("multimodal", state.settings.multimodal);
   $("mm-fields").classList.toggle("hidden", state.settings.multimodalSameAsText);
   $("answer-lang").value = state.settings.answerLanguage;
+  $("ui-font").value = state.settings.uiFont || "md";
   renderShortcutList();
   bindSettingFields();
 }
@@ -953,6 +959,7 @@ function wire() {
   });
   $("btn-save").addEventListener("click", async () => {
     state.settings = await saveSettings(state.settings);
+    applyUiFont(state.settings.uiFont);
     renderModelLine();
     renderShortcutList();
     $("save-status").textContent = "已保存到本机";
@@ -964,6 +971,10 @@ function wire() {
   });
   $("answer-lang").addEventListener("change", (e) => {
     state.settings.answerLanguage = e.target.value;
+  });
+  $("ui-font").addEventListener("change", (e) => {
+    state.settings.uiFont = e.target.value;
+    applyUiFont(state.settings.uiFont);
   });
   $("btn-send").addEventListener("click", () => {
     if (state.busy) {
@@ -1012,6 +1023,7 @@ function wire() {
 async function boot() {
   initMarkdown();
   state.settings = await loadSettings();
+  applyUiFont(state.settings.uiFont);
   state.skills = await loadBundledSkills();
   const active = await loadActiveSession();
   if (active?.messages?.length) applySession(active);
