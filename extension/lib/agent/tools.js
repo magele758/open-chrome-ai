@@ -1,5 +1,14 @@
 import { seekVideo, highlightQuote, extractPage } from "../extract.js";
-import { loadYoutubeCaptions } from "../youtube.js";
+import { loadPageCaptions, transcribeTab } from "../captions.js";
+import { loadSettings } from "../storage.js";
+import {
+  libraryStatus,
+  listLibrary,
+  readLibraryText,
+  writeLibraryText,
+  syncPackToLibrary,
+} from "../library.js";
+import { MAX_RECORD_SECONDS } from "../tab-audio.js";
 import {
   CHROME_CALL_ALLOW,
   captureTab,
@@ -21,7 +30,6 @@ import {
   listControls,
   pageAct,
   queryDom,
-  readTextTracks,
   runJs,
   scrollPage,
 } from "./page-fns.js";
@@ -370,19 +378,54 @@ export function createAgentTools(ctx) {
     },
     {
       name: "get_captions",
-      description: "读取视频字幕。YouTube 走 timedtext；其他页尝试 HTML5 textTracks。",
+      description:
+        "读取视频字幕。YouTube 走 timedtext；其他页尝试 HTML5 textTracks；若本页刚转写过则返回缓存。无字幕时不要编造台词，应改用 transcribe_video。",
       parameters: obj({ tabId: tabIdProp() }),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
         const tab = await chrome.tabs.get(tabId);
-        if (/youtube\.com|youtu\.be/i.test(tab.url || "")) {
-          const caps = await loadYoutubeCaptions(tabId, tab.url);
-          if (caps.status !== "ready" || !caps.text) return `字幕不可用（${caps.status || "missing"}）。`;
+        const caps = await loadPageCaptions(tabId, tab.url);
+        if (caps.status === "ready" && caps.text) {
+          ctx.setCaptions?.(caps);
           return caps.text.slice(0, 9000);
         }
-        const tracks = await inject(tabId, readTextTracks);
-        if (tracks?.status === "ready" && tracks.text) return String(tracks.text).slice(0, 9000);
-        return toToolText(tracks || { status: "missing" });
+        return `字幕不可用（${caps.status || "missing"}）。用户要总结/章节/原文时调用 transcribe_video。`;
+      },
+    },
+    {
+      name: "transcribe_video",
+      description:
+        "录制当前标签的视频声音，用 Whisper 转写成带时间戳的字幕。无现成字幕、用户要总结/章节/全文时调用。需要设置里已配置 ASR。默认从开头播放并录音，最长约 30 分钟；请等待，不要编造台词。DRM 页面录不到声音。",
+      parameters: obj({
+        tabId: tabIdProp(),
+        force: { type: "boolean", description: "即使已有字幕也重新录音转写" },
+        fromStart: { type: "boolean", description: "默认 true，从 0 秒开始" },
+        maxSeconds: {
+          type: "integer",
+          description: `最长录制秒数，默认 ${MAX_RECORD_SECONDS}（30 分钟）`,
+        },
+      }),
+      async execute(args) {
+        const tabId = await resolveTabId(ctx, args);
+        try {
+          const caps = await transcribeTab({
+            tabId,
+            settings: await loadSettings(),
+            force: Boolean(args.force),
+            fromStart: args.fromStart !== false,
+            maxSeconds: args.maxSeconds,
+            onProgress: ctx.onTranscribeProgress,
+            signal: ctx.getAbortSignal?.(),
+          });
+          ctx.setCaptions?.(caps);
+          const note = caps.reused
+            ? "已有字幕，未重新录音。要重录请传 force=true。\n\n"
+            : "已转写并写入字幕槽。\n\n";
+          const lib = caps.library ? `已写入文稿文件夹 ${caps.library}/\n\n` : caps.libraryError ? `文稿未落盘：${caps.libraryError}\n\n` : "";
+          return lib + note + String(caps.text || "").slice(0, 9000);
+        } catch (err) {
+          return `转写失败：${err?.message || err}`;
+        }
       },
     },
     {
@@ -786,6 +829,84 @@ export function createAgentTools(ctx) {
             },
           ]),
         );
+      },
+    },
+    {
+      name: "library_info",
+      description: "查看文稿文件夹是否已选择、是否已授权。视频原稿/译稿写在这个目录里。",
+      parameters: obj({}),
+      async execute() {
+        return toToolText(await libraryStatus());
+      },
+    },
+    {
+      name: "list_library",
+      description: "列出文稿文件夹里的目录或文件。path 相对根目录，省略则列出根。只在用户已授权的目录内。",
+      parameters: obj({
+        path: { type: "string", description: "相对路径，如 yt-xxxx；省略为根" },
+      }),
+      async execute(args) {
+        try {
+          return toToolText(await listLibrary(args?.path || ""));
+        } catch (err) {
+          return `无法列出文稿：${err?.message || err}`;
+        }
+      },
+    },
+    {
+      name: "read_library",
+      description: "读取文稿文件夹内的文本文件，如 yt-xxxx/transcript.md、original.vtt、zh.vtt。",
+      parameters: obj({ path: { type: "string", description: "相对路径" } }, ["path"]),
+      async execute(args) {
+        try {
+          const file = await readLibraryText(String(args.path || ""));
+          const text = String(file.text || "").slice(0, 12000);
+          return `path: ${file.path}\n\n${text}`;
+        } catch (err) {
+          return `无法读取：${err?.message || err}`;
+        }
+      },
+    },
+    {
+      name: "write_library",
+      description:
+        "向文稿文件夹写入文本（md / vtt / json / txt / srt / csv）。只在用户明确要求保存或修改译稿时用。不要写密钥。",
+      parameters: obj(
+        {
+          path: { type: "string", description: "相对路径，如 yt-xxxx/zh.vtt" },
+          text: { type: "string", description: "文件全文" },
+        },
+        ["path", "text"],
+      ),
+      async execute(args) {
+        try {
+          return toToolText(await writeLibraryText(String(args.path || ""), String(args.text || "")));
+        } catch (err) {
+          return `无法写入：${err?.message || err}`;
+        }
+      },
+    },
+    {
+      name: "save_video_doc",
+      description: "把当前视频字幕/转写稿写入文稿文件夹（original.vtt、transcript.md、meta.json）。需已选择文件夹。",
+      parameters: obj({ tabId: tabIdProp() }),
+      async execute(args) {
+        const tabId = await resolveTabId(ctx, args);
+        const tab = await chrome.tabs.get(tabId);
+        const caps = await loadPageCaptions(tabId, tab.url);
+        if (caps.status !== "ready" || !caps.text) {
+          return "当前视频没有字幕可保存。先 get_captions 或 transcribe_video。";
+        }
+        ctx.setCaptions?.(caps);
+        const saved = await syncPackToLibrary({
+          url: tab.url,
+          title: tab.title,
+          captionsStatus: "ready",
+          captionsText: caps.text,
+          captionsCues: caps.cues,
+          captionsSource: caps.source,
+        });
+        return toToolText(saved);
       },
     },
     {

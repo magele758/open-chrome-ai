@@ -310,6 +310,55 @@ export function readTextTracks() {
   };
 }
 
+export function readVideoState() {
+  const video =
+    [...document.querySelectorAll("video")].find((el) => el.offsetWidth > 0) ||
+    [...document.querySelectorAll("audio")].find((el) => Number.isFinite(el.duration) && el.duration > 0) ||
+    null;
+  if (!video) return { ok: false, error: "no-video" };
+  return {
+    ok: true,
+    currentTime: video.currentTime || 0,
+    duration: Number.isFinite(video.duration) ? video.duration : 0,
+    paused: Boolean(video.paused),
+    ended: Boolean(video.ended),
+    muted: Boolean(video.muted),
+  };
+}
+
+export function controlVideo(opts) {
+  const o = opts || {};
+  const video =
+    [...document.querySelectorAll("video")].find((el) => el.offsetWidth > 0) ||
+    [...document.querySelectorAll("audio")].find((el) => Number.isFinite(el.duration) && el.duration > 0) ||
+    null;
+  if (!video) return { ok: false, error: "no-video" };
+  if (o.fromStart && video.currentTime > 0.5) video.currentTime = 0;
+  if (video.muted) video.muted = false;
+  if (o.action === "pause") {
+    video.pause();
+    return { ok: true, paused: true, currentTime: video.currentTime, duration: video.duration };
+  }
+  const play = video.play?.();
+  if (play && typeof play.then === "function") {
+    return play
+      .then(() => ({
+        ok: true,
+        paused: video.paused,
+        currentTime: video.currentTime,
+        duration: video.duration,
+      }))
+      .catch((err) => ({
+        ok: false,
+        error: err?.message || String(err),
+        paused: video.paused,
+        currentTime: video.currentTime,
+        duration: video.duration,
+      }));
+  }
+  return { ok: true, paused: video.paused, currentTime: video.currentTime, duration: video.duration };
+}
+
 export function runJs(code) {
   const dump = (value, depth = 0) => {
     if (depth > 5) return "[…]";

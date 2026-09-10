@@ -10,6 +10,8 @@ export function systemPrompt(settings) {
     languageInstruction(settings.answerLanguage),
     "规则：",
     "- 需要正文先 extract_page；只要标题结构/视频进度用 get_page_info；看图/报错/画面用 screenshot。",
+    "- 视频：先 get_captions。无字幕且用户要总结/章节/原文时调用 transcribe_video（会录当前标签声音，需已配置 ASR，较长视频要等播放完）。不要编造台词。",
+    "- 文稿文件夹（用户在设置里选的本机目录）：library_info / list_library / read_library 读原稿和译稿；save_video_doc 把当前字幕落盘；write_library 只在用户明确要求改文件时用。改译句写 zh.vtt。密钥不要写入。",
     "- 对比多个已打开的页：先 list_tabs，再对目标 tabId 调 extract_page。",
     "- 操作网页：先 list_controls 或 query_dom 定位，再 click / fill / select_option / press_key / scroll_page / wait_for。用户说「点这个」「填上」「搜一下」就去做。打开或操作过的标签会放进橙色任务分组（标题 PL · 问题），方便辨认；用户说关掉这批时用 close_task_group。",
     "- 找链接、定位、DOM：get_links、find_in_page、query_dom。高层工具不够用时才 chrome_call 或 run_js。",
@@ -38,8 +40,12 @@ export function packToContext(pack) {
     const dur = formatTime(v.duration);
     const cur = formatTime(v.currentTime);
     chunks.push(`【视频】标题：${pack.title}\n时长 ${dur}，当前 ${cur}\nURL：${pack.url}`);
-    if (pack.captionsText) chunks.push(`【字幕】\n${pack.captionsText.slice(0, 9000)}`);
-    else chunks.push("【字幕】无。不要编造精确时间戳，除非用户给了截图。");
+    if (pack.captionsText) {
+      const via = pack.captionsSource === "asr" || pack.captionsSource === "asr-cache" ? "（语音转写，可能有错字）" : "";
+      chunks.push(`【字幕】${via}\n${pack.captionsText.slice(0, 9000)}`);
+    } else {
+      chunks.push("【字幕】无。不要编造台词或精确时间戳。无字幕视频应调用 transcribe_video，或请用户点侧栏「转写此视频」。");
+    }
   }
   if (pack.text) {
     const label = pack.kind === "x" ? "【X 帖子】" : "【页面正文】";

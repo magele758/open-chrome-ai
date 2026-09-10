@@ -13,6 +13,14 @@ export const PRESETS = [
   { id: "lmstudio", name: "LM Studio", baseUrl: "http://127.0.0.1:1234/v1" },
 ];
 
+export const ASR_PRESETS = [
+  { id: "custom", name: "自定义", baseUrl: "" },
+  { id: "openai", name: "OpenAI Whisper", baseUrl: "https://api.openai.com/v1" },
+  { id: "groq", name: "Groq Whisper", baseUrl: "https://api.groq.com/openai/v1" },
+  { id: "siliconflow", name: "SiliconFlow", baseUrl: "https://api.siliconflow.cn/v1" },
+  { id: "local", name: "本地 Whisper", baseUrl: "http://127.0.0.1:8000/v1" },
+];
+
 function emptyModel() {
   return {
     preset: "custom",
@@ -26,6 +34,7 @@ export function defaultSettings() {
   return {
     text: emptyModel(),
     multimodal: emptyModel(),
+    asr: emptyModel(),
     multimodalSameAsText: false,
     answerLanguage: "zh-CN",
     uiFont: "md",
@@ -39,6 +48,7 @@ export function normalizeSettings(raw) {
   const merged = { ...base, ...(raw || {}) };
   merged.text = { ...base.text, ...(raw?.text || {}) };
   merged.multimodal = { ...base.multimodal, ...(raw?.multimodal || {}) };
+  merged.asr = { ...base.asr, ...(raw?.asr || {}) };
   merged.uiFont = ["md", "lg", "xl"].includes(raw?.uiFont) ? raw.uiFont : "md";
   merged.shortcuts = Array.isArray(raw?.shortcuts)
     ? raw.shortcuts.map((s) => ({
@@ -71,4 +81,12 @@ export function resolveModel(settings, kind) {
 
 export function isModelReady(model) {
   return Boolean(model?.baseUrl?.trim() && model?.model?.trim() && model?.apiKey?.trim());
+}
+
+export function isAsrReady(model) {
+  return Boolean(model?.baseUrl?.trim() && model?.model?.trim());
+}
+
+export function presetsFor(group) {
+  return group === "asr" ? ASR_PRESETS : PRESETS;
 }

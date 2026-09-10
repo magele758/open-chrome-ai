@@ -1,3 +1,5 @@
+import { handleAudioMessage } from "./lib/tab-audio-sw.js";
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   chrome.contextMenus.removeAll(() => {
@@ -11,6 +13,14 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onStartup.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+});
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (!msg?.type?.startsWith("pl.audio.")) return;
+  handleAudioMessage(msg)
+    .then(sendResponse)
+    .catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
+  return true;
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {

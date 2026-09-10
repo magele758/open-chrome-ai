@@ -89,6 +89,8 @@ globalThis.chrome = {
       if (func.name === "highlightQuote") return [{ result: true }];
       if (func.name === "seekVideo") return [{ result: true }];
       if (func.name === "readTextTracks") return [{ result: { status: "missing" } }];
+      if (func.name === "readVideoState") return [{ result: { ok: true, currentTime: 1, duration: 10, paused: false, ended: false } }];
+      if (func.name === "controlVideo") return [{ result: { ok: true, paused: false } }];
       if (func.name === "runJs") return [{ result: { ok: true, result: "ok" } }];
       if (func.name === "probeCompanions") return [{ result: { automa: true, cose: false } }];
       if (func.name === "automaExecute") return [{ result: { ok: true, dispatched: true, id: "w1" } }];
@@ -118,6 +120,12 @@ globalThis.chrome = {
   runtime: {
     getPlatformInfo: async () => ({ os: "mac", arch: "arm" }),
     getURL: (p) => "chrome-extension://x/" + p,
+    sendMessage: async () => ({ ok: false, error: "test-no-audio" }),
+  },
+  tabCapture: { getMediaStreamId: async () => "sid" },
+  offscreen: {
+    createDocument: async () => {},
+    closeDocument: async () => {},
   },
   i18n: { getUILanguage: () => "zh-CN", getAcceptLanguages: async () => ["zh-CN"] },
   tts: { speak: () => {}, stop: () => {}, getVoices: async () => [] },
@@ -244,6 +252,20 @@ assert(keys.keys.includes("k1"), "recall keys");
 
 const skill = await byName.load_skill.execute({ id: "summarize" });
 assert(/总结当前页/.test(skill), "load_skill");
+
+assert(names.includes("transcribe_video"), "has transcribe_video");
+const noAsr = await byName.transcribe_video.execute({});
+assert(/未配置|语音转写|ASR/.test(noAsr), "transcribe_video needs asr: " + noAsr);
+const caps = await byName.get_captions.execute({});
+assert(/字幕不可用|transcribe_video/.test(caps), "get_captions missing: " + caps);
+
+assert(names.includes("list_library") && names.includes("save_video_doc"), "library tools");
+const libInfo = JSON.parse(await byName.library_info.execute({}));
+assert(libInfo.configured === false, "library empty in tests");
+const libList = await byName.list_library.execute({});
+assert(/文稿文件夹/.test(libList), "list_library needs folder: " + libList);
+const libWrite = await byName.write_library.execute({ path: "x.md", text: "hi" });
+assert(/无法写入|文稿文件夹/.test(libWrite), "write_library needs folder");
 
 const call = JSON.parse(await byName.chrome_call.execute({ method: "tabs.query", args: [{}] }));
 assert(call.ok === true, "chrome_call tabs.query");

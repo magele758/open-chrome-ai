@@ -1,8 +1,16 @@
-import { PRESETS, defaultSettings, loadSettings, saveSettings, resolveModel, isModelReady } from "../lib/storage.js";
+import { defaultSettings, loadSettings, saveSettings, resolveModel, isModelReady, isAsrReady, presetsFor } from "../lib/storage.js";
 import { streamTurn, testConnection, multimodalUserContent } from "../lib/openai.js";
+import { testTranscriptions } from "../lib/asr.js";
 import { extractPage, seekVideo, highlightQuote } from "../lib/extract.js";
 import { systemPrompt, packToContext, visibleSkills, formatTime } from "../lib/prompts.js";
-import { loadYoutubeCaptions } from "../lib/youtube.js";
+import { loadPageCaptions, transcribeTab } from "../lib/captions.js";
+import { abortRecording } from "../lib/tab-audio.js";
+import {
+  libraryStatus,
+  pickLibraryFolder,
+  clearSavedHandle,
+  syncPackToLibrary,
+} from "../lib/library.js";
 import { initMarkdown, formatAnswer, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createAgentLoop } from "../lib/agent/loop.js";
 import { createAgentTools } from "../lib/agent/tools.js";
@@ -46,6 +54,10 @@ const state = {
   run: null,
   stopIntent: null,
   taskGroupId: null,
+  transcribe: null,
+  recordAbort: null,
+  workAbort: null,
+  library: { configured: false, granted: false, name: "" },
 };
 
 function modelSummary() {
@@ -55,7 +67,9 @@ function modelSummary() {
   const t = text.model;
   const m = isModelReady(mm) ? mm.model : "未配多模态";
   const same = state.settings.multimodalSameAsText;
-  return same ? `文本/多模态 · ${t}` : `文本 ${t} · 多模态 ${m}`;
+  const asr = isAsrReady(state.settings.asr) ? ` · ASR ${state.settings.asr.model}` : "";
+  const lib = state.library?.granted ? ` · 文稿夹 ${state.library.name}` : "";
+  return (same ? `文本/多模态 · ${t}` : `文本 ${t} · 多模态 ${m}`) + asr + lib;
 }
 
 function renderModelLine() {
@@ -68,6 +82,7 @@ function renderContext() {
     $("ctx-label").textContent = "未分享页面";
     $("ctx-title").textContent = "当前页未分享";
     $("ctx-sub").textContent = "点工具栏打开本侧栏时，默认会带上当前标签";
+    renderTranscribeAction();
     return;
   }
   const video = state.pack?.videoIsPrimary && state.pack?.video;
@@ -78,9 +93,43 @@ function renderContext() {
   if (state.pack?.text) bits.push(`${state.pack.text.length} 字`);
   if (video) {
     bits.push(formatTime(video.duration));
-    bits.push(state.pack?.captionsStatus === "ready" ? "有字幕" : "无字幕");
+    const src = state.pack?.captionsSource;
+    if (state.pack?.captionsStatus === "ready") {
+      bits.push(src === "asr" || src === "asr-cache" ? "已转写" : "有字幕");
+    } else {
+      bits.push("无字幕");
+    }
+    const tr = state.transcribe;
+    if (tr?.status === "recording") {
+      bits.push(`转写中 ${formatTime(tr.currentTime || 0)}/${formatTime(tr.duration || video.duration || 0)}`);
+      if (tr.hint) bits.push(tr.hint);
+    }
+    if (tr?.status === "uploading") bits.push("正在发给 Whisper");
+    if (tr?.status === "error" && tr.error) bits.push(tr.error);
+    if ((src === "asr" || src === "asr-cache") && (!tr || tr.status === "done" || tr.status === "idle")) {
+      bits.push("可以直接问总结或章节");
+    }
   }
   $("ctx-sub").textContent = bits.filter(Boolean).join(" · ");
+  renderTranscribeAction();
+}
+
+function renderTranscribeAction() {
+  const actions = $("ctx-actions");
+  const btn = $("btn-transcribe");
+  if (!actions || !btn) return;
+  const video = state.pack?.videoIsPrimary && state.pack?.video;
+  const tr = state.transcribe;
+  const recording = tr?.status === "recording" || tr?.status === "uploading";
+  const capsReady = state.pack?.captionsStatus === "ready";
+  const asrCaps = state.pack?.captionsSource === "asr" || state.pack?.captionsSource === "asr-cache";
+  const show = Boolean(state.share && (video || recording) && (!capsReady || asrCaps || recording));
+  actions.classList.toggle("hidden", !show);
+  btn.classList.toggle("busy", Boolean(recording));
+  if (tr?.status === "uploading") btn.textContent = "停止转写";
+  else if (tr?.status === "recording") btn.textContent = "停止转写";
+  else if (asrCaps) btn.textContent = "重新转写";
+  else btn.textContent = "转写此视频";
 }
 
 function applyUiFont(size) {
@@ -322,6 +371,10 @@ async function startNewSession() {
   state.image = null;
   state.run = null;
   state.taskGroupId = null;
+  state.transcribe = null;
+  state.recordAbort?.abort();
+  state.workAbort?.abort();
+  abortRecording();
   await clearActiveId();
   renderAttach();
   renderMessages();
@@ -481,8 +534,8 @@ async function openHistoryView() {
   setView("history");
 }
 
-function fieldBlock(prefix, model) {
-  const presetOpts = PRESETS.map(
+function fieldBlock(prefix, model, hints = {}) {
+  const presetOpts = presetsFor(prefix).map(
     (p) => `<option value="${p.id}" ${p.id === model.preset ? "selected" : ""}>${p.name}</option>`,
   ).join("");
   return `
@@ -490,13 +543,13 @@ function fieldBlock(prefix, model) {
       <select data-k="${prefix}.preset">${presetOpts}</select>
     </label>
     <label class="field">base_url
-      <input data-k="${prefix}.baseUrl" value="${escapeAttr(model.baseUrl)}" placeholder="https://api.example.com/v1" />
+      <input data-k="${prefix}.baseUrl" value="${escapeAttr(model.baseUrl)}" placeholder="${escapeAttr(hints.baseUrl || "https://api.example.com/v1")}" />
     </label>
     <label class="field">model_name
-      <input data-k="${prefix}.model" value="${escapeAttr(model.model)}" placeholder="gpt-4o-mini" />
+      <input data-k="${prefix}.model" value="${escapeAttr(model.model)}" placeholder="${escapeAttr(hints.model || "gpt-4o-mini")}" />
     </label>
     <label class="field">api_key
-      <input data-k="${prefix}.apiKey" type="password" value="${escapeAttr(model.apiKey)}" placeholder="sk-…" autocomplete="off" />
+      <input data-k="${prefix}.apiKey" type="password" value="${escapeAttr(model.apiKey)}" placeholder="${escapeAttr(hints.key || "sk-…")}" autocomplete="off" />
     </label>
     <div class="row-btns">
       <button class="secondary" type="button" data-test="${prefix}">测试连接</button>
@@ -515,13 +568,58 @@ function escapeAttr(value) {
 function renderSettingsForm() {
   $("block-text").querySelectorAll(".field, .row-btns").forEach((n) => n.remove());
   $("block-text").insertAdjacentHTML("beforeend", fieldBlock("text", state.settings.text));
+  $("block-asr").querySelectorAll(".field, .row-btns").forEach((n) => n.remove());
+  $("block-asr").insertAdjacentHTML(
+    "beforeend",
+    fieldBlock("asr", state.settings.asr, {
+      baseUrl: "http://127.0.0.1:8000/v1",
+      model: "whisper-large-v3",
+      key: "本地可空",
+    }),
+  );
   $("mm-same").checked = state.settings.multimodalSameAsText;
   $("mm-fields").innerHTML = fieldBlock("multimodal", state.settings.multimodal);
   $("mm-fields").classList.toggle("hidden", state.settings.multimodalSameAsText);
   $("answer-lang").value = state.settings.answerLanguage;
   $("ui-font").value = state.settings.uiFont || "md";
+  renderLibraryStatus();
   renderShortcutList();
   bindSettingFields();
+}
+
+function paintLibraryStatus(info, extra = "") {
+  const el = $("library-status");
+  if (!el) return;
+  const reauth = $("btn-library-reauth");
+  if (!info?.configured) {
+    el.textContent = extra || "尚未选择";
+    el.className = "status";
+    if (reauth) reauth.classList.add("hidden");
+    return;
+  }
+  if (info.granted) {
+    el.textContent = extra || `已授权 · ${info.name}（浏览器不显示完整路径）`;
+    el.className = "status ok";
+    if (reauth) reauth.classList.add("hidden");
+    return;
+  }
+  el.textContent = extra || `已选 ${info.name}，需要重新授权`;
+  el.className = "status bad";
+  if (reauth) reauth.classList.remove("hidden");
+}
+
+async function refreshLibraryStatus({ request = false } = {}) {
+  try {
+    state.library = await libraryStatus({ request });
+  } catch {
+    state.library = { configured: false, granted: false, name: "" };
+  }
+  paintLibraryStatus(state.library);
+  renderModelLine();
+}
+
+function renderLibraryStatus() {
+  paintLibraryStatus(state.library);
 }
 
 function renderShortcutList() {
@@ -581,7 +679,7 @@ function writeField(el) {
   const [group, key] = el.dataset.k.split(".");
   state.settings[group][key] = el.value;
   if (key === "preset") {
-    const preset = PRESETS.find((p) => p.id === el.value);
+    const preset = presetsFor(group).find((p) => p.id === el.value);
     if (preset && preset.baseUrl) {
       state.settings[group].baseUrl = preset.baseUrl;
       const input = document.querySelector(`[data-k="${group}.baseUrl"]`);
@@ -595,7 +693,13 @@ async function runTest(group) {
   const model = group === "multimodal" && state.settings.multimodalSameAsText
     ? state.settings.text
     : state.settings[group];
-  if (!isModelReady(model)) {
+  if (group === "asr") {
+    if (!isAsrReady(model)) {
+      status.textContent = "请先填 base_url、model_name";
+      status.className = "status bad";
+      return;
+    }
+  } else if (!isModelReady(model)) {
     status.textContent = "请先填满 base_url、model_name、api_key";
     status.className = "status bad";
     return;
@@ -603,7 +707,7 @@ async function runTest(group) {
   status.textContent = "测试中…";
   status.className = "status";
   try {
-    const result = await testConnection(model);
+    const result = group === "asr" ? await testTranscriptions(model) : await testConnection(model);
     status.textContent = `可用 · ${result.ms}ms`;
     status.className = "status ok";
   } catch (err) {
@@ -620,7 +724,10 @@ async function pickTargetTab() {
 }
 
 async function refreshTab() {
+  const prevId = state.tab?.id;
   const tab = await pickTargetTab();
+  const recording = state.transcribe?.status === "recording" || state.transcribe?.status === "uploading";
+  if (!recording && tab?.id !== prevId) state.transcribe = null;
   state.tab = tab || null;
   if (!state.share || !tab || restrictedUrl(tab.url)) {
     state.pack = null;
@@ -634,10 +741,13 @@ async function refreshTab() {
       func: extractPage,
     });
     state.pack = result || null;
-    if (result && /youtube\.com|youtu\.be/.test(tab.url || "")) {
-      const caps = await loadYoutubeCaptions(tab.id, tab.url);
+    if (result && (result.videoIsPrimary || /youtube\.com|youtu\.be/.test(tab.url || ""))) {
+      const caps = await loadPageCaptions(tab.id, tab.url);
       state.pack.captionsStatus = caps.status;
       state.pack.captionsText = caps.text;
+      state.pack.captionsSource = caps.source;
+      state.pack.captionsCues = caps.cues;
+      if (caps.status === "ready") syncPackToLibrary(state.pack).catch(() => {});
     }
   } catch {
     state.pack = {
@@ -711,6 +821,12 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       const user = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
       const line = String(user?.text || "任务").split("\n")[0].trim().slice(0, 24);
       return `PL · ${line || "任务"}`;
+    },
+    getAbortSignal: () => state.abort?.signal,
+    setCaptions: applyCaptions,
+    onTranscribeProgress: (info) => {
+      state.transcribe = { ...(state.transcribe || {}), ...info };
+      renderContext();
     },
     skills,
   });
@@ -894,6 +1010,69 @@ async function runSkill(skill) {
   await sendPrompt(skill.prompt);
 }
 
+function applyCaptions(caps) {
+  if (!caps) return;
+  if (!state.pack) state.pack = {};
+  state.pack.captionsStatus = caps.status;
+  state.pack.captionsText = caps.text;
+  state.pack.captionsSource = caps.source;
+  state.pack.captionsCues = caps.cues;
+  renderContext();
+  if (caps.status === "ready") syncPackToLibrary(state.pack).catch(() => {});
+}
+
+async function startTranscribe({ force = false } = {}) {
+  if (!state.tab?.id) return;
+  if (state.transcribe?.status === "recording") {
+    state.recordAbort?.abort();
+    abortRecording();
+    return;
+  }
+  if (state.transcribe?.status === "uploading") {
+    state.workAbort?.abort();
+    return;
+  }
+  if (!isAsrReady(state.settings.asr)) {
+    renderSettingsForm();
+    setView("settings");
+    $("save-status").textContent = "先配置语音转写（ASR）的 base_url 和 model";
+    $("save-status").className = "status bad";
+    $("block-asr")?.scrollIntoView({ block: "start" });
+    return;
+  }
+  state.recordAbort = new AbortController();
+  state.workAbort = new AbortController();
+  state.transcribe = { status: "recording" };
+  renderContext();
+  try {
+    const caps = await transcribeTab({
+      tabId: state.tab.id,
+      settings: state.settings,
+      force,
+      fromStart: true,
+      onProgress: (info) => {
+        state.transcribe = { ...(state.transcribe || {}), ...info };
+        renderContext();
+      },
+      signal: state.workAbort.signal,
+      stopRecording: state.recordAbort.signal,
+    });
+    applyCaptions(caps);
+    state.transcribe = { status: "done" };
+    renderContext();
+  } catch (err) {
+    if (err?.name === "AbortError" || /abort/i.test(err?.message || "")) {
+      state.transcribe = { status: "idle" };
+    } else {
+      state.transcribe = { status: "error", error: err.message || String(err) };
+    }
+    renderContext();
+  } finally {
+    state.recordAbort = null;
+    state.workAbort = null;
+  }
+}
+
 async function captureTab(tabId) {
   if (!tabId && !state.tab) await refreshTab();
   const id = tabId || state.tab?.id;
@@ -957,6 +1136,38 @@ function wire() {
     state.share = false;
     renderContext();
   });
+  $("btn-transcribe").addEventListener("click", () => {
+    const capsReady = state.pack?.captionsStatus === "ready";
+    startTranscribe({ force: capsReady });
+  });
+  $("btn-library-pick").addEventListener("click", async () => {
+    const el = $("library-status");
+    try {
+      const picked = await pickLibraryFolder();
+      state.library = { configured: true, granted: true, name: picked.name };
+      paintLibraryStatus(state.library, `已选择 ${picked.name}`);
+      renderModelLine();
+      if (state.pack?.captionsStatus === "ready") syncPackToLibrary(state.pack).catch(() => {});
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      if (el) {
+        el.textContent = err.message || String(err);
+        el.className = "status bad";
+      }
+    }
+  });
+  $("btn-library-reauth").addEventListener("click", async () => {
+    await refreshLibraryStatus({ request: true });
+    if (state.library.granted && state.pack?.captionsStatus === "ready") {
+      syncPackToLibrary(state.pack).catch(() => {});
+    }
+  });
+  $("btn-library-clear").addEventListener("click", async () => {
+    await clearSavedHandle();
+    state.library = { configured: false, granted: false, name: "" };
+    paintLibraryStatus(state.library, "已清除（磁盘上的文件还在）");
+    renderModelLine();
+  });
   $("btn-save").addEventListener("click", async () => {
     state.settings = await saveSettings(state.settings);
     applyUiFont(state.settings.uiFont);
@@ -1017,6 +1228,9 @@ function wire() {
   });
   window.addEventListener("pagehide", () => {
     persistSession();
+    state.recordAbort?.abort();
+    state.workAbort?.abort();
+    abortRecording();
   });
 }
 
@@ -1024,6 +1238,7 @@ async function boot() {
   initMarkdown();
   state.settings = await loadSettings();
   applyUiFont(state.settings.uiFont);
+  await refreshLibraryStatus();
   state.skills = await loadBundledSkills();
   const active = await loadActiveSession();
   if (active?.messages?.length) applySession(active);

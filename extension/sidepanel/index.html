@@ -27,6 +27,9 @@
           </div>
           <button type="button" class="x" id="btn-unpin" title="不分享此页">×</button>
         </div>
+        <div class="ctx-actions hidden" id="ctx-actions">
+          <button type="button" class="ctx-action" id="btn-transcribe">转写此视频</button>
+        </div>
       </div>
       <div class="msgs" id="msgs"></div>
       <div class="composer">
@@ -47,7 +50,7 @@
 
     <section id="view-settings" class="settings hidden">
       <h2>模型设置</h2>
-      <p class="lead">文本模型和多模态模型分开配。接口按 OpenAI 兼容：<code>POST {base_url}/chat/completions</code>。密钥只存在本机。</p>
+      <p class="lead">文本、多模态、语音转写分开配。聊天走 <code>POST {base_url}/chat/completions</code>；无字幕视频走 Whisper 的 <code>/audio/transcriptions</code>。密钥只存在本机。</p>
 
       <div class="block" id="block-text">
         <h3>文本模型</h3>
@@ -62,6 +65,22 @@
         </label>
         <p class="lead" id="mm-hint" style="margin-top:-4px">截图、当前视频画面走这条。需要能接受 image_url 的模型。</p>
         <div id="mm-fields"></div>
+      </div>
+
+      <div class="block" id="block-asr">
+        <h3>语音转写（ASR）</h3>
+        <p class="lead" style="margin-top:-4px">无字幕视频：录当前标签声音，发到 Whisper 兼容接口 <code>POST {base_url}/audio/transcriptions</code>。可填 Groq / OpenAI / SiliconFlow，或本地 <code>http://127.0.0.1:端口/v1</code>。本地服务可以不填 api_key。扩展不内置 Whisper。</p>
+      </div>
+
+      <div class="block" id="block-library">
+        <h3>文稿文件夹</h3>
+        <p class="lead" style="margin-top:-4px">选一个本机目录。视频原稿、译稿写成 <code>original.vtt</code> / <code>zh.vtt</code> / <code>transcript.md</code>，可用编辑器或 Obsidian 打开。浏览器只显示文件夹名，不提供完整路径。密钥不会写进去。</p>
+        <div class="row-btns">
+          <button class="secondary" type="button" id="btn-library-pick">选择文件夹</button>
+          <button class="secondary hidden" type="button" id="btn-library-reauth">重新授权</button>
+          <button class="secondary" type="button" id="btn-library-clear">清除</button>
+          <span class="status" id="library-status"></span>
+        </div>
       </div>
 
       <div class="block" id="block-shortcuts">
