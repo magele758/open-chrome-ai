@@ -64,6 +64,8 @@ export function defaultSettings() {
     uiFont: "md",
     shareActiveTab: true,
     nativeShell: true,
+    skillsEnabled: false,
+    interpretUseCaptions: false,
     shortcuts: [],
   };
 }
@@ -80,6 +82,8 @@ export function normalizeSettings(raw) {
   if (!["ZH", "EN", "JA", "AR", "ES"].includes(merged.tts.lang)) merged.tts.lang = "ZH";
   merged.uiFont = ["md", "lg", "xl"].includes(raw?.uiFont) ? raw.uiFont : "md";
   merged.nativeShell = raw?.nativeShell !== false;
+  merged.skillsEnabled = raw?.skillsEnabled === true;
+  merged.interpretUseCaptions = raw?.interpretUseCaptions === true;
   merged.shortcuts = Array.isArray(raw?.shortcuts)
     ? raw.shortcuts.map((s) => ({
         id: String(s?.id || crypto.randomUUID()),
@@ -144,6 +148,14 @@ export function isAsrReady(model) {
 
 export function isTtsReady(tts) {
   return Boolean(tts?.baseUrl?.trim());
+}
+
+export function useInterpretCaptions(settings) {
+  return settings?.interpretUseCaptions === true;
+}
+
+export function isSkillsEnabled(settings) {
+  return settings?.skillsEnabled === true;
 }
 
 export function presetsFor(group) {

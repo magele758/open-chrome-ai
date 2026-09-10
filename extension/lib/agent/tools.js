@@ -39,6 +39,7 @@ import {
   scrollPage,
 } from "./page-fns.js";
 import { findSkill } from "./skills.js";
+import { ensureSkillBody } from "../skill-folder.js";
 import { execNativeShell, formatExecResult } from "../native-host.js";
 import {
   COMPANIONS,
@@ -119,7 +120,7 @@ async function loadNotes() {
 }
 
 export function createAgentTools(ctx) {
-  return [
+  const tools = [
     {
       name: "extract_page",
       description:
@@ -984,7 +985,7 @@ export function createAgentTools(ctx) {
     {
       name: "load_skill",
       description:
-        "加载一个 skill 的完整说明并遵循它完成本轮任务。说明里的 CLI（gh、mcporter、curl、yt-dlp 等）用 run_shell 执行。",
+        "仅在用户明确指定 skill 时加载完整说明。说明里的 CLI（gh、mcporter、curl、yt-dlp 等）用 run_shell 执行。普通问答不要调用。",
       parameters: obj({ id: { type: "string", description: "skill id 或中文名" } }, ["id"]),
       async execute(args) {
         const skill = findSkill(ctx.skills || [], args.id);
@@ -992,7 +993,8 @@ export function createAgentTools(ctx) {
           const names = (ctx.skills || []).map((s) => s.id).join(", ");
           return `未找到 skill ${args.id}。可用：${names || "无"}`;
         }
-        return `【skill:${skill.id} ${skill.name}】\n${skill.body}`;
+        const ready = await ensureSkillBody(skill);
+        return `【skill:${ready.id} ${ready.name}】\n${ready.body || "（没有说明正文）"}`;
       },
     },
     {
@@ -1047,6 +1049,10 @@ export function createAgentTools(ctx) {
       },
     },
   ];
+  if (ctx.enableSkills === false || ctx.settings?.skillsEnabled === false) {
+    return tools.filter((t) => t.name !== "load_skill");
+  }
+  return tools;
 }
 
 /** @deprecated 用 createAgentTools */

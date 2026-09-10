@@ -4,7 +4,7 @@
  * Not Node skill routing; just loadable instruction packs for the loop.
  */
 
-import { loadFolderSkills } from "../skill-folder.js";
+import { ensureSkillBody, loadFolderSkills } from "../skill-folder.js";
 
 export function mergeSkills(...lists) {
   const seen = new Set();
@@ -22,30 +22,32 @@ export function mergeSkills(...lists) {
   return out;
 }
 
-export async function loadBundledSkills() {
-  const extra = [];
+export async function loadBundledSkillIndex() {
   try {
     const url = chrome.runtime.getURL("skills/index.json");
     const res = await fetch(url);
-    if (res.ok) {
-      const index = await res.json();
-      for (const item of index.skills || []) {
-        const mdUrl = chrome.runtime.getURL(`skills/${item.id}/SKILL.md`);
-        const md = await fetch(mdUrl).then((r) => (r.ok ? r.text() : "")).catch(() => "");
-        if (md) extra.push({ id: item.id, name: item.name || item.id, when: item.when || "", body: md });
-      }
-    }
+    if (!res.ok) return [];
+    const index = await res.json();
+    return (index.skills || [])
+      .filter((item) => item?.id)
+      .map((item) => ({
+        id: item.id,
+        name: item.name || item.id,
+        when: item.when || "",
+        body: "",
+        source: "bundled",
+      }));
   } catch {
-    /* packaged files optional */
+    return [];
   }
-  const seen = new Set();
-  const out = [];
-  for (const s of extra) {
-    if (seen.has(s.id)) continue;
-    seen.add(s.id);
-    out.push(s);
+}
+
+export async function loadBundledSkills() {
+  const extra = [];
+  for (const item of await loadBundledSkillIndex()) {
+    extra.push(await ensureSkillBody({ ...item }));
   }
-  return out;
+  return extra;
 }
 
 export function shortcutsAsSkills(settings) {
@@ -77,11 +79,16 @@ export function findSkill(skills, name) {
   return suffix.length === 1 ? suffix[0] : null;
 }
 
-export async function loadRuntimeSkills({ request = false } = {}) {
-  const bundled = await loadBundledSkills();
-  const folder = await loadFolderSkills({ request });
-  return {
-    folder,
-    skills: mergeSkills(bundled, folder.skills),
-  };
+export async function loadRuntimeSkills({ request = false, timeoutMs } = {}) {
+  console.info("[pagelens] skill scan start");
+  try {
+    const bundled = await loadBundledSkillIndex();
+    const folder = await loadFolderSkills({ request, timeoutMs });
+    const skills = mergeSkills(bundled, folder.skills);
+    console.info("[pagelens] skill scan done", skills.length);
+    return { folder, skills };
+  } catch (err) {
+    console.error("[pagelens] skill scan", err);
+    throw err;
+  }
 }

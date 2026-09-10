@@ -279,6 +279,10 @@ assert(keys.keys.includes("k1"), "recall keys");
 
 const skill = await byName.load_skill.execute({ id: "summarize" });
 assert(/总结当前页/.test(skill), "load_skill");
+const noSkill = createAgentTools({ ...ctx, enableSkills: false }).map((t) => t.name);
+assert(!noSkill.includes("load_skill") && noSkill.includes("extract_page"), "skills off");
+const offBySetting = createAgentTools({ ...ctx, enableSkills: true, settings: { skillsEnabled: false } }).map((t) => t.name);
+assert(!offBySetting.includes("load_skill"), "skills setting off");
 
 assert(names.includes("run_shell"), "has run_shell");
 const sh = await byName.run_shell.execute({ command: "echo hi" });

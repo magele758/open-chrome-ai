@@ -1,4 +1,4 @@
-import { defaultSettings, normalizeSettings, isAsrReady, isModelReady, isTtsReady, ASR_PRESETS } from "../lib/storage.js";
+import { defaultSettings, normalizeSettings, isAsrReady, isModelReady, isTtsReady, useInterpretCaptions, isSkillsEnabled, ASR_PRESETS } from "../lib/storage.js";
 import {
   transcriptionsUrl,
   transcribeUrl,
@@ -100,6 +100,15 @@ assert(ASR_PRESETS.some((p) => p.id === "groq"), "groq preset");
 assert(ASR_PRESETS.some((p) => p.id === "v1-transcribe"), "v1 preset");
 assert(defaultSettings().asr, "default asr slot");
 assert(defaultSettings().tts.preset === "off", "tts off");
+assert(useInterpretCaptions(defaultSettings()) === false, "captions off by default");
+assert(useInterpretCaptions(normalizeSettings({ interpretUseCaptions: true })) === true, "persist captions on");
+assert(useInterpretCaptions(normalizeSettings({ interpretUseCaptions: false })) === false, "persist captions off");
+assert(useInterpretCaptions(normalizeSettings({})) === false, "missing flag stays off");
+assert(defaultSettings().skillsEnabled === false, "skills off by default");
+assert(isSkillsEnabled(defaultSettings()) === false, "skills helper off");
+assert(isSkillsEnabled(normalizeSettings({})) === false, "missing skills stays off");
+assert(isSkillsEnabled(normalizeSettings({ skillsEnabled: true })) === true, "persist skills on");
+assert(isSkillsEnabled(normalizeSettings({ skillsEnabled: false })) === false, "persist skills off");
 
 assert(videoIdentity("https://www.youtube.com/watch?v=dQw4w9wgGcQ&t=12") === "yt:dQw4w9wgGcQ", "yt id");
 assert(videoIdentity("https://youtu.be/dQw4w9wgGcQ?t=3") === "yt:dQw4w9wgGcQ", "youtu.be");
