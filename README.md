@@ -57,12 +57,12 @@ YouTube 以及页里带 `<video>` 的站点：
 - 识别时长、当前进度、有没有字幕
 - YouTube 优先拉 timedtext 字幕；其它页尝试 HTML5 `textTracks`
 - **一键总结**：卡片「一键总结」/ 输入框旁「总」。先获取完整字幕；没有字幕则下载完整音轨、分段 ASR 生成全文，再让文本模型分段阅读并汇总。不会跟随视频播放或移动播放进度
-- **同声传译**：卡片「同声传译」/ 输入框旁「译」。始终在当前观看页进行，不新开标签。有字幕则跟轴翻译；否则从当前播放器取声（约 5 秒一切）再识别。翻译走设置里的**文本模型**。配了 TTS 则先截一段原声当临时音色（有字幕、无字幕都一样），再叠中文配音；截取失败才退回设置里的参考音。失败时仍显示译文。处理积压时会暂停画面等待。没配 TTS 只出中文字幕。侧栏「开原声 / 关原声」只切页面喇叭，不影响中文配音和识别
+- **同声传译**：卡片「同声传译」/ 输入框旁「译」。始终在当前观看页进行，不新开标签。默认按声音约 5 秒一切（需 ASR），即使页面有字幕也不自动跟轴；可点「用字幕 / 按声音」改成跟字幕轴。翻译走设置里的**文本模型**。配了 TTS 则用当前原声切片当临时音色，队列配音在合成时取最新样本；截取失败才退回设置里的参考音。失败时仍显示译文。处理积压时会暂停画面等待。没配 TTS 只出中文字幕。侧栏「开原声 / 关原声」只切页面喇叭，不影响中文配音和识别
 - 同一页有多个 `<video>` 时，自动选主播放器（YouTube 的 `html5-main-video`、正在播的、面积最大的）。多于一个会显示「画面 1/N」，可点切换
 - 只要文稿、不总结：点「只要文稿」
 - 答案里的 `12:04` 可点，播放器跳到该秒
 
-无字幕视频需要在设置里配 **语音转写（ASR）**：`base_url` + `model`（如 `whisper-1` / `whisper-large-v3`），云端填 `api_key`，本地 `http://127.0.0.1:端口` 可以不填。自建走 `POST {base_url}/v1/transcribe`，也可走 Groq / OpenAI 的 `/audio/transcriptions`。扩展不内置 Whisper，也不去解析视频直链。
+无字幕视频、以及默认同传（按声音）需要在设置里配 **语音转写（ASR）**：`base_url` + `model`（如 `whisper-1` / `whisper-large-v3`），云端填 `api_key`，本地 `http://127.0.0.1:端口` 可以不填。自建走 `POST {base_url}/v1/transcribe`，也可走 Groq / OpenAI 的 `/audio/transcriptions`。扩展不内置 Whisper，也不去解析视频直链。
 
 完整文稿提取需要保持侧栏打开；没有可直接读取的字幕时，需要启动本机媒体服务（见下文）。音轨按约 5 分钟分段转写，没有原先 30 分钟的录制上限。直播、受保护媒体或下载失败会明确报错，不会把片段当全文。同传仍从当前进度开始，点「停止同传」结束。
 
@@ -76,7 +76,7 @@ python3 tools/media_helper.py
 
 ### 文稿文件夹
 
-设置里选一个本机目录（Obsidian 库、`~/Movies/PageLens` 都可以）。之后有字幕或转写完成时，会写成普通文件，而不是堆在扩展存储里。对话也可以一键写入同一目录：
+设置里可以「选择文件夹」，或填绝对路径（需已安装 Native Host，支持 `~`）。Obsidian 库、`~/Movies/PageLens` 都可以。之后有字幕或转写完成时，会写成普通文件，而不是堆在扩展存储里。对话也可以一键写入同一目录：
 
 ```
 你选的目录/
@@ -90,15 +90,15 @@ python3 tools/media_helper.py
       2026-09-10-对话标题-xxxxxxxx.md
 ```
 
-浏览器不提供完整路径，侧栏只显示文件夹名。改译句请改 `zh.vtt`；`transcript.md` 会按两份 VTT 生成。密钥不会写进这个目录。Agent 可以用 `list_library` / `read_library` / `save_video_doc` / `save_session_note` 读写这个授权目录，出不去。
+用系统选目录时浏览器不提供完整路径，只显示文件夹名；填绝对路径则会记下并显示该路径。改译句请改 `zh.vtt`；`transcript.md` 会按两份 VTT 生成。密钥不会写进这个目录。Agent 可以用 `list_library` / `read_library` / `save_video_doc` / `save_session_note` 读写这个授权目录，出不去。
 
 没选目录时，转写结果仍会临时记在扩展存储里，最多 24 部。
 
 ### Skill 目录
 
-和文稿文件夹分开授权、分开存储。设置里另选一个本机目录（例如 Cursor 的 `skills` 文件夹），只读扫描其中的 `SKILL.md`。Agent 用 `load_skill` 按完整说明执行。不写这个目录，也不会把它们做成输入框上方的快捷芯片。
+和文稿文件夹分开授权、分开存储。设置里另选一个本机目录或填绝对路径（例如 Cursor 的 `skills` 文件夹，路径模式需 Native Host），只读扫描其中的 `SKILL.md`。输入框输入 `/` 可挑选 skill，选中后写入「使用 xxx skill」并拼进本轮 Prompt。Agent 也可自己 `load_skill`。不写这个目录，也不会把它们做成输入框上方的快捷芯片。
 
-浏览器同样只显示文件夹名。没授权或拒绝后，到设置点「重新授权」或「重新扫描」。
+用系统选目录时只显示文件夹名；填路径会显示完整路径。没授权或拒绝后，到设置点「重新授权」或「重新扫描」。
 
 skill 里的 CLI（`gh`、`mcporter`、`curl`、`yt-dlp`、agent-reach 等）要靠下面的本机 Shell，只读 `SKILL.md` 不会执行命令。
 
@@ -167,7 +167,7 @@ Session Buddy、Omni 这类「管标签」扩展没有对外接口，调不到�
 - 截图只记「含截图」，不把图片字节写进历史
 - 关掉侧栏再打开，回到上一场；若当时工具做到一半，会从中断处继续（你点停止则不续跑）
 
-发送：**⌘ + Enter**（Windows / Linux 为 Ctrl + Enter）。Enter / ⇧ + Enter 换行，避免误发。
+发送：**⌘ + Enter**（Windows / Linux 为 Ctrl + Enter）。Enter / ⇧ + Enter 换行，避免误发。输入 `/` 可从 skill 目录挑快捷指令。
 
 ### 模型和快捷问题
 
@@ -221,21 +221,162 @@ python3 extension/tools/mock_llm.py
 
 ## 它怎么跑（给开发者）
 
-主循环从 [ppeng-agent-core](https://github.com/magele758/ppeng-agent-core) 的 L4 `createAgentLoop` 扣成浏览器版：`prepare → model → tools`，不另起进程、没有 Node daemon。
+侧栏是唯一编排中心。`sw.js` 只做开栏、右键选区、录音转发。模型、工具、同传都在 side panel 里跑。本机能力走 Native Host 或 `127.0.0.1` 助手。没有独立后端；密钥和对话在本机。
 
-发给模型前会：
-
-- 修补残缺的 `tool_calls` 序列，避免接口直接 400
-- 超长的旧工具结果压缩掉，系统提示和最近几轮保留
+主循环从 [ppeng-agent-core](https://github.com/magele758/ppeng-agent-core) 的 L4 `createAgentLoop` 扣成浏览器版：`prepare → model → tools`，不另起进程、没有 Node daemon。最多 12 轮。发给模型前会修补残缺的 `tool_calls`，并压缩超长的旧工具结果。
 
 工具分两层：
 
-1. **高层语义工具**（Agent 日常该用这些）：抽页、截图、点击填写、列/开/关标签、任务分组、书签、历史、字幕 / 转写视频、文稿文件夹、Automa / COSE、`run_shell`（需 Native Host）等
+1. **高层语义工具**：抽页、截图、点击填写、列/开/关标签、任务分组、书签、历史、字幕 / 转写视频、文稿文件夹、Automa / COSE、`run_shell`（需 Native Host）等
 2. **`chrome_call` 白名单**：tabs / windows / bookmarks / history / notifications / tts / tabGroups 等已授权 API
 
 不开放：cookies、debugger、downloads、proxy、裸读 `chrome.storage`（密钥在里面）。
 
-密钥、对话、笔记在 `chrome.storage.local`。视频文稿在你选择的本机文件夹里。仓库里没有真实 key。问页时正文发往你配置的模型地址，不经过本项目的后端。
+密钥、对话、笔记在 `chrome.storage.local` 和 IndexedDB。视频文稿在你选择的本机文件夹里。仓库里没有真实 key。问页时正文发往你配置的模型地址，不经过本项目的后端。
+
+### 运行时
+
+```mermaid
+flowchart TB
+  User([用户]) --> SP[sidepanel/app.js]
+
+  subgraph chrome [Chrome 进程]
+    SP
+    SW[sw.js]
+    Off[offscreen/audio]
+    Tab[当前标签 DOM / video]
+    SP <-->|开栏 / pending 选区| SW
+    SW -->|pl.audio.*| Off
+    SP -->|scripting.inject| Tab
+    SP -->|tabCapture| Off
+  end
+
+  SP -->|BYOK chat/completions| LLM[OpenAI 兼容模型]
+  SP -->|File System Access| Folders[(文稿夹 / Skill 目录)]
+  SP -->|storage + IndexedDB| Local[(设置 / 对话 / 转写缓存)]
+  SP -->|sendNativeMessage| Host[native/pagelens-host]
+  Host -->|exec| CLI[本机 CLI]
+  Host -->|fs| Disk[(本机文件)]
+  SP -->|HTTP 回环| Media[tools/media_helper.py]
+  Media --> YT[yt-dlp / ffmpeg]
+  SP --> ASR[ASR]
+  SP --> TTS[Index-TTS Gradio]
+  Media --> ASR
+```
+
+### 模块分层
+
+```mermaid
+flowchart LR
+  subgraph ui [界面]
+    App[sidepanel/app.js]
+    Slash[slash.js]
+    Md[markdown.js]
+  end
+
+  subgraph agent [Agent]
+    Loop[loop.js]
+    Ctx[context.js]
+    Tools[tools.js]
+    Skills[skills.js]
+    PageFns[page-fns.js]
+    Comp[companions.js]
+  end
+
+  subgraph pack [读页]
+    Pack[page-pack.js]
+    Ext[extract.js]
+    Pdf[pdf-text.js]
+    Yt[youtube.js]
+    Caps[captions.js]
+  end
+
+  subgraph media [视频与声音]
+    Pick[video-pick.js]
+    Audio[tab-audio]
+    Interp[interpret]
+    Asr[asr.js]
+    Tts[tts.js]
+    Full[full-transcript.js]
+    Sum[summarize-transcript.js]
+  end
+
+  subgraph persist [持久化]
+    Store[storage.js]
+    Sess[sessions.js]
+    Lib[library.js]
+    SkillDir[skill-folder.js]
+    Idb[idb-kv.js]
+  end
+
+  subgraph bridge [桥]
+    Chrome[chrome.js]
+    Native[native-host.js]
+    Fs[fs-path.js]
+  end
+
+  App --> Slash
+  App --> Md
+  App --> Loop
+  App --> Pack
+  App --> Interp
+  App --> persist
+  Loop --> Ctx
+  Loop --> Tools
+  Tools --> Skills
+  Tools --> PageFns
+  Tools --> Comp
+  Tools --> pack
+  Tools --> media
+  Tools --> persist
+  Tools --> bridge
+  Pack --> Ext
+  Pack --> Pdf
+  Caps --> Yt
+  Caps --> Full
+  Interp --> Audio
+  Interp --> Asr
+  Interp --> Tts
+  SkillDir --> Fs
+  Native --> Fs
+```
+
+| 层 | 文件 | 做什么 |
+|---|---|---|
+| 入口 | `sidepanel/app.js` | UI、会话、设置、编排 Agent / 总结 / 同传 |
+| 后台 | `sw.js` | 开侧栏、右键选区、转发 `pl.audio.*` |
+| Agent | `loop` / `context` / `tools` / `skills` | `prepare → model → tools` |
+| 读页 | `page-pack` `extract` `pdf-text` `youtube` | 抽正文 / PDF / YouTube 字幕 |
+| 视频 | `captions` `full-transcript` `interpret*` `tab-audio*` | 文稿、完整音轨、当前页同传 |
+| 模型 | `openai` `asr` `tts` `summarize-transcript` | 聊天、转写、配音、长文汇总 |
+| 磁盘 | `library` `skill-folder` `sessions` `idb-kv` | 文稿夹、Skill 目录、对话、大缓存 |
+| 本机桥 | `native-host` + `native/pagelens-host` | `ping` / `exec` / `fs` |
+| 助手 | `tools/media_helper.py` | 无字幕时拉完整音轨，不是 Agent 进程 |
+
+### 对话与侧栏按钮
+
+一键总结、同声传译走侧栏按钮，不进 Agent 循环。
+
+```mermaid
+flowchart TB
+  subgraph chat [对话]
+    In[用户输入 / 快捷问题 / 斜杠 skill] --> Prep[context.packForModel]
+    Prep --> Model[streamTurn]
+    Model -->|tool_calls| Tools[createAgentTools]
+    Tools --> Model
+    Model -->|stop| Out[侧栏 Markdown / Mermaid]
+  end
+
+  subgraph video [侧栏按钮]
+    SumBtn[一键总结] --> Caps2[captions / full-transcript]
+    Caps2 -->|无字幕| Helper[media_helper + ASR]
+    Caps2 --> Sum[summarize-transcript]
+    SiBtn[同声传译] --> Live[interpret 当前页切片]
+    Live --> Asr2[ASR 或字幕轴]
+    Asr2 --> Zh[文本模型翻译]
+    Zh -.-> Tts2[可选 TTS 叠音]
+  end
+```
 
 ---
 
@@ -278,11 +419,15 @@ python3 extension/tools/mock_llm.py
 
 ```
 extension/          可加载的解压扩展（选这个目录）
-  sidepanel/        侧栏 UI
+  sidepanel/        侧栏 UI（编排中心）
+  sw.js             开栏、右键选区、录音消息
+  offscreen/        tabCapture 录音
+  lib/              读页、视频、模型、持久化、本机桥
   lib/agent/        循环、工具、压缩与续跑
   skills/           可选的打包 SKILL.md（默认空）；本机目录在设置里单独授权
   tools/            mock 模型、单测、开发启动脚本
-native/             Chrome Native Messaging host（run_shell）
+native/             Chrome Native Messaging host（run_shell / fs）
+tools/              本机媒体助手 media_helper.py
 docs/               调研、PRD、交互、技术方案
 ```
 
@@ -306,6 +451,8 @@ node extension/tools/test_companions.mjs
 node extension/tools/test_asr.mjs
 node extension/tools/test_library.mjs
 node extension/tools/test_skill_folder.mjs
+node extension/tools/test_slash.mjs
+node extension/tools/test_fs_path.mjs
 node native/test_host.mjs
 node extension/tools/test_native_host.mjs
 node extension/tools/test_interpret.mjs
