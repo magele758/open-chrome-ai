@@ -31,7 +31,7 @@ function parseJson3(json) {
     if (!ev.segs) continue;
     const text = ev.segs.map((s) => s.utf8 || "").join("").replace(/\s+/g, " ").trim();
     if (!text) continue;
-    cues.push({ start: (ev.tStartMs || 0) / 1000, text });
+    cues.push({ start: (ev.tStartMs || 0) / 1000, end: ((ev.tStartMs || 0) + (ev.dDurationMs || 0)) / 1000, text });
   }
   return cues;
 }
@@ -58,7 +58,6 @@ export async function loadYoutubeCaptions(tabId, pageUrl) {
   const cues = parseJson3(json);
   const text = cues
     .map((c) => `[${formatTime(c.start)}] ${c.text}`)
-    .join("\n")
-    .slice(0, 20000);
-  return { status: cues.length ? "ready" : "missing", cues, text, language: track.languageCode };
+    .join("\n");
+  return { status: cues.length ? "ready" : "missing", cues, text, complete: true, language: track.languageCode };
 }

@@ -1,12 +1,17 @@
-import { defaultSettings, normalizeSettings, isAsrReady, isModelReady, ASR_PRESETS } from "../lib/storage.js";
+import { defaultSettings, normalizeSettings, isAsrReady, isModelReady, isTtsReady, ASR_PRESETS } from "../lib/storage.js";
 import {
   transcriptionsUrl,
+  transcribeUrl,
+  asrHealthUrl,
+  asrProtocol,
+  asrLanguageValue,
   filenameForMime,
   silentWav,
   segmentsFromTranscription,
   formatTranscript,
   transcribeAudio,
 } from "../lib/asr.js";
+import { buildGenSingleData, ttsOrigin, encodeMonoWav, TTS_EMO_SAME_AS_REF } from "../lib/tts.js";
 import { videoIdentity } from "../lib/captions.js";
 import { packToContext, formatTime } from "../lib/prompts.js";
 
@@ -31,11 +36,31 @@ assert(wav.type === "audio/wav", "wav type");
 const segs = segmentsFromTranscription({
   text: "hello world",
   segments: [
-    { start: 1.2, text: " hello " },
-    { start: 4, text: "world" },
+    { start: 1.2, end: 3.4, text: " hello " },
+    { start: 4, end: 5, text: "world" },
   ],
 });
-assert(segs.length === 2 && segs[0].start === 1.2 && segs[0].text === "hello", "parse segments");
+assert(asrProtocol({ preset: "v1-transcribe" }) === "v1-transcribe", "preset protocol");
+assert(asrProtocol({ baseUrl: "http://127.0.0.1:8002/v1/transcribe" }) === "v1-transcribe", "url protocol");
+assert(asrProtocol({ preset: "openai", baseUrl: "https://api.openai.com/v1" }) === "openai", "openai protocol");
+assert(transcribeUrl({ preset: "v1-transcribe", baseUrl: "http://127.0.0.1:8002" }) === "http://127.0.0.1:8002/v1/transcribe", "v1 url");
+assert(transcribeUrl({ preset: "v1-transcribe", baseUrl: "http://127.0.0.1:8002/v1" }) === "http://127.0.0.1:8002/v1/transcribe", "v1 suffix");
+assert(asrHealthUrl({ baseUrl: "http://127.0.0.1:8002/v1" }) === "http://127.0.0.1:8002/health", "health url");
+assert(asrLanguageValue({ language: "zh-CN" }) === "zh", "lang map");
+assert(asrLanguageValue({ language: "" }) === "", "lang auto");
+assert(isAsrReady({ preset: "v1-transcribe", baseUrl: "http://127.0.0.1:8002", model: "" }), "v1 ready without model");
+assert(!isAsrReady({ preset: "openai", baseUrl: "https://api.openai.com/v1", model: "" }), "openai needs model");
+assert(!isTtsReady(defaultSettings().tts), "tts off by default");
+assert(isTtsReady({ baseUrl: "http://127.0.0.1:7860" }), "tts ready with url");
+assert(ttsOrigin("http://127.0.0.1:7860/") === "http://127.0.0.1:7860", "tts origin");
+const payload = buildGenSingleData({ promptFile: { path: "x" }, text: "你好", lang: "ZH", durationFactor: 1 });
+assert(TTS_EMO_SAME_AS_REF === "Same as the voice reference", "index-tts2.5 emo label");
+assert(payload.length === 26 && payload[0] === TTS_EMO_SAME_AS_REF && payload[2] === "你好" && payload[3] === "ZH", "gen_single arity");
+const refWav = encodeMonoWav(new Float32Array(16000), 16000);
+assert(refWav.size === 44 + 16000 * 2 && refWav.type === "audio/wav", "encode ref wav");
+assert(!JSON.stringify(payload).includes("100.97"), "no private host in payload");
+
+assert(segs.length === 2 && segs[0].start === 1.2 && segs[0].end === 3.4 && segs[0].text === "hello", "parse segments");
 assert(segmentsFromTranscription({ text: "only" })[0].text === "only", "text only");
 assert(segmentsFromTranscription("plain").length === 1, "plain string");
 
@@ -54,7 +79,9 @@ assert(!isModelReady(empty.text), "text not ready");
 const ready = normalizeSettings({ asr: { baseUrl: "http://127.0.0.1:8000/v1", model: "whisper-1" } });
 assert(isAsrReady(ready.asr), "local asr no key");
 assert(ASR_PRESETS.some((p) => p.id === "groq"), "groq preset");
+assert(ASR_PRESETS.some((p) => p.id === "v1-transcribe"), "v1 preset");
 assert(defaultSettings().asr, "default asr slot");
+assert(defaultSettings().tts.preset === "off", "tts off");
 
 assert(videoIdentity("https://www.youtube.com/watch?v=dQw4w9wgGcQ&t=12") === "yt:dQw4w9wgGcQ", "yt id");
 assert(videoIdentity("https://youtu.be/dQw4w9wgGcQ?t=3") === "yt:dQw4w9wgGcQ", "youtu.be");

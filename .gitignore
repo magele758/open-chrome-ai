@@ -1,3 +1,5 @@
 .DS_Store
 *.log
 .tmp/
+extension/local-settings.json
+extension/apply-local.html

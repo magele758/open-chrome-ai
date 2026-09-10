@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>multi-video fixture</title>
+  <style>
+    .preview { width: 160px; height: 90px; background: #333; }
+    .main { width: 640px; height: 360px; background: #111; }
+    .hiddenv { width: 320px; height: 180px; display: none; }
+  </style>
+</head>
+<body>
+  <video class="preview" id="v-preview" muted></video>
+  <video class="html5-main-video video-stream" id="v-main"></video>
+  <video class="hiddenv" id="v-hidden"></video>
+  <div id="movie_player"><video class="html5-main-video" id="v-yt" style="width:800px;height:450px"></video></div>
+</body>
+</html>

@@ -385,6 +385,10 @@ export async function writeVideoDoc(doc, { request = false } = {}) {
   if (!root.granted) return { ok: false, error: "文稿文件夹未授权。" };
   const identity = doc.identity || videoIdentity(doc.url || "");
   const folder = folderNameFor(identity);
+  if (!doc.complete) {
+    const prior = await readLibraryText(`${folder}/meta.json`, { request }).then(r => JSON.parse(r.text)).catch(() => ({}));
+    if (prior.complete) return { ok: true, skipped: true, folder };
+  }
   const cues = normalizeCues(doc);
   if (!cues.length) return { ok: false, error: "没有可写入的字幕。" };
 
@@ -406,6 +410,7 @@ export async function writeVideoDoc(doc, { request = false } = {}) {
     url: doc.url || "",
     duration: doc.duration || null,
     source: doc.source || "",
+    complete: doc.complete === true,
     cueCount: cues.length,
     hasZh: merged.some((c) => c.zh),
     updatedAt,
@@ -429,7 +434,8 @@ export async function readVideoDocFromLibrary(url, { request = false } = {}) {
     const cues = parseVtt(vtt.text);
     if (!cues.length) return null;
     const text = cues.map((c) => `[${formatTime(c.start)}] ${c.text}`).join("\n");
-    return { status: "ready", cues, text, source: "library" };
+    const meta = await readLibraryText(`${folder}/meta.json`, { request }).then(r => JSON.parse(r.text)).catch(() => ({}));
+    return { status: "ready", cues, text, source: "library", complete: meta.complete === true, duration: meta.duration };
   } catch {
     return null;
   }
@@ -447,6 +453,7 @@ export async function syncPackToLibrary(pack, { request = false } = {}) {
       title: pack.title || "",
       duration: pack.video?.duration,
       source: pack.captionsSource || "",
+      complete: pack.captionsComplete === true,
       cues: pack.captionsCues,
       text: pack.captionsText,
     },

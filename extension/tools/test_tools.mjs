@@ -88,6 +88,15 @@ globalThis.chrome = {
       if (func.name === "pageAct") return [{ result: { ok: true, action: args[0] } }];
       if (func.name === "highlightQuote") return [{ result: true }];
       if (func.name === "seekVideo") return [{ result: true }];
+      if (func.name === "plVideo") {
+        const cmd = args[0];
+        if (cmd === "state") return [{ result: { ok: true, currentTime: 1, duration: 10, paused: false, ended: false, count: 1 } }];
+        if (cmd === "control") return [{ result: { ok: true, paused: false } }];
+        if (cmd === "seek") return [{ result: { ok: true } }];
+        if (cmd === "tracks") return [{ result: { status: "missing" } }];
+        if (cmd === "pick" || cmd === "list") return [{ result: { ok: true, videos: [], count: 0 } }];
+        return [{ result: { ok: true } }];
+      }
       if (func.name === "readTextTracks") return [{ result: { status: "missing" } }];
       if (func.name === "readVideoState") return [{ result: { ok: true, currentTime: 1, duration: 10, paused: false, ended: false } }];
       if (func.name === "controlVideo") return [{ result: { ok: true, paused: false } }];
@@ -254,8 +263,15 @@ const skill = await byName.load_skill.execute({ id: "summarize" });
 assert(/总结当前页/.test(skill), "load_skill");
 
 assert(names.includes("transcribe_video"), "has transcribe_video");
-const noAsr = await byName.transcribe_video.execute({});
-assert(/未配置|语音转写|ASR/.test(noAsr), "transcribe_video needs asr: " + noAsr);
+assert(names.includes("tts_speak"), "has tts_speak");
+assert(names.includes("capture_voice_ref"), "has capture_voice_ref");
+const noTts = await byName.tts_speak.execute({ text: "hi" });
+assert(/未配置配音/.test(noTts), "tts optional: " + noTts);
+const savedFetch = globalThis.fetch;
+globalThis.fetch = async () => { throw new TypeError("offline"); };
+const noMedia = await byName.transcribe_video.execute({});
+globalThis.fetch = savedFetch;
+assert(/完整媒体服务未启动/.test(noMedia), "transcribe_video requires full media, no recording fallback: " + noMedia);
 const caps = await byName.get_captions.execute({});
 assert(/字幕不可用|transcribe_video/.test(caps), "get_captions missing: " + caps);
 

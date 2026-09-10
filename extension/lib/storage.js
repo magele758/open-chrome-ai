@@ -15,10 +15,17 @@ export const PRESETS = [
 
 export const ASR_PRESETS = [
   { id: "custom", name: "自定义", baseUrl: "" },
+  { id: "v1-transcribe", name: "自建 /v1/transcribe", baseUrl: "http://127.0.0.1:8002" },
   { id: "openai", name: "OpenAI Whisper", baseUrl: "https://api.openai.com/v1" },
   { id: "groq", name: "Groq Whisper", baseUrl: "https://api.groq.com/openai/v1" },
   { id: "siliconflow", name: "SiliconFlow", baseUrl: "https://api.siliconflow.cn/v1" },
-  { id: "local", name: "本地 Whisper", baseUrl: "http://127.0.0.1:8000/v1" },
+  { id: "local", name: "本地 Whisper（OpenAI 兼容）", baseUrl: "http://127.0.0.1:8000/v1" },
+];
+
+export const TTS_PRESETS = [
+  { id: "off", name: "关闭", baseUrl: "" },
+  { id: "index-tts", name: "Index-TTS 2.5（Gradio）", baseUrl: "http://127.0.0.1:7860" },
+  { id: "custom", name: "自定义 Gradio", baseUrl: "" },
 ];
 
 function emptyModel() {
@@ -30,11 +37,28 @@ function emptyModel() {
   };
 }
 
+function emptyAsr() {
+  return {
+    ...emptyModel(),
+    language: "",
+  };
+}
+
+function emptyTts() {
+  return {
+    preset: "off",
+    baseUrl: "",
+    lang: "ZH",
+    durationFactor: 1,
+  };
+}
+
 export function defaultSettings() {
   return {
     text: emptyModel(),
     multimodal: emptyModel(),
-    asr: emptyModel(),
+    asr: emptyAsr(),
+    tts: emptyTts(),
     multimodalSameAsText: false,
     answerLanguage: "zh-CN",
     uiFont: "md",
@@ -49,6 +73,10 @@ export function normalizeSettings(raw) {
   merged.text = { ...base.text, ...(raw?.text || {}) };
   merged.multimodal = { ...base.multimodal, ...(raw?.multimodal || {}) };
   merged.asr = { ...base.asr, ...(raw?.asr || {}) };
+  merged.tts = { ...base.tts, ...(raw?.tts || {}) };
+  const factor = Number(merged.tts.durationFactor);
+  merged.tts.durationFactor = Number.isFinite(factor) && factor > 0 ? factor : 1;
+  if (!["ZH", "EN", "JA", "AR", "ES"].includes(merged.tts.lang)) merged.tts.lang = "ZH";
   merged.uiFont = ["md", "lg", "xl"].includes(raw?.uiFont) ? raw.uiFont : "md";
   merged.shortcuts = Array.isArray(raw?.shortcuts)
     ? raw.shortcuts.map((s) => ({
@@ -63,6 +91,27 @@ export function normalizeSettings(raw) {
 export async function loadSettings() {
   const { settings } = await chrome.storage.local.get("settings");
   return normalizeSettings(settings);
+}
+
+/** Optional unpacked-only overlay (extension/local-settings.json, gitignored). */
+export async function applyOptionalLocalSettings() {
+  try {
+    const res = await fetch(chrome.runtime.getURL("local-settings.json"));
+    if (!res.ok) return null;
+    const extra = await res.json();
+    if (!extra || extra.rev == null) return null;
+    const { plLocalApplied } = await chrome.storage.local.get("plLocalApplied");
+    if (plLocalApplied === extra.rev) return null;
+    const cur = await loadSettings();
+    const next = { ...cur };
+    if (extra.asr && typeof extra.asr === "object") next.asr = { ...cur.asr, ...extra.asr };
+    if (extra.tts && typeof extra.tts === "object") next.tts = { ...cur.tts, ...extra.tts };
+    const saved = await saveSettings(next);
+    await chrome.storage.local.set({ plLocalApplied: extra.rev });
+    return saved;
+  } catch {
+    return null;
+  }
 }
 
 export async function saveSettings(settings) {
@@ -84,9 +133,19 @@ export function isModelReady(model) {
 }
 
 export function isAsrReady(model) {
-  return Boolean(model?.baseUrl?.trim() && model?.model?.trim());
+  if (!model?.baseUrl?.trim()) return false;
+  const preset = String(model.preset || "");
+  if (preset === "v1-transcribe" || preset === "faster-whisper") return true;
+  if (/\/v1\/transcribe/i.test(model.baseUrl || "")) return true;
+  return Boolean(model.model?.trim());
+}
+
+export function isTtsReady(tts) {
+  return Boolean(tts?.baseUrl?.trim());
 }
 
 export function presetsFor(group) {
-  return group === "asr" ? ASR_PRESETS : PRESETS;
+  if (group === "asr") return ASR_PRESETS;
+  if (group === "tts") return TTS_PRESETS;
+  return PRESETS;
 }

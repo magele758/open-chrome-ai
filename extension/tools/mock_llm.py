@@ -51,8 +51,12 @@ class Handler(BaseHTTPRequestHandler):
             user = str(content or "")
 
         model = body.get("model") or "mock-text"
+        system = ""
+        for m in messages:
+            if m.get("role") == "system":
+                system += str(m.get("content") or "")
         if body.get("stream"):
-            answer = self._answer(user, model)
+            answer = self._answer(user, model, system)
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -65,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"data: [DONE]\n\n")
             return
 
-        answer = self._answer(user, model)
+        answer = self._answer(user, model, system)
         payload = {
             "id": "mock-1",
             "object": "chat.completion",
@@ -79,10 +83,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _answer(self, user: str, model: str) -> str:
+    def _answer(self, user: str, model: str, system: str = "") -> str:
         if user.strip().lower() == "ping":
             return "pong"
         snippet = user.replace("\n", " ").strip()[:80]
+        if "同声传译员" in system or (system and "只输出译文" in system):
+            src = user.replace("\n", " ").strip()[:120]
+            return f"这是实时译文：{src}" if any("\u4e00" <= ch <= "\u9fff" for ch in src) else f"实时译文：代理协议让智能体共享工具。原文大意是 {src[:40]}"
         if "[含截图]" in user:
             return (
                 f"这是多模态模型 `{model}` 看到的当前画面。\n"

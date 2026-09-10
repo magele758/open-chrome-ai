@@ -9,9 +9,10 @@ export function systemPrompt(settings) {
     "你是 PageLens，运行在 Chrome 侧栏里的页面 Agent。可以读页面，也可以按用户要求操作页面（点击、填写、滚动、跳转）。",
     languageInstruction(settings.answerLanguage),
     "规则：",
-    "- 需要正文先 extract_page；只要标题结构/视频进度用 get_page_info；看图/报错/画面用 screenshot。",
-    "- 视频：先 get_captions。无字幕且用户要总结/章节/原文时调用 transcribe_video（会录当前标签声音，需已配置 ASR，较长视频要等播放完）。不要编造台词。",
-    "- 文稿文件夹（用户在设置里选的本机目录）：library_info / list_library / read_library 读原稿和译稿；save_video_doc 把当前字幕落盘；write_library 只在用户明确要求改文件时用。改译句写 zh.vtt。密钥不要写入。",
+    "- 需要正文先 extract_page；PDF、arXiv、alphaXiv 等论文页会抽 PDF 文字层（扫描件可能没有文字）。只要标题结构/视频进度用 get_page_info；看图/报错/画面用 screenshot。",
+    "- 视频：先 get_captions。无字幕且用户要总结/章节/原文时调用 transcribe_video（直接获取完整字幕或音轨；音轨需已配置 ASR 和本机媒体服务，不跟随播放）。不要编造台词。一键总结、同声传译是侧栏按钮，不要自己循环配音整段视频。",
+    "- 配音是可选高级功能。用户要「用原视频的声音说中文」时：先 capture_voice_ref 截一段人声当音色，再用文本模型把一句译成中文，然后 tts_speak。整段边看边译应请用户点侧栏「同声传译」，不要调用未配置的独立翻译服务。",
+    "- 文稿文件夹（用户在设置里选的本机目录）：library_info / list_library / read_library 读原稿和译稿；save_video_doc 把当前字幕落盘；write_library 只在用户明确要求保存笔记或修改译稿时用。改译句写 zh.vtt。密钥不要写入。",
     "- 对比多个已打开的页：先 list_tabs，再对目标 tabId 调 extract_page。",
     "- 操作网页：先 list_controls 或 query_dom 定位，再 click / fill / select_option / press_key / scroll_page / wait_for。用户说「点这个」「填上」「搜一下」就去做。打开或操作过的标签会放进橙色任务分组（标题 PL · 问题），方便辨认；用户说关掉这批时用 close_task_group。",
     "- 找链接、定位、DOM：get_links、find_in_page、query_dom。高层工具不够用时才 chrome_call 或 run_js。",
@@ -42,14 +43,24 @@ export function packToContext(pack) {
     chunks.push(`【视频】标题：${pack.title}\n时长 ${dur}，当前 ${cur}\nURL：${pack.url}`);
     if (pack.captionsText) {
       const via = pack.captionsSource === "asr" || pack.captionsSource === "asr-cache" ? "（语音转写，可能有错字）" : "";
-      chunks.push(`【字幕】${via}\n${pack.captionsText.slice(0, 9000)}`);
+      chunks.push(`【字幕${pack.captionsComplete ? "（完整）" : "（完整性未知）"}】${via}\n${pack.captionsText.slice(0, 9000)}${pack.captionsText.length > 9000 ? "\n【此处仅为文稿开头，不能据此总结整个视频。用 get_captions 读取文稿，或使用侧栏一键总结阅读全文。】" : ""}`);
     } else {
-      chunks.push("【字幕】无。不要编造台词或精确时间戳。无字幕视频应调用 transcribe_video，或请用户点侧栏「转写此视频」。");
+      chunks.push("【字幕】无。不要编造台词或精确时间戳。无字幕视频应调用 transcribe_video，或请用户点侧栏「一键总结」。");
     }
   }
   if (pack.text) {
-    const label = pack.kind === "x" ? "【X 帖子】" : "【页面正文】";
-    chunks.push(`${label}${pack.title ? `\n标题：${pack.title}` : ""}\n${pack.url}\n\n${pack.text.slice(0, 9000)}`);
+    const label = pack.kind === "x" ? "【X 帖子】" : pack.kind === "pdf" ? "【PDF 正文】" : "【页面正文】";
+    const limit = pack.kind === "pdf" ? 24000 : 9000;
+    const extra =
+      pack.kind === "pdf"
+        ? `${pack.pdfPages ? `（${pack.pdfPages} 页` : "（PDF"}${pack.pdfTruncated ? "，已截断" : ""}）`
+        : "";
+    const src = pack.pdfUrl && pack.pdfUrl !== pack.url ? `\nPDF：${pack.pdfUrl}` : "";
+    chunks.push(
+      `${label}${extra}${pack.title ? `\n标题：${pack.title}` : ""}\n${pack.url}${src}\n\n${pack.text.slice(0, limit)}`,
+    );
+  } else if (pack.pdfError) {
+    chunks.push(`【PDF】未能抽取：${pack.pdfError}`);
   }
   if (pack.kind !== "x" && pack.quotes?.length) {
     const lines = pack.quotes.map((q, i) => `〔${i + 1}〕 ${q.text}`).join("\n");

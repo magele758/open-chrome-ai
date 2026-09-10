@@ -1,6 +1,10 @@
 import { handleAudioMessage } from "./lib/tab-audio-sw.js";
+import { applyOptionalLocalSettings } from "./lib/storage.js";
+
+applyOptionalLocalSettings().catch(() => {});
 
 chrome.runtime.onInstalled.addListener(() => {
+  applyOptionalLocalSettings().catch(() => {});
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
@@ -12,6 +16,7 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  applyOptionalLocalSettings().catch(() => {});
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 

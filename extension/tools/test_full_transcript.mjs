@@ -1,0 +1,51 @@
+import assert from 'node:assert/strict';
+import { acquireFullTranscript } from '../lib/full-transcript.js';
+import { summarizeTranscript, splitTranscript } from '../lib/summarize-transcript.js';
+import { getCachedTranscript, setCachedTranscript } from '../lib/captions.js';
+import { formatTranscript } from '../lib/asr.js';
+const id = 'a'.repeat(32);
+let deleted = 0, requests = 0;
+const statuses = [];
+const fetchImpl = async (url, options = {}) => {
+  if (options.method === 'POST') return Response.json({ id });
+  if (options.method === 'DELETE') { deleted++; return Response.json({ ok: true }); }
+  if (url.includes('/audio/')) return new Response(new Blob(['audio'], { type: 'audio/wav' }));
+  return Response.json({ status: 'ready', duration: 610, parts: [{ index: 0, start: 0, duration: 300 }, { index: 1, start: 300, duration: 300 }, { index: 2, start: 600, duration: 10 }] });
+};
+const asr = { preset: 'v1-transcribe', baseUrl: 'https://asr.test' };
+globalThis.fetch = async () => Response.json({ segments: ++requests === 2 ? [] : [{ start: 1, end: 3, text: requests === 3 ? 'ENDING' : 'BEGINNING' }] });
+const result = await acquireFullTranscript({ url: 'https://video.test', asr, fetchImpl, onProgress: p => statuses.push(p) });
+assert.equal(result.complete, true);
+assert.equal(result.cues.at(-1).start, 601);
+assert.match(result.text, /ENDING/);
+assert.equal(requests, 3, 'silence does not omit the next audio segment');
+assert.equal(deleted, 1);
+assert(!statuses.some(s => s.status === 'recording'));
+globalThis.fetch = async () => new Response('failure', { status: 500 });
+await assert.rejects(acquireFullTranscript({ url: 'https://video.test', asr, fetchImpl }), /500/);
+assert.equal(deleted, 2, 'failure also cleans up');
+const abort = new AbortController();
+await assert.rejects(acquireFullTranscript({ url: 'https://video.test', asr, fetchImpl, signal: abort.signal, onProgress: p => { if (p.status === 'uploading') abort.abort(); } }), /abort/i);
+assert.equal(deleted, 3);
+const sub = await acquireFullTranscript({ url: 'https://video.test', fetchImpl: async (url, opts = {}) => opts.method === 'POST' ? Response.json({ id }) : opts.method === 'DELETE' ? Response.json({}) : Response.json({ status: 'ready', duration: 10, subtitle: { format: 'vtt', body: 'WEBVTT\n\n00:00:01.000 --> 00:00:09.000\nfull subtitles\n' } }) });
+assert.equal(sub.complete, true, 'subtitles do not need ASR');
+const store = {};
+globalThis.chrome = { storage: { local: { get: async key => ({ [key]: store[key] }), set: async value => Object.assign(store, value), remove: async keys => keys.forEach(k => delete store[k]) } } };
+const large = formatTranscript(Array.from({ length: 1200 }, (_, i) => ({ start: i, text: `cue ${i} ${'full text '.repeat(4)}` })));
+await setCachedTranscript('https://video.test', { ...large, complete: true });
+const cached = await getCachedTranscript('https://video.test');
+assert.equal(cached.text, large.text);
+assert.equal(cached.cues.length, 1200);
+assert.equal(cached.complete, true);
+const text = Array.from({ length: 7 }, (_, i) => `[${i}:00] MARKER_${i} ${'words '.repeat(1700)}\n`).join('');
+assert.equal(splitTranscript(text).join(''), text, 'chunking loses no characters');
+const seen = [];
+const summary = await summarizeTranscript({ text, model: {}, complete: async (_model, { messages }) => {
+  const input = messages.at(-1).content;
+  if (input.includes('提取本段要点')) { seen.push(input); return input.match(/MARKER_\d/g)?.join(' ') || 'continuation'; }
+  assert(input.includes('MARKER_6'), 'final synthesis includes the ending');
+  return 'complete summary';
+} });
+assert.equal(summary, 'complete summary');
+for (let i = 0; i < 7; i++) assert(seen.some(s => s.includes(`MARKER_${i}`)));
+console.log('PASS full acquisition, silent segments, offsets, failure/cancel cleanup, subtitle-only, untruncated cache, whole-document summary');

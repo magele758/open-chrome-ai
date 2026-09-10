@@ -10,9 +10,10 @@ export function chatCompletionsUrl(baseUrl) {
 }
 
 function headersFor(model) {
+  const key = String(model?.apiKey || "").trim() || "local";
   const headers = {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${model.apiKey.trim()}`,
+    Authorization: `Bearer ${key}`,
     "HTTP-Referer": "https://pagelens.local",
     "X-Title": "PageLens",
   };
@@ -73,6 +74,28 @@ async function readError(response) {
     /* keep text */
   }
   return `${response.status} ${detail}`.trim();
+}
+
+/**
+ * Non-streaming chat completion for short jobs (live translation).
+ */
+export async function completeChat(model, { messages, temperature = 0.2, maxTokens = 400, signal } = {}) {
+  const url = chatCompletionsUrl(model.baseUrl);
+  const response = await fetch(url, {
+    method: "POST",
+    headers: headersFor(model),
+    signal,
+    body: JSON.stringify({
+      model: String(model.model || "").trim(),
+      stream: false,
+      temperature,
+      max_tokens: maxTokens,
+      messages: messages || [],
+    }),
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  const json = await response.json();
+  return String(json.choices?.[0]?.message?.content || "").trim();
 }
 
 export async function testConnection(model) {

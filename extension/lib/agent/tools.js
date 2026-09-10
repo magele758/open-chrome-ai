@@ -1,6 +1,9 @@
-import { seekVideo, highlightQuote, extractPage } from "../extract.js";
+import { highlightQuote } from "../extract.js";
+import { loadTabPack } from "../page-pack.js";
+import { PDF_MAX_CHARS } from "../pdf-text.js";
 import { loadPageCaptions, transcribeTab } from "../captions.js";
-import { loadSettings } from "../storage.js";
+import { isTtsReady, loadSettings } from "../storage.js";
+import { captureVoiceRefFromTab, synthesizeTts } from "../tts.js";
 import {
   libraryStatus,
   listLibrary,
@@ -8,7 +11,6 @@ import {
   writeLibraryText,
   syncPackToLibrary,
 } from "../library.js";
-import { MAX_RECORD_SECONDS } from "../tab-audio.js";
 import {
   CHROME_CALL_ALLOW,
   captureTab,
@@ -18,6 +20,7 @@ import {
   extensionUrl,
   inject,
   injectMain,
+  injectVideo,
   isHttpUrl,
   restrictedUrl,
   toToolText,
@@ -53,14 +56,24 @@ function tabIdProp() {
 }
 
 function formatPack(pack) {
-  if (!pack?.text && !pack?.title) return "未能抽取到正文。页面可能未加载完、需要登录，或是受限页。";
+  if (!pack?.text && !pack?.title && !pack?.pdfError) {
+    return "未能抽取到正文。页面可能未加载完、需要登录，或是受限页。";
+  }
+  const kind =
+    pack.kind === "x" ? "类型：X 帖子" : pack.kind === "pdf" ? "类型：PDF" : "类型：网页";
+  const limit = pack.kind === "pdf" ? Math.min(PDF_MAX_CHARS, 12000) : 9000;
   const head = [
-    pack.kind === "x" ? "类型：X 帖子" : "类型：网页",
+    kind,
     pack.title ? `标题：${pack.title}` : "",
     pack.url ? `URL：${pack.url}` : "",
+    pack.pdfUrl && pack.pdfUrl !== pack.url ? `PDF：${pack.pdfUrl}` : "",
+    pack.pdfPages ? `页数：${pack.pdfPages}` : "",
+    pack.pdfTruncated ? "正文已截断" : "",
     pack.selection ? `选区：${pack.selection}` : "",
   ].filter(Boolean);
-  return [...head, "", (pack.text || "").slice(0, 9000)].join("\n");
+  const body = (pack.text || "").slice(0, limit);
+  const err = !body && pack.pdfError ? `未能读取 PDF：${pack.pdfError}` : "";
+  return [...head, "", body || err].join("\n");
 }
 
 async function resolveTabId(ctx, args) {
@@ -106,7 +119,8 @@ export function createAgentTools(ctx) {
   return [
     {
       name: "extract_page",
-      description: "抽取标签页干净正文（去导航/侧栏）。阅读或总结页面前应先调用。可传 tabId 读其他已打开的标签。",
+      description:
+        "抽取标签页干净正文（去导航/侧栏）。PDF、arXiv、alphaXiv 等论文页会拉取 PDF 文字层。阅读或总结页面前应先调用。可传 tabId 读其他已打开的标签。",
       parameters: obj({ tabId: tabIdProp() }),
       async execute(args) {
         const tabId = args?.tabId != null ? Number(args.tabId) : ctx.getTabId?.();
@@ -118,7 +132,7 @@ export function createAgentTools(ctx) {
         }
         const tab = await chrome.tabs.get(tabId);
         if (restrictedUrl(tab.url)) return `受限页，无法抽取：${tab.url}`;
-        const pack = await inject(tabId, extractPage);
+        const pack = await loadTabPack(tabId);
         return formatPack(pack || { title: tab.title, url: tab.url, text: "" });
       },
     },
@@ -353,7 +367,7 @@ export function createAgentTools(ctx) {
       ),
       async execute(args) {
         try {
-          await inject(await resolveTabId(ctx, args), seekVideo, [Number(args.seconds)]);
+          await injectVideo(await resolveTabId(ctx, args), "seek", { seconds: Number(args.seconds) });
         } catch (err) {
           if (/NO_PLAYER/.test(err?.message || "")) return "当前页没有可跳转的视频。";
           throw err;
@@ -387,7 +401,7 @@ export function createAgentTools(ctx) {
         const caps = await loadPageCaptions(tabId, tab.url);
         if (caps.status === "ready" && caps.text) {
           ctx.setCaptions?.(caps);
-          return caps.text.slice(0, 9000);
+          return `${caps.complete ? "完整文稿" : "字幕片段（完整性未知）"}，共 ${caps.text.length} 字。\n` + caps.text;
         }
         return `字幕不可用（${caps.status || "missing"}）。用户要总结/章节/原文时调用 transcribe_video。`;
       },
@@ -395,15 +409,10 @@ export function createAgentTools(ctx) {
     {
       name: "transcribe_video",
       description:
-        "录制当前标签的视频声音，用 Whisper 转写成带时间戳的字幕。无现成字幕、用户要总结/章节/全文时调用。需要设置里已配置 ASR。默认从开头播放并录音，最长约 30 分钟；请等待，不要编造台词。DRM 页面录不到声音。",
+        "直接获取完整字幕或下载完整音轨并分段 ASR，保存完整文稿。不播放或录制标签。无字幕时需要本机媒体服务和 ASR；直播或获取失败会明确报错。",
       parameters: obj({
         tabId: tabIdProp(),
-        force: { type: "boolean", description: "即使已有字幕也重新录音转写" },
-        fromStart: { type: "boolean", description: "默认 true，从 0 秒开始" },
-        maxSeconds: {
-          type: "integer",
-          description: `最长录制秒数，默认 ${MAX_RECORD_SECONDS}（30 分钟）`,
-        },
+        force: { type: "boolean", description: "即使已有完整文稿也重新提取" },
       }),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
@@ -412,19 +421,60 @@ export function createAgentTools(ctx) {
             tabId,
             settings: await loadSettings(),
             force: Boolean(args.force),
-            fromStart: args.fromStart !== false,
-            maxSeconds: args.maxSeconds,
             onProgress: ctx.onTranscribeProgress,
             signal: ctx.getAbortSignal?.(),
           });
           ctx.setCaptions?.(caps);
           const note = caps.reused
-            ? "已有字幕，未重新录音。要重录请传 force=true。\n\n"
+            ? "已有字幕，未重新提取。要重提请传 force=true。\n\n"
             : "已转写并写入字幕槽。\n\n";
           const lib = caps.library ? `已写入文稿文件夹 ${caps.library}/\n\n` : caps.libraryError ? `文稿未落盘：${caps.libraryError}\n\n` : "";
-          return lib + note + String(caps.text || "").slice(0, 9000);
+          return lib + note + String(caps.text || "");
         } catch (err) {
           return `转写失败：${err?.message || err}`;
+        }
+      },
+    },
+    {
+      name: "capture_voice_ref",
+      description:
+        "从当前标签正在播放的视频截取约 7 秒声音，作为 Index-TTS 参考音色。截前请让人声清楚播放。不要在 DRM 页上用。",
+      parameters: obj({ tabId: tabIdProp() }),
+      async execute(args) {
+        try {
+          const tabId = await resolveTabId(ctx, args);
+          const saved = await captureVoiceRefFromTab(tabId);
+          return `已把当前视频声音存成参考音色（${saved.name}，${Math.round((saved.bytes || 0) / 1024)} KB）。之后 tts_speak 会按这个音色合成。`;
+        } catch (err) {
+          return `截取音色失败：${err?.message || err}`;
+        }
+      },
+    },
+    {
+      name: "tts_speak",
+      description:
+        "用已配置的 Index-TTS 朗读一句短文本（最多 500 字）。未配置配音时不要调用。不要给整段视频自动配音。",
+      parameters: obj(
+        {
+          text: { type: "string", description: "要朗读的文本" },
+          lang: { type: "string", description: "ZH / EN / JA / AR / ES，默认用设置" },
+        },
+        ["text"],
+      ),
+      async execute(args) {
+        const settings = await loadSettings();
+        if (!isTtsReady(settings.tts)) {
+          return "未配置配音。到设置填写 Index-TTS 地址并上传参考音；不配不影响其它功能。";
+        }
+        try {
+          const out = await synthesizeTts(settings.tts, String(args.text || ""), { lang: args.lang });
+          const url = URL.createObjectURL(out.blob);
+          const audio = new Audio(url);
+          audio.onended = () => URL.revokeObjectURL(url);
+          await audio.play();
+          return `已朗读 ${String(args.text || "").trim().length} 字。`;
+        } catch (err) {
+          return `配音失败：${err?.message || err}`;
         }
       },
     },

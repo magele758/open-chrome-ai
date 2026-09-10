@@ -217,6 +217,62 @@ export async function extractPage() {
     return { text: text.slice(0, MAX_CHARS), quotes, kind: "generic", videoIsPrimary: false };
   }
 
+  function findPdfHints() {
+    const absUrl = (u) => {
+      const s = String(u || "").trim();
+      if (!s || /^(blob:|chrome-extension:|javascript:|data:)/i.test(s)) return "";
+      try {
+        const href = new URL(s, location.href).href;
+        return /^https?:/i.test(href) ? href : "";
+      } catch {
+        return "";
+      }
+    };
+    const citationPdfUrl = absUrl(
+      document.querySelector('meta[name="citation_pdf_url"]')?.getAttribute("content") || "",
+    );
+    const citationArxivId = (
+      document.querySelector('meta[name="citation_arxiv_id"]')?.getAttribute("content") || ""
+    )
+      .replace(/^arXiv:/i, "")
+      .trim();
+    const pdfCandidates = [];
+    const add = (u) => {
+      const href = absUrl(u);
+      if (href && !pdfCandidates.includes(href)) pdfCandidates.push(href);
+    };
+    add(citationPdfUrl);
+    for (const el of document.querySelectorAll("embed[src], object[data], iframe[src]")) {
+      const src = el.getAttribute("src") || el.getAttribute("data") || "";
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      if (type === "application/pdf" || /pdf/i.test(src)) add(src);
+    }
+    for (const a of document.querySelectorAll("a[href]")) {
+      if (pdfCandidates.length >= 8) break;
+      const href = a.getAttribute("href") || "";
+      const text = clean(a.innerText).slice(0, 80);
+      if (
+        /\.pdf($|[?#])/i.test(href) ||
+        /\/pdf\//i.test(href) ||
+        /^(pdf|download pdf|view pdf|全文pdf|下载论文)$/i.test(text)
+      ) {
+        add(href);
+      }
+    }
+    const chromePdfViewer = Boolean(
+      /application\/pdf/i.test(document.contentType || "") ||
+        document.querySelector('embed[type="application/pdf"], object[type="application/pdf"]') ||
+        document.querySelector("pdf-viewer, viewer-toolbar, #viewer.pdfViewer, .pdfViewer"),
+    );
+    return {
+      citationPdfUrl,
+      citationArxivId,
+      pdfCandidates: pdfCandidates.slice(0, 8),
+      chromePdfViewer,
+      contentType: document.contentType || "",
+    };
+  }
+
   const isXHost = /(^|\.)x\.com$|(^|\.)twitter\.com$/.test(hostname);
   const hasXTweet = Boolean(document.querySelector('article[data-testid="tweet"]'));
 
@@ -224,22 +280,58 @@ export async function extractPage() {
   if (isXHost || hasXTweet) extracted = await extractX();
   else extracted = extractGeneric();
 
-  const videos = [...document.querySelectorAll("video")].filter(
-    (el) => el.duration && Number.isFinite(el.duration) && el.duration >= 5 && el.offsetWidth > 0,
-  );
-  const video = videos[0];
-  const videoMeta = video
-    ? {
-        duration: video.duration,
-        currentTime: video.currentTime,
-        paused: video.paused,
-        width: video.videoWidth,
-        height: video.videoHeight,
-      }
-    : null;
+  const allVideos = [...document.querySelectorAll("video, audio")].filter((el) => {
+    if (el.tagName === "AUDIO") return Number.isFinite(el.duration) && el.duration > 0;
+    return (el.offsetWidth || 0) >= 80 && (el.offsetHeight || 0) >= 45;
+  });
+  const scoreVideo = (el) => {
+    const w = el.offsetWidth || 0;
+    const h = el.offsetHeight || 0;
+    const cls = String(el.className || "");
+    const dur = Number.isFinite(el.duration) ? el.duration : 0;
+    let s = Math.min((w * h) / 800, 500);
+    if (/html5-main-video/.test(cls)) s += 900;
+    if (/video-stream/.test(cls)) s += 200;
+    if (el.closest("#movie_player, .html5-video-player, .bpx-player-container, .bilibili-player, .xgplayer, .jwplayer")) {
+      s += 250;
+    }
+    if (!el.paused && !el.ended) s += 320;
+    if ((el.currentTime || 0) > 0.4) s += 120;
+    if (dur >= 8) s += 80;
+    if (dur >= 60) s += 70;
+    if ((w * h) < 160 * 90) s -= 450;
+    return s;
+  };
+  const marked = allVideos.find((el) => el.getAttribute("data-pagelens-player") === "1");
+  const video = marked || allVideos.slice().sort((a, b) => scoreVideo(b) - scoreVideo(a))[0] || null;
+  if (video) {
+    allVideos.forEach((el) => el.removeAttribute("data-pagelens-player"));
+    video.setAttribute("data-pagelens-player", "1");
+  }
+  const snap = (el, i) =>
+    el
+      ? {
+          i,
+          duration: Number.isFinite(el.duration) ? el.duration : 0,
+          currentTime: el.currentTime || 0,
+          paused: Boolean(el.paused),
+          width: el.videoWidth || el.offsetWidth,
+          height: el.videoHeight || el.offsetHeight,
+          main: /html5-main-video|video-stream/.test(String(el.className || "")) || Boolean(el.closest("#movie_player")),
+          label: `${Math.round(el.offsetWidth || 0)}×${Math.round(el.offsetHeight || 0)}${el.paused ? "" : " · 播放中"}`,
+        }
+      : null;
+  const videos = allVideos.map((el, i) => snap(el, i));
+  const videoMeta = snap(video, allVideos.indexOf(video));
+  if (videoMeta && videos.length > 1) videoMeta.count = videos.length;
 
-  const hostPrimaryVideo = /youtube\.com|youtu\.be|bilibili\.com|vimeo\.com/.test(hostname);
-  const videoIsPrimary = Boolean(extracted.videoIsPrimary) || (hostPrimaryVideo && Boolean(videoMeta));
+  const hostPrimaryVideo =
+    /youtube\.com|youtu\.be|bilibili\.com|vimeo\.com|twitch\.tv|tiktok\.com|youku\.com|iqiyi\.com|ted\.com|coursera\.org|udemy\.com|netflix\.com/.test(
+      hostname,
+    );
+  const largePlayer = Boolean(videoMeta && (videoMeta.width >= 240 || videoMeta.height >= 180));
+  const videoIsPrimary = Boolean(extracted.videoIsPrimary) || (hostPrimaryVideo && Boolean(videoMeta)) || largePlayer;
+  const pdfHints = findPdfHints();
 
   return {
     title,
@@ -248,17 +340,28 @@ export async function extractPage() {
     text: extracted.text || "",
     selection,
     quotes: extracted.quotes || [],
-    video: videoIsPrimary ? videoMeta : null,
+    video: videoMeta,
+    videos,
+    videoCount: videos.length,
+    videoIndex: videoMeta ? videoMeta.i : -1,
     videoIsPrimary,
     kind: extracted.kind || "generic",
+    ...pdfHints,
   };
 }
 
 export function seekVideo(seconds) {
-  const nodes = [...document.querySelectorAll("video")].filter(
-    (el) => el.duration && Number.isFinite(el.duration) && el.offsetWidth > 0,
-  );
-  const el = nodes[0];
+  const all = [...document.querySelectorAll("video, audio")].filter((el) => {
+    if (el.tagName === "AUDIO") return Number.isFinite(el.duration) && el.duration > 0;
+    return (el.offsetWidth || 0) >= 80 && (el.offsetHeight || 0) >= 45;
+  });
+  const el =
+    all.find((n) => n.getAttribute("data-pagelens-player") === "1") ||
+    all.slice().sort((a, b) => {
+      const area = (n) => (n.offsetWidth || 0) * (n.offsetHeight || 0);
+      const cls = (n) => (/html5-main-video/.test(String(n.className || "")) ? 1000 : 0) + area(n);
+      return cls(b) - cls(a);
+    })[0];
   if (!el) throw new Error("NO_PLAYER");
   el.currentTime = Number(seconds);
   const play = el.play?.();

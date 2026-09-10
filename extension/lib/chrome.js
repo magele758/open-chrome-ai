@@ -3,6 +3,8 @@
  * Side-panel and tool code share these; no extra process.
  */
 
+import { plPageAudio, plVideo } from "./video-pick.js";
+
 const BLOCKED_PROTOCOLS = new Set([
   "chrome:",
   "edge:",
@@ -167,6 +169,14 @@ export async function inject(tabId, func, args = [], { world } = {}) {
   if (world) opts.world = world;
   const [entry] = await chrome.scripting.executeScript(opts);
   return entry?.result;
+}
+
+export async function injectVideo(tabId, cmd, arg = {}) {
+  return inject(tabId, plVideo, [cmd, arg]);
+}
+
+export async function injectPageAudio(tabId, cmd, arg = {}) {
+  return inject(tabId, plPageAudio, [cmd, arg]);
 }
 
 export async function injectMain(tabId, func, args = []) {

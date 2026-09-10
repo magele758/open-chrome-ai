@@ -4,8 +4,20 @@
  */
 
 export function getPageInfo() {
-  const videos = [...document.querySelectorAll("video")].filter((el) => el.offsetWidth > 0);
-  const video = videos[0];
+  const all = [...document.querySelectorAll("video, audio")].filter((el) => {
+    if (el.tagName === "AUDIO") return Number.isFinite(el.duration) && el.duration > 0;
+    return (el.offsetWidth || 0) >= 80 && (el.offsetHeight || 0) >= 45;
+  });
+  const marked = all.find((el) => el.getAttribute("data-pagelens-player") === "1");
+  const video =
+    marked ||
+    all.slice().sort((a, b) => {
+      const cls = (n) => (/html5-main-video/.test(String(n.className || "")) ? 1e6 : 0);
+      const area = (n) => (n.offsetWidth || 0) * (n.offsetHeight || 0);
+      const live = (n) => (!n.paused && !n.ended ? 1e5 : 0);
+      return cls(b) + area(b) + live(b) - (cls(a) + area(a) + live(a));
+    })[0] ||
+    null;
   const headings = [...document.querySelectorAll("h1, h2, h3")]
     .map((el) => ({ tag: el.tagName.toLowerCase(), text: (el.innerText || "").trim().slice(0, 120) }))
     .filter((h) => h.text)
@@ -18,11 +30,14 @@ export function getPageInfo() {
     headings,
     links: document.querySelectorAll("a[href]").length,
     images: document.querySelectorAll("img").length,
+    videoCount: all.length,
     video: video
       ? {
           duration: video.duration,
           currentTime: video.currentTime,
           paused: video.paused,
+          index: all.indexOf(video),
+          count: all.length,
         }
       : null,
   };

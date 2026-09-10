@@ -27,8 +27,15 @@
           </div>
           <button type="button" class="x" id="btn-unpin" title="不分享此页">×</button>
         </div>
-        <div class="ctx-actions hidden" id="ctx-actions">
-          <button type="button" class="ctx-action" id="btn-transcribe">转写此视频</button>
+        <div class="ctx-actions" id="ctx-actions">
+          <button type="button" class="ctx-action primary" id="btn-summarize-video" title="一键取出台词并总结。有字幕直接总结。">一键总结</button>
+          <button type="button" class="ctx-action primary" id="btn-interpret" title="边看边出中文。有字幕跟轴翻译；无字幕则按声音识别。">同声传译</button>
+          <button type="button" class="ctx-action" id="btn-transcribe" title="只取出带时间戳的台词，不自动总结">只要文稿</button>
+          <button type="button" class="ctx-action hidden" id="btn-video-switch" title="页面里有多个视频时，切换要总结/同传的那一个">画面</button>
+        </div>
+        <div class="si-live hidden" id="si-live">
+          <div class="si-zh" id="si-zh"></div>
+          <div class="si-src" id="si-src"></div>
         </div>
       </div>
       <div class="msgs" id="msgs"></div>
@@ -41,6 +48,8 @@
         <div class="skills" id="skills"></div>
         <div class="row">
           <button class="ghost" type="button" id="btn-shot" title="截取当前画面">▣</button>
+          <button class="ghost" type="button" id="btn-summarize-bar" title="一键总结">总</button>
+          <button class="ghost" type="button" id="btn-interpret-bar" title="同声传译">译</button>
           <textarea id="input" placeholder="问这页 · ⌘↵ 发送 · ⇧↵ 换行"></textarea>
           <button class="send" type="button" id="btn-send" title="发送（⌘↵）">↑</button>
         </div>
@@ -50,7 +59,7 @@
 
     <section id="view-settings" class="settings hidden">
       <h2>模型设置</h2>
-      <p class="lead">文本、多模态、语音转写分开配。聊天走 <code>POST {base_url}/chat/completions</code>；无字幕视频走 Whisper 的 <code>/audio/transcriptions</code>。密钥只存在本机。</p>
+      <p class="lead">文本、多模态必填才能聊天。语音转写和配音是高级功能，不填不影响读页、问答、点选。密钥只存在本机。</p>
 
       <div class="block" id="block-text">
         <h3>文本模型</h3>
@@ -69,7 +78,12 @@
 
       <div class="block" id="block-asr">
         <h3>语音转写（ASR）</h3>
-        <p class="lead" style="margin-top:-4px">无字幕视频：录当前标签声音，发到 Whisper 兼容接口 <code>POST {base_url}/audio/transcriptions</code>。可填 Groq / OpenAI / SiliconFlow，或本地 <code>http://127.0.0.1:端口/v1</code>。本地服务可以不填 api_key。扩展不内置 Whisper。</p>
+        <p class="lead" style="margin-top:-4px">可选。无字幕视频才需要。自建服务选预设「自建 /v1/transcribe」，<code>POST {host}/v1/transcribe</code>；也可填 Groq / OpenAI 的 <code>/audio/transcriptions</code>。扩展不内置 Whisper。详见仓库 <code>docs/advanced-asr-tts.md</code>。</p>
+      </div>
+
+      <div class="block" id="block-tts">
+        <h3>配音（高级，可选）</h3>
+        <p class="lead" style="margin-top:-4px">Index-TTS 2.5 Gradio：<code>/gen_single</code>，用参考 wav 克隆同一把声音。不配时「同声传译」仍出中文字幕。参考音可上传或从当前视频截取；同传时关掉原片声音，只播中文配音。</p>
       </div>
 
       <div class="block" id="block-library">

@@ -4,7 +4,7 @@ Chrome 侧栏里的页面 Agent：打开就能问「这一页 / 这段视频在�
 
 模型用你自己的密钥（BYOK），走 OpenAI 兼容接口。中文优先。不经过我们的服务器。
 
-当前版本 **0.8.0**（Manifest V3，主界面是 Side Panel，不是弹窗）。
+当前版本 **0.9.8**（Manifest V3，主界面是 Side Panel，不是弹窗）。
 
 ---
 
@@ -41,14 +41,14 @@ PageLens 要做的是：**能用的「内容理解侧栏」**，主场是网页�
 
 ### 读当前页
 
-打开任意普通网页，直接问。扩展会抽干净正文（去掉导航、侧栏），X/Twitter 走专用抽取。
+打开任意普通网页，直接问。扩展会抽干净正文（去掉导航、侧栏），X/Twitter 走专用抽取。PDF 和论文页（arXiv、alphaXiv、Chrome 自带 PDF 查看器等）会拉取 PDF 文字层；扫描件没有文字时会说明。
 
 - 摘要、解释、对照、找原文
 - 选中文字后右键「用 PageLens 问选区」
 - 回答里的 〔1〕〔2〕可点回页面并高亮
 - 需要看图、报错、课件时，截当前画面送给多模态模型
 
-顶栏随时显示「正在阅读 / 正在看帖 / 正在观看」。点 × 取消分享后，这一轮不再带页面。
+顶栏随时显示「正在阅读 / 正在读 PDF / 正在看帖 / 正在观看」。点 × 取消分享后，这一轮不再带页面。
 
 ### 读视频
 
@@ -56,12 +56,23 @@ YouTube 以及页里带 `<video>` 的站点：
 
 - 识别时长、当前进度、有没有字幕
 - YouTube 优先拉 timedtext 字幕；其它页尝试 HTML5 `textTracks`
-- 无字幕时：点侧栏「转写此视频」（或让 Agent 调 `transcribe_video`）→ 录当前标签声音 → 发到你配置的 Whisper 兼容接口 → 带时间戳的文稿写进原来的字幕槽，之后就能总结、列章节、点时间跳转
+- **一键总结**：卡片「一键总结」/ 输入框旁「总」。先获取完整字幕；没有字幕则下载完整音轨、分段 ASR 生成全文，再让文本模型分段阅读并汇总。不会跟随视频播放或移动播放进度
+- **同声传译**：卡片「同声传译」/ 输入框旁「译」。边看边出中文。YouTube 自带字幕则跟轴翻译；否则从当前播放器取声（约 5 秒一切）再识别。翻译走设置里的**文本模型**。配了 Index-TTS 则以每段原音作为临时参考生成中文配音（原声关闭），不覆盖保存的音色。使用临时后台标签页提前取声，当前观看页先缓冲两段，再让画面与中文配音同步推进；暂停、拖动和倍速都跟随原播放器。下一段未准备好时画面等待；自动换段要等当前配音自然播完，画面先到终点就停住等尾音。停止后自动关闭后台取声页。没配 TTS 仍出中文字幕
+- 同一页有多个 `<video>` 时，自动选主播放器（YouTube 的 `html5-main-video`、正在播的、面积最大的）。多于一个会显示「画面 1/N」，可点切换
+- 只要文稿、不总结：点「只要文稿」
 - 答案里的 `12:04` 可点，播放器跳到该秒
 
-转写需要在设置里配第三套槽 **语音转写（ASR）**：`base_url` + `model`（如 `whisper-1` / `whisper-large-v3`），云端填 `api_key`，本地 `http://127.0.0.1:端口/v1` 可以不填。走 `POST {base_url}/audio/transcriptions`。扩展不内置 Whisper，也不去解析视频直链。
+无字幕视频需要在设置里配 **语音转写（ASR）**：`base_url` + `model`（如 `whisper-1` / `whisper-large-v3`），云端填 `api_key`，本地 `http://127.0.0.1:端口` 可以不填。自建走 `POST {base_url}/v1/transcribe`，也可走 Groq / OpenAI 的 `/audio/transcriptions`。扩展不内置 Whisper，也不去解析视频直链。
 
-Netflix 一类 DRM 录不到声音。转写时请保持侧栏打开，必要时在页面上点播放。默认从开头录，最长约 30 分钟。
+完整文稿提取需要保持侧栏打开；没有可直接读取的字幕时，需要启动本机媒体服务（见下文）。音轨按约 5 分钟分段转写，没有原先 30 分钟的录制上限。直播、受保护媒体或下载失败会明确报错，不会把片段当全文。同传仍从当前进度开始，点「停止同传」结束。
+
+完整媒体服务使用本机 `yt-dlp`、`ffmpeg`、`ffprobe`，只监听回环地址，不自动读取浏览器 Cookie：
+
+```sh
+python3 tools/media_helper.py
+```
+
+默认地址 `http://127.0.0.1:18789`。先尝试整条字幕，再下载完整音轨；音频分段发往设置里的 ASR，原音轨不发给文本模型。成功、失败或取消后清理临时音频；意外关闭侧栏留下的任务一小时后清理。若提示媒体服务未启动，重新运行上面的命令。站点需登录或 yt-dlp 不支持时会失败，不回退到播放录音。完整文稿保留在扩展缓存；选了文稿文件夹还会写入 `original.vtt` 和 `transcript.md`。长文稿总结会阅读全文，旧录音缓存完整性未知时会重新提取。
 
 ### 文稿文件夹
 
@@ -79,6 +90,17 @@ Netflix 一类 DRM 录不到声音。转写时请保持侧栏打开，必要时�
 浏览器不提供完整路径，侧栏只显示文件夹名。改译句请改 `zh.vtt`；`transcript.md` 会按两份 VTT 生成。密钥不会写进这个目录。Agent 可以用 `list_library` / `read_library` / `save_video_doc` 读写这个授权目录，出不去。
 
 没选目录时，转写结果仍会临时记在扩展存储里，最多 24 部。
+
+### 高级：自建转写与配音（可选）
+
+不配也能用读页、问答、点选。只有无字幕要转写、或想朗读一句时才填。
+
+设置里：
+
+- **语音转写**：预设「自建 /v1/transcribe」，`base_url` 填你的转写根地址（示例 `http://127.0.0.1:8002`）。扩展调用 `POST {base_url}/v1/transcribe`，用返回的 `segments[].start/end/text`。也仍支持 OpenAI 形态的 `/audio/transcriptions`。
+- **配音**：Index-TTS 2.5 Gradio（示例 `http://127.0.0.1:7860`）。`/gen_single` 用 `Same as the voice reference` + 参考 wav 克隆音色。同传使用每段原音作为临时参考，中文音频按对应的视频起止时间播放；上传或手动截取的参考音供试听／朗读使用。同传期间会关掉原片声音，停止后恢复。
+
+接口说明、curl 示例见 [docs/advanced-asr-tts.md](docs/advanced-asr-tts.md)。不要把内网 IP 或机器路径写进仓库。翻译专用端口先不接。
 
 ### 操作网页
 
@@ -117,13 +139,14 @@ Session Buddy、Omni 这类「管标签」扩展没有对外接口，调不到�
 
 ### 模型和快捷问题
 
-设置里三套槽位：
+设置里的槽位：
 
 - **文本模型**：摘要、问答、字幕理解
 - **多模态模型**：看截图。若就是同一个视觉模型，勾选「与文本模型相同」
-- **语音转写（ASR）**：无字幕视频。Whisper 兼容接口，可指向 Groq / OpenAI / SiliconFlow 或本机
+- **语音转写（ASR）**：无字幕视频。自建 `/v1/transcribe`，或 Groq / OpenAI 兼容 `/audio/transcriptions`
+- **配音（可选）**：Index-TTS Gradio。不配不影响其它功能
 
-文本/多模态：`POST {base_url}/chat/completions`。ASR：`POST {base_url}/audio/transcriptions`。预设里有 OpenAI、SiliconFlow、DeepSeek、Kimi、通义、火山、Ollama、LM Studio 等，也可完全自定义。
+文本/多模态：`POST {base_url}/chat/completions`。自建 ASR：`POST {base_url}/v1/transcribe`。也可继续用 OpenAI 形态的 `/audio/transcriptions`。预设里有 OpenAI、SiliconFlow、DeepSeek、Kimi、通义、火山、Ollama、LM Studio 等，也可完全自定义。
 
 快捷问题没有内置芯片。自己在设置里加，或点输入框旁的 **+**。点一下就把那段话发给模型。
 
@@ -213,6 +236,9 @@ python3 extension/tools/mock_llm.py
 
   不要做：PageLens 自己常驻 HTTP 网关、公网 A2A、给默认配置文件开 CDP。
 
+- **实时音频翻译（边看边出中文配音）**  
+  还没有。现在只有整段转写 + 可选逐句 TTS。实时需要切窗 ASR、翻译、TTS 队列，选型后再做。
+
 ---
 
 ## 仓库结构
@@ -232,6 +258,7 @@ docs/               调研、PRD、交互、技术方案
 2. [功能 PRD](docs/02-prd.md)（初稿范围，以本 README 的「当前能做」为准）
 3. [交互与 UI](docs/03-interaction-ui.md)
 4. [技术方案](docs/04-technical-scheme.md)
+5. [自建转写与配音（高级）](docs/advanced-asr-tts.md)
 
 本地单测：
 
@@ -244,4 +271,12 @@ node extension/tools/test_markdown.mjs
 node extension/tools/test_companions.mjs
 node extension/tools/test_asr.mjs
 node extension/tools/test_library.mjs
+node extension/tools/test_interpret.mjs
+node extension/tools/test_interpret_pipeline.mjs
+node extension/tools/test_interpret_flow.mjs
+node extension/tools/test_interpret_video.mjs
+node extension/tools/test_page_audio.mjs
+node extension/tools/test_tts.mjs
+node extension/tools/test_pdf.mjs
+node extension/tools/test_video_pick.mjs
 ```
