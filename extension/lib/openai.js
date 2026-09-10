@@ -73,9 +73,15 @@ function parseSseTurn(line) {
     const json = JSON.parse(data);
     const choice = json.choices?.[0] || {};
     return {
-      content: normalizeContent(choice.delta?.content ?? choice.message?.content ?? ""),
-      toolCalls: choice.delta?.tool_calls || choice.message?.tool_calls || [],
-      finishReason: choice.finish_reason || json.choices?.[0]?.finish_reason || "",
+      content: normalizeContent(choice.delta?.content ?? choice.message?.content ?? choice.text ?? ""),
+      reasoning: normalizeContent(
+        choice.delta?.reasoning_content ?? choice.message?.reasoning_content
+          ?? choice.delta?.reasoning ?? choice.message?.reasoning ?? "",
+      ),
+      toolCalls: Array.isArray(choice.delta?.tool_calls)
+        ? choice.delta.tool_calls
+        : (Array.isArray(choice.message?.tool_calls) ? choice.message.tool_calls : []),
+      finishReason: choice.finish_reason || "",
     };
   } catch {
     return null;
@@ -83,13 +89,43 @@ function parseSseTurn(line) {
 }
 
 function mergeToolCallDeltas(bucket, deltas) {
-  for (const tc of deltas || []) {
-    const i = Number.isInteger(tc.index) ? tc.index : bucket.length;
+  if (!Array.isArray(deltas)) return;
+  for (const tc of deltas) {
+    if (!tc || typeof tc !== "object") continue;
+    // Missing indices still need to distinguish new calls from argument chunks.
+    const known = tc.id ? bucket.findIndex((call) => call?.id === tc.id) : -1;
+    const i = Number.isInteger(tc.index) ? tc.index
+      : known >= 0 ? known
+      : tc.id || tc.function?.name ? bucket.length
+      : Math.max(0, bucket.length - 1);
     if (!bucket[i]) bucket[i] = { id: "", name: "", arguments: "" };
     if (tc.id) bucket[i].id = tc.id;
     const fn = tc.function || {};
-    if (fn.name) bucket[i].name += fn.name;
-    if (fn.arguments) bucket[i].arguments += fn.arguments;
+    if (fn.name && fn.name !== bucket[i].name) bucket[i].name += fn.name;
+    if (typeof fn.arguments === "string") bucket[i].arguments += fn.arguments;
+    else if (fn.arguments && typeof fn.arguments === "object") {
+      bucket[i].arguments = JSON.stringify(fn.arguments);
+    }
+  }
+}
+
+function finalizedToolCalls(bucket) {
+  return (bucket || [])
+    .filter((c) => c && c.name)
+    .map((c, i) => ({
+      id: c.id || `call_${i}`,
+      name: c.name,
+      arguments: c.arguments || "{}",
+    }));
+}
+
+function parseCompletionJson(raw) {
+  const text = String(raw || "").trim();
+  if (!text.startsWith("{")) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
   }
 }
 
@@ -252,17 +288,37 @@ export async function streamTurn(model, input, onTextDelta) {
   if (!response.ok) throw new Error(await readError(response));
 
   let content = "";
+  let reasoning = "";
   const toolBucket = [];
   let finishReason = "";
+  let sawDone = false;
 
   const consumeEvent = (ev) => {
-    if (!ev || ev.done) return;
+    if (!ev) return false;
+    if (ev.done) {
+      sawDone = true;
+      return true;
+    }
     if (ev.content) {
       content += ev.content;
       onTextDelta?.(ev.content);
+    } else if (ev.reasoning) {
+      // Same as streamChat: reasoning-only chunks must paint as they arrive.
+      onTextDelta?.(ev.reasoning);
     }
+    if (ev.reasoning) reasoning += ev.reasoning;
     if (ev.toolCalls?.length) mergeToolCallDeltas(toolBucket, ev.toolCalls);
     if (ev.finishReason) finishReason = ev.finishReason;
+    return false;
+  };
+
+  const finish = () => {
+    const toolCalls = finalizedToolCalls(toolBucket);
+    if (!content && reasoning) content = reasoning;
+    if (!finishReason) finishReason = toolCalls.length ? "tool_calls" : "stop";
+    // Gemini OpenAI compat often reports finish_reason=stop on streamed tool calls.
+    if (toolCalls.length && finishReason === "stop") finishReason = "tool_calls";
+    return { content, toolCalls, finishReason };
   };
 
   if (!response.body) {
@@ -281,25 +337,49 @@ export async function streamTurn(model, input, onTextDelta) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let rawAll = "";
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    const chunk = decoder.decode(value, { stream: true });
+    rawAll += chunk;
+    buffer += chunk;
     const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() || "";
-    for (const line of lines) consumeEvent(parseSseTurn(line));
+    for (const line of lines) {
+      if (consumeEvent(parseSseTurn(line))) break;
+    }
+    // Same as streamChat: [DONE] ends the turn even if the socket stays open.
+    if (sawDone) {
+      try { await reader.cancel(); } catch { /* ignore */ }
+      break;
+    }
   }
-  if (buffer.trim()) consumeEvent(parseSseTurn(buffer));
+  if (!sawDone && buffer.trim()) consumeEvent(parseSseTurn(buffer));
 
-  const toolCalls = toolBucket
-    .filter((c) => c && c.name)
-    .map((c, i) => ({
-      id: c.id || `call_${i}`,
-      name: c.name,
-      arguments: c.arguments || "{}",
-    }));
-  if (!finishReason) finishReason = toolCalls.length ? "tool_calls" : "stop";
-  return { content, toolCalls, finishReason };
+  const empty = !content && !reasoning && !finalizedToolCalls(toolBucket).length;
+  if (empty) {
+    const json = parseCompletionJson(rawAll + decoder.decode());
+    if (json) {
+      content = messageText(json);
+      if (content) onTextDelta?.(content);
+      const choice = json.choices?.[0] || {};
+      const calls = (choice.message?.tool_calls || []).map((c) => ({
+        id: c.id,
+        name: c.function?.name,
+        arguments: typeof c.function?.arguments === "string"
+          ? c.function.arguments
+          : JSON.stringify(c.function?.arguments || {}),
+      })).filter((c) => c.name);
+      return {
+        content,
+        toolCalls: calls,
+        finishReason: choice.finish_reason || (calls.length ? "tool_calls" : "stop"),
+      };
+    }
+  }
+
+  return finish();
 }
 
 export function textUserContent(text) {

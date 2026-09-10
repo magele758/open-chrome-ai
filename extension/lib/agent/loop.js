@@ -76,15 +76,16 @@ async function runLoop(host, userText, options) {
 
     let result;
     try {
+      if (turnsUsed === 0) console.info("[pagelens] model first-turn", host.tools?.length || 0, "tools");
       result = await host.model.runTurn({
         messages: packed,
-        tools: host.tools.map(toOpenAITool),
+        tools: (host.tools || []).map(toOpenAITool),
         signal,
         onTextDelta: options.onTextDelta,
       });
     } catch (err) {
       const msg = String(err?.message || err);
-      if (/tools|tool_choice|functions/i.test(msg) && host.tools.length) {
+      if (/tools|tool_choice|functions/i.test(msg) && host.tools?.length) {
         result = await host.model.runTurn({
           messages: packed,
           tools: [],
@@ -97,6 +98,7 @@ async function runLoop(host, userText, options) {
     }
 
     turnsUsed += 1;
+    if (!result || typeof result !== "object") result = { content: "", toolCalls: [] };
     lastText = result.content || lastText;
     onEvent({
       type: "model_done",

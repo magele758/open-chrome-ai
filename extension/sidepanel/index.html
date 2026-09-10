@@ -30,7 +30,8 @@
         </div>
         <div class="ctx-actions" id="ctx-actions">
           <button type="button" class="ctx-action primary" id="btn-summarize-video" title="一键取出台词并总结。有字幕直接总结。">一键总结</button>
-          <button type="button" class="ctx-action primary" id="btn-interpret" title="边看边出中文。有字幕跟轴翻译；无字幕则按声音识别。">同声传译</button>
+          <button type="button" class="ctx-action primary" id="btn-interpret" title="边看边出中文。已关闭跟字幕，按声音约 5 秒一切。">同声传译</button>
+          <button type="button" class="ctx-action hidden busy" id="btn-interpret-captions" title="当前不跟字幕。点此改回有字幕就跟轴。">按声音</button>
           <button type="button" class="ctx-action hidden" id="btn-original-audio" title="开启或关闭原视频声音">关原声</button>
           <button type="button" class="ctx-action" id="btn-transcribe" title="只取出带时间戳的台词，不自动总结">只要文稿</button>
           <button type="button" class="ctx-action hidden" id="btn-video-switch" title="页面里有多个视频时，切换要总结/同传的那一个">画面</button>
@@ -48,12 +49,15 @@
           <button type="button" id="btn-clear-attach">移除</button>
         </div>
         <div class="skills" id="skills"></div>
-        <div class="row">
-          <button class="ghost" type="button" id="btn-shot" title="截取当前画面">▣</button>
-          <button class="ghost" type="button" id="btn-summarize-bar" title="一键总结">总</button>
-          <button class="ghost" type="button" id="btn-interpret-bar" title="同声传译">译</button>
-          <textarea id="input" placeholder="问这页 · ⌘↵ 发送 · ⇧↵ 换行"></textarea>
-          <button class="send" type="button" id="btn-send" title="发送（⌘↵）">↑</button>
+        <div class="composer-input">
+          <div class="slash-menu hidden" id="slash-menu" role="listbox" aria-label="快捷指令"></div>
+          <div class="row">
+            <button class="ghost" type="button" id="btn-shot" title="截取当前画面">▣</button>
+            <button class="ghost" type="button" id="btn-summarize-bar" title="一键总结">总</button>
+            <button class="ghost" type="button" id="btn-interpret-bar" title="同声传译">译</button>
+            <textarea id="input" placeholder="问这页 · Enter 发送 · ⇧Enter 换行"></textarea>
+            <button class="send" type="button" id="btn-send" title="发送（Enter）">↑</button>
+          </div>
         </div>
         <div class="model-line" id="model-line">未配置模型 · 先到设置填 base_url / model / key</div>
       </div>
@@ -90,24 +94,36 @@
 
       <div class="block" id="block-library">
         <h3>文稿文件夹</h3>
-        <p class="lead" style="margin-top:-4px">选一个本机目录，可直接选 Obsidian 库。视频文稿写在各视频子目录；对话笔记写在 <code>PageLens/sessions/</code>。Obsidian 打开该库即可看到。浏览器只显示文件夹名。密钥不会写进去。和下面的 Skill 目录分开授权，互不影响。</p>
+        <p class="lead" style="margin-top:-4px">选一个本机目录，或填绝对路径（需 Native Host，可用 <code>~</code>）。填完点「使用路径」，或点底部「保存」/「返回对话」也会应用。可直接是 Obsidian 库。视频文稿写在各视频子目录；对话笔记写在 <code>PageLens/sessions/</code>。密钥不会写进去。和下面的 Skill 目录分开，互不影响。用系统选目录时浏览器只显示文件夹名。</p>
         <div class="row-btns">
           <button class="secondary" type="button" id="btn-library-pick">选择文件夹</button>
           <button class="secondary hidden" type="button" id="btn-library-reauth">重新授权</button>
           <button class="secondary" type="button" id="btn-library-clear">清除</button>
           <span class="status" id="library-status"></span>
         </div>
+        <div class="path-row">
+          <input id="library-path" type="text" spellcheck="false" placeholder="/Users/…/Notes 或 ~/Obsidian" />
+          <button class="secondary" type="button" id="btn-library-path">使用路径</button>
+        </div>
       </div>
 
       <div class="block" id="block-skill-folder">
         <h3>Skill 目录</h3>
-        <p class="lead" style="margin-top:-4px">和上文稿文件夹分开授权、分开存储。选本机 skill 根目录（例如 Cursor 的 <code>skills</code> 文件夹），只读扫描 <code>SKILL.md</code>。对话里用 <code>load_skill</code>，不写盘，也不做成快捷芯片。浏览器只显示文件夹名。</p>
+        <label class="check">
+          <input type="checkbox" id="skills-enabled" />
+          启用 Skill
+        </label>
+        <p class="lead" style="margin-top:-4px">默认关闭。打开后也不会在启动时扫描；只有输入 <code>/</code> 或写出「使用 xxx skill」才读目录，正文只加载选中的那一份。路径和上文稿文件夹分开，关开关只停扫描，不删路径。</p>
         <div class="row-btns">
           <button class="secondary" type="button" id="btn-skills-pick">选择目录</button>
           <button class="secondary hidden" type="button" id="btn-skills-reauth">重新授权</button>
           <button class="secondary hidden" type="button" id="btn-skills-refresh">重新扫描</button>
           <button class="secondary" type="button" id="btn-skills-clear">清除</button>
           <span class="status" id="skill-folder-status"></span>
+        </div>
+        <div class="path-row">
+          <input id="skill-path" type="text" spellcheck="false" placeholder="/Users/…/skills 或 ~/.cursor/skills" />
+          <button class="secondary" type="button" id="btn-skills-path">使用路径</button>
         </div>
       </div>
 

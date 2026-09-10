@@ -317,6 +317,45 @@ button { cursor: pointer; }
   color: var(--muted);
 }
 #btn-add-shortcut { margin-top: 2px; }
+.composer-input { position: relative; }
+.slash-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 6px;
+  max-height: 220px;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(28, 25, 23, 0.12);
+  z-index: 5;
+}
+.slash-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 10px;
+}
+.slash-item:last-child { border-bottom: 0; }
+.slash-item:hover, .slash-item.active { background: var(--accent-soft); }
+.slash-item .n { font-size: 12px; line-height: 1.3; }
+.slash-item .d {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+.slash-empty {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
 .row { display: flex; gap: 6px; align-items: flex-end; }
 .row .ghost {
   width: 32px;
@@ -384,7 +423,27 @@ label.field input, label.field select {
   margin: 0 0 10px;
   color: var(--ink);
 }
+#block-skill-folder.skills-off .row-btns,
+#block-skill-folder.skills-off .path-row {
+  opacity: 0.55;
+}
 .row-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.path-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.path-row input {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+}
+.path-row input:focus { border-color: #d0b49a; outline: none; }
 #native-host-id { word-break: break-all; }
 .primary, .secondary {
   height: 34px;

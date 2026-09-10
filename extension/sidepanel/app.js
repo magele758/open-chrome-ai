@@ -1,4 +1,4 @@
-import { defaultSettings, loadSettings, saveSettings, applyOptionalLocalSettings, resolveModel, isModelReady, isAsrReady, isTtsReady, presetsFor } from "../lib/storage.js";
+import { defaultSettings, loadSettings, saveSettings, applyOptionalLocalSettings, resolveModel, isModelReady, isAsrReady, isTtsReady, useInterpretCaptions, isSkillsEnabled, presetsFor } from "../lib/storage.js";
 import { streamTurn, testConnection, multimodalUserContent } from "../lib/openai.js";
 import { testTranscriptions } from "../lib/asr.js";
 import { testTts, synthesizeTts, getTtsRef, setTtsRef, clearTtsRef, blobToWav, TTS_LANGS } from "../lib/tts.js";
@@ -9,10 +9,11 @@ import { summarizeTranscript } from "../lib/summarize-transcript.js";
 import { loadPageCaptions, transcribeTab, usableTranscript } from "../lib/captions.js";
 import { abortRecording, beginCapture, beginTabCapture, discardCapture, recordFromCapture } from "../lib/tab-audio.js";
 import { injectVideo } from "../lib/chrome.js";
-import { runInterpret, timedCues } from "../lib/interpret.js";
+import { captionsForInterpret, runInterpret } from "../lib/interpret.js";
 import {
   libraryStatus,
   pickLibraryFolder,
+  setLibraryPath,
   clearSavedHandle,
   syncPackToLibrary,
   writeSessionNote,
@@ -21,8 +22,9 @@ import {
 import { initMarkdown, formatAnswer, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createAgentLoop } from "../lib/agent/loop.js";
 import { createAgentTools } from "../lib/agent/tools.js";
-import { loadBundledSkills, loadRuntimeSkills, shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
-import { pickSkillFolder, clearSkillFolderHandle } from "../lib/skill-folder.js";
+import { loadRuntimeSkills, shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
+import { applySlashItem, composeSkillPrompt, filterSlashItems, parseSlashToken, slashItemsFromSkills, userInvokedSkill } from "../lib/slash.js";
+import { pickSkillFolder, clearSkillFolderHandle, setSkillFolderPath, ensureSkillBody, skillFolderStatus } from "../lib/skill-folder.js";
 import { installHint, pingNativeHost } from "../lib/native-host.js";
 import { restrictedUrl, captureTab as captureVisible } from "../lib/chrome.js";
 import {
@@ -43,7 +45,21 @@ import {
 } from "../lib/sessions.js";
 import { isResumableRun } from "../lib/agent/context.js";
 
+console.info("[pagelens] module start");
+
 const $ = (id) => document.getElementById(id);
+
+function on(id, event, handler) {
+  const el = $(id);
+  if (!el) {
+    console.warn("[pagelens] wire missing", id);
+    return null;
+  }
+  el.addEventListener(event, handler);
+  return el;
+}
+
+let composerBound = false;
 
 const state = {
   settings: defaultSettings(),
@@ -56,6 +72,9 @@ const state = {
   view: "chat",
   abort: null,
   skills: [],
+  skillsMetaReady: false,
+  skillsMetaLoading: false,
+  skillsMetaError: "",
   sessionId: null,
   sessionCreatedAt: null,
   sessionPages: [],
@@ -85,13 +104,36 @@ function modelSummary() {
   const asr = isAsrReady(state.settings.asr) ? ` · ASR ${state.settings.asr.model || "自建"}` : "";
   const tts = isTtsReady(state.settings.tts) ? " · TTS" : "";
   const lib = state.library?.granted ? ` · 文稿夹 ${state.library.name}` : "";
-  const sk = state.skillFolder?.granted ? ` · Skills ${state.skillFolder.count || 0}` : "";
+  const sk = skillsOn()
+    ? ` · Skills${state.skillsMetaReady ? ` ${state.skills.length}` : ""}`
+    : "";
   const sh = state.settings.nativeShell !== false && state.nativeHost?.ok ? " · Shell" : "";
   return (same ? `文本/多模态 · ${t}` : `文本 ${t} · 多模态 ${m}`) + asr + tts + lib + sk + sh;
 }
 
+function skillsOn() {
+  return isSkillsEnabled(state.settings);
+}
+
 function renderModelLine() {
-  $("model-line").textContent = modelSummary();
+  const el = $("model-line");
+  if (el) el.textContent = modelSummary();
+}
+
+function syncComposerHints() {
+  const input = $("input");
+  if (input) {
+    input.placeholder = skillsOn()
+      ? "问这页 · / 选 skill · Enter 发送 · ⇧Enter 换行"
+      : "问这页 · Enter 发送 · ⇧Enter 换行";
+  }
+  const send = $("btn-send");
+  if (send) send.title = "发送（Enter）";
+}
+
+function syncSkillFolderControls() {
+  $("block-skill-folder")?.classList.toggle("skills-off", !skillsOn());
+  syncComposerHints();
 }
 
 function renderContext() {
@@ -132,8 +174,10 @@ function renderContext() {
     const tr = state.transcribe;
     const si = state.interpret;
     if (si?.status === "running") {
-      bits.push(si.mode === "captions" ? "同传中" : "同传中（按声音）");
+      bits.push(si.mode === "captions" ? "同传中（跟字幕）" : "同传中（按声音）");
       if (si.hint) bits.push(si.hint);
+    } else if (useInterpretCaptions(state.settings) === false) {
+      bits.push("同传按声音切句");
     }
     if (tr?.status === "recording") {
       bits.push(`提取中 ${formatTime(tr.currentTime || 0)}/${formatTime(tr.duration || video.duration || 0)}`);
@@ -162,6 +206,7 @@ function renderTranscribeAction() {
   const btn = $("btn-transcribe");
   const sum = $("btn-summarize-video");
   const siBtn = $("btn-interpret");
+  const capBtn = $("btn-interpret-captions");
   const audioBtn = $("btn-original-audio");
   const bar = $("btn-summarize-bar");
   const siBar = $("btn-interpret-bar");
@@ -185,10 +230,28 @@ function renderTranscribeAction() {
     sum.textContent = recording ? "提取中…" : interpreting ? "一键总结" : "一键总结";
     sum.disabled = recording || interpreting || !canShare;
   }
+  const videoCount = Number(state.pack?.videoCount) || (Array.isArray(state.pack?.videos) ? state.pack.videos.length : 0);
+  const hasPlayer = Boolean(state.pack?.video) || videoCount > 0 || interpreting;
   if (siBtn) {
+    const followCaps = useInterpretCaptions(state.settings);
     siBtn.textContent = interpreting ? "停止同传" : "同声传译";
+    siBtn.title = interpreting
+      ? "停止同传"
+      : followCaps
+        ? "边看边出中文。有字幕则跟轴；无字幕按声音识别。"
+        : "边看边出中文。已关闭跟字幕，按声音约 5 秒一切。";
     siBtn.classList.toggle("busy", Boolean(interpreting));
     siBtn.disabled = recording || (!canShare && !interpreting);
+  }
+  if (capBtn) {
+    const followCaps = useInterpretCaptions(state.settings);
+    capBtn.classList.toggle("hidden", !hasPlayer || (!canShare && !interpreting));
+    capBtn.textContent = followCaps ? "用字幕" : "按声音";
+    capBtn.title = followCaps
+      ? "当前跟字幕轴断句。点此改为按声音约 5 秒一切。"
+      : "当前不跟字幕。点此改回有字幕就跟轴。";
+    capBtn.classList.toggle("busy", !followCaps);
+    capBtn.disabled = interpreting || !canShare;
   }
   if (bar) {
     bar.textContent = recording ? "■" : "总";
@@ -202,8 +265,6 @@ function renderTranscribeAction() {
     siBar.classList.toggle("busy", Boolean(interpreting));
     siBar.disabled = recording;
   }
-  const videoCount = Number(state.pack?.videoCount) || (Array.isArray(state.pack?.videos) ? state.pack.videos.length : 0);
-  const hasPlayer = Boolean(state.pack?.video) || videoCount > 0 || interpreting;
   if (audioBtn) {
     const on = state.originalAudioOn !== false;
     audioBtn.classList.toggle("hidden", !hasPlayer || (!canShare && !interpreting));
@@ -251,13 +312,22 @@ function hostOf(url) {
 
 function renderSkills() {
   const el = $("skills");
+  if (!el) {
+    console.warn("[pagelens] wire missing", "skills");
+    return;
+  }
   el.innerHTML = "";
   visibleSkills(state.settings).forEach((skill) => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = skill.label;
     if (skill.custom) btn.classList.add("custom");
-    btn.addEventListener("click", () => runSkill(skill));
+    btn.addEventListener("click", () => {
+      runSkill(skill).catch((err) => {
+        console.error("[pagelens] chip failed", err);
+        pushError("发送失败：" + (err.message || err));
+      });
+    });
     el.appendChild(btn);
   });
   const add = document.createElement("button");
@@ -271,6 +341,7 @@ function renderSkills() {
 
 function renderMessages() {
   const root = $("msgs");
+  if (!root) return;
   root.innerHTML = "";
   if (!state.messages.length) {
     const empty = document.createElement("div");
@@ -287,7 +358,12 @@ function renderMessages() {
         const b = document.createElement("button");
         b.type = "button";
         b.textContent = skill.label;
-        b.addEventListener("click", () => runSkill(skill));
+        b.addEventListener("click", () => {
+          runSkill(skill).catch((err) => {
+            console.error("[pagelens] chip failed", err);
+            pushError("发送失败：" + (err.message || err));
+          });
+        });
         actions.appendChild(b);
       });
       root.appendChild(actions);
@@ -382,9 +458,10 @@ function pushError(text) {
 
 function setView(view) {
   state.view = view;
-  $("view-chat").classList.toggle("hidden", view !== "chat");
-  $("view-settings").classList.toggle("hidden", view !== "settings");
-  $("view-history").classList.toggle("hidden", view !== "history");
+  $("view-chat")?.classList.toggle("hidden", view !== "chat");
+  $("view-settings")?.classList.toggle("hidden", view !== "settings");
+  $("view-history")?.classList.toggle("hidden", view !== "history");
+  if (view !== "chat") hideSlashMenu();
 }
 
 function currentPageMeta() {
@@ -632,7 +709,11 @@ async function ensureLibraryForWrite() {
   state.library = info;
   paintLibraryStatus(state.library);
   renderModelLine();
-  if (!info.granted) throw new Error("文稿文件夹未授权。到设置点「重新授权」。");
+  if (!info.granted) {
+    throw new Error(info.mode === "path"
+      ? (info.error || "文稿路径不可用。确认已安装 Native Host，并到设置重新填路径。")
+      : "文稿文件夹未授权。到设置点「重新授权」。");
+  }
   return info;
 }
 
@@ -758,8 +839,11 @@ function renderSettingsForm() {
   $("answer-lang").value = state.settings.answerLanguage;
   $("ui-font").value = state.settings.uiFont || "md";
   if ($("native-shell")) $("native-shell").checked = state.settings.nativeShell !== false;
+  if ($("skills-enabled")) $("skills-enabled").checked = skillsOn();
+  syncSkillFolderControls();
   renderLibraryStatus();
   renderSkillFolderStatus();
+  hydrateSkillFolderStatus().catch(() => {});
   renderNativeHostStatus();
   renderShortcutList();
   bindSettingFields();
@@ -770,21 +854,36 @@ function paintLibraryStatus(info, extra = "") {
   const el = $("library-status");
   if (!el) return;
   const reauth = $("btn-library-reauth");
+  const input = $("library-path");
+  if (info?.mode === "path" && info.path && input && document.activeElement !== input) {
+    input.value = info.path;
+  }
   if (!info?.configured) {
     el.textContent = extra || "尚未选择";
     el.className = "status";
-    if (reauth) reauth.classList.add("hidden");
+    reauth?.classList.add("hidden");
+    return;
+  }
+  if (info.mode === "path") {
+    reauth?.classList.add("hidden");
+    if (info.granted) {
+      el.textContent = extra || `路径 · ${info.path || info.name}`;
+      el.className = "status ok";
+      return;
+    }
+    el.textContent = extra || info.error || `路径不可用 · ${info.path || info.name}`;
+    el.className = "status bad";
     return;
   }
   if (info.granted) {
     el.textContent = extra || `已授权 · ${info.name}（浏览器不显示完整路径）`;
     el.className = "status ok";
-    if (reauth) reauth.classList.add("hidden");
+    reauth?.classList.add("hidden");
     return;
   }
   el.textContent = extra || `已选 ${info.name}，需要重新授权`;
   el.className = "status bad";
-  if (reauth) reauth.classList.remove("hidden");
+  reauth?.classList.remove("hidden");
 }
 
 async function refreshLibraryStatus({ request = false } = {}) {
@@ -806,6 +905,18 @@ function paintSkillFolderStatus(info, extra = "") {
   if (!el) return;
   const reauth = $("btn-skills-reauth");
   const refresh = $("btn-skills-refresh");
+  const input = $("skill-path");
+  if (info?.mode === "path" && info.path && input && document.activeElement !== input) {
+    input.value = info.path;
+  }
+  if (!skillsOn()) {
+    const path = info?.path || info?.name;
+    el.textContent = extra || (info?.configured ? `已关闭 · 路径仍保留${path ? ` · ${path}` : ""}` : "已关闭（默认）");
+    el.className = "status";
+    reauth?.classList.add("hidden");
+    refresh?.classList.add("hidden");
+    return;
+  }
   if (!info?.configured) {
     el.textContent = extra || "尚未选择";
     el.className = "status";
@@ -813,10 +924,29 @@ function paintSkillFolderStatus(info, extra = "") {
     refresh?.classList.add("hidden");
     return;
   }
+  if (info.mode === "path") {
+    reauth?.classList.add("hidden");
+    if (info.granted) {
+      const n = Number(info.count) || 0;
+      const cap = info.truncated ? "，已达扫描上限" : "";
+      el.textContent = extra || (state.skillsMetaReady
+        ? `路径 · ${info.path || info.name} · ${n} 个 skill${cap}`
+        : `路径 · ${info.path || info.name} · 输入 / 时再扫描`);
+      el.className = "status ok";
+      refresh?.classList.remove("hidden");
+      return;
+    }
+    el.textContent = extra || info.error || `路径不可用 · ${info.path || info.name}`;
+    el.className = "status bad";
+    refresh?.classList.remove("hidden");
+    return;
+  }
   if (info.granted) {
     const n = Number(info.count) || 0;
     const cap = info.truncated ? "，已达扫描上限" : "";
-    el.textContent = extra || `已授权 · ${info.name} · ${n} 个 skill${cap}（浏览器不显示完整路径）`;
+    el.textContent = extra || (state.skillsMetaReady
+      ? `已授权 · ${info.name} · ${n} 个 skill${cap}（浏览器不显示完整路径）`
+      : `已授权 · ${info.name} · 输入 / 时再扫描`);
     el.className = "status ok";
     reauth?.classList.add("hidden");
     refresh?.classList.remove("hidden");
@@ -830,6 +960,46 @@ function paintSkillFolderStatus(info, extra = "") {
 
 function renderSkillFolderStatus() {
   paintSkillFolderStatus(state.skillFolder);
+}
+
+function folderPathDirty(raw, current) {
+  const next = String(raw || "").trim();
+  const cur = String(current || "").trim();
+  if (!next) return "";
+  return next === cur ? "" : next;
+}
+
+async function applyFolderPathsFromInputs() {
+  const errors = [];
+  const libRaw = folderPathDirty($("library-path")?.value, state.library?.path);
+  if (libRaw) {
+    try {
+      paintLibraryStatus(state.library, "正在验证路径…");
+      state.library = await setLibraryPath(libRaw);
+      paintLibraryStatus(state.library);
+      if (state.pack?.captionsStatus === "ready") syncPackToLibrary(state.pack).catch(() => {});
+    } catch (err) {
+      const msg = err.message || String(err);
+      paintLibraryStatus(state.library, msg);
+      errors.push(`文稿：${msg}`);
+    }
+  }
+  const skillRaw = folderPathDirty($("skill-path")?.value, state.skillFolder?.path);
+  if (skillRaw) {
+    try {
+      paintSkillFolderStatus(state.skillFolder, "正在验证路径…");
+      const next = await setSkillFolderPath(skillRaw);
+      state.skillFolder = { ...next, count: 0 };
+      clearSkillsCache();
+      paintSkillFolderStatus(state.skillFolder, `已设置 ${next.path}，输入 / 时再扫描`);
+    } catch (err) {
+      const msg = err.message || String(err);
+      paintSkillFolderStatus(state.skillFolder, msg);
+      errors.push(`Skill：${msg}`);
+    }
+  }
+  renderModelLine();
+  return errors;
 }
 
 function nativeInstallCommand() {
@@ -900,35 +1070,227 @@ async function copyText(text) {
 }
 
 let skillScanGen = 0;
+let slash = { open: false, items: [], index: 0, token: null };
 
-async function refreshSkillFolder({ request = false } = {}) {
+function hideSlashMenu() {
+  slash = { open: false, items: [], index: 0, token: null };
+  const el = $("slash-menu");
+  if (!el) return;
+  el.innerHTML = "";
+  el.classList.add("hidden");
+}
+
+function renderSlashMenu() {
+  const el = $("slash-menu");
+  if (!el) return;
+  el.innerHTML = "";
+  if (!slash.open) {
+    el.classList.add("hidden");
+    return;
+  }
+  el.classList.remove("hidden");
+  if (!slash.items.length) {
+    const empty = document.createElement("div");
+    empty.className = "slash-empty";
+    empty.textContent = state.skillsMetaLoading
+      ? "正在扫描 skill…"
+      : state.skillsMetaError
+        ? state.skillsMetaError
+        : (state.skills || []).length
+          ? "没有匹配的 skill"
+          : "没有可用 skill。到设置选择 skill 目录。";
+    el.appendChild(empty);
+    return;
+  }
+  slash.items.forEach((item, i) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "slash-item" + (i === slash.index ? " active" : "");
+    btn.setAttribute("role", "option");
+    const n = document.createElement("div");
+    n.className = "n";
+    n.textContent = item.name;
+    btn.appendChild(n);
+    const detail = [item.id !== item.name ? item.id : "", item.hint].filter(Boolean).join(" · ");
+    if (detail) {
+      const d = document.createElement("div");
+      d.className = "d";
+      d.textContent = detail;
+      btn.appendChild(d);
+    }
+    btn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      pickSlashItem(item);
+    });
+    el.appendChild(btn);
+  });
+  el.querySelector(".slash-item.active")?.scrollIntoView({ block: "nearest" });
+}
+
+function updateSlashMenu() {
+  const input = $("input");
+  if (!input || state.view !== "chat" || !skillsOn()) {
+    hideSlashMenu();
+    return;
+  }
+  const token = parseSlashToken(input.value, input.selectionStart);
+  if (!token) {
+    hideSlashMenu();
+    return;
+  }
+  if (state.skillsMetaLoading || !state.skillsMetaReady) {
+    slash = { open: true, items: [], index: 0, token };
+    renderSlashMenu();
+    if (!state.skillsMetaLoading && !state.skillsMetaError) ensureSkillsMeta();
+    return;
+  }
+  const items = filterSlashItems(slashItemsFromSkills(state.skills), token.query);
+  const sameQuery = slash.open && slash.token && slash.token.query === token.query;
+  slash = {
+    open: true,
+    items,
+    index: sameQuery ? Math.min(slash.index, Math.max(0, items.length - 1)) : 0,
+    token,
+  };
+  renderSlashMenu();
+}
+
+function pickSlashItem(item) {
+  const input = $("input");
+  if (!input || !item) {
+    hideSlashMenu();
+    return;
+  }
+  const token = slash.token || parseSlashToken(input.value, input.selectionStart);
+  if (!token) {
+    hideSlashMenu();
+    return;
+  }
+  const next = applySlashItem(input.value, token, item);
+  input.value = next.text;
+  input.setSelectionRange(next.cursor, next.cursor);
+  hideSlashMenu();
+  fitInput();
+  input.focus();
+  if (item.skill) ensureSkillBody(item.skill).catch(() => {});
+}
+
+function handleSlashKey(e) {
+  if (!slash.open || e.isComposing) return false;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    hideSlashMenu();
+    return true;
+  }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!slash.items.length) return true;
+    const delta = e.key === "ArrowDown" ? 1 : -1;
+    slash.index = (slash.index + delta + slash.items.length) % slash.items.length;
+    renderSlashMenu();
+    return true;
+  }
+  if ((e.key === "Enter" && !e.metaKey && !e.ctrlKey) || e.key === "Tab") {
+    if (!slash.items.length) return false;
+    e.preventDefault();
+    pickSlashItem(slash.items[slash.index]);
+    return true;
+  }
+  return false;
+}
+
+let skillsMetaPromise = null;
+
+function clearSkillsCache() {
+  skillScanGen += 1;
+  skillsMetaPromise = null;
+  state.skills = [];
+  state.skillsMetaReady = false;
+  state.skillsMetaLoading = false;
+  state.skillsMetaError = "";
+}
+
+async function hydrateSkillFolderStatus() {
+  try {
+    const status = await skillFolderStatus();
+    state.skillFolder = {
+      configured: status.configured,
+      granted: status.granted,
+      mode: status.mode || "",
+      name: status.name || "",
+      path: status.path || "",
+      count: state.skillsMetaReady ? state.skillFolder.count || status.count || 0 : 0,
+      truncated: state.skillFolder.truncated === true,
+      error: status.error || "",
+    };
+    paintSkillFolderStatus(state.skillFolder);
+  } catch (err) {
+    console.warn("[pagelens] skill status", err);
+  }
+}
+
+async function ensureSkillsMeta({ force = false, timeoutMs = 8000, request = false } = {}) {
+  if (!skillsOn()) {
+    console.info("[pagelens] skill scan skip");
+    state.skills = [];
+    state.skillsMetaReady = true;
+    state.skillsMetaLoading = false;
+    state.skillsMetaError = "";
+    return state.skillFolder;
+  }
+  if (state.skillsMetaReady && !force) return state.skillFolder;
+  if (skillsMetaPromise && !force) return skillsMetaPromise;
   const gen = ++skillScanGen;
+  state.skillsMetaLoading = true;
+  state.skillsMetaError = "";
+  if (force) state.skillsMetaReady = false;
   if (state.skillFolder?.configured) {
     paintSkillFolderStatus(state.skillFolder, "正在扫描…");
   }
-  try {
-    const loaded = await loadRuntimeSkills({ request });
-    if (gen !== skillScanGen) return loaded;
-    state.skillFolder = {
-      configured: loaded.folder.configured,
-      granted: loaded.folder.granted,
-      name: loaded.folder.name || "",
-      count: loaded.folder.count || 0,
-      truncated: loaded.folder.truncated === true,
-    };
-    state.skills = loaded.skills;
-  } catch {
-    if (gen !== skillScanGen) return null;
-    state.skillFolder = { configured: false, granted: false, name: "", count: 0 };
-    state.skills = await loadBundledSkills();
-  }
-  paintSkillFolderStatus(state.skillFolder);
-  renderModelLine();
-  return state.skillFolder;
+  const run = (async () => {
+    try {
+      const loaded = await withTimeout(
+        loadRuntimeSkills({ request, timeoutMs }),
+        timeoutMs,
+        "扫描 skill 超时",
+      );
+      if (gen !== skillScanGen) return state.skillFolder;
+      state.skillFolder = {
+        configured: loaded.folder.configured,
+        granted: loaded.folder.granted,
+        mode: loaded.folder.mode || "",
+        name: loaded.folder.name || "",
+        path: loaded.folder.path || "",
+        count: loaded.folder.count || 0,
+        truncated: loaded.folder.truncated === true,
+        error: loaded.folder.error || "",
+      };
+      state.skills = loaded.skills;
+      state.skillsMetaReady = true;
+      state.skillsMetaError = loaded.folder.error || "";
+    } catch (err) {
+      if (gen !== skillScanGen) return state.skillFolder;
+      console.warn("[pagelens] skill scan timeout/error", err);
+      state.skillsMetaError = err?.message || String(err);
+      state.skillsMetaReady = false;
+    } finally {
+      if (gen === skillScanGen) {
+        state.skillsMetaLoading = false;
+        if (skillsMetaPromise === run) skillsMetaPromise = null;
+        paintSkillFolderStatus(state.skillFolder);
+        renderModelLine();
+        if (slash.open) updateSlashMenu();
+      }
+    }
+    return state.skillFolder;
+  })();
+  skillsMetaPromise = run;
+  return run;
 }
 
 function renderShortcutList() {
   const list = $("shortcut-list");
+  if (!list) return;
   list.innerHTML = "";
   if (!Array.isArray(state.settings.shortcuts)) state.settings.shortcuts = [];
   state.settings.shortcuts.forEach((item, index) => {
@@ -1245,39 +1607,63 @@ function currentKind(wantImage) {
   return wantImage || state.image ? "multimodal" : "text";
 }
 
+function needModelMessage(kind) {
+  return kind === "multimodal"
+    ? "未配置多模态模型。点右上角「设」，或勾选「与文本模型相同」。"
+    : "未配置文本模型。点右上角「设」填 base_url / model / key。";
+}
+
 function requireModel(kind) {
   const model = resolveModel(state.settings, kind);
   if (isModelReady(model)) return model;
-  setView("settings");
-  $("save-status").textContent = kind === "multimodal"
-    ? "先配置多模态模型，或勾选「与文本模型相同」"
-    : "先配置文本模型";
-  $("save-status").className = "status bad";
+  console.warn("[pagelens] no-model", kind);
+  const el = $("save-status");
+  if (el) {
+    el.textContent = needModelMessage(kind);
+    el.className = "status bad";
+  }
   return null;
 }
 
+function isPlaceholderBotText(text) {
+  const s = String(text || "").trim();
+  return !s || s === "…";
+}
+
 function paintBot(botMsg) {
-  const wrap = document.querySelector("#msgs .msg.bot:last-child");
+  const bots = document.querySelectorAll("#msgs .msg.bot");
+  const wrap = bots[bots.length - 1];
   if (!wrap) return;
+  const trace = Array.isArray(botMsg.trace) ? botMsg.trace : [];
   let traceEl = wrap.querySelector(".trace");
-  if (botMsg.trace.length) {
+  if (trace.length) {
     if (!traceEl) {
       traceEl = document.createElement("div");
       traceEl.className = "trace";
       wrap.querySelector(".who")?.after(traceEl);
     }
-    traceEl.textContent = botMsg.trace
+    traceEl.textContent = trace
       .map((t) => (t.ok === false ? `${t.name} 失败` : t.name))
       .join(" → ");
   }
   const body = wrap.querySelector(".body");
   if (body) fillBotBody(body, botMsg.text || "…", { mermaid: false });
-  $("msgs").scrollTop = $("msgs").scrollHeight;
+  const root = $("msgs");
+  if (root) root.scrollTop = root.scrollHeight;
+}
+
+function lastUserAskedForSkill() {
+  const lastUser = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
+  return userInvokedSkill(lastUser?.text || "");
 }
 
 async function executeLoop({ userText, history, resume, turnsUsed, lastText, botMsg, model, clearImage }) {
-  const skills = [...(state.skills || []), ...shortcutsAsSkills(state.settings)];
-  const tools = createAgentTools({
+  const useSkills = skillsOn() && lastUserAskedForSkill();
+  const skills = useSkills ? [...(state.skills || []), ...shortcutsAsSkills(state.settings)] : [];
+  let tools;
+  let loop;
+  try {
+    tools = createAgentTools({
     getTabId: () => state.tab?.id,
     getWindowId: () => state.tab?.windowId,
     refreshPack: async () => {
@@ -1311,11 +1697,12 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     skills,
     settings: state.settings,
     nativeShell: state.settings.nativeShell !== false,
+    enableSkills: useSkills,
   });
 
-  const loop = createAgentLoop({
+    loop = createAgentLoop({
     maxTurns: 12,
-    systemPrompt: [systemPrompt(state.settings), skillCatalogText(skills)].filter(Boolean).join("\n\n"),
+    systemPrompt: [systemPrompt(state.settings, { useSkills }), useSkills ? skillCatalogText(skills) : ""].filter(Boolean).join("\n\n"),
     tools,
     model: {
       async runTurn({ messages, tools: turnTools, signal, onTextDelta }) {
@@ -1332,6 +1719,14 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       },
     },
   });
+  } catch (err) {
+    console.error("[pagelens] executeLoop setup", err);
+    botMsg.text = "请求失败：" + (err.message || String(err));
+    botMsg.error = true;
+    renderMessages();
+    return;
+  }
+  console.info("[pagelens] executeLoop", { tools: tools.length, useSkills });
 
   state.busy = true;
   state.abort = new AbortController();
@@ -1342,14 +1737,20 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     turnsUsed: turnsUsed || 0,
     startedAt: resume && state.run?.startedAt ? state.run.startedAt : Date.now(),
   };
-  $("btn-send").textContent = "■";
-  $("btn-send").title = "停止";
-  renderMessages();
-  persistSession();
+  if ($("btn-send")) {
+    $("btn-send").textContent = "■";
+    $("btn-send").title = "停止";
+  }
 
   let result = null;
   let failed = false;
   try {
+    try {
+      renderMessages();
+    } catch (err) {
+      console.error("[pagelens] renderMessages", err);
+    }
+    persistSession();
     result = await loop.run(userText, {
       history,
       resume: Boolean(resume),
@@ -1357,40 +1758,64 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       lastText: lastText || "",
       signal: state.abort.signal,
       onTextDelta: (delta) => {
+        if (isPlaceholderBotText(botMsg.text)) botMsg.text = "";
         botMsg.text += delta;
-        paintBot(botMsg);
+        try {
+          paintBot(botMsg);
+        } catch (err) {
+          console.warn("[pagelens] paintBot", err);
+        }
       },
       onEvent: (ev) => {
-        if (ev.type === "checkpoint" && !ev.done) {
-          state.run = {
-            status: "running",
-            history: ev.history,
-            lastText: ev.lastText,
-            turnsUsed: ev.turnsUsed,
-            startedAt: state.run?.startedAt || Date.now(),
-          };
-          persistSession();
-        }
-        if (ev.type === "compressed") {
-          botMsg.trace.push({ name: "压缩上下文", ok: true });
-          paintBot(botMsg);
-        }
-        if (ev.type === "turn_prepared" && botMsg.text) {
-          botMsg.trace.push({ name: "思考", ok: true });
-          botMsg.text = "";
-        }
-        if (ev.type === "tools_done") {
-          botMsg.trace.push({ name: ev.name, ok: ev.ok });
-          paintBot(botMsg);
+        try {
+          if (ev.type === "checkpoint" && !ev.done) {
+            state.run = {
+              status: "running",
+              history: ev.history,
+              lastText: ev.lastText,
+              turnsUsed: ev.turnsUsed,
+              startedAt: state.run?.startedAt || Date.now(),
+            };
+            persistSession();
+          }
+          if (ev.type === "compressed") {
+            botMsg.trace.push({ name: "压缩上下文", ok: true });
+            paintBot(botMsg);
+          }
+          if (ev.type === "turn_prepared") {
+            if (!isPlaceholderBotText(botMsg.text)) {
+              botMsg.trace.push({ name: "思考", ok: true });
+              botMsg.text = "";
+            }
+            paintBot(botMsg);
+          }
+          if (ev.type === "model_done" && ev.content && isPlaceholderBotText(botMsg.text)) {
+            botMsg.text = ev.content;
+            paintBot(botMsg);
+          }
+          if (ev.type === "tools_done") {
+            botMsg.trace.push({ name: ev.name, ok: ev.ok });
+            paintBot(botMsg);
+          }
+        } catch (err) {
+          console.warn("[pagelens] onEvent", err);
         }
       },
     });
-    const done = document.querySelector("#msgs .msg.bot:last-child .body");
-    if (done && !botMsg.error) fillBotBody(done, botMsg.text, { mermaid: true });
+    if (!botMsg.error) {
+      if (result?.text) botMsg.text = result.text;
+      else if (isPlaceholderBotText(botMsg.text)) {
+        botMsg.text = result?.reason === "abort" ? "已停止。" : "模型未返回正文，请重试或检查模型服务。";
+        botMsg.error = result?.reason !== "abort";
+      }
+      renderMessages();
+    }
   } catch (err) {
     if (err?.name === "AbortError") {
+      console.warn("[pagelens] executeLoop abort");
       botMsg.text = botMsg.text || (state.stopIntent === "user" ? "已停止。" : "已中断，重新打开侧栏会继续。");
     } else {
+      console.error("[pagelens] executeLoop", err);
       botMsg.text = "请求失败：" + (err.message || String(err));
       botMsg.error = true;
       failed = true;
@@ -1403,51 +1828,131 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     state.busy = false;
     state.abort = null;
     state.stopIntent = null;
-    $("btn-send").textContent = "↑";
-    $("btn-send").title = "发送";
+    if ($("btn-send")) {
+      $("btn-send").textContent = "↑";
+      $("btn-send").title = "发送（Enter）";
+    }
     if (clearImage) {
       state.image = null;
       renderAttach();
     }
     await persistSession();
+    console.info("[pagelens] executeLoop done", failed ? "fail" : result?.reason || "ok");
   }
 }
 
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(label || `超时 ${ms}ms`)), ms);
+    Promise.resolve(promise).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 async function sendPrompt(userText, options = {}) {
-  if (state.busy) {
-    state.stopIntent = "user";
-    state.abort?.abort();
+  const text = String(userText || "").trim();
+  console.info("[pagelens] sendPrompt", text.slice(0, 80) || "(empty)");
+  if (!text && !options.image && !state.image) {
+    console.warn("[pagelens] sendPrompt empty");
     return;
   }
-  const wantImage = Boolean(options.image || state.image);
-  const kind = currentKind(wantImage);
-  const model = requireModel(kind);
-  if (!model) return;
-  if (state.share && state.tab) await refreshTab();
-
-  const pack = state.share ? state.pack : null;
-  const image = options.image || state.image;
-  const context = pack ? packToContext(pack) : "（用户未分享页面）";
-
-  state.messages.push({ role: "user", text: userText, image: image || null });
-  const botMsg = { role: "bot", text: "", trace: [] };
-  state.messages.push(botMsg);
-
-  const prior = [];
-  for (const m of state.messages.slice(0, -2)) {
-    if (m.error || (m.role === "bot" && !m.text)) continue;
-    if (m.role === "user") prior.push({ role: "user", content: m.text });
-    if (m.role === "bot") prior.push({ role: "assistant", content: m.text });
+  if (state.view !== "chat") setView("chat");
+  if (state.busy) {
+    console.warn("[pagelens] sendPrompt busy, abort previous then send");
+    state.stopIntent = "user";
+    state.abort?.abort();
+    await settleBusy();
+    if (state.busy) {
+      console.warn("[pagelens] sendPrompt force-clear busy");
+      state.busy = false;
+      state.abort = null;
+      state.stopIntent = null;
+    }
   }
 
-  await executeLoop({
-    userText: context ? `${userText}\n\n${context}` : userText,
-    history: prior,
-    resume: false,
-    botMsg,
-    model,
-    clearImage: options.clearImage,
-  });
+  const image = options.image || state.image;
+  state.messages.push({ role: "user", text: text || userText, image: image || null });
+  const botMsg = { role: "bot", text: "…", trace: [] };
+  state.messages.push(botMsg);
+  try {
+    renderMessages();
+  } catch (err) {
+    console.error("[pagelens] renderMessages", err);
+  }
+
+  const wantImage = Boolean(image);
+  const kind = currentKind(wantImage);
+  const model = requireModel(kind);
+  if (!model) {
+    console.warn("[pagelens] sendPrompt no-model");
+    botMsg.text = needModelMessage(kind);
+    botMsg.error = true;
+    renderMessages();
+    return;
+  }
+
+  try {
+    console.info("[pagelens] sendPrompt executeLoop");
+    if (state.share && state.tab) {
+      try {
+        await withTimeout(refreshTab(), 8000, "读当前页超时，先用已缓存内容。");
+      } catch (err) {
+        console.warn("[pagelens] refreshTab", err);
+        botMsg.trace.push({ name: "读页", ok: false });
+      }
+    }
+    const pack = state.share ? state.pack : null;
+    const context = pack ? packToContext(pack) : "（用户未分享页面）";
+    const prior = [];
+    for (const m of state.messages.slice(0, -2)) {
+      if (m.error || (m.role === "bot" && !m.text)) continue;
+      if (m.role === "user") prior.push({ role: "user", content: m.text });
+      if (m.role === "bot") prior.push({ role: "assistant", content: m.text });
+    }
+    let loopText = text || userText;
+    if (skillsOn() && userInvokedSkill(loopText)) {
+      try {
+        await ensureSkillsMeta();
+      } catch (err) {
+        console.warn("[pagelens] skills meta", err);
+        botMsg.trace.push({ name: "skill 扫描", ok: false });
+      }
+      const runtimeSkills = [...(state.skills || []), ...shortcutsAsSkills(state.settings)];
+      try {
+        loopText = await withTimeout(
+          composeSkillPrompt(loopText, runtimeSkills, { loadBody: ensureSkillBody }),
+          8000,
+          "读取 skill 超时",
+        );
+      } catch (err) {
+        console.warn("[pagelens] skill body", err);
+        botMsg.trace.push({ name: "读取 skill", ok: false });
+      }
+    }
+    await executeLoop({
+      userText: context ? `${loopText}\n\n${context}` : loopText,
+      history: prior,
+      resume: false,
+      botMsg,
+      model,
+      clearImage: options.clearImage,
+    });
+    console.info("[pagelens] sendPrompt ok");
+  } catch (err) {
+    console.error("[pagelens] sendPrompt fail", err);
+    botMsg.text = "请求失败：" + (err.message || String(err));
+    botMsg.error = true;
+    state.busy = false;
+    renderMessages();
+  }
 }
 
 async function resumeInterruptedRun() {
@@ -1481,15 +1986,21 @@ async function resumeInterruptedRun() {
 }
 
 async function runSkill(skill) {
+  const prompt = String(skill?.prompt || "").trim();
+  console.info("[pagelens] chip", skill?.label || "", prompt.slice(0, 80));
+  if (!prompt) {
+    console.warn("[pagelens] chip empty prompt");
+    return;
+  }
   if (skill.image) {
     const shot = await captureTab();
     if (!shot) return;
     state.image = shot;
     renderAttach();
-    await sendPrompt(skill.prompt, { image: shot, clearImage: true });
+    await sendPrompt(prompt, { image: shot, clearImage: true });
     return;
   }
-  await sendPrompt(skill.prompt);
+  await sendPrompt(prompt);
 }
 
 function applyCaptions(caps) {
@@ -1570,7 +2081,10 @@ async function startSummarizeVideo() {
   }
   if (state.busy) return;
   const model = requireModel("text");
-  if (!model) return;
+  if (!model) {
+    pushError(needModelMessage("text"));
+    return;
+  }
   const packed = usableTranscript({
     status: state.pack?.captionsStatus,
     text: state.pack?.captionsText,
@@ -1610,9 +2124,20 @@ async function startSummarizeVideo() {
     state.abort = null;
     state.stopIntent = null;
     $("btn-send").textContent = "↑";
-    $("btn-send").title = "发送";
+    $("btn-send").title = "发送（Enter）";
     renderMessages();
     await persistSession();
+  }
+}
+
+async function toggleInterpretCaptions() {
+  if (state.interpret?.status === "running") return;
+  const next = useInterpretCaptions(state.settings) === false;
+  try {
+    state.settings = await saveSettings({ ...state.settings, interpretUseCaptions: next });
+    renderContext();
+  } catch (err) {
+    pushError("无法保存同传设置：" + (err?.message || err));
   }
 }
 
@@ -1641,13 +2166,23 @@ async function startInterpret() {
     startTranscribe();
     return;
   }
-  const cues = timedCues(state.pack?.captionsStatus === "ready" ? state.pack.captionsCues : []);
+  const followCaps = useInterpretCaptions(state.settings);
+  const cues = captionsForInterpret(
+    state.pack?.captionsStatus === "ready" ? state.pack.captionsCues : [],
+    followCaps,
+  );
   if (!cues.length && !isAsrReady(state.settings.asr)) {
-    needAsrSettings("无字幕视频要同传，先配置语音转写（ASR）");
+    needAsrSettings(followCaps ? "无字幕视频要同传，先配置语音转写（ASR）" : "按声音同传需要先配置语音转写（ASR）");
     return;
   }
-  if (cues.length && shouldNeedTranslate(cues) && !requireModel("text")) return;
-  if (!cues.length && !requireModel("text")) return;
+  if (cues.length && shouldNeedTranslate(cues) && !requireModel("text")) {
+    pushError(needModelMessage("text"));
+    return;
+  }
+  if (!cues.length && !requireModel("text")) {
+    pushError(needModelMessage("text"));
+    return;
+  }
 
   let startAt = 0;
   let openingHold = false;
@@ -1771,60 +2306,122 @@ async function captureTab(tabId) {
 
 function renderAttach() {
   const row = $("attach-row");
+  if (!row) return;
   row.classList.toggle("hidden", !state.image);
-  if (state.image) $("attach-thumb").src = state.image;
+  if (state.image && $("attach-thumb")) $("attach-thumb").src = state.image;
 }
 
 async function consumePending() {
   const { pendingSelection } = await chrome.storage.session.get("pendingSelection");
   if (!pendingSelection) return;
   await chrome.storage.session.remove("pendingSelection");
-  $("input").value = `关于这段选区：\n${pendingSelection}\n\n请解释它在本页里的含义。`;
-  $("input").focus();
+  if ($("input")) {
+    $("input").value = `关于这段选区：\n${pendingSelection}\n\n请解释它在本页里的含义。`;
+    $("input").focus();
+  }
+}
+
+function bindComposer() {
+  if (composerBound) return;
+  composerBound = true;
+  on("btn-send", "click", () => {
+    try {
+      const text = $("input")?.value?.trim();
+      if (!text) {
+        if (state.busy) {
+          console.info("[pagelens] sendPrompt busy-stop");
+          state.stopIntent = "user";
+          state.abort?.abort();
+          const line = $("model-line");
+          if (line) line.textContent = "已请求停止上一轮";
+        } else {
+          console.info("[pagelens] sendPrompt empty");
+        }
+        return;
+      }
+      if ($("input")) $("input").value = "";
+      hideSlashMenu();
+      fitInput();
+      sendPrompt(text, { clearImage: true }).catch((err) => {
+        console.error("[pagelens] send", err);
+        pushError("发送失败：" + (err.message || err));
+      });
+    } catch (err) {
+      console.error("[pagelens] click send", err);
+      pushError("发送失败：" + (err.message || err));
+    }
+  });
+  on("input", "keydown", (e) => {
+    if (handleSlashKey(e)) return;
+    if (e.key !== "Enter" || e.isComposing) return;
+    if (e.shiftKey) return;
+    e.preventDefault();
+    $("btn-send")?.click();
+  });
+  on("input", "input", () => {
+    fitInput();
+    updateSlashMenu();
+  });
+  on("input", "click", updateSlashMenu);
+  on("input", "keyup", (e) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Home" || e.key === "End") {
+      updateSlashMenu();
+    }
+  });
+  console.info("[pagelens] wire send", Boolean($("btn-send")), "shortcuts", Boolean($("skills")));
 }
 
 function wire() {
-  $("btn-settings").addEventListener("click", () => {
+  bindComposer();
+  try {
+  on("btn-settings", "click", () => {
     renderSettingsForm();
     setView("settings");
   });
-  $("btn-back").addEventListener("click", () => {
+  on("btn-back", "click", async () => {
+    try {
+      const pathErrors = await applyFolderPathsFromInputs();
+      if (pathErrors.length) flashStatus(pathErrors.join(" "), false);
+    } catch (err) {
+      console.warn("[pagelens] apply paths", err);
+    }
     renderSkills();
     renderMessages();
     setView("chat");
   });
-  $("btn-add-shortcut").addEventListener("click", () => {
+  on("btn-add-shortcut", "click", () => {
     if (!Array.isArray(state.settings.shortcuts)) state.settings.shortcuts = [];
     state.settings.shortcuts.push({ id: crypto.randomUUID(), label: "", prompt: "" });
     renderShortcutList();
   });
-  $("btn-new").addEventListener("click", () => {
+  on("btn-new", "click", () => {
     startNewSession();
   });
-  $("btn-history").addEventListener("click", () => {
+  on("btn-history", "click", () => {
     openHistoryView();
   });
-  $("btn-hist-back").addEventListener("click", () => {
+  on("btn-hist-back", "click", () => {
     setView("chat");
   });
-  $("btn-export-all-md").addEventListener("click", () => exportAll("md"));
-  $("btn-export-all-json").addEventListener("click", () => exportAll("json"));
-  $("btn-import-all-obsidian").addEventListener("click", () => importAllToLibrary());
-  $("btn-obsidian").addEventListener("click", () => importCurrentToLibrary());
-  $("hist-q").addEventListener("input", () => {
+  on("btn-export-all-md", "click", () => exportAll("md"));
+  on("btn-export-all-json", "click", () => exportAll("json"));
+  on("btn-import-all-obsidian", "click", () => importAllToLibrary());
+  on("btn-obsidian", "click", () => importCurrentToLibrary());
+  on("hist-q", "input", () => {
     state.histQuery = $("hist-q").value;
     renderHistory();
   });
-  $("btn-unpin").addEventListener("click", () => {
+  on("btn-unpin", "click", () => {
     state.share = false;
     renderContext();
   });
-  $("btn-transcribe").addEventListener("click", () => {
+  on("btn-transcribe", "click", () => {
     const capsReady = state.pack?.captionsStatus === "ready";
     startTranscribe({ force: capsReady });
   });
   $("btn-summarize-video")?.addEventListener("click", () => startSummarizeVideo());
   $("btn-interpret")?.addEventListener("click", () => startInterpret());
+  $("btn-interpret-captions")?.addEventListener("click", () => toggleInterpretCaptions());
   $("btn-original-audio")?.addEventListener("click", () => toggleOriginalAudio());
   $("btn-summarize-bar")?.addEventListener("click", () => startSummarizeVideo());
   $("btn-interpret-bar")?.addEventListener("click", () => startInterpret());
@@ -1841,11 +2438,12 @@ function wire() {
       pushError("无法切换画面：" + (err?.message || err));
     }
   });
-  $("btn-library-pick").addEventListener("click", async () => {
+  on("btn-library-pick", "click", async () => {
     const el = $("library-status");
     try {
       const picked = await pickLibraryFolder();
-      state.library = { configured: true, granted: true, name: picked.name };
+      if ($("library-path")) $("library-path").value = "";
+      state.library = { configured: true, granted: true, mode: "picker", name: picked.name, path: "" };
       paintLibraryStatus(state.library, `已选择 ${picked.name}`);
       renderModelLine();
       if (state.pack?.captionsStatus === "ready") syncPackToLibrary(state.pack).catch(() => {});
@@ -1857,25 +2455,57 @@ function wire() {
       }
     }
   });
-  $("btn-library-reauth").addEventListener("click", async () => {
+  on("btn-library-path", "click", async () => {
+    const el = $("library-status");
+    const raw = $("library-path")?.value.trim() || "";
+    if (!raw) {
+      if (el) {
+        el.textContent = "先填绝对路径或 ~ 路径。";
+        el.className = "status bad";
+      }
+      return;
+    }
+    try {
+      paintLibraryStatus(state.library, "正在验证路径…");
+      const next = await setLibraryPath(raw);
+      state.library = next;
+      paintLibraryStatus(state.library);
+      renderModelLine();
+      if (state.pack?.captionsStatus === "ready") syncPackToLibrary(state.pack).catch(() => {});
+    } catch (err) {
+      if (el) {
+        el.textContent = err.message || String(err);
+        el.className = "status bad";
+      }
+    }
+  });
+  $("library-path")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      $("btn-library-path")?.click();
+    }
+  });
+  on("btn-library-reauth", "click", async () => {
     await refreshLibraryStatus({ request: true });
     if (state.library.granted && state.pack?.captionsStatus === "ready") {
       syncPackToLibrary(state.pack).catch(() => {});
     }
   });
-  $("btn-library-clear").addEventListener("click", async () => {
+  on("btn-library-clear", "click", async () => {
     await clearSavedHandle();
-    state.library = { configured: false, granted: false, name: "" };
+    if ($("library-path")) $("library-path").value = "";
+    state.library = { configured: false, granted: false, name: "", path: "", mode: "" };
     paintLibraryStatus(state.library, "已清除（磁盘上的文件还在）");
     renderModelLine();
   });
-  $("btn-skills-pick").addEventListener("click", async () => {
+  $("btn-skills-pick")?.addEventListener("click", async () => {
     const el = $("skill-folder-status");
     try {
       const picked = await pickSkillFolder();
-      state.skillFolder = { configured: true, granted: true, name: picked.name, count: 0 };
-      paintSkillFolderStatus(state.skillFolder, `已选择 ${picked.name}，正在扫描…`);
-      await refreshSkillFolder({ request: true });
+      if ($("skill-path")) $("skill-path").value = "";
+      state.skillFolder = { configured: true, granted: true, mode: "picker", name: picked.name, path: "", count: 0 };
+      clearSkillsCache();
+      paintSkillFolderStatus(state.skillFolder, `已选择 ${picked.name}，输入 / 时再扫描`);
     } catch (err) {
       if (err?.name === "AbortError") return;
       if (el) {
@@ -1884,35 +2514,83 @@ function wire() {
       }
     }
   });
-  $("btn-skills-reauth").addEventListener("click", async () => {
-    await refreshSkillFolder({ request: true });
+  $("btn-skills-path")?.addEventListener("click", async () => {
+    const el = $("skill-folder-status");
+    const raw = $("skill-path")?.value.trim() || "";
+    if (!raw) {
+      if (el) {
+        el.textContent = "先填绝对路径或 ~ 路径。";
+        el.className = "status bad";
+      }
+      return;
+    }
+    try {
+      paintSkillFolderStatus(state.skillFolder, "正在验证路径…");
+      const next = await setSkillFolderPath(raw);
+      state.skillFolder = { ...next, count: 0 };
+      clearSkillsCache();
+      paintSkillFolderStatus(state.skillFolder, `已设置 ${next.path}，输入 / 时再扫描`);
+    } catch (err) {
+      if (el) {
+        el.textContent = err.message || String(err);
+        el.className = "status bad";
+      }
+    }
   });
-  $("btn-skills-refresh").addEventListener("click", async () => {
-    await refreshSkillFolder({ request: true });
+  $("skill-path")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      $("btn-skills-path")?.click();
+    }
   });
-  $("btn-skills-clear").addEventListener("click", async () => {
+  $("btn-skills-reauth")?.addEventListener("click", async () => {
+    if (!skillsOn()) return;
+    await skillFolderStatus({ request: true });
+    clearSkillsCache();
+    await hydrateSkillFolderStatus();
+  });
+  $("btn-skills-refresh")?.addEventListener("click", async () => {
+    if (!skillsOn()) return;
+    await ensureSkillsMeta({ force: true, timeoutMs: 15000, request: true });
+  });
+  $("btn-skills-clear")?.addEventListener("click", async () => {
     await clearSkillFolderHandle();
-    state.skillFolder = { configured: false, granted: false, name: "", count: 0 };
-    state.skills = await loadBundledSkills();
+    if ($("skill-path")) $("skill-path").value = "";
+    state.skillFolder = { configured: false, granted: false, name: "", path: "", mode: "", count: 0 };
+    clearSkillsCache();
     paintSkillFolderStatus(state.skillFolder, "已清除（磁盘上的 skill 还在）");
     renderModelLine();
   });
-  $("btn-save").addEventListener("click", async () => {
+  $("skills-enabled")?.addEventListener("change", (e) => {
+    state.settings.skillsEnabled = e.target.checked;
+    clearSkillsCache();
+    if (!e.target.checked) hideSlashMenu();
+    syncSkillFolderControls();
+    paintSkillFolderStatus(state.skillFolder);
+    renderModelLine();
+  });
+  on("btn-save", "click", async () => {
+    const pathErrors = await applyFolderPathsFromInputs();
     state.settings = await saveSettings(state.settings);
     applyUiFont(state.settings.uiFont);
     renderModelLine();
     renderShortcutList();
+    if (pathErrors.length) {
+      $("save-status").textContent = `设置已保存，路径未生效：${pathErrors.join(" ")}`;
+      $("save-status").className = "status bad";
+      return;
+    }
     $("save-status").textContent = "已保存到本机";
     $("save-status").className = "status ok";
   });
-  $("mm-same").addEventListener("change", (e) => {
+  on("mm-same", "change", (e) => {
     state.settings.multimodalSameAsText = e.target.checked;
-    $("mm-fields").classList.toggle("hidden", e.target.checked);
+    $("mm-fields")?.classList.toggle("hidden", e.target.checked);
   });
-  $("answer-lang").addEventListener("change", (e) => {
+  on("answer-lang", "change", (e) => {
     state.settings.answerLanguage = e.target.value;
   });
-  $("ui-font").addEventListener("change", (e) => {
+  on("ui-font", "change", (e) => {
     state.settings.uiFont = e.target.value;
     applyUiFont(state.settings.uiFont);
   });
@@ -1940,41 +2618,28 @@ function wire() {
   $("btn-native-test")?.addEventListener("click", async () => {
     await refreshNativeHost();
   });
-  $("btn-send").addEventListener("click", () => {
-    if (state.busy) {
-      state.stopIntent = "user";
-      state.abort?.abort();
-      return;
-    }
-    const text = $("input").value.trim();
-    if (!text) return;
-    $("input").value = "";
-    fitInput();
-    sendPrompt(text, { clearImage: true });
+  document.addEventListener("pointerdown", (e) => {
+    if (!slash.open) return;
+    const menu = $("slash-menu");
+    const input = $("input");
+    if (menu?.contains(e.target) || input?.contains(e.target)) return;
+    hideSlashMenu();
   });
-  $("input").addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" || e.isComposing) return;
-    if (e.metaKey || e.ctrlKey) {
-      e.preventDefault();
-      $("btn-send").click();
-    }
-  });
-  $("input").addEventListener("input", fitInput);
-  $("btn-shot").addEventListener("click", async () => {
+  on("btn-shot", "click", async () => {
     const shot = await captureTab();
     if (!shot) return;
     state.image = shot;
     renderAttach();
   });
-  $("btn-clear-attach").addEventListener("click", () => {
+  on("btn-clear-attach", "click", () => {
     state.image = null;
     renderAttach();
   });
-  chrome.tabs.onActivated.addListener(() => {
+  chrome.tabs?.onActivated?.addListener(() => {
     state.share = state.settings.shareActiveTab;
     refreshTab();
   });
-  chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  chrome.tabs?.onUpdated?.addListener((tabId, info, tab) => {
     if (tab.active && (info.status === "complete" || info.title || info.url)) {
       refreshTab();
     }
@@ -1986,35 +2651,96 @@ function wire() {
     state.siAbort?.abort();
     abortRecording();
   });
+  } catch (err) {
+    console.error("[pagelens] wire rest", err);
+  }
 }
 
+function markWired() {
+  document.documentElement.dataset.pagelensWired = "1";
+  const line = $("model-line");
+  if (line) line.dataset.pagelensBoot = "1";
+}
+
+setTimeout(() => {
+  if (document.documentElement.dataset.pagelensWired) return;
+  const line = $("model-line");
+  if (!line || line.dataset.pagelensBoot) return;
+  line.textContent = "侧栏脚本未启动。请在侧栏空白处右键→检查，看 [pagelens] 日志（不要看 chrome://extensions 的 Service Worker）。";
+}, 3000);
+
 async function boot() {
-  initMarkdown();
-  state.settings = (await applyOptionalLocalSettings()) || (await loadSettings());
-  applyUiFont(state.settings.uiFont);
-  await refreshLibraryStatus();
-  state.skills = await loadBundledSkills();
-  refreshSkillFolder().catch(() => {});
+  console.info("[pagelens] boot");
+  try {
+    try {
+      initMarkdown();
+    } catch (err) {
+      console.warn("[pagelens] initMarkdown", err);
+    }
+    try {
+      state.settings = (await applyOptionalLocalSettings()) || (await loadSettings());
+      applyUiFont(state.settings.uiFont);
+    } catch (err) {
+      console.error("[pagelens] boot settings", err);
+      state.settings = defaultSettings();
+    }
+    wire();
+    markWired();
+    syncComposerHints();
+    renderModelLine();
+    renderSkills();
+    renderMessages();
+    console.info("[pagelens] wired");
+  } catch (err) {
+    console.error("[pagelens] boot ui", err);
+    try {
+      bindComposer();
+      markWired();
+    } catch (bindErr) {
+      console.error("[pagelens] bindComposer", bindErr);
+    }
+    const line = $("model-line");
+    if (line) line.textContent = "启动失败：" + (err?.message || err);
+  }
+  refreshLibraryStatus().catch((err) => console.warn("[pagelens] library", err));
   refreshNativeHost({ silent: true }).catch(() => {});
-  const active = await loadActiveSession();
-  if (active?.messages?.length) applySession(active);
-  wire();
-  renderModelLine();
-  renderSkills();
-  renderMessages();
-  await refreshTab();
-  await consumePending();
+  try {
+    const active = await loadActiveSession();
+    if (active?.messages?.length) {
+      applySession(active);
+      renderMessages();
+    }
+  } catch (err) {
+    console.warn("[pagelens] session", err);
+  }
+  refreshTab().catch((err) => console.warn("[pagelens] tab", err));
+  consumePending().catch(() => {});
   if (!isModelReady(resolveModel(state.settings, "text"))) {
-    renderSettingsForm();
+    console.warn("[pagelens] boot no-model");
+    try {
+      renderSettingsForm();
+    } catch (err) {
+      console.warn("[pagelens] settings form", err);
+    }
     setView("settings");
     return;
   }
-  if (isResumableRun(state.run)) {
-    resumeInterruptedRun();
+  if (isResumableRun(state.run) && skillsOn() && lastUserAskedForSkill()) {
+    resumeInterruptedRun().catch((err) => console.warn("[pagelens] resume", err));
   } else if (state.run) {
     state.run = null;
     persistSession();
   }
 }
 
-boot();
+boot().catch((err) => {
+  console.error("[pagelens] boot", err);
+  try {
+    bindComposer();
+    markWired();
+  } catch {
+    /* ignore */
+  }
+  const line = document.getElementById("model-line");
+  if (line) line.textContent = "启动失败：" + (err?.message || err);
+});

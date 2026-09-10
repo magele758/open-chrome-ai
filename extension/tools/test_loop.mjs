@@ -32,5 +32,28 @@ const out = await loop.run("总结此页", {
 });
 
 const ok = out.reason === "stop" && out.text === "FINAL:PAGE_OK" && events.includes("tools_done:extract_page");
-console.log(ok ? "PASS" : "FAIL", out, events);
-if (!ok) process.exit(1);
+if (!ok) {
+  console.log("FAIL", out, events);
+  process.exit(1);
+}
+
+const deltas = [];
+const emptyTools = createAgentLoop({
+  maxTurns: 2,
+  systemPrompt: "test",
+  tools: undefined,
+  model: {
+    async runTurn({ onTextDelta, tools }) {
+      if (tools && tools.length) throw new Error("expected no tools");
+      onTextDelta?.("直出");
+      return { content: "直出", toolCalls: [], finishReason: "stop" };
+    },
+  },
+});
+const plain = await emptyTools.run("你好", { onTextDelta: (d) => deltas.push(d) });
+if (plain.reason !== "stop" || plain.text !== "直出" || deltas.join("") !== "直出") {
+  console.log("FAIL plain", plain, deltas);
+  process.exit(1);
+}
+
+console.log("PASS", out.reason, events);

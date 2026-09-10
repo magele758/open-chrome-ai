@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chatCompletionsUrl, completeChat, messageText } from "../lib/openai.js";
+import { chatCompletionsUrl, completeChat, messageText, streamTurn } from "../lib/openai.js";
 import { summarizeTranscript } from "../lib/summarize-transcript.js";
 
 assert.equal(
@@ -90,5 +90,132 @@ globalThis.fetch = async (_url, opts) => {
   return Response.json({ choices: [{ message: { content: "要点：全文\n\n00:00 开场" } }] });
 };
 assert.match(await summarizeTranscript({ text: long, title: "v", model }), /要点：全文/);
+
+function sseResponse(chunks, { close = true } = {}) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const c of chunks) controller.enqueue(encoder.encode(c));
+      if (close) controller.close();
+    },
+  });
+  return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+}
+
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(label || `timeout ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
+function trackReads(response) {
+  const inner = response.body.getReader();
+  let reads = 0;
+  let readsAfterDone = 0;
+  let sawDone = false;
+  return {
+    ok: true,
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (sawDone) readsAfterDone += 1;
+            reads += 1;
+            const result = await inner.read();
+            if (result.value && new TextDecoder().decode(result.value).includes("[DONE]")) {
+              sawDone = true;
+            }
+            return result;
+          },
+          cancel: (reason) => inner.cancel(reason),
+        };
+      },
+    },
+    get reads() { return reads; },
+    get readsAfterDone() { return readsAfterDone; },
+  };
+}
+
+function delayedSse(chunks, { delayMs = 25, close = false } = {}) {
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream({
+    async start(controller) {
+      for (const c of chunks) {
+        controller.enqueue(encoder.encode(c));
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+      if (close) controller.close();
+    },
+  }), { headers: { "Content-Type": "text/event-stream" } });
+}
+
+const liveDeltas = [];
+let sawFirstDelta;
+const firstDelta = new Promise((resolve) => { sawFirstDelta = resolve; });
+globalThis.fetch = async () => delayedSse([
+  `data: ${JSON.stringify({ choices: [{ delta: { content: "你" } }] })}\n\n`,
+  `data: ${JSON.stringify({ choices: [{ delta: { content: "好" } }] })}\n\n`,
+  `data: ${JSON.stringify({ choices: [{ delta: { content: "啊" } }] })}\n\n`,
+  "data: [DONE]\n\n",
+]);
+const liveTurn = streamTurn(model, { messages: [{ role: "user", content: "hi" }] }, (d) => {
+  liveDeltas.push(d);
+  if (liveDeltas.length === 1) sawFirstDelta();
+});
+await withTimeout(firstDelta, 400, "first SSE chunk did not emit onTextDelta before [DONE]");
+assert.deepEqual(liveDeltas, ["你"]);
+const liveResult = await withTimeout(liveTurn, 800, "streamTurn hung after [DONE]");
+assert.deepEqual(liveDeltas, ["你", "好", "啊"]);
+assert.equal(liveResult.content, "你好啊");
+
+const tracked = trackReads(sseResponse([
+  `data: ${JSON.stringify({ choices: [{ delta: { content: "你好" } }] })}\n\n`,
+  "data: [DONE]\n\n",
+], { close: false }));
+globalThis.fetch = async () => tracked;
+const streamed = await withTimeout(
+  streamTurn(model, { messages: [{ role: "user", content: "hi" }] }),
+  400,
+  "streamTurn hung after [DONE]",
+);
+assert.equal(streamed.content, "你好");
+assert.equal(streamed.toolCalls.length, 0);
+assert.equal(tracked.readsAfterDone, 0, "must not reader.read() after [DONE]");
+
+const deltas = [];
+globalThis.fetch = async () => sseResponse([
+  `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ id: "c1", function: { name: "extract_page", arguments: "{" } }] } }] })}\n\n`,
+  `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ function: { arguments: "}" } }] } }] })}\n\n`,
+  `data: ${JSON.stringify({ choices: [{ finish_reason: "stop", delta: {} }] })}\n\n`,
+  "data: [DONE]\n\n",
+], { close: false });
+const tooled = await withTimeout(
+  streamTurn(model, { messages: [], tools: [{ type: "function", function: { name: "extract_page" } }] }, (d) => deltas.push(d)),
+  400,
+  "streamTurn hung on Gemini tool SSE",
+);
+assert.equal(tooled.toolCalls.length, 1);
+assert.equal(tooled.toolCalls[0].name, "extract_page");
+assert.equal(tooled.toolCalls[0].arguments, "{}");
+assert.equal(tooled.finishReason, "tool_calls");
+
+const thoughtDeltas = [];
+globalThis.fetch = async () => sseResponse([
+  `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "先看" } }] })}\n\n`,
+  `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "标题" } }] })}\n\n`,
+  `data: ${JSON.stringify({ choices: [{ finish_reason: "stop", delta: {} }] })}\n\n`,
+  "data: [DONE]\n\n",
+]);
+const thought = await streamTurn(model, { messages: [] }, (d) => thoughtDeltas.push(d));
+assert.equal(thought.content, "先看标题");
+assert.deepEqual(thoughtDeltas, ["先看", "标题"]);
+
+globalThis.fetch = async () => Response.json({
+  choices: [{ message: { content: "非流式正文" }, finish_reason: "stop" }],
+});
+assert.equal((await streamTurn(model, { messages: [] })).content, "非流式正文");
 
 console.log("PASS openai content parse, thinking-budget retry, stream fallback");
