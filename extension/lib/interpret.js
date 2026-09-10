@@ -16,6 +16,14 @@ export const CHUNK_SECONDS = 5;
 export const VOICE_SAMPLE_SECONDS = 4;
 export const LOOKAHEAD_MAX_CUES = 4;
 export const LOOKAHEAD_MAX_SECONDS = 20;
+export const OPENING_READY_TTS = 3;
+export const OPENING_READY_TEXT = 2;
+
+export function openingReadyCount(ttsOn) {
+  const n = ttsOn ? OPENING_READY_TTS : OPENING_READY_TEXT;
+  return Math.min(LOOKAHEAD_MAX_CUES, Math.max(1, n));
+}
+
 export const SEEK_BACK_SECONDS = 0.8;
 export const SEEK_FORWARD_SECONDS = 3.2;
 
@@ -178,6 +186,35 @@ export async function voiceRefFromBlob(blob) {
   }
 }
 
+export function voiceSliceEnd(slice, fallbackSeconds = VOICE_SAMPLE_SECONDS) {
+  const start = Number(slice?.start);
+  const end = Number(slice?.end);
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) return end;
+  if (Number.isFinite(start)) return start + (Number(fallbackSeconds) > 0 ? Number(fallbackSeconds) : VOICE_SAMPLE_SECONDS);
+  return 0;
+}
+
+/** Prefer the latest slice covering t; otherwise the standing session sample. */
+export function voiceRefForTime(bank, t, fallback) {
+  const now = Number(t);
+  if (!Number.isFinite(now) || !Array.isArray(bank)) return fallback || null;
+  let best = null;
+  for (const slice of bank) {
+    if (!slice?.blob) continue;
+    const start = Number(slice.start);
+    if (!Number.isFinite(start)) continue;
+    const end = voiceSliceEnd(slice);
+    if (now >= start - 0.35 && now < end + 0.35) {
+      if (!best || start >= best.start) best = slice;
+    }
+  }
+  return best?.blob || fallback || null;
+}
+
+export function captionsForInterpret(cues, useCaptions = false) {
+  return useCaptions === true ? timedCues(cues) : [];
+}
+
 export function linesToCaptions(lines) {
   const cues = (lines || [])
     .map((line, i) => {
@@ -242,6 +279,7 @@ export async function translateToZh(model, text, signal) {
  *   signal?: AbortSignal,
  *   wantOriginalAudio?: () => boolean,
  *   recordSlice?: (seconds: number, signal: AbortSignal) => Promise<{blob: Blob, mime?: string, seconds?: number}>,
+ *   voiceRefNow?: () => Blob | null | undefined,
  *   onEvent?: (ev: object) => void,
  * }} opts
  */
@@ -256,6 +294,7 @@ export async function runInterpret(opts) {
   const asr = settings?.asr;
   const textModel = resolveModel(settings, "text");
   const ttsOn = isTtsReady(settings?.tts);
+  const openingReady = openingReadyCount(ttsOn);
   if (!cues.length && !isAsrReady(asr)) throw new Error("没有字幕，请先配置语音转写。");
   if (mode === "audio" && !capture?.stream) throw new Error("没有当前标签的声音。请再点一次「同声传译」。");
   opts.signal?.addEventListener("abort", stop, { once: true });
@@ -265,6 +304,7 @@ export async function runInterpret(opts) {
   const skipDub = new Set();
   let ttsWarned = false;
   let sessionRef = null;
+  const voiceBank = [];
   const emit = ev => { if (!signal.aborted) { try { onEvent?.(ev); } catch { /* UI callback */ } } };
   const status = message => emit({ type: "status", mode, message, hint: message });
   const jobSignal = job => job?.signal || signal;
@@ -276,22 +316,38 @@ export async function runInterpret(opts) {
       || Boolean(capture?.stream);
   }
 
+  function rememberSlice(blob, range) {
+    if (!blob) return null;
+    sessionRef = blob;
+    const start = Number(range?.start);
+    if (!Number.isFinite(start)) return blob;
+    const end = voiceSliceEnd({ start, end: range?.end });
+    voiceBank.push({ start, end, blob });
+    return blob;
+  }
+
+  function liveVoiceRef(line) {
+    if (line?.ownRef) return line.ownRef;
+    const now = opts.voiceRefNow?.();
+    if (now) return now;
+    return voiceRefForTime(voiceBank, line?.start, sessionRef);
+  }
+
   const pipeline = createInterpretPipeline({
     signal,
-    prebuffer: ttsOn ? 1 : 2,
+    prebuffer: openingReady,
     onError: err => emit({ type: "warn", message: err?.message || String(err) }),
     prepare: async (item, job) => {
       const s = jobSignal(job);
-      let referenceBlob = item.referenceBlob || null;
-      if (!referenceBlob && item.blob) referenceBlob = await voiceRefFromBlob(item.blob);
-      if (referenceBlob) sessionRef = referenceBlob;
-      else referenceBlob = sessionRef;
+      let ownRef = item.referenceBlob || null;
+      if (!ownRef && item.blob) ownRef = await voiceRefFromBlob(item.blob);
+      if (ownRef) rememberSlice(ownRef, { start: item.start, end: item.end });
       const src = stripTimeline(item.src !== undefined ? item.src : joinSegmentText(await transcribeAudio(asr, item.blob, {
         filename: filenameForMime(item.mime), signal: s,
       })));
       if (!src || signal.aborted || s.aborted) return null;
       const zh = await translateToZh(textModel, src, s);
-      return { start: item.start, src, zh, referenceBlob };
+      return { start: item.start, end: item.end, src, zh, ownRef };
     },
     synthesize: async (line, job) => {
       const s = jobSignal(job);
@@ -301,13 +357,14 @@ export async function runInterpret(opts) {
       lines.push(ready);
       emit({ type: "line", ...ready, mode });
       if (!ttsOn || !spoken || shouldTranslate(spoken)) return null;
+      const referenceBlob = liveVoiceRef(ready);
       try {
         const out = await dub(settings.tts, spoken, {
           signal: s,
           lang: settings.tts.lang || "ZH",
-          ...(ready.referenceBlob ? { referenceBlob: ready.referenceBlob } : {}),
+          ...(referenceBlob ? { referenceBlob } : {}),
         });
-        return { ...ready, blob: out.blob, dubbed: true };
+        return { ...ready, blob: out.blob, dubbed: true, referenceBlob };
       } catch (err) {
         if (err?.name === "AbortError") return null;
         if (!ttsWarned) {
@@ -343,7 +400,6 @@ export async function runInterpret(opts) {
   let systemHold = "";
   let userPaused = false;
   let lastTime = null;
-  let audioOpeningPending = mode === "audio";
   let silenced = false;
   let pageTapStarted = false;
 
@@ -432,6 +488,7 @@ export async function runInterpret(opts) {
         pipeline.flushAhead();
         pruneSpokenOnSeek(cues, spoken, t);
         skipDub.clear();
+        voiceBank.length = 0;
         enqueueCaptionLookahead(t);
       }
       lastTime = t;
@@ -441,6 +498,7 @@ export async function runInterpret(opts) {
       pipeline.flushAhead();
       pruneSpokenOnSeek(cues, spoken, t);
       skipDub.clear();
+      voiceBank.length = 0;
       enqueueCaptionLookahead(t);
     }
     lastTime = t;
@@ -464,17 +522,20 @@ export async function runInterpret(opts) {
     }
   }
 
-  async function rememberVoice(blob) {
+  async function rememberVoice(blob, range) {
     const ref = await voiceRefFromBlob(blob);
-    if (ref) sessionRef = ref;
-    return ref;
+    return rememberSlice(ref, range);
   }
 
   let harvestBusy = false;
   function scheduleVoiceHarvest() {
     if (!ttsOn || harvestBusy || userPaused || systemHold || signal.aborted || !canTakeSlice()) return;
     harvestBusy = true;
-    recordCurrentSlice(VOICE_SAMPLE_SECONDS).then((slice) => rememberVoice(slice?.blob)).catch(() => {
+    const start = Number(lastTime);
+    recordCurrentSlice(VOICE_SAMPLE_SECONDS).then((slice) => rememberVoice(slice?.blob, {
+      start,
+      end: Number.isFinite(start) ? start + VOICE_SAMPLE_SECONDS : undefined,
+    })).catch(() => {
       /* keep last sessionRef */
     }).finally(() => { harvestBusy = false; });
   }
@@ -483,6 +544,7 @@ export async function runInterpret(opts) {
     if (!ttsOn || sessionRef || signal.aborted || userPaused || !canTakeSlice()) return;
     status("正在截取原声作为配音音色…");
     await playTab(tabId, false);
+    const start = Number(lastTime);
     let slice = null;
     try {
       slice = await recordCurrentSlice(VOICE_SAMPLE_SECONDS);
@@ -491,17 +553,17 @@ export async function runInterpret(opts) {
         try { await holdForSystem(HOLD_OPENING); } catch { /* keep going */ }
       }
     }
-    if (!await rememberVoice(slice?.blob)) {
+    if (!await rememberVoice(slice?.blob, {
+      start,
+      end: Number.isFinite(start) ? start + VOICE_SAMPLE_SECONDS : undefined,
+    })) {
       emit({ type: "warn", message: "未能截取原声，配音将使用设置里的参考音" });
     }
   }
 
-  async function captureOpeningSlice() {
-    if (mode !== "audio" || !audioOpeningPending || signal.aborted || userPaused) {
-      audioOpeningPending = false;
-      return;
-    }
-    const start = lastTime;
+  async function captureOpeningSlice(cursor) {
+    if (mode !== "audio" || signal.aborted || userPaused) return { ok: false, stop: true, cursor };
+    const start = Number.isFinite(Number(cursor)) ? Number(cursor) : 0;
     await playTab(tabId, false);
     let slice = null;
     try {
@@ -511,17 +573,56 @@ export async function runInterpret(opts) {
         try { await holdForSystem(HOLD_OPENING); } catch { /* keep going */ }
       }
     }
-    audioOpeningPending = false;
-    if (signal.aborted || !slice || isQuietBlob(slice.blob)) return;
-    await rememberVoice(slice.blob);
-    pipeline.enqueue({ ...slice, start });
+    if (signal.aborted || userPaused) return { ok: false, stop: true, cursor: start };
+    const recordedSec = Number(slice?.seconds) > 0 ? Number(slice.seconds) : CHUNK_SECONDS;
+    const st = await injectVideo(tabId, "state");
+    if (st?.ok) {
+      if (systemHold && !st.paused && !userPaused) await holdForSystem(HOLD_OPENING);
+      const t = Number(st.currentTime);
+      const reset = isImplausibleReset(start, t);
+      const seeked = Number.isFinite(t) && !reset && isSeekJump(start, t, {
+        audioChunk: true,
+        paused: Boolean(st.paused),
+      });
+      if (seeked) handleSeek(st, { audioChunk: true });
+      else if (Number.isFinite(t) && !reset) lastTime = t;
+      noteUserOverride(st);
+    }
+    const next = Number.isFinite(Number(st?.currentTime)) && Number(st.currentTime) > start + 0.4
+      ? Number(st.currentTime)
+      : start + recordedSec;
+    if (!slice) return { ok: false, stop: true, cursor: next };
+    if (isQuietBlob(slice.blob)) return { ok: false, stop: false, cursor: next };
+    await rememberVoice(slice.blob, { start, end: start + recordedSec });
+    return { ok: Boolean(pipeline.enqueue({ ...slice, start })), stop: false, cursor: next };
+  }
+
+  async function captureOpeningAudio() {
+    if (mode !== "audio") return;
+    let got = 0;
+    let attempts = 0;
+    const maxAttempts = openingReady + 2;
+    let cursor = Number.isFinite(Number(lastTime)) ? Number(lastTime) : 0;
+    while (!signal.aborted && !userPaused && got < openingReady && attempts < maxAttempts) {
+      attempts += 1;
+      const result = await captureOpeningSlice(cursor);
+      cursor = Number.isFinite(Number(result.cursor)) ? Number(result.cursor) : cursor;
+      if (result.ok) got += 1;
+      if (result.stop) break;
+    }
+  }
+
+  function openingReadyStatus() {
+    return ttsOn
+      ? `画面已暂停，正在准备前 ${openingReady} 段中文配音…`
+      : `画面已暂停，正在准备前 ${openingReady} 段译文…`;
   }
 
   async function waitForOpeningReady() {
     if (pipeline.pending) {
-      if (systemHold) status("画面已暂停，等待第一段中文配音…");
-      if (ttsOn) await pipeline.waitUntilReady(1);
-      else await pipeline.waitUntilSettled(1);
+      if (systemHold) status(openingReadyStatus());
+      if (ttsOn) await pipeline.waitUntilReady(openingReady);
+      else await pipeline.waitUntilSettled(openingReady);
       const st = await injectVideo(tabId, "state");
       if (st?.ok) {
         if (systemHold && !st.paused) await holdForSystem(systemHold);
@@ -559,11 +660,11 @@ export async function runInterpret(opts) {
     if (mode === "captions") {
       if (ttsOn) await captureVoiceSample();
       enqueueCaptionLookahead(lastTime);
-      status("画面已暂停，正在从当前进度翻译…");
+      status(openingReadyStatus());
       await waitForOpeningReady();
     } else {
-      status("画面已暂停，正在从当前进度听第一段…");
-      await captureOpeningSlice();
+      status(`画面已暂停，正在从当前进度听前 ${openingReady} 段…`);
+      await captureOpeningAudio();
       await waitForOpeningReady();
     }
 
@@ -624,19 +725,6 @@ export async function runInterpret(opts) {
       // for ASR, translation, synthesis, or playback to finish this segment.
       const item = { ...slice, start };
       if (!isQuietBlob(slice.blob)) pipeline.enqueue(item);
-      if (audioOpeningPending) {
-        audioOpeningPending = false;
-        const stAfter = await injectVideo(tabId, "state");
-        if (stAfter?.ok) {
-          handleSeek(stAfter, { audioChunk: true });
-          if (stAfter.ended) break;
-          if (stAfter.paused && !systemHold) userPaused = true;
-          else if (!stAfter.paused) await holdForSystem(HOLD_OPENING);
-        } else {
-          await holdForSystem(HOLD_OPENING);
-        }
-        await waitForOpeningReady();
-      }
     }
     // Finish the final text segments on natural end; explicit stop cancels them.
     await pipeline.finish();

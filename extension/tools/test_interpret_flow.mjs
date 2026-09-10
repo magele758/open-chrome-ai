@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { runInterpret } from '../lib/interpret.js';
+import { OPENING_READY_TEXT, OPENING_READY_TTS, openingReadyCount, runInterpret } from '../lib/interpret.js';
 
 const textSettings = { baseUrl: 'https://llm.test/v1', model: 'm', apiKey: 'k' };
 const waitMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -95,6 +95,14 @@ function twoCues() {
   ];
 }
 
+function nCues(n, label = 'spoken line for opening buffer') {
+  return Array.from({ length: n }, (_, i) => ({
+    start: i * 2,
+    end: i * 2 + 2,
+    text: `Cue ${i} ${label}`,
+  }));
+}
+
 // --- smoke: stay on the current tab, translations still emit ---
 {
   let currentTime = 0.2;
@@ -130,30 +138,35 @@ function twoCues() {
   assert(!events.some((e) => /后台/.test(e.message || '')), 'must stay on the current tab');
 }
 
-// --- captions: pause first, play only after first translation settles ---
+// --- captions: pause first, play only after opening text buffer settles ---
 {
-  const player = { currentTime: 0.2, duration: 8, paused: false, ended: false, advance: 0 };
+  const player = { currentTime: 0.2, duration: 20, paused: false, ended: false, advance: 0 };
   installChrome(player);
-  const first = gate();
+  const last = gate();
+  let n = 0;
   globalThis.fetch = async (url, options = {}) => {
-    await first.promise;
+    const i = ++n;
+    if (i >= OPENING_READY_TEXT) await last.promise;
     return mockTranslateFetch()(url, options);
   };
   const running = runInterpret({
     tabId: 1,
     settings: settings(),
-    cues: twoCues(),
+    cues: nCues(Math.max(4, OPENING_READY_TEXT)),
     capture: null,
   });
   await waitUntil(() => player.cmds.includes('pause'));
-  assert(!player.cmds.includes('play'), 'must not play before first segment is ready');
+  assert(!player.cmds.includes('play'), 'must not play before opening buffer is ready');
   assert(player.paused, 'system hold pauses the picture');
   const firstClock = player.cmds.find((c) => c === 'pause' || c === 'play');
   assert.equal(firstClock, 'pause', 'click interpret pauses before anything else');
   await waitUntil(() => player.cmds.includes('silence'));
-  first.resolve();
+  await waitUntil(() => n >= 1);
+  await waitMs(80);
+  assert(!player.cmds.includes('play'), 'one settled translation must not resume the picture');
+  last.resolve();
   await waitUntil(() => player.cmds.includes('play'));
-  assert(player.cmds.indexOf('pause') < player.cmds.indexOf('play'), 'resume only after first TTS/translation settles');
+  assert(player.cmds.indexOf('pause') < player.cmds.indexOf('play'), 'resume only after opening text buffer settles');
   player.ended = true;
   await running;
   assert(player.cmds.includes('restore'), 'captions path restores original sound');
@@ -224,7 +237,7 @@ function twoCues() {
     const body = JSON.parse(options.body || '{}');
     const src = body.messages?.at(-1)?.content || '';
     translates++;
-    if (translates > 1) {
+    if (translates > OPENING_READY_TEXT) {
       await Promise.race([
         extra.promise,
         new Promise((_, reject) => {
@@ -261,30 +274,35 @@ function twoCues() {
   abort.abort();
   await running;
   assert(lines.some((src) => /Cue 0 /.test(src)), 'opening cue still translated');
+  assert(lines.some((src) => /Cue 1 /.test(src)), 'opening buffer second cue translated');
   assert(lines.some((src) => /Cue 20 /.test(src)), 'seek flushes and starts the new window');
-  assert(!lines.some((src) => /Cue [1-3] /.test(src)), `stale waiting cues must not emit after gen++, got ${lines.join('|')}`);
+  assert(!lines.some((src) => /Cue [2-3] /.test(src)), `stale waiting cues must not emit after gen++, got ${lines.join('|')}`);
 }
 
-// --- TTS on: do not resume picture until first Chinese audio is ready ---
+// --- TTS on: do not resume picture until opening Chinese audio buffer is ready ---
 {
-  const player = { currentTime: 0.2, duration: 8, paused: false, ended: false, advance: 0 };
+  const player = { currentTime: 0.2, duration: 20, paused: false, ended: false, advance: 0 };
   installChrome(player);
-  const dub = gate();
+  const last = gate();
+  let n = 0;
   globalThis.fetch = mockTranslateFetch();
   const running = runInterpret({
     tabId: 1,
     settings: settings({ tts: true }),
-    cues: twoCues(),
+    cues: nCues(Math.max(6, OPENING_READY_TTS)),
     capture: null,
     synthesizeTts: async () => {
-      await dub.promise;
-      return { blob: new Blob(['wav']), mime: 'audio/wav' };
+      n += 1;
+      if (n >= OPENING_READY_TTS) await last.promise;
+      return { blob: new Blob([`wav${n}`]), mime: 'audio/wav' };
     },
   });
   await waitUntil(() => player.cmds.includes('pause'));
+  await waitUntil(() => n >= Math.max(1, OPENING_READY_TTS - 1));
   await waitMs(60);
   assert(!player.cmds.includes('play'), 'translation alone must not advance the picture when TTS is on');
-  dub.resolve();
+  assert(player.paused, 'must wait for the opening dub buffer, not the first segment');
+  last.resolve();
   await waitUntil(() => player.cmds.includes('play'));
   player.ended = true;
   await running;
@@ -292,7 +310,7 @@ function twoCues() {
 
 // --- current cue without dub holds again; video must not skip ahead ---
 {
-  const player = { currentTime: 0.2, duration: 12, paused: false, ended: false, advance: 0 };
+  const player = { currentTime: 0.2, duration: 16, paused: false, ended: false, advance: 0 };
   installChrome(player);
   const second = gate();
   let n = 0;
@@ -301,19 +319,21 @@ function twoCues() {
     tabId: 1,
     settings: settings({ tts: true }),
     cues: [
-      { start: 0, end: 3, text: 'Hello world from the lecture' },
-      { start: 3, end: 8, text: 'This is the second sentence' },
+      { start: 0, end: 2, text: 'Hello world from the lecture' },
+      { start: 2, end: 4, text: 'Cue 1 spoken line after opening' },
+      { start: 4, end: 6, text: 'Cue 2 spoken line after opening' },
+      { start: 6, end: 10, text: 'This is the second sentence' },
     ],
     capture: null,
     synthesizeTts: async () => {
       n += 1;
-      if (n > 1) await second.promise;
+      if (n > OPENING_READY_TTS) await second.promise;
       return { blob: new Blob([`wav${n}`]), mime: 'audio/wav' };
     },
   });
   await waitUntil(() => player.cmds.includes('play'));
   const playsAfterFirst = player.cmds.filter((c) => c === 'play').length;
-  player.currentTime = 3.4;
+  player.currentTime = 6.4;
   await waitUntil(() => player.cmds.filter((c) => c === 'pause').length >= 2);
   assert(player.paused, 'must hold when the current cue has no Chinese audio yet');
   assert(player.cmds.filter((c) => c === 'play').length === playsAfterFirst, 'must not skip ahead before the next dub');
@@ -525,6 +545,196 @@ function mockRecordSlice() {
     if (err?.name !== 'AbortError' && !/abort/i.test(err?.message || '')) throw err;
   });
   assert(refs[0] === true, 'audio-path TTS must clone from the recorded slice');
+}
+
+// --- queued caption TTS uses the latest harvested voice, not the prepare-time sample ---
+{
+  const player = { currentTime: 0.2, duration: 8, paused: false, ended: false, advance: 0 };
+  installChrome(player);
+  globalThis.fetch = mockTranslateFetch();
+  const oldRef = new Blob([new Uint8Array(2000).fill(1)], { type: 'audio/wav' });
+  const newRef = new Blob([new Uint8Array(2000).fill(2)], { type: 'audio/wav' });
+  let latest = oldRef;
+  const dubs = [];
+  const abort = new AbortController();
+  const running = runInterpret({
+    tabId: 1,
+    settings: settings({ tts: true }),
+    cues: twoCues(),
+    capture: { stream: { id: 'tab' }, playback: { setGain() {} } },
+    recordSlice: async () => ({ blob: oldRef, mime: 'audio/wav', seconds: 4 }),
+    voiceRefNow: () => latest,
+    signal: abort.signal,
+    synthesizeTts: async (_tts, _text, opts) => {
+      dubs.push(opts?.referenceBlob);
+      player.ended = true;
+      abort.abort();
+      return { blob: new Blob(['wav']), mime: 'audio/wav' };
+    },
+    onEvent: (ev) => {
+      if (ev.type === 'line') latest = newRef;
+    },
+  });
+  await running.catch((err) => {
+    if (err?.name !== 'AbortError' && !/abort/i.test(err?.message || '')) throw err;
+  });
+  assert.equal(dubs.length, 1, 'first queued cue is dubbed once');
+  assert.equal(dubs[0], newRef, 'synthesize uses harvest after translate, not the opening freeze');
+}
+
+// --- audio + TTS: record enough opening slices, play only after opening dub buffer ---
+{
+  const player = { currentTime: 0.2, duration: 40, paused: false, ended: false, advance: 0 };
+  installChrome(player);
+  let records = 0;
+  const last = gate();
+  let dubs = 0;
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = options.body;
+    if (typeof body === 'string') {
+      try {
+        const json = JSON.parse(body);
+        if (json.messages) return mockTranslateFetch()(_url, options);
+      } catch { /* form upload */ }
+    }
+    return Response.json({
+      text: 'Hello from the speaker',
+      segments: [{ start: 0, text: 'Hello from the speaker' }],
+    });
+  };
+  const need = openingReadyCount(true);
+  const abort = new AbortController();
+  const running = runInterpret({
+    tabId: 1,
+    settings: {
+      text: textSettings,
+      asr: { baseUrl: 'https://asr.test/v1', model: 'w' },
+      tts: { baseUrl: 'https://tts.example.test' },
+    },
+    cues: [],
+    capture: { stream: { id: 'tab' }, playback: { setGain() {} } },
+    recordSlice: async () => {
+      records += 1;
+      if (records > need) {
+        abort.abort();
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      return { blob: loudWav(), mime: 'audio/wav', seconds: 5 };
+    },
+    signal: abort.signal,
+    synthesizeTts: async () => {
+      dubs += 1;
+      if (dubs >= need) await last.promise;
+      return { blob: new Blob([`wav${dubs}`]), mime: 'audio/wav' };
+    },
+  });
+  await waitUntil(() => records >= need);
+  await waitUntil(() => dubs >= Math.max(1, need - 1));
+  await waitMs(50);
+  assert(player.paused, 'audio path stays held until opening dub buffer is ready');
+  assert(records >= need, `must record ${need} opening slices, got ${records}`);
+  const playsAtHold = player.cmds.filter((c) => c === 'play').length;
+  last.resolve();
+  await running.catch((err) => {
+    if (err?.name !== 'AbortError' && !/abort/i.test(err?.message || '')) throw err;
+  });
+  assert(
+    player.cmds.filter((c) => c === 'play').length > playsAtHold,
+    'must resume only after the opening dub buffer is ready',
+  );
+}
+
+// --- audio without TTS: record opening slices, play only after text buffer settles ---
+{
+  const player = { currentTime: 0.2, duration: 40, paused: false, ended: false, advance: 0 };
+  installChrome(player);
+  let records = 0;
+  const last = gate();
+  let zhN = 0;
+  globalThis.fetch = async (_url, options = {}) => {
+    const body = options.body;
+    if (typeof body === 'string') {
+      try {
+        const json = JSON.parse(body);
+        if (json.messages) {
+          const i = ++zhN;
+          if (i >= OPENING_READY_TEXT) await last.promise;
+          return mockTranslateFetch()(_url, options);
+        }
+      } catch { /* form upload */ }
+    }
+    return Response.json({
+      text: 'Hello from the speaker',
+      segments: [{ start: 0, text: 'Hello from the speaker' }],
+    });
+  };
+  const abort = new AbortController();
+  const running = runInterpret({
+    tabId: 1,
+    settings: {
+      text: textSettings,
+      asr: { baseUrl: 'https://asr.test/v1', model: 'w' },
+      tts: { preset: 'off', baseUrl: '' },
+    },
+    cues: [],
+    capture: { stream: { id: 'tab' }, playback: { setGain() {} } },
+    recordSlice: async () => {
+      records += 1;
+      if (records > OPENING_READY_TEXT) {
+        abort.abort();
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      return { blob: loudWav(), mime: 'audio/wav', seconds: 5 };
+    },
+    signal: abort.signal,
+  });
+  await waitUntil(() => records >= OPENING_READY_TEXT);
+  await waitUntil(() => zhN >= 1);
+  await waitMs(50);
+  assert(player.paused, 'audio path stays held until opening text buffer settles');
+  const playsAtHold = player.cmds.filter((c) => c === 'play').length;
+  last.resolve();
+  await running.catch((err) => {
+    if (err?.name !== 'AbortError' && !/abort/i.test(err?.message || '')) throw err;
+  });
+  assert(
+    player.cmds.filter((c) => c === 'play').length > playsAtHold,
+    'must resume only after the opening text buffer settles',
+  );
+}
+
+// --- audio opening must not force play over a user pause ---
+{
+  const player = { currentTime: 0.2, duration: 40, paused: true, ended: false, advance: 0 };
+  installChrome(player);
+  let records = 0;
+  const abort = new AbortController();
+  globalThis.fetch = mockTranslateFetch();
+  const running = runInterpret({
+    tabId: 1,
+    settings: {
+      text: textSettings,
+      asr: { baseUrl: 'https://asr.test/v1', model: 'w' },
+      tts: { preset: 'off', baseUrl: '' },
+    },
+    cues: [],
+    capture: { stream: { id: 'tab' }, playback: { setGain() {} } },
+    recordSlice: async () => {
+      records += 1;
+      return { blob: loudWav(), mime: 'audio/wav', seconds: 5 };
+    },
+    signal: abort.signal,
+  });
+  await waitUntil(() => player.cmds.includes('silence'));
+  await waitMs(80);
+  assert.equal(records, 0, 'must not capture opening slices while the user is paused');
+  assert(!player.cmds.includes('play'), 'user pause is not forced for opening capture');
+  abort.abort();
+  await running;
 }
 
 console.log('ok same-tab interpret: hold, user pause, lookahead, seek flush, no new page');

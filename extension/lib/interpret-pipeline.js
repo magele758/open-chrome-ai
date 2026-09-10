@@ -116,6 +116,10 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
     async waitUntilReady(n = 1) {
       while (!cancelled && !closed && audioReady < n) {
         if (count <= 0) return false;
+        // Items sitting in ready[] still hold count (prebuffer). That is not in-flight work.
+        if (waiting.length === 0 && preparing === 0 && count <= ready.length) {
+          return audioReady >= n;
+        }
         await wait();
       }
       return audioReady >= n;

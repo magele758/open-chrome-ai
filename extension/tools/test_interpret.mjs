@@ -8,11 +8,16 @@ import {
   joinSegmentText,
   linesToCaptions,
   LOOKAHEAD_MAX_CUES,
+  OPENING_READY_TEXT,
+  OPENING_READY_TTS,
+  openingReadyCount,
   pickLiveCue,
   pickLookaheadCues,
   pruneSpokenOnSeek,
   shouldTranslate,
   timedCues,
+  captionsForInterpret,
+  voiceRefForTime,
   voiceRefFromBlob,
   withCueEnds,
 } from "../lib/interpret.js";
@@ -71,6 +76,10 @@ assert(!late, "skip far future");
 const spokenAhead = new Set();
 const many = withCueEnds(Array.from({ length: 20 }, (_, i) => ({ start: i * 2, text: `cue ${i} hello` })));
 const ahead = pickLookaheadCues(many, 0.1, spokenAhead);
+assert(OPENING_READY_TTS <= LOOKAHEAD_MAX_CUES, "tts opening stays within lookahead");
+assert(OPENING_READY_TEXT <= LOOKAHEAD_MAX_CUES, "text opening stays within lookahead");
+assert(openingReadyCount(true) === OPENING_READY_TTS, "tts opening count");
+assert(openingReadyCount(false) === OPENING_READY_TEXT, "text opening count");
 assert(ahead.length === LOOKAHEAD_MAX_CUES, `lookahead capped at ${LOOKAHEAD_MAX_CUES}, got ${ahead.length}`);
 assert(ahead[0].cue.text.includes("cue 0"), "lookahead starts at current");
 assert(!ahead.some((h) => h.cue.start >= 20), "lookahead stops at ~20s");
@@ -118,5 +127,18 @@ assert(await voiceRefFromBlob(new Blob([new Uint8Array(8)], { type: "audio/wav" 
   const wav = new Blob([new Uint8Array(2000)], { type: "audio/wav" });
   assert(await voiceRefFromBlob(wav) === wav, "loud wav is reused as voice ref");
 }
+
+{
+  const a = { start: 0, end: 4, blob: "old" };
+  const b = { start: 4, end: 8, blob: "new" };
+  assert(voiceRefForTime([a, b], 0.2, "fb") === "old", "cover opening cue");
+  assert(voiceRefForTime([a, b], 5, "fb") === "new", "cover later cue");
+  assert(voiceRefForTime([a, b], 40, "fb") === "fb", "fallback when no overlap");
+  assert(voiceRefForTime([a, b], 4.1, "fb") === "new", "later overlapping slice wins");
+}
+
+assert(captionsForInterpret([{ start: 1, text: "hi" }]).length === 0, "default ignores captions");
+assert(captionsForInterpret([{ start: 1, text: "hi" }], true).length === 1, "use captions");
+assert(captionsForInterpret([{ start: 1, text: "hi" }], false).length === 0, "ignore captions");
 
 console.log("ok interpret");
