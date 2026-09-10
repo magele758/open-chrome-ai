@@ -63,6 +63,7 @@ export function defaultSettings() {
     answerLanguage: "zh-CN",
     uiFont: "md",
     shareActiveTab: true,
+    nativeShell: true,
     shortcuts: [],
   };
 }
@@ -78,6 +79,7 @@ export function normalizeSettings(raw) {
   merged.tts.durationFactor = Number.isFinite(factor) && factor > 0 ? factor : 1;
   if (!["ZH", "EN", "JA", "AR", "ES"].includes(merged.tts.lang)) merged.tts.lang = "ZH";
   merged.uiFont = ["md", "lg", "xl"].includes(raw?.uiFont) ? raw.uiFont : "md";
+  merged.nativeShell = raw?.nativeShell !== false;
   merged.shortcuts = Array.isArray(raw?.shortcuts)
     ? raw.shortcuts.map((s) => ({
         id: String(s?.id || crypto.randomUUID()),

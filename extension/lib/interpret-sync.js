@@ -5,6 +5,7 @@ import { createInterpretPipeline } from './interpret-pipeline.js';
 import { recordPageSlice } from './tab-audio.js';
 import { blobToWav, synthesizeTts } from './tts.js';
 import { transcribeAudio, filenameForMime, silentWav } from './asr.js';
+import { stripTimeline } from './interpret.js';
 
 async function base64(blob) {
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -59,19 +60,21 @@ export async function runSynchronizedInterpret({ tabId, settings, cues, signal, 
         onBuffer: (ready, target) => status(`音画同步缓冲 ${ready}/${target} 段，画面等待中…`),
         prepare: async item => {
           const [original, referenceBlob] = await Promise.all([
-            item.src !== undefined ? item.src : transcribeAudio(settings.asr, item.blob, {
+            item.src !== undefined ? stripTimeline(item.src) : transcribeAudio(settings.asr, item.blob, {
               filename: filenameForMime(item.mime), signal: epochSignal,
-            }).then(segments => segments.map(s => s.text || '').join(' ').trim()),
+            }).then(segments => stripTimeline(segments.map(s => s.text || '').join(' '))),
             blobToWav(item.blob),
           ]);
           epochSignal.throwIfAborted();
-          const zh = original ? await translate(original, epochSignal) : '';
-          return { start: item.start, end: item.end, src: original, zh, referenceBlob };
+          const src = stripTimeline(original);
+          const zh = src ? stripTimeline(await translate(src, epochSignal)) : '';
+          return { start: item.start, end: item.end, src, zh, referenceBlob };
         },
         synthesize: async item => {
           epochSignal.throwIfAborted();
           const { referenceBlob, ...line } = item;
-          const blob = item.zh ? (await synthesizeTts(settings.tts, item.zh, {
+          const spoken = stripTimeline(item.zh);
+          const blob = spoken ? (await synthesizeTts(settings.tts, spoken, {
             referenceBlob, signal: epochSignal, lang: settings.tts.lang || 'ZH',
           })).blob : silentWav(item.end - item.start, 16000);
           return { ...line, blob };

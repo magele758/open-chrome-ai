@@ -20,6 +20,33 @@ function headersFor(model) {
   return headers;
 }
 
+export function normalizeContent(raw) {
+  if (raw == null) return "";
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) {
+    return raw.map((part) => {
+      if (typeof part === "string") return part;
+      if (!part || typeof part !== "object") return "";
+      if (/thinking|thought|reasoning/i.test(String(part.type || ""))) return "";
+      if (typeof part.text === "string") return part.text;
+      if (typeof part.content === "string") return part.content;
+      return "";
+    }).join("");
+  }
+  if (typeof raw === "object" && typeof raw.text === "string") return raw.text;
+  return "";
+}
+
+export function messageText(json) {
+  const choice = json?.choices?.[0] || {};
+  const msg = choice.message || {};
+  const primary = normalizeContent(msg.content ?? choice.delta?.content ?? choice.text ?? "");
+  if (primary.trim()) return primary.trim();
+  return normalizeContent(
+    msg.reasoning_content ?? choice.delta?.reasoning_content ?? msg.reasoning ?? "",
+  ).trim();
+}
+
 function parseSseDelta(line) {
   const trimmed = line.trim();
   if (!trimmed.startsWith("data:")) return null;
@@ -28,7 +55,9 @@ function parseSseDelta(line) {
   try {
     const json = JSON.parse(data);
     const choice = json.choices?.[0];
-    return choice?.delta?.content ?? choice?.message?.content ?? "";
+    const piece = choice?.delta?.content ?? choice?.message?.content
+      ?? choice?.delta?.reasoning_content ?? choice?.message?.reasoning_content ?? "";
+    return typeof piece === "string" ? piece : normalizeContent(piece);
   } catch {
     return null;
   }
@@ -44,7 +73,7 @@ function parseSseTurn(line) {
     const json = JSON.parse(data);
     const choice = json.choices?.[0] || {};
     return {
-      content: choice.delta?.content ?? "",
+      content: normalizeContent(choice.delta?.content ?? choice.message?.content ?? ""),
       toolCalls: choice.delta?.tool_calls || choice.message?.tool_calls || [],
       finishReason: choice.finish_reason || json.choices?.[0]?.finish_reason || "",
     };
@@ -76,26 +105,49 @@ async function readError(response) {
   return `${response.status} ${detail}`.trim();
 }
 
-/**
- * Non-streaming chat completion for short jobs (live translation).
- */
-export async function completeChat(model, { messages, temperature = 0.2, maxTokens = 400, signal } = {}) {
-  const url = chatCompletionsUrl(model.baseUrl);
-  const response = await fetch(url, {
+async function postChat(model, body, signal) {
+  const response = await fetch(chatCompletionsUrl(model.baseUrl), {
     method: "POST",
     headers: headersFor(model),
     signal,
-    body: JSON.stringify({
-      model: String(model.model || "").trim(),
-      stream: false,
-      temperature,
-      max_tokens: maxTokens,
-      messages: messages || [],
-    }),
+    body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(await readError(response));
-  const json = await response.json();
-  return String(json.choices?.[0]?.message?.content || "").trim();
+  return response;
+}
+
+function chatBody(model, { messages, temperature, maxTokens, stream }) {
+  const body = {
+    model: String(model.model || "").trim(),
+    stream: stream === true,
+    temperature,
+    messages: messages || [],
+  };
+  if (maxTokens) body.max_tokens = maxTokens;
+  return body;
+}
+
+/**
+ * Non-streaming chat completion for short jobs (live translation).
+ * Thinking models can spend max_tokens on reasoning and return empty content;
+ * retry with a larger budget, then the same streaming path as sidepanel chat.
+ */
+export async function completeChat(model, { messages, temperature = 0.2, maxTokens = 400, signal } = {}) {
+  const once = async (tokens) => {
+    const response = await postChat(model, chatBody(model, { messages, temperature, maxTokens: tokens, stream: false }), signal);
+    return response.json();
+  };
+  let json = await once(maxTokens);
+  let text = messageText(json);
+  const finish = String(json.choices?.[0]?.finish_reason || "").toLowerCase();
+  if (!text && maxTokens && (finish === "length" || finish === "max_tokens")) {
+    json = await once(Math.max(8192, maxTokens * 8));
+    text = messageText(json);
+  }
+  if (!text) {
+    text = String(await streamChat(model, { messages, temperature, signal }, () => {}) || "").trim();
+  }
+  return text;
 }
 
 export async function testConnection(model) {
@@ -117,8 +169,8 @@ export async function testConnection(model) {
     });
     if (!response.ok) throw new Error(await readError(response));
     const json = await response.json();
-    const content = json.choices?.[0]?.message?.content || "";
-    return { ok: true, ms: Date.now() - started, preview: String(content).slice(0, 80) };
+    const content = messageText(json);
+    return { ok: true, ms: Date.now() - started, preview: content.slice(0, 80) };
   } catch (err) {
     if (err?.name === "AbortError") throw new Error("连接超时（20s）");
     throw err;
@@ -133,23 +185,15 @@ export async function testConnection(model) {
  * @param {(delta: string) => void} onDelta
  */
 export async function streamChat(model, input, onDelta) {
-  const url = chatCompletionsUrl(model.baseUrl);
-  const body = {
-    model: model.model.trim(),
-    stream: true,
-    temperature: 0.3,
+  const response = await postChat(model, chatBody(model, {
     messages: input.messages,
-  };
-  const response = await fetch(url, {
-    method: "POST",
-    headers: headersFor(model),
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw new Error(await readError(response));
+    temperature: input.temperature ?? 0.3,
+    stream: true,
+  }), input.signal);
 
   if (!response.body) {
     const json = await response.json();
-    const content = json.choices?.[0]?.message?.content || "";
+    const content = messageText(json);
     if (content) onDelta(content);
     return content;
   }
@@ -224,7 +268,7 @@ export async function streamTurn(model, input, onTextDelta) {
   if (!response.body) {
     const json = await response.json();
     const choice = json.choices?.[0] || {};
-    content = choice.message?.content || "";
+    content = messageText(json);
     if (content) onTextDelta?.(content);
     const calls = (choice.message?.tool_calls || []).map((c) => ({
       id: c.id,

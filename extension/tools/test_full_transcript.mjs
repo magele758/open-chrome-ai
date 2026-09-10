@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict';
 import { acquireFullTranscript } from '../lib/full-transcript.js';
 import { summarizeTranscript, splitTranscript } from '../lib/summarize-transcript.js';
-import { getCachedTranscript, setCachedTranscript } from '../lib/captions.js';
+import { getCachedTranscript, setCachedTranscript, videoIdentity } from '../lib/captions.js';
 import { formatTranscript } from '../lib/asr.js';
+import { installMemoryIndexedDB } from './idb_mem.mjs';
+
+const idb = installMemoryIndexedDB();
+async function asrItemKey(url) {
+  const id = videoIdentity(url);
+  const buf = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(id));
+  const hash = [...new Uint8Array(buf)].slice(0, 10).map((b) => b.toString(16).padStart(2, '0')).join('');
+  return 'pl.asr.item.' + hash;
+}
 const id = 'a'.repeat(32);
 let deleted = 0, requests = 0;
 const statuses = [];
@@ -30,19 +39,56 @@ assert.equal(deleted, 3);
 const sub = await acquireFullTranscript({ url: 'https://video.test', fetchImpl: async (url, opts = {}) => opts.method === 'POST' ? Response.json({ id }) : opts.method === 'DELETE' ? Response.json({}) : Response.json({ status: 'ready', duration: 10, subtitle: { format: 'vtt', body: 'WEBVTT\n\n00:00:01.000 --> 00:00:09.000\nfull subtitles\n' } }) });
 assert.equal(sub.complete, true, 'subtitles do not need ASR');
 const store = {};
-globalThis.chrome = { storage: { local: { get: async key => ({ [key]: store[key] }), set: async value => Object.assign(store, value), remove: async keys => keys.forEach(k => delete store[k]) } } };
+globalThis.chrome = { storage: { local: {
+  get: async (keys) => {
+    if (typeof keys === 'string') return { [keys]: store[keys] };
+    if (Array.isArray(keys)) {
+      const out = {};
+      for (const k of keys) out[k] = store[k];
+      return out;
+    }
+    return { ...store };
+  },
+  set: async (value) => Object.assign(store, value),
+  remove: async (keys) => { for (const k of [].concat(keys)) delete store[k]; },
+} } };
 const large = formatTranscript(Array.from({ length: 1200 }, (_, i) => ({ start: i, text: `cue ${i} ${'full text '.repeat(4)}` })));
 await setCachedTranscript('https://video.test', { ...large, complete: true });
 const cached = await getCachedTranscript('https://video.test');
 assert.equal(cached.text, large.text);
 assert.equal(cached.cues.length, 1200);
 assert.equal(cached.complete, true);
+const largeKey = await asrItemKey('https://video.test');
+assert.equal(store[largeKey], undefined, 'transcript body not in chrome.storage');
+assert.equal(idb.has(largeKey), true, 'transcript body in idb');
+assert.equal(store['pl.asr.index']?.length, 1, 'asr index stays in chrome.storage');
+
+const legacyUrl = 'https://legacy.test/video';
+const legacyKey = await asrItemKey(legacyUrl);
+store[legacyKey] = { text: 'legacy transcript', cues: [{ start: 1, text: 'hi' }], complete: true };
+const migrated = await getCachedTranscript(legacyUrl);
+assert.equal(migrated.text, 'legacy transcript');
+assert.equal(store[legacyKey], undefined, 'legacy chrome item removed');
+assert.equal(idb.get(legacyKey)?.text, 'legacy transcript');
+
+for (let i = 0; i < 25; i++) {
+  await setCachedTranscript(`https://video.test/v${i}`, { text: `t${i}`, cues: [], complete: true });
+}
+assert.equal(store['pl.asr.index']?.length, 24, 'asr cache cap');
+const droppedKey = await asrItemKey('https://video.test/v0');
+assert.equal(await getCachedTranscript('https://video.test/v0'), null);
+assert.equal(idb.has(droppedKey), false, 'evicted asr item dropped from idb');
+assert.equal((await getCachedTranscript('https://video.test/v24'))?.text, 't24');
 const text = Array.from({ length: 7 }, (_, i) => `[${i}:00] MARKER_${i} ${'words '.repeat(1700)}\n`).join('');
 assert.equal(splitTranscript(text).join(''), text, 'chunking loses no characters');
 const seen = [];
-const summary = await summarizeTranscript({ text, model: {}, complete: async (_model, { messages }) => {
+const summary = await summarizeTranscript({ text, model: {}, complete: async (_model, { messages, maxTokens }) => {
   const input = messages.at(-1).content;
-  if (input.includes('提取本段要点')) { seen.push(input); return input.match(/MARKER_\d/g)?.join(' ') || 'continuation'; }
+  if (input.includes('提取本段要点')) {
+    assert.ok(maxTokens >= 8000, 'note budget must outrun thinking tokens');
+    seen.push(input);
+    return input.match(/MARKER_\d/g)?.join(' ') || 'continuation';
+  }
   assert(input.includes('MARKER_6'), 'final synthesis includes the ending');
   return 'complete summary';
 } });

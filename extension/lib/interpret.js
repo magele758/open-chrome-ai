@@ -5,14 +5,19 @@
 
 import { injectVideo, injectPageAudio, sleep } from "./chrome.js";
 import { recordPageSlice } from "./tab-audio.js";
-import { filenameForMime, transcribeAudio } from "./asr.js";
+import { collapseRollingCues, filenameForMime, transcribeAudio } from "./asr.js";
 import { completeChat } from "./openai.js";
 import { isAsrReady, isModelReady, isTtsReady, resolveModel } from "./storage.js";
 import { isQuietBlob, recordSlice } from "./tab-audio-record.js";
 import { createInterpretPipeline } from "./interpret-pipeline.js";
-import { synthesizeTts } from "./tts.js";
+import { blobToWav, synthesizeTts } from "./tts.js";
 
 export const CHUNK_SECONDS = 5;
+export const VOICE_SAMPLE_SECONDS = 4;
+export const LOOKAHEAD_MAX_CUES = 4;
+export const LOOKAHEAD_MAX_SECONDS = 20;
+export const SEEK_BACK_SECONDS = 0.8;
+export const SEEK_FORWARD_SECONDS = 3.2;
 
 const TRANSLATE_SYSTEM =
   "你是同声传译员。把用户给出的口语转成通顺的简体中文，只输出译文，不要引号、不要解释、不要原文。若输入已是中文，原样润色成可朗读的短句。";
@@ -32,6 +37,37 @@ export function shouldTranslate(text) {
 
 export function cueKey(cue) {
   return `${Number(cue?.start || 0).toFixed(2)}|${String(cue?.text || "").slice(0, 48)}`;
+}
+
+/** Display/VTT clocks and YouTube karaoke tags must never go to translate/TTS. */
+export function stripTimeline(text) {
+  let s = String(text || "");
+  if (!s) return "";
+  s = s.replace(/<think>[\s\S]*?<\/think>/gi, " ");
+  s = s.replace(/&nbsp;/gi, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  s = s.replace(/\d{1,2}:\d{2}:\d{2}\.\d{1,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}\.\d{1,3}/g, " ");
+  s = s.replace(/<\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?>/g, "");
+  s = s.replace(/\[(?:\d{1,2}:)?\d{1,2}:\d{2}(?:\.\d+)?\]\s*/g, "");
+  s = s.replace(/<\/?c(?:\.[^>]*)?>/gi, "");
+  s = s.replace(/<\/?(?:i|b|u|ruby|rt|v|lang)(?:\s[^>]*)?>/gi, "");
+  s = s.replace(/<[^>]+>/g, "");
+  return s.replace(/\s+/g, " ").trim();
+}
+
+export function timedCues(cues) {
+  return collapseRollingCues((Array.isArray(cues) ? cues : [])
+    .map((cue) => ({
+      ...cue,
+      start: Number(cue?.start),
+      text: stripTimeline(cue?.text),
+    }))
+    .filter((cue) => cue.text && Number.isFinite(cue.start)));
+}
+
+/** Stale player reads jump to ~0 while the real clock is mid-video. */
+export function isImplausibleReset(prev, next) {
+  if (!Number.isFinite(prev) || !Number.isFinite(next)) return false;
+  return prev > 5 && next < 1;
 }
 
 export function withCueEnds(cues) {
@@ -58,35 +94,88 @@ export function cueWindowEnd(cue) {
 export function pickLiveCue(cues, t, spoken) {
   const now = Number(t) || 0;
   for (const cue of cues || []) {
-    const text = String(cue?.text || "").replace(/\s+/g, " ").trim();
+    const text = stripTimeline(cue?.text);
     if (!text) continue;
     const start = Number(cue.start) || 0;
     const end = cueWindowEnd(cue);
-    const key = cueKey(cue);
+    const key = cueKey({ ...cue, text });
     if (spoken?.has?.(key)) continue;
     if (now + 0.3 >= start && now < end + 0.35) return { cue: { ...cue, text, start, end }, key };
   }
   return null;
 }
 
+export function pickLookaheadCues(cues, t, spoken, opts = {}) {
+  const maxCues = Number(opts.maxCues) > 0 ? Number(opts.maxCues) : LOOKAHEAD_MAX_CUES;
+  const maxSeconds = Number(opts.maxSeconds) > 0 ? Number(opts.maxSeconds) : LOOKAHEAD_MAX_SECONDS;
+  const now = Number(t) || 0;
+  const horizon = now + maxSeconds;
+  const hits = [];
+  let reserved = 0;
+  for (const cue of cues || []) {
+    const text = stripTimeline(cue?.text);
+    if (!text) continue;
+    const start = Number(cue.start) || 0;
+    const end = cueWindowEnd(cue);
+    const key = cueKey({ ...cue, text });
+    if (now >= end + 0.35) continue;
+    if (start > horizon) continue;
+    if (spoken?.has?.(key)) {
+      reserved += 1;
+      if (reserved >= maxCues) break;
+      continue;
+    }
+    hits.push({ cue: { ...cue, text, start, end }, key });
+    if (hits.length + reserved >= maxCues) break;
+  }
+  return hits;
+}
+
+export function isSeekJump(prev, next, { paused = false, audioChunk = false } = {}) {
+  if (!Number.isFinite(prev) || !Number.isFinite(next)) return false;
+  if (next < prev - SEEK_BACK_SECONDS) return true;
+  if (paused && Math.abs(next - prev) > SEEK_BACK_SECONDS) return true;
+  const slack = audioChunk ? CHUNK_SECONDS + 2.5 : SEEK_FORWARD_SECONDS;
+  return next > prev + slack;
+}
+
+export function pruneSpokenOnSeek(cues, spoken, t) {
+  if (!spoken?.delete) return;
+  const now = Number(t) || 0;
+  for (const cue of cues || []) {
+    if (cueWindowEnd(cue) > now - 0.5) spoken.delete(cueKey(cue));
+  }
+}
+
 export function cleanTranslation(raw, fallback) {
-  let s = String(raw || "").trim();
-  if (!s) return String(fallback || "").trim();
-  s = s.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  let s = String(raw || "").replace(/<think>[\s\S]*?<\/think>/gi, " ").trim();
+  s = stripTimeline(s);
+  if (!s) return stripTimeline(fallback);
   s = s.replace(/^```[a-z]*\n?/i, "").replace(/```$/i, "").trim();
   s = s.replace(/^(译文|翻译|中文)[:：]\s*/u, "");
   s = s.replace(/^["「『“]+|[」』"”]+$/g, "").trim();
   s = s.replace(/\s*\n+\s*/g, " ").replace(/\s+/g, " ").trim();
+  s = stripTimeline(s);
   if (s.length > 240) s = s.slice(0, 240);
-  return s || String(fallback || "").trim();
+  return s || stripTimeline(fallback);
 }
 
 export function joinSegmentText(segments) {
   return (segments || [])
-    .map((s) => String(s?.text || "").replace(/\s+/g, " ").trim())
+    .map((s) => stripTimeline(s?.text))
     .filter(Boolean)
     .join(" ")
     .trim();
+}
+
+/** Index-TTS prompt from a captured slice. Quiet/failed clips are ignored. */
+export async function voiceRefFromBlob(blob) {
+  if (!blob || isQuietBlob(blob)) return null;
+  try {
+    return await blobToWav(blob);
+  } catch {
+    return blob;
+  }
 }
 
 export function linesToCaptions(lines) {
@@ -124,7 +213,7 @@ async function playTab(tabId, fromStart) {
 }
 
 export async function translateToZh(model, text, signal) {
-  const src = String(text || "").replace(/\s+/g, " ").trim();
+  const src = stripTimeline(text);
   if (!src) return "";
   if (!shouldTranslate(src)) return src;
   if (!isModelReady(model)) {
@@ -147,8 +236,12 @@ export async function translateToZh(model, text, signal) {
  *   tabId: number,
  *   settings: object,
  *   cues?: Array<{start:number,end?:number,text:string}>,
+ *   startAt?: number,
+ *   openingHold?: boolean,
  *   capture: { stream: MediaStream, playback?: { setGain?: Function } },
  *   signal?: AbortSignal,
+ *   wantOriginalAudio?: () => boolean,
+ *   recordSlice?: (seconds: number, signal: AbortSignal) => Promise<{blob: Blob, mime?: string, seconds?: number}>,
  *   onEvent?: (ev: object) => void,
  * }} opts
  */
@@ -158,7 +251,7 @@ export async function runInterpret(opts) {
   const controller = new AbortController();
   const signal = controller.signal;
   const stop = () => controller.abort();
-  const cues = withCueEnds((opts.cues || []).filter(c => String(c?.text || "").trim()));
+  const cues = withCueEnds(timedCues(opts.cues));
   const mode = cues.length ? "captions" : "audio";
   const asr = settings?.asr;
   const textModel = resolveModel(settings, "text");
@@ -169,31 +262,52 @@ export async function runInterpret(opts) {
   if (opts.signal?.aborted) stop();
   const lines = [];
   const spoken = new Set();
+  const skipDub = new Set();
   let ttsWarned = false;
+  let sessionRef = null;
   const emit = ev => { if (!signal.aborted) { try { onEvent?.(ev); } catch { /* UI callback */ } } };
   const status = message => emit({ type: "status", mode, message, hint: message });
+  const jobSignal = job => job?.signal || signal;
+  const dub = typeof opts.synthesizeTts === "function" ? opts.synthesizeTts : synthesizeTts;
+
+  function canTakeSlice() {
+    return typeof opts.recordSlice === "function"
+      || Boolean(capture?.pageAudio)
+      || Boolean(capture?.stream);
+  }
+
   const pipeline = createInterpretPipeline({
     signal,
+    prebuffer: ttsOn ? 1 : 2,
     onError: err => emit({ type: "warn", message: err?.message || String(err) }),
-    prepare: async item => {
-      const src = item.src !== undefined ? item.src : joinSegmentText(await transcribeAudio(asr, item.blob, {
-        filename: filenameForMime(item.mime), signal,
-      }));
-      if (!src || signal.aborted) return null;
-      const zh = await translateToZh(textModel, src, signal);
-      return { start: item.start, src, zh };
+    prepare: async (item, job) => {
+      const s = jobSignal(job);
+      let referenceBlob = item.referenceBlob || null;
+      if (!referenceBlob && item.blob) referenceBlob = await voiceRefFromBlob(item.blob);
+      if (referenceBlob) sessionRef = referenceBlob;
+      else referenceBlob = sessionRef;
+      const src = stripTimeline(item.src !== undefined ? item.src : joinSegmentText(await transcribeAudio(asr, item.blob, {
+        filename: filenameForMime(item.mime), signal: s,
+      })));
+      if (!src || signal.aborted || s.aborted) return null;
+      const zh = await translateToZh(textModel, src, s);
+      return { start: item.start, src, zh, referenceBlob };
     },
-    synthesize: async line => {
-      if (signal.aborted) return null;
-      lines.push(line);
-      emit({ type: "line", ...line, mode });
-      if (!ttsOn || !line.zh) return null;
+    synthesize: async (line, job) => {
+      const s = jobSignal(job);
+      if (signal.aborted || s.aborted) return null;
+      const spoken = stripTimeline(line?.zh);
+      const ready = spoken ? { ...line, zh: spoken } : line;
+      lines.push(ready);
+      emit({ type: "line", ...ready, mode });
+      if (!ttsOn || !spoken || shouldTranslate(spoken)) return null;
       try {
-        const out = await synthesizeTts(settings.tts, line.zh, {
-          signal,
+        const out = await dub(settings.tts, spoken, {
+          signal: s,
           lang: settings.tts.lang || "ZH",
+          ...(ready.referenceBlob ? { referenceBlob: ready.referenceBlob } : {}),
         });
-        return { ...line, blob: out.blob };
+        return { ...ready, blob: out.blob, dubbed: true };
       } catch (err) {
         if (err?.name === "AbortError") return null;
         if (!ttsWarned) {
@@ -204,7 +318,7 @@ export async function runInterpret(opts) {
       }
     },
     play: async item => {
-      if (!item?.blob || signal.aborted || typeof Audio === "undefined") return;
+      if (!item?.dubbed || !item?.blob || signal.aborted || typeof Audio === "undefined") return;
       const url = URL.createObjectURL(item.blob);
       try {
         const audio = new Audio(url);
@@ -224,52 +338,305 @@ export async function runInterpret(opts) {
       }
     },
   });
-  let pausedForBacklog = false;
-  let wasPaused = false;
+  const HOLD_OPENING = "opening";
+  const HOLD_BACKLOG = "backlog";
+  let systemHold = "";
+  let userPaused = false;
+  let lastTime = null;
+  let audioOpeningPending = mode === "audio";
+  let silenced = false;
+  let pageTapStarted = false;
+
+  function wantOriginal() {
+    return Boolean(opts.wantOriginalAudio?.());
+  }
+
+  async function ensureSilence() {
+    try {
+      const r = await injectVideo(tabId, "silence");
+      if (r?.ok) silenced = true;
+      return r;
+    } catch {
+      return { ok: false };
+    }
+  }
+
+  async function applySpeaker(st) {
+    if (wantOriginal()) {
+      if (silenced || st?.silenced) {
+        capture?.playback?.setGain?.(1);
+        try { await injectVideo(tabId, "restore"); } catch { /* page may have closed */ }
+        silenced = false;
+      }
+      return;
+    }
+    capture?.playback?.setGain?.(0);
+    if (!silenced || st?.silenced === false) await ensureSilence();
+  }
+
+  async function holdForSystem(reason) {
+    const paused = await injectVideo(tabId, "control", { action: "pause" });
+    if (!paused?.ok) {
+      throw new Error(reason === HOLD_BACKLOG
+        ? "同传处理积压，无法暂停播放器；请暂停视频后重试。"
+        : "无法暂停播放器，同传已停止。");
+    }
+    systemHold = reason;
+  }
+
+  function noteUserOverride(st) {
+    if (!st) return;
+    if (st.paused && !systemHold) userPaused = true;
+    if (!st.paused && !systemHold) userPaused = false;
+  }
+
+  async function resumeSystemHoldIfAllowed() {
+    if (userPaused || !systemHold || signal.aborted) return;
+    if (capture?.pageAudio || pageTapStarted) await injectPageAudio(tabId, "take");
+    await playTab(tabId, false);
+    systemHold = "";
+  }
+
+  function tryEnqueueCue(hit) {
+    if (!hit || pipeline.full || signal.aborted) return false;
+    spoken.add(hit.key);
+    try {
+      if (!pipeline.enqueue({ src: hit.cue.text, start: hit.cue.start })) {
+        spoken.delete(hit.key);
+        return false;
+      }
+      return true;
+    } catch {
+      spoken.delete(hit.key);
+      return false;
+    }
+  }
+
+  function enqueueCaptionLookahead(t) {
+    if (mode !== "captions") return;
+    for (const hit of pickLookaheadCues(cues, t, spoken)) tryEnqueueCue(hit);
+  }
+
+  function progressTime(st) {
+    const t = Number(st?.currentTime);
+    if (!Number.isFinite(t)) return lastTime;
+    if (systemHold && isImplausibleReset(lastTime, t)) return lastTime;
+    return t;
+  }
+
+  function handleSeek(st, { audioChunk = false } = {}) {
+    const t = progressTime(st);
+    if (!Number.isFinite(t)) return;
+    if (systemHold) {
+      if (isSeekJump(lastTime, t, { paused: true, audioChunk })) {
+        pipeline.flushAhead();
+        pruneSpokenOnSeek(cues, spoken, t);
+        skipDub.clear();
+        enqueueCaptionLookahead(t);
+      }
+      lastTime = t;
+      return;
+    }
+    if (isSeekJump(lastTime, t, { paused: Boolean(st?.paused), audioChunk })) {
+      pipeline.flushAhead();
+      pruneSpokenOnSeek(cues, spoken, t);
+      skipDub.clear();
+      enqueueCaptionLookahead(t);
+    }
+    lastTime = t;
+  }
+
+  async function takeSlice(seconds) {
+    if (typeof opts.recordSlice === "function") return opts.recordSlice(seconds, signal);
+    if (capture?.pageAudio || pageTapStarted) {
+      return recordPageSlice(capture?.tabId || tabId, seconds, signal);
+    }
+    if (capture?.stream) return recordSlice(capture.stream, seconds, signal);
+    return null;
+  }
+
+  async function recordCurrentSlice(seconds) {
+    try {
+      return await takeSlice(seconds);
+    } catch (err) {
+      if (err?.name === "AbortError") throw err;
+      return null;
+    }
+  }
+
+  async function rememberVoice(blob) {
+    const ref = await voiceRefFromBlob(blob);
+    if (ref) sessionRef = ref;
+    return ref;
+  }
+
+  let harvestBusy = false;
+  function scheduleVoiceHarvest() {
+    if (!ttsOn || harvestBusy || userPaused || systemHold || signal.aborted || !canTakeSlice()) return;
+    harvestBusy = true;
+    recordCurrentSlice(VOICE_SAMPLE_SECONDS).then((slice) => rememberVoice(slice?.blob)).catch(() => {
+      /* keep last sessionRef */
+    }).finally(() => { harvestBusy = false; });
+  }
+
+  async function captureVoiceSample() {
+    if (!ttsOn || sessionRef || signal.aborted || userPaused || !canTakeSlice()) return;
+    status("正在截取原声作为配音音色…");
+    await playTab(tabId, false);
+    let slice = null;
+    try {
+      slice = await recordCurrentSlice(VOICE_SAMPLE_SECONDS);
+    } finally {
+      if (!signal.aborted && !userPaused) {
+        try { await holdForSystem(HOLD_OPENING); } catch { /* keep going */ }
+      }
+    }
+    if (!await rememberVoice(slice?.blob)) {
+      emit({ type: "warn", message: "未能截取原声，配音将使用设置里的参考音" });
+    }
+  }
+
+  async function captureOpeningSlice() {
+    if (mode !== "audio" || !audioOpeningPending || signal.aborted || userPaused) {
+      audioOpeningPending = false;
+      return;
+    }
+    const start = lastTime;
+    await playTab(tabId, false);
+    let slice = null;
+    try {
+      slice = await recordCurrentSlice(CHUNK_SECONDS);
+    } finally {
+      if (!signal.aborted && !userPaused) {
+        try { await holdForSystem(HOLD_OPENING); } catch { /* keep going */ }
+      }
+    }
+    audioOpeningPending = false;
+    if (signal.aborted || !slice || isQuietBlob(slice.blob)) return;
+    await rememberVoice(slice.blob);
+    pipeline.enqueue({ ...slice, start });
+  }
+
+  async function waitForOpeningReady() {
+    if (pipeline.pending) {
+      if (systemHold) status("画面已暂停，等待第一段中文配音…");
+      if (ttsOn) await pipeline.waitUntilReady(1);
+      else await pipeline.waitUntilSettled(1);
+      const st = await injectVideo(tabId, "state");
+      if (st?.ok) {
+        if (systemHold && !st.paused) await holdForSystem(systemHold);
+        handleSeek(st, { audioChunk: mode === "audio" });
+        noteUserOverride(st);
+      }
+    }
+    await resumeSystemHoldIfAllowed();
+  }
+
   try {
     if (signal.aborted) return { mode, lines, captions: linesToCaptions(lines) };
-    await playTab(tabId, false);
-    status("正在翻译字幕…");
+    await injectVideo(tabId, "pick", { fresh: true });
+    const st0 = await injectVideo(tabId, "state");
+    if (!st0?.ok) throw new Error("找不到播放器，同传已停止。");
+    const snapped = Number(opts.startAt);
+    const read = Number(st0.currentTime);
+    lastTime = Number.isFinite(snapped) ? snapped : (Number.isFinite(read) ? read : 0);
+    if (Number.isFinite(read) && Number.isFinite(snapped) && !isImplausibleReset(snapped, read)) lastTime = read;
+    if (st0.ended) {
+      await applySpeaker(st0);
+      return { mode, lines, captions: linesToCaptions(lines) };
+    }
+    if (st0.paused && !opts.openingHold) userPaused = true;
+    else if (st0.paused) systemHold = HOLD_OPENING;
+    else await holdForSystem(HOLD_OPENING);
+    await applySpeaker(st0);
+    if ((mode === "audio" || ttsOn) && capture && !capture.pageAudio) {
+      try {
+        const started = await injectPageAudio(tabId, "start", { fromStart: false, autoplay: false });
+        pageTapStarted = Boolean(started?.ok);
+      } catch { pageTapStarted = false; }
+    }
+
+    if (mode === "captions") {
+      if (ttsOn) await captureVoiceSample();
+      enqueueCaptionLookahead(lastTime);
+      status("画面已暂停，正在从当前进度翻译…");
+      await waitForOpeningReady();
+    } else {
+      status("画面已暂停，正在从当前进度听第一段…");
+      await captureOpeningSlice();
+      await waitForOpeningReady();
+    }
+
     while (!signal.aborted) {
       if (pipeline.full) {
-        const paused = await injectVideo(tabId, "control", { action: "pause" });
-        if (!paused?.ok) throw new Error("同传处理积压，无法暂停播放器；请暂停视频后重试。");
-        pausedForBacklog = true;
-        status("处理暂时赶不上，已暂停画面等待配音…");
+        if (!userPaused) {
+          await holdForSystem(HOLD_BACKLOG);
+          status("处理暂时赶不上，已暂停画面等待配音…");
+        }
         await pipeline.waitForRoom();
         if (signal.aborted) break;
-        if (capture?.pageAudio) await injectPageAudio(tabId, "take");
-        await playTab(tabId, false);
-        pausedForBacklog = false;
+        await resumeSystemHoldIfAllowed();
       }
       const st = await injectVideo(tabId, "state");
       if (st?.ended) break;
       if (!st?.ok) throw new Error("找不到播放器，同传已停止。");
-      if (st.paused) {
-        wasPaused = true;
+      await applySpeaker(st);
+      if (systemHold && !st.paused && !userPaused) {
+        await holdForSystem(systemHold);
+        enqueueCaptionLookahead(progressTime(st));
         await sleep(200);
         continue;
       }
-      if (wasPaused && capture?.pageAudio) await injectPageAudio(tabId, "take");
-      wasPaused = false;
+      handleSeek(st, { audioChunk: mode === "audio" });
+      if (st.paused) {
+        if (!systemHold) userPaused = true;
+        enqueueCaptionLookahead(progressTime(st));
+        await sleep(200);
+        continue;
+      }
+      if (userPaused && (capture?.pageAudio || pageTapStarted)) await injectPageAudio(tabId, "take");
+      userPaused = false;
       if (mode === "captions") {
-        const hit = pickLiveCue(cues, st.currentTime, spoken);
-        if (hit) {
-          spoken.add(hit.key);
-          pipeline.enqueue({ src: hit.cue.text, start: hit.cue.start });
+        scheduleVoiceHarvest();
+        const now = progressTime(st);
+        const live = pickLiveCue(cues, now);
+        if (live && !spoken.has(live.key)) tryEnqueueCue(live);
+        if (ttsOn && live && spoken.has(live.key) && !pipeline.hasAudio(live.cue.start) && !skipDub.has(live.key)) {
+          if (!userPaused) {
+            await holdForSystem("dub");
+            status("画面已暂停，等待中文配音…");
+            const ok = await pipeline.waitUntilHasAudio(live.cue.start);
+            if (!ok) skipDub.add(live.key);
+          }
+          await resumeSystemHoldIfAllowed();
+          continue;
         }
+        const hit = pickLiveCue(cues, now, spoken);
+        if (hit) tryEnqueueCue(hit);
         await sleep(150);
         continue;
       }
-      const start = Number(st.currentTime) || 0;
-      const slice = capture.pageAudio
-        ? await recordPageSlice(capture.tabId, CHUNK_SECONDS, signal)
-        : await recordSlice(capture.stream, CHUNK_SECONDS, signal);
+      const start = progressTime(st) || 0;
+      const slice = await recordCurrentSlice(CHUNK_SECONDS);
       if (signal.aborted) break;
+      if (!slice) continue;
       // Recording immediately continues on the next iteration, never waiting
       // for ASR, translation, synthesis, or playback to finish this segment.
       const item = { ...slice, start };
       if (!isQuietBlob(slice.blob)) pipeline.enqueue(item);
+      if (audioOpeningPending) {
+        audioOpeningPending = false;
+        const stAfter = await injectVideo(tabId, "state");
+        if (stAfter?.ok) {
+          handleSeek(stAfter, { audioChunk: true });
+          if (stAfter.ended) break;
+          if (stAfter.paused && !systemHold) userPaused = true;
+          else if (!stAfter.paused) await holdForSystem(HOLD_OPENING);
+        } else {
+          await holdForSystem(HOLD_OPENING);
+        }
+        await waitForOpeningReady();
+      }
     }
     // Finish the final text segments on natural end; explicit stop cancels them.
     await pipeline.finish();
@@ -279,10 +646,13 @@ export async function runInterpret(opts) {
     await pipeline.finish();
     opts.signal?.removeEventListener("abort", stop);
     capture?.playback?.setGain?.(1);
-    if (capture?.pageAudio) {
+    if (pageTapStarted) {
+      try { await injectPageAudio(tabId, "stop"); } catch { /* page may have closed */ }
+    }
+    if (silenced || capture?.pageAudio) {
       try { await injectVideo(tabId, "restore"); } catch { /* page may have closed */ }
     }
-    if (pausedForBacklog) {
+    if (systemHold && !userPaused) {
       try { await playTab(tabId, false); } catch { /* page may have closed */ }
     }
   }

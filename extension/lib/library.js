@@ -3,6 +3,7 @@
  * Handle lives in IndexedDB; files are real VTT/Markdown on disk.
  */
 
+import { formatTranscript } from "./asr.js";
 import { formatTime } from "./prompts.js";
 import { sessionNoteRelPath, sessionToObsidianMarkdown } from "./sessions.js";
 
@@ -448,9 +449,9 @@ export async function readVideoDocFromLibrary(url, { request = false } = {}) {
     const vtt = await readLibraryText(`${folder}/original.vtt`, { request });
     const cues = parseVtt(vtt.text);
     if (!cues.length) return null;
-    const text = cues.map((c) => `[${formatTime(c.start)}] ${c.text}`).join("\n");
+    const formatted = formatTranscript(cues);
     const meta = await readLibraryText(`${folder}/meta.json`, { request }).then(r => JSON.parse(r.text)).catch(() => ({}));
-    return { status: "ready", cues, text, source: "library", complete: meta.complete === true, duration: meta.duration };
+    return { status: "ready", ...formatted, source: "library", complete: meta.complete === true, duration: meta.duration };
   } catch {
     return null;
   }

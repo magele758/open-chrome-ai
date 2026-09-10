@@ -281,11 +281,11 @@ function b64ToBlob(b64, mime) {
   return new Blob([bytes], { type: mime || "audio/webm" });
 }
 
-export async function beginPageCapture(tabId, { fromStart = false } = {}) {
+export async function beginPageCapture(tabId, { fromStart = false, autoplay = true } = {}) {
   if (!tabId) throw new Error("没有可取声音的标签。");
   await injectVideo(tabId, "pick");
   await injectVideo(tabId, "silence");
-  const started = await injectPageAudio(tabId, "start", { fromStart });
+  const started = await injectPageAudio(tabId, "start", { fromStart, autoplay });
   if (!started?.ok) throw new Error(started?.error || "无法从播放器取声。");
   const abort = new AbortController();
   const session = {
@@ -317,11 +317,11 @@ export async function recordPageSlice(tabId, seconds, signal) {
   };
 }
 
-export async function beginCapture(tabId, { fromStart = false } = {}) {
+export async function beginCapture(tabId, { fromStart = false, autoplay = true } = {}) {
   try {
     return await beginTabCapture(tabId);
   } catch (err) {
     if (!tabCaptureBlocked(err)) throw err;
-    return beginPageCapture(tabId, { fromStart });
+    return beginPageCapture(tabId, { fromStart, autoplay });
   }
 }

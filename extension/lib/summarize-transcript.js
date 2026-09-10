@@ -25,14 +25,19 @@ export async function summarizeTranscript({ text, title, model, language, signal
     for (const [index, chunk] of chunks.entries()) {
       signal?.throwIfAborted();
       onProgress?.(`正在阅读${round ? '分段笔记' : '完整文稿'} ${index + 1}/${chunks.length}`);
-      const note = await complete(model, {
-        signal, maxTokens: 1200,
+      const ask = async (extra) => String(await complete(model, {
+        signal, maxTokens: 16384,
         messages: [
           { role: 'system', content: system },
-          { role: 'user', content: `视频：${title || ''}\n这是按时间排列的第 ${index + 1}/${chunks.length} 段。提取本段要点、论据、结论和原有时间戳，保留后半段内容；控制在 1200 字以内。\n<material>\n${chunk}\n</material>` },
+          { role: 'user', content: `${extra}视频：${title || ''}\n这是按时间排列的第 ${index + 1}/${chunks.length} 段。提取本段要点、论据、结论和原有时间戳，保留后半段内容；控制在 1200 字以内。只输出笔记正文，不要思考过程。\n<material>\n${chunk}\n</material>` },
         ],
-      });
-      if (!note.trim()) throw new Error('模型未返回分段笔记，已停止全文总结。');
+      }) || '').trim();
+      let note = await ask('');
+      if (!note) {
+        onProgress?.(`第 ${index + 1} 段为空，正在重试…`);
+        note = await ask('不要输出空内容。');
+      }
+      if (!note) throw new Error(`第 ${index + 1}/${chunks.length} 段文本模型返回空。请到设置测一下文本模型；侧栏普通对话能答，再重试总结。Native Messaging 不参与视频总结。`);
       notes.push(note);
     }
     const next = notes.join('\n\n');
@@ -42,7 +47,7 @@ export async function summarizeTranscript({ text, title, model, language, signal
   signal?.throwIfAborted();
   onProgress?.('正在汇总整个视频');
   const result = await complete(model, {
-    signal, maxTokens: 3000,
+    signal, maxTokens: 16384,
     messages: [
       { role: 'system', content: system },
       { role: 'user', content: `视频：${title || ''}\n根据以下${round ? '覆盖全文的分段笔记' : '完整文稿'}总结整个视频：先给不超过 5 条要点，再按时间顺序列带 mm:ss 或 h:mm:ss 的章节，覆盖开头、中间和结尾。时间戳只能使用材料里已有的。\n<material>\n${material}\n</material>` },

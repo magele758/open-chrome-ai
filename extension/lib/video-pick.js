@@ -74,23 +74,35 @@ export function plVideo(cmd, arg) {
     if (el) el.setAttribute("data-pagelens-player", "1");
   };
 
+  const looksIdle = (el) => Boolean(el.paused || el.ended) && (el.currentTime || 0) < 1;
+
   const pick = () => {
     const all = nodes();
     if (!all.length) return null;
-    const marked = all.find((el) => el.getAttribute("data-pagelens-player") === "1");
     if (Number.isInteger(o.index) && all[o.index]) {
       globalThis[KEY] = o.index;
       mark(all[o.index]);
       return all[o.index];
     }
-    const stored = globalThis[KEY];
-    if (Number.isInteger(stored) && all[stored]) {
-      mark(all[stored]);
-      return all[stored];
-    }
-    if (marked) return marked;
     const ranked = all.slice().sort((a, b) => score(b) - score(a));
     const best = ranked[0];
+    const stored = globalThis[KEY];
+    const storedEl = Number.isInteger(stored) && all[stored] ? all[stored] : null;
+    const marked = all.find((el) => el.getAttribute("data-pagelens-player") === "1");
+    const sticky = storedEl || marked;
+    const staleSticky = Boolean(
+      sticky &&
+      best &&
+      sticky !== best &&
+      score(best) - score(sticky) > 80 &&
+      looksIdle(sticky) &&
+      ((!best.paused && !best.ended) || (best.currentTime || 0) > (sticky.currentTime || 0) + 2)
+    );
+    if (!o.fresh && sticky && !staleSticky) {
+      mark(sticky);
+      globalThis[KEY] = all.indexOf(sticky);
+      return sticky;
+    }
     globalThis[KEY] = all.indexOf(best);
     mark(best);
     return best;
@@ -144,7 +156,45 @@ export function plVideo(cmd, arg) {
   if (cmd === "pick" || cmd === "snapshot") {
     return { ok: true, video: snapshot(el, idx, all.length), videos: all.map((n, i) => snapshot(n, i, all.length)) };
   }
+  const tapLive = (tap, node) => Boolean(tap?.el && tap.el === node && tap.el.isConnected !== false);
+  const speakerOff = (tap) => Boolean(tap?.speaker && tap.speaker.gain.value === 0);
+  const attachSilence = (node) => {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AC();
+      const src = ctx.createMediaElementSource(node);
+      const speaker = ctx.createGain();
+      const dest = ctx.createMediaStreamDestination();
+      src.connect(speaker);
+      src.connect(dest);
+      speaker.connect(ctx.destination);
+      speaker.gain.value = 0;
+      ctx.resume?.();
+      globalThis.__plAudioTap = {
+        ctx,
+        src,
+        speaker,
+        dest,
+        el: node,
+        prevMuted: node.muted,
+        prevVolume: node.volume,
+      };
+    } catch (err) {
+      globalThis.__plAudioTap = {
+        fallback: true,
+        el: node,
+        prevMuted: node.muted,
+        prevVolume: node.volume,
+        error: String(err?.message || err),
+      };
+      node.muted = true;
+      node.volume = 0;
+    }
+  };
+
   if (cmd === "state") {
+    const tap = globalThis.__plAudioTap;
+    const live = tapLive(tap, el);
     return {
       ok: true,
       currentTime: el.currentTime || 0,
@@ -155,6 +205,7 @@ export function plVideo(cmd, arg) {
       seeking: Boolean(el.seeking),
       readyState: el.readyState || 0,
       muted: Boolean(el.muted),
+      silenced: Boolean(globalThis.__plSiMute && live && (speakerOff(tap) || (tap?.fallback && el.muted))),
       index: idx,
       count: all.length,
     };
@@ -162,47 +213,23 @@ export function plVideo(cmd, arg) {
   if (cmd === "control") return playResult(el);
   if (cmd === "silence") {
     globalThis.__plSiMute = true;
-    if (!globalThis.__plAudioTap) {
-      try {
-        const AC = window.AudioContext || window.webkitAudioContext;
-        const ctx = new AC();
-        const src = ctx.createMediaElementSource(el);
-        const speaker = ctx.createGain();
-        const dest = ctx.createMediaStreamDestination();
-        src.connect(speaker);
-        src.connect(dest);
-        speaker.connect(ctx.destination);
-        speaker.gain.value = 0;
-        ctx.resume?.();
-        globalThis.__plAudioTap = {
-          ctx,
-          src,
-          speaker,
-          dest,
-          el,
-          prevMuted: el.muted,
-          prevVolume: el.volume,
-        };
-      } catch (err) {
-        globalThis.__plAudioTap = {
-          fallback: true,
-          el,
-          prevMuted: el.muted,
-          prevVolume: el.volume,
-          error: String(err?.message || err),
-        };
-        el.muted = true;
-        el.volume = 0;
-      }
-    } else if (globalThis.__plAudioTap.speaker) {
-      globalThis.__plAudioTap.speaker.gain.value = 0;
-    } else if (globalThis.__plAudioTap.el) {
-      globalThis.__plAudioTap.el.muted = true;
-      globalThis.__plAudioTap.el.volume = 0;
+    const tap = globalThis.__plAudioTap;
+    const live = tapLive(tap, el);
+    let rebound = false;
+    if (live && tap.speaker) {
+      tap.speaker.gain.value = 0;
+    } else if (live && tap.fallback && tap.el) {
+      tap.el.muted = true;
+      tap.el.volume = 0;
+    } else {
+      if (tap && !live) globalThis.__plAudioTap = null;
+      attachSilence(el);
+      rebound = Boolean(tap && !live);
     }
     return {
       ok: true,
       via: globalThis.__plAudioTap?.fallback ? "element-mute" : "webaudio",
+      rebound,
       index: idx,
     };
   }
@@ -316,7 +343,8 @@ export function plPageAudio(cmd, arg) {
     if (o.fromStart && el.currentTime > 0.5) el.currentTime = 0;
     // Restarting the recorder must not restart the media. In particular,
     // play() on an ended video rewinds it to zero and corrupts the timeline.
-    if (cmd === "start" && el.paused && !el.ended) {
+    // Interpret holds the picture until the first Chinese audio is ready.
+    if (cmd === "start" && el.paused && !el.ended && o.autoplay !== false) {
       const p = el.play?.();
       if (p && typeof p.catch === "function") p.catch(() => {});
     }

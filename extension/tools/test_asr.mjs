@@ -9,6 +9,8 @@ import {
   silentWav,
   segmentsFromTranscription,
   formatTranscript,
+  collapseRollingCues,
+  rollingDelta,
   transcribeAudio,
 } from "../lib/asr.js";
 import { buildGenSingleData, ttsOrigin, encodeMonoWav, TTS_EMO_SAME_AS_REF } from "../lib/tts.js";
@@ -71,6 +73,22 @@ assert(formatted.text.includes("[0:01] hello"), "cue 1: " + formatted.text);
 assert(formatted.text.includes("[0:04] world"), "cue 2");
 const shifted = formatTranscript(segs, 60);
 assert(shifted.text.includes(`[${formatTime(64)}] world`), "offset");
+assert(rollingDelta("", "团队成员以及 招聘") === "团队成员以及 招聘", "first window");
+assert(rollingDelta("团队成员以及 招聘", "团队成员以及 招聘人员都谈论") === "人员都谈论", "cjk tail");
+assert(rollingDelta("团队成员以及 招聘人员都谈论", "招聘人员都谈论对") === "对", "cjk slide");
+assert(rollingDelta("hello everyone welcome", "everyone welcome to the show") === "to the show", "en slide");
+const rolled = collapseRollingCues([
+  { start: 1, text: "团队成员以及 招聘" },
+  { start: 2, text: "团队成员以及 招聘人员都谈论" },
+  { start: 3, text: "招聘人员都谈论对" },
+]);
+assert(rolled.map((c) => c.text).join("|") === "团队成员以及 招聘|人员都谈论|对", "collapse rolling youtube windows");
+const rolledFmt = formatTranscript([
+  { start: 1, text: "hello everyone welcome" },
+  { start: 3, text: "hello everyone welcome to the show" },
+]);
+assert(!rolledFmt.text.includes("[0:03] hello everyone welcome to the show"), rolledFmt.text);
+assert(rolledFmt.text.includes("[0:03] to the show"), rolledFmt.text);
 
 const empty = normalizeSettings(null);
 assert(empty.asr && empty.asr.baseUrl === "", "default asr");

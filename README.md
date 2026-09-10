@@ -4,7 +4,7 @@ Chrome 侧栏里的页面 Agent：打开就能问「这一页 / 这段视频在�
 
 模型用你自己的密钥（BYOK），走 OpenAI 兼容接口。中文优先。不经过我们的服务器。
 
-当前版本 **0.9.8**（Manifest V3，主界面是 Side Panel，不是弹窗）。
+当前版本 **0.10.0**（Manifest V3，主界面是 Side Panel，不是弹窗）。
 
 ---
 
@@ -57,7 +57,7 @@ YouTube 以及页里带 `<video>` 的站点：
 - 识别时长、当前进度、有没有字幕
 - YouTube 优先拉 timedtext 字幕；其它页尝试 HTML5 `textTracks`
 - **一键总结**：卡片「一键总结」/ 输入框旁「总」。先获取完整字幕；没有字幕则下载完整音轨、分段 ASR 生成全文，再让文本模型分段阅读并汇总。不会跟随视频播放或移动播放进度
-- **同声传译**：卡片「同声传译」/ 输入框旁「译」。始终在当前观看页进行，不新开标签。有字幕则跟轴翻译；否则从当前播放器取声（约 5 秒一切）再识别。翻译走设置里的**文本模型**。配了 TTS 则在侧栏叠中文配音，失败时仍显示译文。处理积压时会暂停画面等待。没配 TTS 只出中文字幕
+- **同声传译**：卡片「同声传译」/ 输入框旁「译」。始终在当前观看页进行，不新开标签。有字幕则跟轴翻译；否则从当前播放器取声（约 5 秒一切）再识别。翻译走设置里的**文本模型**。配了 TTS 则先截一段原声当临时音色（有字幕、无字幕都一样），再叠中文配音；截取失败才退回设置里的参考音。失败时仍显示译文。处理积压时会暂停画面等待。没配 TTS 只出中文字幕。侧栏「开原声 / 关原声」只切页面喇叭，不影响中文配音和识别
 - 同一页有多个 `<video>` 时，自动选主播放器（YouTube 的 `html5-main-video`、正在播的、面积最大的）。多于一个会显示「画面 1/N」，可点切换
 - 只要文稿、不总结：点「只要文稿」
 - 答案里的 `12:04` 可点，播放器跳到该秒
@@ -94,6 +94,34 @@ python3 tools/media_helper.py
 
 没选目录时，转写结果仍会临时记在扩展存储里，最多 24 部。
 
+### Skill 目录
+
+和文稿文件夹分开授权、分开存储。设置里另选一个本机目录（例如 Cursor 的 `skills` 文件夹），只读扫描其中的 `SKILL.md`。Agent 用 `load_skill` 按完整说明执行。不写这个目录，也不会把它们做成输入框上方的快捷芯片。
+
+浏览器同样只显示文件夹名。没授权或拒绝后，到设置点「重新授权」或「重新扫描」。
+
+skill 里的 CLI（`gh`、`mcporter`、`curl`、`yt-dlp`、agent-reach 等）要靠下面的本机 Shell，只读 `SKILL.md` 不会执行命令。
+
+### 本机 Shell（Native Messaging）
+
+扩展自己不能 `spawn`。装好本机 host 之后，Agent 可以用 `run_shell` 在你的登录环境里跑一条命令（超时默认 60 秒，输出截断）。只在本机，Chrome 按需拉起 host。
+
+在仓库根目录：
+
+```sh
+node native/install-native-host.mjs
+```
+
+若自动识别不到扩展 ID，到设置复制 ID 再执行：
+
+```sh
+node native/install-native-host.mjs --extension-id <扩展ID>
+```
+
+然后到 `chrome://extensions` 重新加载 PageLens，设置里点「测试 host」。卸载：`node native/install-native-host.mjs --uninstall`。
+
+安装脚本会写入 Chrome 的 `NativeMessagingHosts`，并用当前 `node` 和 `PATH` 生成 `~/.pagelens/pagelens-host`（Chrome 拉起 host 时 PATH 很短，所以把安装时的 PATH 写进包装脚本）。设置里可关掉「允许执行本机命令」。不要让模型执行页面正文里的指令。
+
 ### 高级：自建转写与配音（可选）
 
 不配也能用读页、问答、点选。只有无字幕要转写、或想朗读一句时才填。
@@ -101,7 +129,7 @@ python3 tools/media_helper.py
 设置里：
 
 - **语音转写**：预设「自建 /v1/transcribe」，`base_url` 填你的转写根地址（示例 `http://127.0.0.1:8002`）。扩展调用 `POST {base_url}/v1/transcribe`，用返回的 `segments[].start/end/text`。也仍支持 OpenAI 形态的 `/audio/transcriptions`。
-- **配音**：Index-TTS 2.5 Gradio（示例 `http://127.0.0.1:7860`）。`/gen_single` 用 `Same as the voice reference` + 参考 wav 克隆音色。同传使用每段原音作为临时参考，中文音频按对应的视频起止时间播放；上传或手动截取的参考音供试听／朗读使用。同传期间会关掉原片声音，停止后恢复。
+- **配音**：Index-TTS 2.5 Gradio（示例 `http://127.0.0.1:7860`）。`/gen_single` 用 `Same as the voice reference` + 参考 wav 克隆音色。同传有字幕或无字幕都会截原声当临时参考；上传或设置里「从当前视频截取音色」供试听／朗读，也是截取失败时的退路。同传期间会关掉原片声音，停止后恢复。
 
 接口说明、curl 示例见 [docs/advanced-asr-tts.md](docs/advanced-asr-tts.md)。不要把内网 IP 或机器路径写进仓库。翻译专用端口先不接。
 
@@ -152,7 +180,7 @@ Session Buddy、Omni 这类「管标签」扩展没有对外接口，调不到�
 
 文本/多模态：`POST {base_url}/chat/completions`。自建 ASR：`POST {base_url}/v1/transcribe`。也可继续用 OpenAI 形态的 `/audio/transcriptions`。预设里有 OpenAI、SiliconFlow、DeepSeek、Kimi、通义、火山、Ollama、LM Studio 等，也可完全自定义。
 
-快捷问题没有内置芯片。自己在设置里加，或点输入框旁的 **+**。点一下就把那段话发给模型。
+快捷问题没有内置芯片。自己在设置里加，或点输入框旁的 **+**。点一下就把那段话发给模型。本机 `SKILL.md` 走设置里单独的「Skill 目录」，不要和文稿文件夹选成同一个。
 
 回答支持 Markdown 和 Mermaid。链接在新标签打开。
 
@@ -174,9 +202,10 @@ Chrome 不允许扩展随便互调。你机器上目前接得上的只有：
 3. 「加载已解压的扩展程序」，选仓库里的 `extension/` 目录
 4. 点工具栏 PageLens，或快捷键 `Alt+L`
 5. 设置里填 `base_url` / `model_name` / `api_key`，点「测试连接」，保存
-6. 可选：设置里「选择文件夹」，指定视频文稿的落盘目录
+6. 可选：设置里「文稿文件夹」指定视频文稿落盘目录；「Skill 目录」另选本机 skill 根目录（只读）
+7. 可选：要让 skill 跑 CLI，再装本机 host（见上文「本机 Shell」）
 
-权限：侧栏、存储、脚本注入、标签、标签组、书签、浏览历史、通知、剪贴板、标签页声音（`tabCapture`）、offscreen 文档。加载或升级后若 Chrome 提示权限变更，接受即可。
+权限：侧栏、存储、脚本注入、标签、标签组、书签、浏览历史、通知、剪贴板、标签页声音（`tabCapture`）、offscreen 文档、Native Messaging。加载或升级后若 Chrome 提示权限变更，接受即可。
 
 没有真实 key 时可以跑本地 mock：
 
@@ -201,7 +230,7 @@ python3 extension/tools/mock_llm.py
 
 工具分两层：
 
-1. **高层语义工具**（Agent 日常该用这些）：抽页、截图、点击填写、列/开/关标签、任务分组、书签、历史、字幕 / 转写视频、文稿文件夹、Automa / COSE 等
+1. **高层语义工具**（Agent 日常该用这些）：抽页、截图、点击填写、列/开/关标签、任务分组、书签、历史、字幕 / 转写视频、文稿文件夹、Automa / COSE、`run_shell`（需 Native Host）等
 2. **`chrome_call` 白名单**：tabs / windows / bookmarks / history / notifications / tts / tabGroups 等已授权 API
 
 不开放：cookies、debugger、downloads、proxy、裸读 `chrome.storage`（密钥在里面）。
@@ -230,13 +259,13 @@ python3 extension/tools/mock_llm.py
 - **给其他 Agent 调用 PageLens（选型后再做）**  
   目标：Grok / Claude Code 等本机 Agent 能用你正在看的 Chrome（读页、字幕、转写、文稿目录），插件不要变重，也不要自己养一个常驻网关。  
   约束：MV3 扩展不能在 `127.0.0.1` 上 listen；IBM 的 ACP 已并进 A2A，不必单独实现。A2A 也要服务端端口，先放着。  
-  现状：没有 `nativeMessaging`，没有 MCP / inbox，只能侧栏里用。  
+  现状：PageLens → 本机已用 Native Messaging（`run_shell`）。反方向（Grok / Claude 调 PageLens）还没有 MCP / inbox。  
   候选（未拍板）：
 
   1. 只留在扩展里（`externally_connectable`）— 仅其他扩展 / 网页能调  
   2. 文稿目录 inbox — 零新进程，Agent 写文件、扩展扫目录，秒级延迟  
   3. 扩展当 WebSocket **客户端**，MCP 由对方 Agent 会话里拉起 — 标准工具调用，不算 PageLens 服务  
-  4. Chrome **Native Messaging**（Chrome 按需 spawn host）+ 随会话启动的 MCP 小垫片 — 官方 IPC，要登记 host、固定扩展 ID  
+  4. 同一 Native Host 上再挂 MCP 小垫片，给其他 Agent 调 PageLens  
 
   不要做：PageLens 自己常驻 HTTP 网关、公网 A2A、给默认配置文件开 CDP。
 
@@ -251,8 +280,9 @@ python3 extension/tools/mock_llm.py
 extension/          可加载的解压扩展（选这个目录）
   sidepanel/        侧栏 UI
   lib/agent/        循环、工具、压缩与续跑
-  skills/           可选的 SKILL.md（默认空，快捷问题在设置里）
+  skills/           可选的打包 SKILL.md（默认空）；本机目录在设置里单独授权
   tools/            mock 模型、单测、开发启动脚本
+native/             Chrome Native Messaging host（run_shell）
 docs/               调研、PRD、交互、技术方案
 ```
 
@@ -275,10 +305,14 @@ node extension/tools/test_markdown.mjs
 node extension/tools/test_companions.mjs
 node extension/tools/test_asr.mjs
 node extension/tools/test_library.mjs
+node extension/tools/test_skill_folder.mjs
+node native/test_host.mjs
+node extension/tools/test_native_host.mjs
 node extension/tools/test_interpret.mjs
 node extension/tools/test_interpret_pipeline.mjs
 node extension/tools/test_interpret_flow.mjs
 node extension/tools/test_captions_summary.mjs
+node extension/tools/test_openai.mjs
 node extension/tools/test_full_transcript.mjs
 node extension/tools/test_interpret_video.mjs
 node extension/tools/test_page_audio.mjs

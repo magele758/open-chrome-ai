@@ -384,7 +384,8 @@ label.field input, label.field select {
   margin: 0 0 10px;
   color: var(--ink);
 }
-.row-btns { display: flex; gap: 8px; align-items: center; }
+.row-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#native-host-id { word-break: break-all; }
 .primary, .secondary {
   height: 34px;
   border-radius: 8px;

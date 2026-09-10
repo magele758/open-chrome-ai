@@ -127,9 +127,27 @@ globalThis.chrome = {
     },
   },
   runtime: {
+    id: "abcdefghijklmnopqrstuvwxyzabcdef",
     getPlatformInfo: async () => ({ os: "mac", arch: "arm" }),
     getURL: (p) => "chrome-extension://x/" + p,
     sendMessage: async () => ({ ok: false, error: "test-no-audio" }),
+    sendNativeMessage: async (name, msg) => {
+      if (name !== "com.pagelens.host") throw new Error("Specified native messaging host not found.");
+      if (msg?.op === "ping") return { ok: true, op: "ping", name, version: "1.0.0" };
+      if (msg?.op === "exec") {
+        return {
+          ok: true,
+          op: "exec",
+          code: 0,
+          stdout: "hi\n",
+          stderr: "",
+          timedOut: false,
+          ms: 1,
+          cwd: "/tmp",
+        };
+      }
+      return { ok: false, error: "unknown op" };
+    },
   },
   tabCapture: { getMediaStreamId: async () => "sid" },
   offscreen: {
@@ -261,6 +279,21 @@ assert(keys.keys.includes("k1"), "recall keys");
 
 const skill = await byName.load_skill.execute({ id: "summarize" });
 assert(/总结当前页/.test(skill), "load_skill");
+
+assert(names.includes("run_shell"), "has run_shell");
+const sh = await byName.run_shell.execute({ command: "echo hi" });
+assert(/exit 0/.test(sh) && /hi/.test(sh), "run_shell exec: " + sh);
+ctx.nativeShell = false;
+const shOff = await byName.run_shell.execute({ command: "echo hi" });
+assert(/关闭/.test(shOff), "run_shell disabled: " + shOff);
+ctx.nativeShell = undefined;
+const savedNative = chrome.runtime.sendNativeMessage;
+chrome.runtime.sendNativeMessage = async () => {
+  throw new Error("Specified native messaging host not found.");
+};
+const shMiss = await byName.run_shell.execute({ command: "echo hi" });
+chrome.runtime.sendNativeMessage = savedNative;
+assert(/未安装 Native Host/.test(shMiss), "run_shell missing host: " + shMiss);
 
 assert(names.includes("transcribe_video"), "has transcribe_video");
 assert(names.includes("tts_speak"), "has tts_speak");

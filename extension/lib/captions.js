@@ -4,12 +4,38 @@ import { formatTranscript } from "./asr.js";
 import { loadSettings } from "./storage.js";
 import { acquireFullTranscript, subtitleCues } from "./full-transcript.js";
 import { readVideoDocFromLibrary, syncPackToLibrary, videoIdentity } from "./library.js";
+import { idbDel, idbGet, idbSet } from "./idb-kv.js";
 
 export { videoIdentity };
 
 const INDEX_KEY = "pl.asr.index";
 const ITEM_PREFIX = "pl.asr.item.";
 const MAX_CACHE = 24;
+
+async function readCachedItem(key) {
+  const fromIdb = await idbGet(key);
+  if (fromIdb != null) return fromIdb;
+  if (!chrome.storage?.local) return null;
+  const data = await chrome.storage.local.get(key);
+  const hit = data?.[key];
+  if (hit == null) return null;
+  if (await idbSet(key, hit)) await chrome.storage.local.remove(key);
+  return hit;
+}
+
+async function writeCachedItem(key, item) {
+  if (await idbSet(key, item)) {
+    if (chrome.storage?.local) await chrome.storage.local.remove(key);
+    return;
+  }
+  if (chrome.storage?.local) await chrome.storage.local.set({ [key]: item });
+}
+
+async function dropCachedItems(keys) {
+  if (!keys?.length) return;
+  await idbDel(keys);
+  if (chrome.storage?.local) await chrome.storage.local.remove(keys);
+}
 
 async function cacheId(url) {
   const id = videoIdentity(url);
@@ -24,11 +50,10 @@ async function cacheId(url) {
 }
 
 export async function getCachedTranscript(url) {
-  if (!url || !chrome.storage?.local) return null;
+  if (!url) return null;
   const id = await cacheId(url);
   const key = ITEM_PREFIX + id;
-  const data = await chrome.storage.local.get(key);
-  const hit = data?.[key];
+  const hit = await readCachedItem(key);
   if (!hit?.text) return null;
   return {
     status: "ready",
@@ -57,10 +82,9 @@ export async function setCachedTranscript(url, payload) {
   const next = (Array.isArray(index) ? index : []).filter((x) => x.id !== id);
   next.unshift({ id, at: item.at });
   const drop = next.splice(MAX_CACHE);
-  await chrome.storage.local.set({ [key]: item, [INDEX_KEY]: next });
-  if (drop.length) {
-    await chrome.storage.local.remove(drop.map((x) => ITEM_PREFIX + x.id));
-  }
+  await chrome.storage.local.set({ [INDEX_KEY]: next });
+  await writeCachedItem(key, item);
+  await dropCachedItems(drop.map((x) => ITEM_PREFIX + x.id));
 }
 
 export async function loadPageCaptions(tabId, pageUrl) {
@@ -76,6 +100,10 @@ export async function loadPageCaptions(tabId, pageUrl) {
   }
   try {
     const tracks = await injectVideo(tabId, "tracks");
+    if (tracks?.status === "ready" && tracks.cues?.length) {
+      const formatted = formatTranscript(tracks.cues);
+      if (formatted.status === "ready") return { ...formatted, source: "textTracks" };
+    }
     if (tracks?.status === "ready" && tracks.text) return { ...tracks, source: "textTracks" };
   } catch {
     /* fall through */

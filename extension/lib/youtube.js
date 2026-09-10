@@ -1,3 +1,4 @@
+import { collapseRollingCues } from "./asr.js";
 import { readYoutubeCaptionTracks } from "./extract.js";
 import { formatTime } from "./prompts.js";
 
@@ -29,7 +30,9 @@ function parseJson3(json) {
   const cues = [];
   for (const ev of events) {
     if (!ev.segs) continue;
-    const text = ev.segs.map((s) => s.utf8 || "").join("").replace(/\s+/g, " ").trim();
+    const joined = ev.segs.map((s) => s.utf8 || "").join("");
+    const line = joined.includes("\n") ? joined.slice(joined.lastIndexOf("\n") + 1) : joined;
+    const text = line.replace(/\s+/g, " ").trim();
     if (!text) continue;
     cues.push({ start: (ev.tStartMs || 0) / 1000, end: ((ev.tStartMs || 0) + (ev.dDurationMs || 0)) / 1000, text });
   }
@@ -83,7 +86,7 @@ export async function loadYoutubeCaptions(tabId, pageUrl) {
   const url = track.baseUrl.includes("fmt=") ? track.baseUrl : `${track.baseUrl}&fmt=json3`;
   const json = await fetchCaptionJson(url, tabId);
   if (!json) return { status: "missing", cues: [], text: "" };
-  const cues = parseJson3(json);
+  const cues = collapseRollingCues(parseJson3(json));
   const text = cues
     .map((c) => `[${formatTime(c.start)}] ${c.text}`)
     .join("\n");

@@ -1,7 +1,26 @@
 /**
- * Chrome-side skills: bundled SKILL.md + user shortcuts.
+ * Chrome-side skills: bundled SKILL.md + user shortcuts + authorized folder.
+ * Folder loading lives in skill-folder.js (separate handle from 文稿夹).
  * Not Node skill routing; just loadable instruction packs for the loop.
  */
+
+import { loadFolderSkills } from "../skill-folder.js";
+
+export function mergeSkills(...lists) {
+  const seen = new Set();
+  const out = [];
+  for (const list of lists) {
+    for (const skill of list || []) {
+      const id = String(skill?.id || "").trim();
+      if (!id) continue;
+      const key = id.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(skill);
+    }
+  }
+  return out;
+}
 
 export async function loadBundledSkills() {
   const extra = [];
@@ -48,5 +67,21 @@ export function skillCatalogText(skills) {
 
 export function findSkill(skills, name) {
   const key = String(name || "").trim().toLowerCase();
-  return skills.find((s) => s.id.toLowerCase() === key || s.name.toLowerCase() === key) || null;
+  if (!key) return null;
+  const exact = (skills || []).find((s) => s.id.toLowerCase() === key || s.name.toLowerCase() === key);
+  if (exact) return exact;
+  const suffix = (skills || []).filter((s) => {
+    const id = s.id.toLowerCase();
+    return id.endsWith(`/${key}`) || id.split("/").pop() === key;
+  });
+  return suffix.length === 1 ? suffix[0] : null;
+}
+
+export async function loadRuntimeSkills({ request = false } = {}) {
+  const bundled = await loadBundledSkills();
+  const folder = await loadFolderSkills({ request });
+  return {
+    folder,
+    skills: mergeSkills(bundled, folder.skills),
+  };
 }

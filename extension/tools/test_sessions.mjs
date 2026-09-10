@@ -1,4 +1,5 @@
 import {
+  INDEX_KEY,
   MAX_SESSIONS,
   filterSessions,
   formatWhen,
@@ -22,7 +23,9 @@ import {
   sessionsToMarkdown,
   toSummary,
 } from "../lib/sessions.js";
+import { installMemoryIndexedDB } from "./idb_mem.mjs";
 
+const idb = installMemoryIndexedDB();
 const bag = {};
 globalThis.chrome = {
   storage: {
@@ -137,6 +140,9 @@ const saved = await saveSession({
   ],
 });
 assert(saved.title === "这篇在说什么", "save title");
+assert(bag[itemKey("live")] === undefined, "body not in chrome.storage");
+assert(idb.has(itemKey("live")), "body in idb");
+assert(bag[INDEX_KEY][0].id === "live", "index stays in chrome.storage");
 const listed = await listSessions();
 assert(listed[0].id === "live" && listed[0].pages[0].url === "https://news.example/p", "index pages");
 const loaded = await loadSession("live");
@@ -153,6 +159,7 @@ assert((await listSessions()).length === 2, "two sessions");
 await deleteSession("live");
 assert((await listSessions()).map((s) => s.id).join() === "other", "delete");
 assert((await loadSession("live")) === null, "gone");
+assert(!idb.has(itemKey("live")), "idb deleted with index");
 assert(itemKey("x") === "pl.sessions.item.x", "key");
 
 const summary = toSummary(saved);
@@ -191,5 +198,38 @@ assert(
   }),
   "stale run dropped",
 );
+
+bag[itemKey("legacy")] = {
+  id: "legacy",
+  messages: [{ role: "user", text: "旧会话正文" }, { role: "bot", text: "旧回复" }],
+};
+const migrated = await loadSession("legacy");
+assert(migrated.messages[0].text === "旧会话正文", "silent migrate");
+assert(bag[itemKey("legacy")] === undefined, "legacy chrome item removed");
+assert(idb.has(itemKey("legacy")), "legacy now in idb");
+
+const prevIndex = await listSessions();
+bag[itemKey("bulk")] = {
+  id: "bulk",
+  messages: [{ role: "user", text: "批量旧文" }],
+};
+bag[INDEX_KEY] = [
+  { id: "bulk", title: "批量旧文", updatedAt: Date.now(), createdAt: Date.now(), messageCount: 1, pages: [] },
+  ...prevIndex,
+];
+const allMigrated = await loadAllSessions();
+assert(allMigrated[0].id === "bulk" && allMigrated[0].messages[0].text === "批量旧文", "migrate all");
+assert(bag[itemKey("bulk")] === undefined, "bulk chrome item removed");
+
+for (let i = 0; i < 201; i++) {
+  await saveSession({
+    id: "evict" + i,
+    messages: [{ role: "user", text: "淘汰 " + i }],
+  });
+}
+assert((await listSessions()).length === 200, "cap 200");
+assert((await loadSession("evict0")) === null, "oldest session gone");
+assert(!idb.has(itemKey("evict0")), "oldest idb dropped");
+assert((await loadSession("evict200"))?.messages[0].text === "淘汰 200", "newest kept");
 
 console.log("PASS sessions");

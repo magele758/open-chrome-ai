@@ -1,7 +1,10 @@
 /**
- * Conversation history. Stored in chrome.storage.local (no extra process).
- * Full session at pl.sessions.item.{id}; list metadata at pl.sessions.index.
+ * Conversation history.
+ * Index / active id stay in chrome.storage.local; session bodies live in IndexedDB
+ * (pagelens-data). Legacy pl.sessions.item.* in chrome.storage is migrated on read.
  */
+
+import { idbDel, idbGet, idbGetAll, idbSet, idbSetAll } from "./idb-kv.js";
 
 export const INDEX_KEY = "pl.sessions.index";
 export const ACTIVE_KEY = "pl.sessions.active";
@@ -314,6 +317,32 @@ async function localRemove(keys) {
   await chrome.storage.local.remove(keys);
 }
 
+async function readSessionItem(id) {
+  const key = itemKey(id);
+  const fromIdb = await idbGet(key);
+  if (fromIdb != null) return fromIdb;
+  const data = await localGet(key);
+  const raw = data[key];
+  if (raw == null) return null;
+  if (await idbSet(key, raw)) await localRemove(key);
+  return raw;
+}
+
+async function writeSessionItem(id, session) {
+  const key = itemKey(id);
+  if (await idbSet(key, session)) {
+    await localRemove(key);
+    return;
+  }
+  await localSet({ [key]: session });
+}
+
+async function dropSessionItems(keys) {
+  if (!keys?.length) return;
+  await idbDel(keys);
+  await localRemove(keys);
+}
+
 export async function listSessions() {
   const data = await localGet(INDEX_KEY);
   return Array.isArray(data[INDEX_KEY]) ? data[INDEX_KEY] : [];
@@ -321,8 +350,7 @@ export async function listSessions() {
 
 export async function loadSession(id) {
   if (!id) return null;
-  const data = await localGet(itemKey(id));
-  const raw = data[itemKey(id)];
+  const raw = await readSessionItem(id);
   return raw ? normalizeSession(raw) : null;
 }
 
@@ -334,8 +362,23 @@ export async function loadActiveSession() {
 export async function loadAllSessions() {
   const index = await listSessions();
   if (!index.length) return [];
-  const bag = await localGet(index.map((s) => itemKey(s.id)));
-  return index.map((s) => bag[itemKey(s.id)]).filter(Boolean).map(normalizeSession);
+  const keys = index.map((s) => itemKey(s.id));
+  const fromIdb = await idbGetAll(keys);
+  const missing = keys.filter((k) => !(k in fromIdb));
+  let fromLocal = {};
+  if (missing.length) {
+    fromLocal = await localGet(missing);
+    const migrate = {};
+    for (const k of missing) {
+      if (fromLocal[k] != null) migrate[k] = fromLocal[k];
+    }
+    const migrated = Object.keys(migrate);
+    if (migrated.length && (await idbSetAll(migrate))) await localRemove(migrated);
+  }
+  return index
+    .map((s) => fromIdb[itemKey(s.id)] ?? fromLocal[itemKey(s.id)])
+    .filter(Boolean)
+    .map(normalizeSession);
 }
 
 export async function saveSession(raw) {
@@ -351,10 +394,10 @@ export async function saveSession(raw) {
 
   await localSet({
     [INDEX_KEY]: next,
-    [itemKey(session.id)]: session,
     [ACTIVE_KEY]: session.id,
   });
-  if (drop.length) await localRemove(drop);
+  await writeSessionItem(session.id, session);
+  await dropSessionItems(drop);
   return session;
 }
 
@@ -364,7 +407,7 @@ export async function deleteSession(id) {
   const patch = { [INDEX_KEY]: index };
   if (data[ACTIVE_KEY] === id) patch[ACTIVE_KEY] = "";
   await localSet(patch);
-  await localRemove(itemKey(id));
+  await dropSessionItems([itemKey(id)]);
   return index;
 }
 

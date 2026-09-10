@@ -101,8 +101,49 @@ export function segmentsFromTranscription(json) {
   return text ? [{ start: 0, text }] : [];
 }
 
+function normLine(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+/** YouTube ASR/textTracks roll a sliding window; keep only the newly appended words. */
+export function rollingDelta(prev, next) {
+  const a = normLine(prev);
+  const b = normLine(next);
+  if (!b) return "";
+  if (!a) return b;
+  if (a === b) return "";
+  if (b.startsWith(a)) return b.slice(a.length).trim();
+  if (a.startsWith(b) || a.endsWith(b) || a.includes(b)) return "";
+  const minChars = /[\u4e00-\u9fff]/.test(a + b) ? 2 : 4;
+  const max = Math.min(a.length, b.length);
+  for (let n = max; n >= minChars; n -= 1) {
+    if (b.startsWith(a.slice(-n))) return b.slice(n).trim();
+  }
+  const at = a.split(" ");
+  const bt = b.split(" ");
+  if (at.length >= 2 && bt.length >= 2) {
+    for (let k = Math.min(at.length, bt.length); k >= 2; k -= 1) {
+      if (at.slice(-k).join(" ") === bt.slice(0, k).join(" ")) return bt.slice(k).join(" ");
+    }
+  }
+  return b;
+}
+
+export function collapseRollingCues(cues) {
+  const out = [];
+  let prev = "";
+  for (const cue of Array.isArray(cues) ? cues : []) {
+    const raw = normLine(cue?.text);
+    const added = rollingDelta(prev, raw);
+    if (raw) prev = raw;
+    if (!added) continue;
+    out.push({ ...cue, text: added });
+  }
+  return out;
+}
+
 export function formatTranscript(segments, offset = 0) {
-  const cues = (segments || [])
+  const cues = collapseRollingCues((segments || [])
     .map((s) => {
       const start = Math.max(0, (Number(s.start) || 0) + Number(offset || 0));
       const endRaw = Number(s.end);
@@ -112,7 +153,7 @@ export function formatTranscript(segments, offset = 0) {
         text: String(s.text || "").replace(/\s+/g, " ").trim(),
       };
     })
-    .filter((c) => c.text);
+    .filter((c) => c.text));
   const text = cues.map((c) => `[${formatTime(c.start)}] ${c.text}`).join("\n");
   return {
     status: cues.length ? "ready" : "missing",

@@ -60,4 +60,86 @@ await failure.finish();
 assert.deepEqual(errors, ['ASR failed']);
 assert.deepEqual(recovered, [2]);
 assert.equal(failure.pending, 0);
-console.log('ok interpretation pipeline: overlap, order, references, buffering, drain, abort, capacity, recovery');
+
+const settleGate = gate();
+let settledFlag = false;
+const settling = createInterpretPipeline({
+  prepare: async item => { await settleGate.promise; return item; },
+  synthesize: async item => item,
+  play: async () => {},
+  prebuffer: 1,
+});
+settling.enqueue('first');
+const settledWait = settling.waitUntilSettled(1).then(ok => { settledFlag = ok; return ok; });
+await tick();
+assert.equal(settledFlag, false, 'opening wait stays blocked until first segment settles');
+settleGate.resolve();
+assert.equal(await settledWait, true);
+await settling.finish();
+
+const playingFlush = gate(), latePrepare = gate();
+const flushedPlayed = [];
+let secondSignal;
+const flusher = createInterpretPipeline({
+  prepare: async (item, job) => {
+    if (item.id === 2) {
+      secondSignal = job.signal;
+      await latePrepare.promise;
+      return item;
+    }
+    return item;
+  },
+  synthesize: async item => item,
+  play: async item => { flushedPlayed.push(item.id); if (item.id === 1) await playingFlush.promise; },
+  prebuffer: 1,
+});
+flusher.enqueue({ id: 1 });
+flusher.enqueue({ id: 2 });
+flusher.enqueue({ id: 3 });
+for (let i = 0; i < 20 && !flushedPlayed.includes(1); i++) await tick();
+assert.deepEqual(flushedPlayed, [1], 'first segment is already playing');
+assert.equal(flusher.generation, 0);
+flusher.flushAhead();
+assert.equal(flusher.generation, 1);
+assert(secondSignal?.aborted, 'in-flight prepare is aborted on flush');
+latePrepare.resolve();
+flusher.enqueue({ id: 4 });
+await tick();
+playingFlush.resolve();
+await flusher.finish();
+assert.deepEqual(flushedPlayed, [1, 4], 'flush drops waiting+ready and never plays stale segments');
+
+const readyGate = gate();
+const readyPipe = createInterpretPipeline({
+  prepare: async item => item,
+  synthesize: async item => { await readyGate.promise; return item.id === 'text' ? null : item; },
+  play: async () => {},
+  prebuffer: 1,
+});
+readyPipe.enqueue({ id: 'text', start: 0 });
+let readyFlag = 'pending';
+const readyWait = readyPipe.waitUntilReady(1).then(ok => { readyFlag = ok; return ok; });
+await tick();
+assert.equal(readyFlag, 'pending', 'null TTS must not count as ready audio');
+readyGate.resolve();
+assert.equal(await readyWait, false, 'failed dub does not release the picture as if audio arrived');
+await readyPipe.finish();
+
+const dubGate = gate();
+const dubbed = [];
+const audioPipe = createInterpretPipeline({
+  prepare: async item => item,
+  synthesize: async item => { await dubGate.promise; return item; },
+  play: async item => dubbed.push(item.start),
+  prebuffer: 1,
+});
+audioPipe.enqueue({ id: 1, start: 4 });
+const hasWait = audioPipe.waitUntilHasAudio(4);
+await tick();
+assert.equal(audioPipe.hasAudio(4), false);
+dubGate.resolve();
+assert.equal(await hasWait, true);
+assert.equal(audioPipe.hasAudio(4), true);
+await audioPipe.finish();
+
+console.log('ok interpretation pipeline: overlap, order, references, buffering, drain, abort, capacity, recovery, generation flush');

@@ -9,7 +9,7 @@ import { summarizeTranscript } from "../lib/summarize-transcript.js";
 import { loadPageCaptions, transcribeTab, usableTranscript } from "../lib/captions.js";
 import { abortRecording, beginCapture, beginTabCapture, discardCapture, recordFromCapture } from "../lib/tab-audio.js";
 import { injectVideo } from "../lib/chrome.js";
-import { runInterpret } from "../lib/interpret.js";
+import { runInterpret, timedCues } from "../lib/interpret.js";
 import {
   libraryStatus,
   pickLibraryFolder,
@@ -21,7 +21,9 @@ import {
 import { initMarkdown, formatAnswer, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createAgentLoop } from "../lib/agent/loop.js";
 import { createAgentTools } from "../lib/agent/tools.js";
-import { loadBundledSkills, shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
+import { loadBundledSkills, loadRuntimeSkills, shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
+import { pickSkillFolder, clearSkillFolderHandle } from "../lib/skill-folder.js";
+import { installHint, pingNativeHost } from "../lib/native-host.js";
 import { restrictedUrl, captureTab as captureVisible } from "../lib/chrome.js";
 import {
   clearActiveId,
@@ -67,7 +69,10 @@ const state = {
   interpret: null,
   siAbort: null,
   siCapture: null,
+  originalAudioOn: true,
   library: { configured: false, granted: false, name: "" },
+  skillFolder: { configured: false, granted: false, name: "", count: 0 },
+  nativeHost: { ok: false, checked: false },
 };
 
 function modelSummary() {
@@ -80,7 +85,9 @@ function modelSummary() {
   const asr = isAsrReady(state.settings.asr) ? ` · ASR ${state.settings.asr.model || "自建"}` : "";
   const tts = isTtsReady(state.settings.tts) ? " · TTS" : "";
   const lib = state.library?.granted ? ` · 文稿夹 ${state.library.name}` : "";
-  return (same ? `文本/多模态 · ${t}` : `文本 ${t} · 多模态 ${m}`) + asr + tts + lib;
+  const sk = state.skillFolder?.granted ? ` · Skills ${state.skillFolder.count || 0}` : "";
+  const sh = state.settings.nativeShell !== false && state.nativeHost?.ok ? " · Shell" : "";
+  return (same ? `文本/多模态 · ${t}` : `文本 ${t} · 多模态 ${m}`) + asr + tts + lib + sk + sh;
 }
 
 function renderModelLine() {
@@ -155,6 +162,7 @@ function renderTranscribeAction() {
   const btn = $("btn-transcribe");
   const sum = $("btn-summarize-video");
   const siBtn = $("btn-interpret");
+  const audioBtn = $("btn-original-audio");
   const bar = $("btn-summarize-bar");
   const siBar = $("btn-interpret-bar");
   const sw = $("btn-video-switch");
@@ -195,6 +203,15 @@ function renderTranscribeAction() {
     siBar.disabled = recording;
   }
   const videoCount = Number(state.pack?.videoCount) || (Array.isArray(state.pack?.videos) ? state.pack.videos.length : 0);
+  const hasPlayer = Boolean(state.pack?.video) || videoCount > 0 || interpreting;
+  if (audioBtn) {
+    const on = state.originalAudioOn !== false;
+    audioBtn.classList.toggle("hidden", !hasPlayer || (!canShare && !interpreting));
+    audioBtn.textContent = on ? "关原声" : "开原声";
+    audioBtn.title = on ? "关闭原视频声音" : "开启原视频声音";
+    audioBtn.classList.toggle("busy", !on);
+    audioBtn.disabled = !state.tab?.id;
+  }
   if (sw) {
     const idx = Number.isInteger(state.pack?.videoIndex) ? state.pack.videoIndex : 0;
     sw.classList.toggle("hidden", videoCount < 2);
@@ -740,7 +757,10 @@ function renderSettingsForm() {
   $("mm-fields").classList.toggle("hidden", state.settings.multimodalSameAsText);
   $("answer-lang").value = state.settings.answerLanguage;
   $("ui-font").value = state.settings.uiFont || "md";
+  if ($("native-shell")) $("native-shell").checked = state.settings.nativeShell !== false;
   renderLibraryStatus();
+  renderSkillFolderStatus();
+  renderNativeHostStatus();
   renderShortcutList();
   bindSettingFields();
   bindTtsRefControls();
@@ -779,6 +799,132 @@ async function refreshLibraryStatus({ request = false } = {}) {
 
 function renderLibraryStatus() {
   paintLibraryStatus(state.library);
+}
+
+function paintSkillFolderStatus(info, extra = "") {
+  const el = $("skill-folder-status");
+  if (!el) return;
+  const reauth = $("btn-skills-reauth");
+  const refresh = $("btn-skills-refresh");
+  if (!info?.configured) {
+    el.textContent = extra || "尚未选择";
+    el.className = "status";
+    reauth?.classList.add("hidden");
+    refresh?.classList.add("hidden");
+    return;
+  }
+  if (info.granted) {
+    const n = Number(info.count) || 0;
+    const cap = info.truncated ? "，已达扫描上限" : "";
+    el.textContent = extra || `已授权 · ${info.name} · ${n} 个 skill${cap}（浏览器不显示完整路径）`;
+    el.className = "status ok";
+    reauth?.classList.add("hidden");
+    refresh?.classList.remove("hidden");
+    return;
+  }
+  el.textContent = extra || `已选 ${info.name}，需要重新授权`;
+  el.className = "status bad";
+  reauth?.classList.remove("hidden");
+  refresh?.classList.add("hidden");
+}
+
+function renderSkillFolderStatus() {
+  paintSkillFolderStatus(state.skillFolder);
+}
+
+function nativeInstallCommand() {
+  const id = chrome.runtime?.id || "";
+  return `node native/install-native-host.mjs${id ? ` --extension-id ${id}` : ""}`;
+}
+
+function paintNativeHostStatus(info, extra = "") {
+  const el = $("native-host-status");
+  const idEl = $("native-host-id");
+  if (idEl && chrome.runtime?.id) {
+    idEl.textContent = `扩展 ID：${chrome.runtime.id}。在仓库根目录执行：${nativeInstallCommand()}`;
+  } else if (idEl) {
+    idEl.textContent = installHint("");
+  }
+  if (!el) return;
+  if (extra) {
+    el.textContent = extra;
+    el.className = /失败|未安装|关闭|对不上|错误/.test(extra) ? "status bad" : /可用|已接通/.test(extra) ? "status ok" : "status";
+    return;
+  }
+  if (state.settings.nativeShell === false) {
+    el.textContent = "已关闭";
+    el.className = "status";
+    return;
+  }
+  if (!info?.checked) {
+    el.textContent = "未检测";
+    el.className = "status";
+    return;
+  }
+  if (info.ok) {
+    el.textContent = `已接通 · ${info.version || "host"}${info.ms != null ? ` · ${info.ms}ms` : ""}`;
+    el.className = "status ok";
+    return;
+  }
+  el.textContent = info.error || "未安装";
+  el.className = "status bad";
+}
+
+function renderNativeHostStatus() {
+  paintNativeHostStatus(state.nativeHost);
+}
+
+async function refreshNativeHost({ silent = false } = {}) {
+  if (!silent) paintNativeHostStatus(state.nativeHost, "测试中…");
+  const res = await pingNativeHost();
+  state.nativeHost = {
+    checked: true,
+    ok: res.ok === true,
+    version: res.version || "",
+    error: res.ok ? "" : res.error || "未安装",
+    ms: res.ms,
+  };
+  paintNativeHostStatus(state.nativeHost);
+  renderModelLine();
+  return state.nativeHost;
+}
+
+async function copyText(text) {
+  const value = String(text || "");
+  if (!value) return;
+  if (navigator?.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  throw new Error("剪贴板不可用。");
+}
+
+let skillScanGen = 0;
+
+async function refreshSkillFolder({ request = false } = {}) {
+  const gen = ++skillScanGen;
+  if (state.skillFolder?.configured) {
+    paintSkillFolderStatus(state.skillFolder, "正在扫描…");
+  }
+  try {
+    const loaded = await loadRuntimeSkills({ request });
+    if (gen !== skillScanGen) return loaded;
+    state.skillFolder = {
+      configured: loaded.folder.configured,
+      granted: loaded.folder.granted,
+      name: loaded.folder.name || "",
+      count: loaded.folder.count || 0,
+      truncated: loaded.folder.truncated === true,
+    };
+    state.skills = loaded.skills;
+  } catch {
+    if (gen !== skillScanGen) return null;
+    state.skillFolder = { configured: false, granted: false, name: "", count: 0 };
+    state.skills = await loadBundledSkills();
+  }
+  paintSkillFolderStatus(state.skillFolder);
+  renderModelLine();
+  return state.skillFolder;
 }
 
 function renderShortcutList() {
@@ -1163,6 +1309,8 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       renderContext();
     },
     skills,
+    settings: state.settings,
+    nativeShell: state.settings.nativeShell !== false,
   });
 
   const loop = createAgentLoop({
@@ -1361,6 +1509,7 @@ function stopInterpret() {
   abortRecording();
   const capture = state.siCapture;
   state.siCapture = null;
+  state.originalAudioOn = true;
   if (state.interpret?.status === "running") {
     state.interpret = { ...(state.interpret || {}), status: "idle" };
     renderContext();
@@ -1467,6 +1616,21 @@ async function startSummarizeVideo() {
   }
 }
 
+async function toggleOriginalAudio() {
+  if (!state.tab?.id) return;
+  const next = state.originalAudioOn === false;
+  state.originalAudioOn = next;
+  renderContext();
+  try {
+    await injectVideo(state.tab.id, next ? "restore" : "silence");
+    state.siCapture?.playback?.setGain?.(next ? 1 : 0);
+  } catch (err) {
+    state.originalAudioOn = !next;
+    renderContext();
+    pushError("无法切换原声：" + (err?.message || err));
+  }
+}
+
 async function startInterpret() {
   if (!state.tab?.id) return;
   if (state.interpret?.status === "running") {
@@ -1477,11 +1641,7 @@ async function startInterpret() {
     startTranscribe();
     return;
   }
-  const liveCaption = state.pack?.captionsSource === "youtube" || state.pack?.captionsSource === "textTracks";
-  const cues = (liveCaption && state.pack?.captionsStatus === "ready" && Array.isArray(state.pack?.captionsCues)
-    ? state.pack.captionsCues
-    : [])
-    .filter((c) => String(c?.text || "").trim());
+  const cues = timedCues(state.pack?.captionsStatus === "ready" ? state.pack.captionsCues : []);
   if (!cues.length && !isAsrReady(state.settings.asr)) {
     needAsrSettings("无字幕视频要同传，先配置语音转写（ASR）");
     return;
@@ -1489,21 +1649,40 @@ async function startInterpret() {
   if (cues.length && shouldNeedTranslate(cues) && !requireModel("text")) return;
   if (!cues.length && !requireModel("text")) return;
 
+  let startAt = 0;
+  let openingHold = false;
+  try {
+    await injectVideo(state.tab.id, "pick", { fresh: true });
+    const st = await injectVideo(state.tab.id, "state");
+    startAt = Number(st?.currentTime) || 0;
+    openingHold = Boolean(st?.ok && !st.paused && !st.ended);
+    if (openingHold) await injectVideo(state.tab.id, "control", { action: "pause" });
+  } catch {
+    openingHold = false;
+  }
+
   let capture = null;
-  const needCapture = !cues.length;
+  const needCapture = !cues.length || isTtsReady(state.settings.tts);
   if (needCapture) {
     try {
-      capture = await beginCapture(state.tab.id, { fromStart: false });
+      capture = await beginCapture(state.tab.id, { fromStart: false, autoplay: false });
     } catch (err) {
-      state.interpret = { status: "error", error: err.message || String(err) };
-      renderContext();
-      return;
+      if (!cues.length) {
+        if (openingHold) {
+          try { await injectVideo(state.tab.id, "control", { action: "play" }); } catch { /* leave paused */ }
+        }
+        state.interpret = { status: "error", error: err.message || String(err) };
+        renderContext();
+        return;
+      }
+      capture = null;
     }
   }
 
   const abort = new AbortController();
   state.siAbort = abort;
   state.siCapture = capture;
+  state.originalAudioOn = false;
   state.interpret = { status: "running", mode: cues.length ? "captions" : "audio", message: "同传已开始…" };
   renderContext();
   try {
@@ -1511,8 +1690,11 @@ async function startInterpret() {
       tabId: state.tab.id,
       settings: state.settings,
       cues,
+      startAt,
+      openingHold,
       capture,
       signal: abort.signal,
+      wantOriginalAudio: () => state.siAbort === abort && state.originalAudioOn,
       onEvent: (ev) => {
         if (state.siAbort !== abort) return;
         if (ev.type === "line") {
@@ -1541,6 +1723,7 @@ async function startInterpret() {
     });
     if (state.siAbort !== abort) return;
     if (result?.captions?.status === "ready") applyCaptions(result.captions);
+    state.originalAudioOn = true;
     if (state.interpret?.status === "running") {
       state.interpret = {
         ...(state.interpret || {}),
@@ -1549,7 +1732,7 @@ async function startInterpret() {
       };
     }
     renderContext();
-  } catch (err) {
+    } catch (err) {
     if (state.siAbort !== abort) return;
     if (err?.name === "AbortError" || /abort/i.test(err?.message || "")) {
       state.interpret = { ...(state.interpret || {}), status: "idle" };
@@ -1558,9 +1741,11 @@ async function startInterpret() {
     }
     renderContext();
   } finally {
+    if (state.siAbort === abort) state.originalAudioOn = true;
     await discardCapture(capture);
     if (state.siCapture === capture) state.siCapture = null;
     if (state.siAbort === abort) state.siAbort = null;
+    renderContext();
   }
 }
 
@@ -1640,6 +1825,7 @@ function wire() {
   });
   $("btn-summarize-video")?.addEventListener("click", () => startSummarizeVideo());
   $("btn-interpret")?.addEventListener("click", () => startInterpret());
+  $("btn-original-audio")?.addEventListener("click", () => toggleOriginalAudio());
   $("btn-summarize-bar")?.addEventListener("click", () => startSummarizeVideo());
   $("btn-interpret-bar")?.addEventListener("click", () => startInterpret());
   $("btn-video-switch")?.addEventListener("click", async () => {
@@ -1683,6 +1869,34 @@ function wire() {
     paintLibraryStatus(state.library, "已清除（磁盘上的文件还在）");
     renderModelLine();
   });
+  $("btn-skills-pick").addEventListener("click", async () => {
+    const el = $("skill-folder-status");
+    try {
+      const picked = await pickSkillFolder();
+      state.skillFolder = { configured: true, granted: true, name: picked.name, count: 0 };
+      paintSkillFolderStatus(state.skillFolder, `已选择 ${picked.name}，正在扫描…`);
+      await refreshSkillFolder({ request: true });
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      if (el) {
+        el.textContent = err.message || String(err);
+        el.className = "status bad";
+      }
+    }
+  });
+  $("btn-skills-reauth").addEventListener("click", async () => {
+    await refreshSkillFolder({ request: true });
+  });
+  $("btn-skills-refresh").addEventListener("click", async () => {
+    await refreshSkillFolder({ request: true });
+  });
+  $("btn-skills-clear").addEventListener("click", async () => {
+    await clearSkillFolderHandle();
+    state.skillFolder = { configured: false, granted: false, name: "", count: 0 };
+    state.skills = await loadBundledSkills();
+    paintSkillFolderStatus(state.skillFolder, "已清除（磁盘上的 skill 还在）");
+    renderModelLine();
+  });
   $("btn-save").addEventListener("click", async () => {
     state.settings = await saveSettings(state.settings);
     applyUiFont(state.settings.uiFont);
@@ -1701,6 +1915,30 @@ function wire() {
   $("ui-font").addEventListener("change", (e) => {
     state.settings.uiFont = e.target.value;
     applyUiFont(state.settings.uiFont);
+  });
+  $("native-shell")?.addEventListener("change", (e) => {
+    state.settings.nativeShell = e.target.checked;
+    paintNativeHostStatus(state.nativeHost);
+    renderModelLine();
+  });
+  $("btn-native-copy-id")?.addEventListener("click", async () => {
+    try {
+      await copyText(chrome.runtime.id);
+      paintNativeHostStatus(state.nativeHost, "已复制扩展 ID");
+    } catch (err) {
+      paintNativeHostStatus(state.nativeHost, err.message || String(err));
+    }
+  });
+  $("btn-native-copy-install")?.addEventListener("click", async () => {
+    try {
+      await copyText(nativeInstallCommand());
+      paintNativeHostStatus(state.nativeHost, "已复制安装命令");
+    } catch (err) {
+      paintNativeHostStatus(state.nativeHost, err.message || String(err));
+    }
+  });
+  $("btn-native-test")?.addEventListener("click", async () => {
+    await refreshNativeHost();
   });
   $("btn-send").addEventListener("click", () => {
     if (state.busy) {
@@ -1756,6 +1994,8 @@ async function boot() {
   applyUiFont(state.settings.uiFont);
   await refreshLibraryStatus();
   state.skills = await loadBundledSkills();
+  refreshSkillFolder().catch(() => {});
+  refreshNativeHost({ silent: true }).catch(() => {});
   const active = await loadActiveSession();
   if (active?.messages?.length) applySession(active);
   wire();

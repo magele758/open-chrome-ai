@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PageLens",
-  "version": "0.9.8",
+  "version": "0.10.0",
   "minimum_chrome_version": "116",
   "description": "侧栏页面 Agent：读网页/PDF/视频，并用 Chrome 扩展 API 作为工具。",
   "icons": {
@@ -37,7 +37,8 @@
     "clipboardWrite",
     "unlimitedStorage",
     "tabCapture",
-    "offscreen"
+    "offscreen",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "http://*/*",
