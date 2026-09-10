@@ -36,6 +36,35 @@ function parseJson3(json) {
   return cues;
 }
 
+async function fetchCaptionJson(url, tabId) {
+  try {
+    const response = await fetch(url);
+    if (response.ok) return response.json();
+  } catch {
+    /* extension-context fetch is often blocked; try the page next */
+  }
+  if (!tabId || typeof chrome.scripting?.executeScript !== "function") return null;
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: async (href) => {
+        try {
+          const response = await fetch(href);
+          if (!response.ok) return null;
+          return response.json();
+        } catch {
+          return null;
+        }
+      },
+      args: [url],
+    });
+    return result || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function loadYoutubeCaptions(tabId, pageUrl) {
   if (!isYoutube(pageUrl)) return { status: "n/a", cues: [], text: "" };
   let tracks = [];
@@ -52,9 +81,8 @@ export async function loadYoutubeCaptions(tabId, pageUrl) {
   const track = pickTrack(tracks);
   if (!track?.baseUrl) return { status: "missing", cues: [], text: "" };
   const url = track.baseUrl.includes("fmt=") ? track.baseUrl : `${track.baseUrl}&fmt=json3`;
-  const response = await fetch(url);
-  if (!response.ok) return { status: "missing", cues: [], text: "" };
-  const json = await response.json();
+  const json = await fetchCaptionJson(url, tabId);
+  if (!json) return { status: "missing", cues: [], text: "" };
   const cues = parseJson3(json);
   const text = cues
     .map((c) => `[${formatTime(c.start)}] ${c.text}`)

@@ -1,7 +1,6 @@
 /**
- * Chinese subtitles, or buffered interpretation synchronized to the video.
- * Voiced mode owns an independent background source and uses the visible
- * video clock for translated playback; text-only mode captures the current tab.
+ * Live interpretation on the current tab. Never opens a new page.
+ * TTS is optional overlay: translation still runs if dubbing fails.
  */
 
 import { injectVideo, injectPageAudio, sleep } from "./chrome.js";
@@ -11,7 +10,7 @@ import { completeChat } from "./openai.js";
 import { isAsrReady, isModelReady, isTtsReady, resolveModel } from "./storage.js";
 import { isQuietBlob, recordSlice } from "./tab-audio-record.js";
 import { createInterpretPipeline } from "./interpret-pipeline.js";
-import { runSynchronizedInterpret } from "./interpret-sync.js";
+import { synthesizeTts } from "./tts.js";
 
 export const CHUNK_SECONDS = 5;
 
@@ -156,17 +155,6 @@ export async function translateToZh(model, text, signal) {
 export async function runInterpret(opts) {
   const { tabId, settings, capture, onEvent } = opts || {};
   if (!tabId) throw new Error("没有可同传的标签。");
-  if (isTtsReady(settings?.tts)) {
-    if (!(opts.cues || []).some(c => String(c?.text || "").trim()) && !isAsrReady(settings?.asr)) {
-      throw new Error("没有字幕，请先配置语音转写。");
-    }
-    const result = await runSynchronizedInterpret({
-      ...opts,
-      cues: withCueEnds((opts.cues || []).filter(c => String(c?.text || "").trim())),
-      translate: (text, signal) => translateToZh(resolveModel(settings, "text"), text, signal),
-    });
-    return { ...result, captions: linesToCaptions(result.lines) };
-  }
   const controller = new AbortController();
   const signal = controller.signal;
   const stop = () => controller.abort();
@@ -174,12 +162,14 @@ export async function runInterpret(opts) {
   const mode = cues.length ? "captions" : "audio";
   const asr = settings?.asr;
   const textModel = resolveModel(settings, "text");
+  const ttsOn = isTtsReady(settings?.tts);
   if (!cues.length && !isAsrReady(asr)) throw new Error("没有字幕，请先配置语音转写。");
   if (mode === "audio" && !capture?.stream) throw new Error("没有当前标签的声音。请再点一次「同声传译」。");
   opts.signal?.addEventListener("abort", stop, { once: true });
   if (opts.signal?.aborted) stop();
   const lines = [];
   const spoken = new Set();
+  let ttsWarned = false;
   const emit = ev => { if (!signal.aborted) { try { onEvent?.(ev); } catch { /* UI callback */ } } };
   const status = message => emit({ type: "status", mode, message, hint: message });
   const pipeline = createInterpretPipeline({
@@ -197,9 +187,42 @@ export async function runInterpret(opts) {
       if (signal.aborted) return null;
       lines.push(line);
       emit({ type: "line", ...line, mode });
-      return null;
+      if (!ttsOn || !line.zh) return null;
+      try {
+        const out = await synthesizeTts(settings.tts, line.zh, {
+          signal,
+          lang: settings.tts.lang || "ZH",
+        });
+        return { ...line, blob: out.blob };
+      } catch (err) {
+        if (err?.name === "AbortError") return null;
+        if (!ttsWarned) {
+          ttsWarned = true;
+          emit({ type: "warn", message: `配音未开始，仅显示译文：${err?.message || err}` });
+        }
+        return null;
+      }
     },
-    play: async () => {},
+    play: async item => {
+      if (!item?.blob || signal.aborted || typeof Audio === "undefined") return;
+      const url = URL.createObjectURL(item.blob);
+      try {
+        const audio = new Audio(url);
+        await new Promise((resolve, reject) => {
+          audio.onended = resolve;
+          audio.onerror = () => reject(new Error("中文配音播放失败"));
+          const pending = audio.play();
+          if (pending?.catch) pending.catch(reject);
+        });
+      } catch (err) {
+        if (err?.name !== "AbortError" && !ttsWarned) {
+          ttsWarned = true;
+          emit({ type: "warn", message: err?.message || String(err) });
+        }
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    },
   });
   let pausedForBacklog = false;
   let wasPaused = false;

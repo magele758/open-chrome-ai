@@ -6,7 +6,7 @@ import { highlightQuote } from "../lib/extract.js";
 import { loadTabPack } from "../lib/page-pack.js";
 import { systemPrompt, packToContext, visibleSkills, formatTime } from "../lib/prompts.js";
 import { summarizeTranscript } from "../lib/summarize-transcript.js";
-import { loadPageCaptions, transcribeTab } from "../lib/captions.js";
+import { loadPageCaptions, transcribeTab, usableTranscript } from "../lib/captions.js";
 import { abortRecording, beginCapture, beginTabCapture, discardCapture, recordFromCapture } from "../lib/tab-audio.js";
 import { injectVideo } from "../lib/chrome.js";
 import { runInterpret } from "../lib/interpret.js";
@@ -15,6 +15,8 @@ import {
   pickLibraryFolder,
   clearSavedHandle,
   syncPackToLibrary,
+  writeSessionNote,
+  writeSessionNotes,
 } from "../lib/library.js";
 import { initMarkdown, formatAnswer, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createAgentLoop } from "../lib/agent/loop.js";
@@ -517,6 +519,8 @@ async function renderHistory() {
       .join(" · ");
     main.querySelector(".pages").textContent = pageLines(item.pages);
     main.addEventListener("click", () => openHistoryItem(item.id));
+    const ops = document.createElement("div");
+    ops.className = "hist-ops";
     const exp = document.createElement("button");
     exp.type = "button";
     exp.className = "mini";
@@ -525,6 +529,15 @@ async function renderHistory() {
     exp.addEventListener("click", (e) => {
       e.stopPropagation();
       exportOne(item.id);
+    });
+    const obsidian = document.createElement("button");
+    obsidian.type = "button";
+    obsidian.className = "mini";
+    obsidian.textContent = "入库";
+    obsidian.title = "写入文稿文件夹（Obsidian 可直接打开）";
+    obsidian.addEventListener("click", (e) => {
+      e.stopPropagation();
+      importOneToLibrary(item.id);
     });
     const del = document.createElement("button");
     del.type = "button";
@@ -535,7 +548,8 @@ async function renderHistory() {
       e.stopPropagation();
       removeHistoryItem(item.id);
     });
-    row.append(main, exp, del);
+    ops.append(obsidian, exp, del);
+    row.append(main, ops);
     root.appendChild(row);
   }
 }
@@ -579,6 +593,73 @@ async function exportAll(kind) {
   }
   downloadText(`pagelens-sessions-${day}.md`, sessionsToMarkdown(all), "text/markdown");
   histStatus(`已导出 ${all.length} 条 Markdown`, true);
+}
+
+function flashStatus(text, ok) {
+  if (state.view === "history") {
+    histStatus(text, ok);
+    return;
+  }
+  const el = $("model-line");
+  if (!el) return;
+  el.textContent = text || "";
+  window.setTimeout(() => renderModelLine(), 2600);
+}
+
+async function ensureLibraryForWrite() {
+  let info = await libraryStatus({ request: true });
+  if (!info.configured) {
+    const picked = await pickLibraryFolder();
+    info = { configured: true, granted: true, name: picked.name };
+  }
+  state.library = info;
+  paintLibraryStatus(state.library);
+  renderModelLine();
+  if (!info.granted) throw new Error("文稿文件夹未授权。到设置点「重新授权」。");
+  return info;
+}
+
+async function importOneToLibrary(id) {
+  if (id === state.sessionId) await persistSession();
+  const data = await loadSession(id);
+  if (!data) {
+    flashStatus("没有可导入的内容", false);
+    return;
+  }
+  try {
+    await ensureLibraryForWrite();
+    const saved = await writeSessionNote(data, { request: true });
+    flashStatus(`已写入 ${saved.path}`, true);
+  } catch (err) {
+    if (err?.name === "AbortError") return;
+    flashStatus(err.message || String(err), false);
+  }
+}
+
+async function importAllToLibrary() {
+  await persistSession();
+  const all = await loadAllSessions();
+  if (!all.length) {
+    histStatus("没有可导入的对话", false);
+    return;
+  }
+  try {
+    await ensureLibraryForWrite();
+    const saved = await writeSessionNotes(all, { request: true });
+    histStatus(`已写入 ${saved.count} 条到 PageLens/sessions/`, true);
+  } catch (err) {
+    if (err?.name === "AbortError") return;
+    histStatus(err.message || String(err), false);
+  }
+}
+
+async function importCurrentToLibrary() {
+  await persistSession();
+  if (!state.sessionId) {
+    flashStatus("还没有可保存的对话", false);
+    return;
+  }
+  await importOneToLibrary(state.sessionId);
 }
 
 async function removeHistoryItem(id) {
@@ -1075,6 +1156,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       return `PL · ${line || "任务"}`;
     },
     getAbortSignal: () => state.abort?.signal,
+    getSessionId: () => state.sessionId,
     setCaptions: applyCaptions,
     onTranscribeProgress: (info) => {
       state.transcribe = { ...(state.transcribe || {}), ...info };
@@ -1334,14 +1416,28 @@ async function startTranscribe({ force = false } = {}) {
 async function startSummarizeVideo() {
   if (state.interpret?.status === "running") stopInterpret();
   if (isTranscribing()) {
-    state.workAbort?.abort();
+    pushError("正在获取文稿，请稍候再点「一键总结」。");
     return;
   }
   if (state.busy) return;
   const model = requireModel("text");
   if (!model) return;
-  const caps = await startTranscribe();
-  if (!caps?.complete || !caps.text) return;
+  const packed = usableTranscript({
+    status: state.pack?.captionsStatus,
+    text: state.pack?.captionsText,
+    cues: state.pack?.captionsCues,
+    source: state.pack?.captionsSource,
+    complete: state.pack?.captionsComplete === true,
+  });
+  let caps = packed?.complete ? packed : null;
+  if (!caps?.text) {
+    const extracted = await startTranscribe();
+    caps = usableTranscript(extracted) || packed;
+  }
+  if (!caps?.text) {
+    pushError(state.transcribe?.error || "没有可总结的文稿。有字幕会直接总结；否则请启动本机媒体服务。");
+    return;
+  }
   const title = state.pack?.title || state.tab?.title;
   const abort = new AbortController();
   state.busy = true;
@@ -1386,7 +1482,6 @@ async function startInterpret() {
     ? state.pack.captionsCues
     : [])
     .filter((c) => String(c?.text || "").trim());
-  const ttsOn = isTtsReady(state.settings.tts);
   if (!cues.length && !isAsrReady(state.settings.asr)) {
     needAsrSettings("无字幕视频要同传，先配置语音转写（ASR）");
     return;
@@ -1395,9 +1490,7 @@ async function startInterpret() {
   if (!cues.length && !requireModel("text")) return;
 
   let capture = null;
-  // Voiced interpretation owns a separate background source so the visible
-  // player's clock can pause/seek without starving audio capture.
-  const needCapture = !ttsOn && !cues.length;
+  const needCapture = !cues.length;
   if (needCapture) {
     try {
       capture = await beginCapture(state.tab.id, { fromStart: false });
@@ -1531,6 +1624,8 @@ function wire() {
   });
   $("btn-export-all-md").addEventListener("click", () => exportAll("md"));
   $("btn-export-all-json").addEventListener("click", () => exportAll("json"));
+  $("btn-import-all-obsidian").addEventListener("click", () => importAllToLibrary());
+  $("btn-obsidian").addEventListener("click", () => importCurrentToLibrary());
   $("hist-q").addEventListener("input", () => {
     state.histQuery = $("hist-q").value;
     renderHistory();

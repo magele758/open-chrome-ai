@@ -275,7 +275,9 @@ assert(/完整媒体服务未启动/.test(noMedia), "transcribe_video requires f
 const caps = await byName.get_captions.execute({});
 assert(/字幕不可用|transcribe_video/.test(caps), "get_captions missing: " + caps);
 
-assert(names.includes("list_library") && names.includes("save_video_doc"), "library tools");
+assert(names.includes("list_library") && names.includes("save_video_doc") && names.includes("save_session_note"), "library tools");
+const noNote = await byName.save_session_note.execute({});
+assert(/没有可保存的对话|无法入库|文稿文件夹/.test(noNote), "save_session_note needs session or folder: " + noNote);
 const libInfo = JSON.parse(await byName.library_info.execute({}));
 assert(libInfo.configured === false, "library empty in tests");
 const libList = await byName.list_library.execute({});

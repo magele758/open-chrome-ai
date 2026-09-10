@@ -13,6 +13,7 @@
       <div class="icon-btns">
         <button type="button" id="btn-new" title="新对话">新</button>
         <button type="button" id="btn-history" title="对话历史">历</button>
+        <button type="button" id="btn-obsidian" title="把当前对话写入文稿文件夹（Obsidian 可直接打开）">入</button>
         <button type="button" id="btn-settings" title="设置">设</button>
       </div>
     </header>
@@ -88,7 +89,7 @@
 
       <div class="block" id="block-library">
         <h3>文稿文件夹</h3>
-        <p class="lead" style="margin-top:-4px">选一个本机目录。视频原稿、译稿写成 <code>original.vtt</code> / <code>zh.vtt</code> / <code>transcript.md</code>，可用编辑器或 Obsidian 打开。浏览器只显示文件夹名，不提供完整路径。密钥不会写进去。</p>
+        <p class="lead" style="margin-top:-4px">选一个本机目录，可直接选 Obsidian 库。视频文稿写在各视频子目录；对话笔记写在 <code>PageLens/sessions/</code>。Obsidian 打开该库即可看到。浏览器只显示文件夹名。密钥不会写进去。</p>
         <div class="row-btns">
           <button class="secondary" type="button" id="btn-library-pick">选择文件夹</button>
           <button class="secondary hidden" type="button" id="btn-library-reauth">重新授权</button>
@@ -131,13 +132,14 @@
 
     <section id="view-history" class="settings hidden">
       <h2>对话历史</h2>
-      <p class="lead">每场对话自动保存在本机，带上当时的网页和全文。可打开续聊、导出或删除。</p>
+      <p class="lead">每场对话自动保存在本机，带上当时的网页和全文。可打开续聊、导出、入库到文稿文件夹，或删除。</p>
       <label class="field">搜索
         <input id="hist-q" placeholder="标题、网站或网址" />
       </label>
       <div class="row-btns hist-actions">
         <button class="secondary" type="button" id="btn-export-all-md">全部导出 Markdown</button>
         <button class="secondary" type="button" id="btn-export-all-json">全部导出 JSON</button>
+        <button class="secondary" type="button" id="btn-import-all-obsidian">全部入库</button>
         <span class="status" id="hist-status"></span>
       </div>
       <div id="hist-list"></div>

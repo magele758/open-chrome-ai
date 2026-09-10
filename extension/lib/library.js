@@ -4,6 +4,7 @@
  */
 
 import { formatTime } from "./prompts.js";
+import { sessionNoteRelPath, sessionToObsidianMarkdown } from "./sessions.js";
 
 const DB_NAME = "pagelens-fs";
 const STORE = "kv";
@@ -300,6 +301,20 @@ async function walkDir(root, dirParts, create) {
     dir = await dir.getDirectoryHandle(part, { create: Boolean(create) });
   }
   return dir;
+}
+
+export async function writeSessionNote(session, { request = false } = {}) {
+  const rel = sessionNoteRelPath(session);
+  const written = await writeLibraryText(rel, sessionToObsidianMarkdown(session), { request });
+  return { ...written, path: rel };
+}
+
+export async function writeSessionNotes(sessions, { request = false } = {}) {
+  const files = [];
+  for (const session of sessions || []) {
+    files.push(await writeSessionNote(session, { request }));
+  }
+  return { ok: true, count: files.length, folder: "PageLens/sessions", files };
 }
 
 export async function writeLibraryText(rel, text, { request = false } = {}) {

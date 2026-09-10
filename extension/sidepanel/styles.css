@@ -399,7 +399,7 @@ label.field input, label.field select {
 .hist-actions { flex-wrap: wrap; margin-bottom: 12px; }
 .hist-item {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto;
   gap: 6px;
   align-items: start;
   border: 1px solid var(--line);
@@ -407,6 +407,11 @@ label.field input, label.field select {
   padding: 10px;
   margin-bottom: 8px;
   background: var(--surface);
+}
+.hist-ops {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 .hist-item.active {
   border-color: #d0b49a;

@@ -9,8 +9,10 @@ import {
   listLibrary,
   readLibraryText,
   writeLibraryText,
+  writeSessionNote,
   syncPackToLibrary,
 } from "../library.js";
+import { loadActiveSession, loadSession } from "../sessions.js";
 import {
   CHROME_CALL_ALLOW,
   captureTab,
@@ -883,7 +885,7 @@ export function createAgentTools(ctx) {
     },
     {
       name: "library_info",
-      description: "查看文稿文件夹是否已选择、是否已授权。视频原稿/译稿写在这个目录里。",
+      description: "查看文稿文件夹是否已选择、是否已授权。视频原稿/译稿和对话笔记都写在这个目录里。",
       parameters: obj({}),
       async execute() {
         return toToolText(await libraryStatus());
@@ -920,7 +922,7 @@ export function createAgentTools(ctx) {
     {
       name: "write_library",
       description:
-        "向文稿文件夹写入文本（md / vtt / json / txt / srt / csv）。只在用户明确要求保存或修改译稿时用。不要写密钥。",
+        "向文稿文件夹写入文本（md / vtt / json / txt / srt / csv）。只在用户明确要求保存或修改译稿时用。导入当前对话请用 save_session_note。不要写密钥。",
       parameters: obj(
         {
           path: { type: "string", description: "相对路径，如 yt-xxxx/zh.vtt" },
@@ -957,6 +959,25 @@ export function createAgentTools(ctx) {
           captionsSource: caps.source,
         });
         return toToolText(saved);
+      },
+    },
+    {
+      name: "save_session_note",
+      description:
+        "把一场对话写成带 YAML frontmatter 的 Markdown，写入文稿文件夹 PageLens/sessions/。用户说导入 Obsidian、保存笔记、入库时用。需已选择文件夹。省略 sessionId 则写当前对话。",
+      parameters: obj({
+        sessionId: { type: "string", description: "对话 id；省略则用当前侧栏这场" },
+      }),
+      async execute(args) {
+        try {
+          const id = String(args?.sessionId || "").trim() || String(ctx.getSessionId?.() || "");
+          const session = id ? await loadSession(id) : await loadActiveSession();
+          if (!session) return "没有可保存的对话。先聊几轮，或指定 sessionId。";
+          const saved = await writeSessionNote(session);
+          return `已写入 ${saved.path}（${saved.bytes} 字）。Obsidian 打开该库即可看到。`;
+        } catch (err) {
+          return `无法入库：${err?.message || err}`;
+        }
       },
     },
     {

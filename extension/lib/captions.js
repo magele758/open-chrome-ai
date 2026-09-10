@@ -89,6 +89,23 @@ export async function loadPageCaptions(tabId, pageUrl) {
   return { status: "missing", cues: [], text: "", source: "missing" };
 }
 
+export function usableTranscript(caps) {
+  const text = String(caps?.text || "").trim();
+  if (!text || caps?.status === "n/a") return null;
+  return {
+    status: "ready",
+    text,
+    cues: Array.isArray(caps.cues) ? caps.cues : [],
+    source: caps.source || "unknown",
+    complete: caps.complete === true,
+    duration: caps.duration,
+  };
+}
+
+export function isReusablePageTranscript(caps) {
+  return Boolean(usableTranscript(caps) && caps.complete === true);
+}
+
 export async function transcribeTab({ tabId, settings, force = false, onProgress, signal } = {}) {
   if (!tabId) throw new Error("没有可转写的标签。");
   const tab = await chrome.tabs.get(tabId);
@@ -96,7 +113,7 @@ export async function transcribeTab({ tabId, settings, force = false, onProgress
   signal?.throwIfAborted();
   if (!force) {
     const existing = await loadPageCaptions(tabId, tab.url);
-    if (existing.complete && existing.status === "ready" && existing.text) {
+    if (isReusablePageTranscript(existing)) {
       signal?.throwIfAborted();
       await setCachedTranscript(tab.url, existing);
       return { ...existing, reused: true };

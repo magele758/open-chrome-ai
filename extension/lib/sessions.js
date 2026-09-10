@@ -202,13 +202,30 @@ export function filterSessions(index, query) {
   });
 }
 
-export function sessionFilename(session, ext) {
-  const day = new Date(session.createdAt || Date.now()).toISOString().slice(0, 10);
-  const slug = String(session.title || "session")
+function yamlScalar(value) {
+  const s = String(value ?? "");
+  if (s === "") return '""';
+  if (/[:#\n"'\\]/.test(s) || /^-/.test(s)) return JSON.stringify(s);
+  return s;
+}
+
+export function sessionSlug(session) {
+  return String(session?.title || "session")
     .replace(/[\\/:*?"<>|\n\r]+/g, "")
     .trim()
     .slice(0, 32) || "session";
-  return `pagelens-${day}-${slug}.${ext}`;
+}
+
+export function sessionFilename(session, ext) {
+  const day = new Date(session.createdAt || Date.now()).toISOString().slice(0, 10);
+  return `pagelens-${day}-${sessionSlug(session)}.${ext}`;
+}
+
+export function sessionNoteRelPath(session) {
+  const s = normalizeSession(session || {});
+  const day = new Date(s.createdAt || Date.now()).toISOString().slice(0, 10);
+  const short = String(s.id || "note").replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || "note";
+  return `PageLens/sessions/${day}-${sessionSlug(s)}-${short}.md`;
 }
 
 export function sessionToMarkdown(session) {
@@ -239,6 +256,28 @@ export function sessionToMarkdown(session) {
     ...turns,
     "",
   ].join("\n");
+}
+
+export function sessionToObsidianMarkdown(session) {
+  const s = normalizeSession(session);
+  const day = new Date(s.createdAt || Date.now()).toISOString().slice(0, 10);
+  const updated = new Date(s.updatedAt || s.createdAt || Date.now()).toISOString().slice(0, 10);
+  const urls = (s.pages || []).map((p) => p.url).filter(Boolean);
+  const fm = [
+    "---",
+    `title: ${yamlScalar(s.title)}`,
+    `date: ${day}`,
+    `updated: ${updated}`,
+    "tags: [pagelens, session]",
+    `session_id: ${yamlScalar(s.id)}`,
+    "source: PageLens",
+  ];
+  if (urls.length) {
+    fm.push("urls:");
+    for (const url of urls) fm.push(`  - ${yamlScalar(url)}`);
+  }
+  fm.push("---", "");
+  return `${fm.join("\n")}${sessionToMarkdown(s)}`;
 }
 
 export function sessionsToMarkdown(sessions) {

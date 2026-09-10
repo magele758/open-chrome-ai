@@ -57,7 +57,7 @@ YouTube 以及页里带 `<video>` 的站点：
 - 识别时长、当前进度、有没有字幕
 - YouTube 优先拉 timedtext 字幕；其它页尝试 HTML5 `textTracks`
 - **一键总结**：卡片「一键总结」/ 输入框旁「总」。先获取完整字幕；没有字幕则下载完整音轨、分段 ASR 生成全文，再让文本模型分段阅读并汇总。不会跟随视频播放或移动播放进度
-- **同声传译**：卡片「同声传译」/ 输入框旁「译」。边看边出中文。YouTube 自带字幕则跟轴翻译；否则从当前播放器取声（约 5 秒一切）再识别。翻译走设置里的**文本模型**。配了 Index-TTS 则以每段原音作为临时参考生成中文配音（原声关闭），不覆盖保存的音色。使用临时后台标签页提前取声，当前观看页先缓冲两段，再让画面与中文配音同步推进；暂停、拖动和倍速都跟随原播放器。下一段未准备好时画面等待；自动换段要等当前配音自然播完，画面先到终点就停住等尾音。停止后自动关闭后台取声页。没配 TTS 仍出中文字幕
+- **同声传译**：卡片「同声传译」/ 输入框旁「译」。始终在当前观看页进行，不新开标签。有字幕则跟轴翻译；否则从当前播放器取声（约 5 秒一切）再识别。翻译走设置里的**文本模型**。配了 TTS 则在侧栏叠中文配音，失败时仍显示译文。处理积压时会暂停画面等待。没配 TTS 只出中文字幕
 - 同一页有多个 `<video>` 时，自动选主播放器（YouTube 的 `html5-main-video`、正在播的、面积最大的）。多于一个会显示「画面 1/N」，可点切换
 - 只要文稿、不总结：点「只要文稿」
 - 答案里的 `12:04` 可点，播放器跳到该秒
@@ -76,7 +76,7 @@ python3 tools/media_helper.py
 
 ### 文稿文件夹
 
-设置里选一个本机目录（Obsidian 库、`~/Movies/PageLens` 都可以）。之后有字幕或转写完成时，会写成普通文件，而不是堆在扩展存储里：
+设置里选一个本机目录（Obsidian 库、`~/Movies/PageLens` 都可以）。之后有字幕或转写完成时，会写成普通文件，而不是堆在扩展存储里。对话也可以一键写入同一目录：
 
 ```
 你选的目录/
@@ -85,9 +85,12 @@ python3 tools/media_helper.py
     original.vtt      # 原稿
     zh.vtt            # 译稿（有翻译才有）
     transcript.md     # 给人看的双语
+  PageLens/
+    sessions/
+      2026-09-10-对话标题-xxxxxxxx.md
 ```
 
-浏览器不提供完整路径，侧栏只显示文件夹名。改译句请改 `zh.vtt`；`transcript.md` 会按两份 VTT 生成。密钥不会写进这个目录。Agent 可以用 `list_library` / `read_library` / `save_video_doc` 读写这个授权目录，出不去。
+浏览器不提供完整路径，侧栏只显示文件夹名。改译句请改 `zh.vtt`；`transcript.md` 会按两份 VTT 生成。密钥不会写进这个目录。Agent 可以用 `list_library` / `read_library` / `save_video_doc` / `save_session_note` 读写这个授权目录，出不去。
 
 没选目录时，转写结果仍会临时记在扩展存储里，最多 24 部。
 
@@ -131,7 +134,8 @@ Session Buddy、Omni 这类「管标签」扩展没有对外接口，调不到�
 ### 对话与导出
 
 - 每场对话自动存在本机，带着当时的页面标题和 URL
-- 侧栏「历」：搜索、打开续聊、删、导出 Markdown / JSON
+- 侧栏「历」：搜索、打开续聊、删、导出 Markdown / JSON、一键入库到文稿文件夹（`PageLens/sessions/`，带 YAML frontmatter，Obsidian 打开该库即可看到）
+- 侧栏「入」：把当前这场对话写入同一目录；没选文件夹时会先弹出选择框
 - 截图只记「含截图」，不把图片字节写进历史
 - 关掉侧栏再打开，回到上一场；若当时工具做到一半，会从中断处继续（你点停止则不续跑）
 
@@ -274,6 +278,8 @@ node extension/tools/test_library.mjs
 node extension/tools/test_interpret.mjs
 node extension/tools/test_interpret_pipeline.mjs
 node extension/tools/test_interpret_flow.mjs
+node extension/tools/test_captions_summary.mjs
+node extension/tools/test_full_transcript.mjs
 node extension/tools/test_interpret_video.mjs
 node extension/tools/test_page_audio.mjs
 node extension/tools/test_tts.mjs

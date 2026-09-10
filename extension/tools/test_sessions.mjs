@@ -14,8 +14,10 @@ import {
   loadAllSessions,
   deleteSession,
   sessionFilename,
+  sessionNoteRelPath,
   sessionTitle,
   sessionToMarkdown,
+  sessionToObsidianMarkdown,
   sessionsToJSON,
   sessionsToMarkdown,
   toSummary,
@@ -90,6 +92,22 @@ assert(parsed.sessions[0].messages[0].image === undefined, "json no bytes");
 
 assert(sessionFilename(session, "md").endsWith(".md"), "filename ext");
 assert(!sessionFilename({ title: "a/b:c", createdAt: Date.now() }, "md").includes("/"), "filename sanitize");
+
+const notePath = sessionNoteRelPath(session);
+assert(notePath.startsWith("PageLens/sessions/2026-09-09-总结此页-"), "obsidian path " + notePath);
+assert(notePath.endsWith("-s1.md"), "obsidian id suffix " + notePath);
+const note = sessionToObsidianMarkdown(session);
+assert(note.startsWith("---\n"), "obsidian frontmatter");
+assert(note.includes("title: 总结此页"), "obsidian title");
+assert(note.includes("tags: [pagelens, session]"), "obsidian tags");
+assert(note.includes("session_id: s1"), "obsidian session id");
+assert(note.includes("https://example.com/x"), "obsidian url");
+assert(note.includes("这是一篇关于 X 的文章。"), "obsidian body");
+const quoted = sessionToObsidianMarkdown({
+  id: "q1",
+  messages: [{ role: "user", text: "标题: 含冒号" }],
+});
+assert(quoted.includes('title: "标题: 含冒号"'), "yaml quote " + quoted.split("\n")[1]);
 
 const when = formatWhen(Date.now());
 assert(when.startsWith("今天 "), "today format: " + when);
