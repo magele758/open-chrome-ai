@@ -1,5 +1,6 @@
 import {
   clipSkillWhen,
+  ensureSkillBody,
   isSkillFile,
   parseSimpleYaml,
   parseSkillMarkdown,
@@ -7,6 +8,8 @@ import {
   shouldSkipDir,
   skillIdFromPath,
   skillsFromFiles,
+  skillsFromMeta,
+  skillsFromTexts,
 } from "../lib/skill-folder.js";
 import { findSkill, mergeSkills, skillCatalogText } from "../lib/agent/skills.js";
 
@@ -113,5 +116,23 @@ assert(
 
 const catalog = skillCatalogText(folderSkills);
 assert(catalog.includes("load_skill") && catalog.includes("gstack/browse"), "catalog");
+
+const fromText = skillsFromTexts([{ path: "demo/SKILL.md", text: "---\nname: demo\ndescription: 说明\n---\n# Hi\n" }]);
+assert(fromText[0].id === "demo" && fromText[0].name === "demo" && fromText[0].body.includes("# Hi"), "from texts");
+
+const metaOnly = skillsFromMeta(
+  [{ path: "demo/SKILL.md", name: "demo", when: "说明" }],
+  { rootPath: "/tmp/skills" },
+);
+assert(metaOnly[0].body === "" && metaOnly[0].root === "/tmp/skills", "meta no body");
+
+const lazy = await ensureSkillBody({
+  id: "x",
+  name: "x",
+  body: "",
+  handle: fileHandle("SKILL.md", "---\nname: x\n---\n完整正文"),
+});
+assert(lazy.body.includes("完整正文"), "lazy body from handle");
+assert((await ensureSkillBody({ id: "y", body: "已有" })).body === "已有", "keep body");
 
 console.log("PASS skill-folder");

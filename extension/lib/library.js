@@ -4,14 +4,17 @@
  */
 
 import { formatTranscript } from "./asr.js";
+import { fileExt, MAX_FS_TEXT, pathBasename, splitRelParts, TEXT_FILE_EXT } from "./fs-path.js";
+import { nativeFs } from "./native-host.js";
 import { formatTime } from "./prompts.js";
 import { sessionNoteRelPath, sessionToObsidianMarkdown } from "./sessions.js";
 
 const DB_NAME = "pagelens-fs";
 const STORE = "kv";
 const ROOT_KEY = "libraryRoot";
-const TEXT_EXT = new Set(["md", "txt", "vtt", "json", "srt", "csv"]);
-const MAX_TEXT = 400000;
+const PATH_KEY = "libraryPath";
+const TEXT_EXT = TEXT_FILE_EXT;
+const MAX_TEXT = MAX_FS_TEXT;
 
 export function videoIdentity(url) {
   try {
@@ -49,21 +52,11 @@ export function folderNameFor(identity) {
 }
 
 export function splitRelPath(rel) {
-  const trimmed = String(rel || "").trim();
-  if (!trimmed) throw new Error("路径不能为空。");
-  if (trimmed.startsWith("/") || /^[a-zA-Z]:/.test(trimmed)) throw new Error("不能使用绝对路径。");
-  const parts = trimmed.replace(/\\/g, "/").split("/").filter(Boolean);
-  if (!parts.length) throw new Error("路径不能为空。");
-  if (parts.some((p) => p === "." || p === ".." || p.includes("\0"))) {
-    throw new Error("路径不合法。");
-  }
-  return parts;
+  return splitRelParts(rel);
 }
 
 export function extOf(name) {
-  const base = String(name || "").split("/").pop() || "";
-  const i = base.lastIndexOf(".");
-  return i >= 0 ? base.slice(i + 1).toLowerCase() : "";
+  return fileExt(name);
 }
 
 export function formatVttTime(seconds) {
@@ -204,14 +197,14 @@ function openDb() {
   });
 }
 
-export async function getSavedHandle() {
+async function idbGet(key) {
   if (typeof indexedDB === "undefined") return null;
   try {
     const db = await openDb();
     return await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, "readonly");
-      const req = tx.objectStore(STORE).get(ROOT_KEY);
-      req.onsuccess = () => resolve(req.result || null);
+      const req = tx.objectStore(STORE).get(key);
+      req.onsuccess = () => resolve(req.result ?? null);
       req.onerror = () => reject(req.error);
     });
   } catch {
@@ -219,29 +212,49 @@ export async function getSavedHandle() {
   }
 }
 
-export async function setSavedHandle(handle) {
+async function idbPut(key, value) {
   const db = await openDb();
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(handle, ROOT_KEY);
+    tx.objectStore(STORE).put(value, key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
-export async function clearSavedHandle() {
+async function idbDelete(...keys) {
   if (typeof indexedDB === "undefined") return;
   try {
     const db = await openDb();
     await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).delete(ROOT_KEY);
+      const store = tx.objectStore(STORE);
+      for (const key of keys) store.delete(key);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
   } catch {
     /* ignore */
   }
+}
+
+export async function getSavedHandle() {
+  return idbGet(ROOT_KEY);
+}
+
+export async function setSavedHandle(handle) {
+  await idbPut(ROOT_KEY, handle);
+  await idbDelete(PATH_KEY);
+}
+
+export async function getSavedLibraryPath() {
+  const raw = await idbGet(PATH_KEY);
+  const path = String(raw || "").trim();
+  return path || "";
+}
+
+export async function clearSavedHandle() {
+  await idbDelete(ROOT_KEY, PATH_KEY);
 }
 
 export async function ensurePermission(handle, { request = false } = {}) {
@@ -262,16 +275,22 @@ export async function ensurePermission(handle, { request = false } = {}) {
   return Boolean(handle);
 }
 
+function missingLibraryError() {
+  return "还没有选择文稿文件夹。到设置里选一个目录，或填绝对路径。";
+}
+
 export async function libraryStatus({ request = false } = {}) {
-  const handle = await getSavedHandle();
-  if (!handle) return { ok: true, configured: false, granted: false, name: "" };
-  const granted = await ensurePermission(handle, { request });
+  const root = await getLibraryRoot({ request });
+  if (!root) return { ok: true, configured: false, granted: false, name: "", mode: "", path: "" };
   return {
     ok: true,
     configured: true,
-    granted,
-    name: handle.name || "",
-    permission: granted ? "granted" : "prompt",
+    granted: root.granted,
+    mode: root.mode || "picker",
+    name: root.name || "",
+    path: root.mode === "path" ? root.path || "" : "",
+    permission: root.granted ? "granted" : "prompt",
+    error: root.error || "",
   };
 }
 
@@ -285,15 +304,50 @@ export async function pickLibraryFolder() {
     startIn: "documents",
   });
   await setSavedHandle(handle);
-  return { ok: true, name: handle.name, granted: true };
+  return { ok: true, mode: "picker", name: handle.name, granted: true };
+}
+
+export async function setLibraryPath(raw) {
+  const res = await nativeFs({ action: "stat", path: String(raw || "") });
+  if (!res.ok) throw new Error(res.error || "无法访问路径。填绝对路径需要已安装 Native Host。");
+  if (res.kind !== "directory") throw new Error("必须是目录。");
+  await idbPut(PATH_KEY, res.path);
+  await idbDelete(ROOT_KEY);
+  return {
+    ok: true,
+    configured: true,
+    granted: true,
+    mode: "path",
+    path: res.path,
+    name: res.name || pathBasename(res.path),
+  };
 }
 
 export async function getLibraryRoot({ request = false } = {}) {
+  const savedPath = await getSavedLibraryPath();
+  if (savedPath) {
+    const stat = await nativeFs({ action: "stat", path: savedPath });
+    if (!stat.ok || stat.kind !== "directory") {
+      return {
+        mode: "path",
+        path: savedPath,
+        name: pathBasename(savedPath),
+        granted: false,
+        error: stat.error || "路径不可用。填绝对路径需要已安装 Native Host。",
+      };
+    }
+    return {
+      mode: "path",
+      path: stat.path || savedPath,
+      name: stat.name || pathBasename(savedPath),
+      granted: true,
+    };
+  }
   const handle = await getSavedHandle();
   if (!handle) return null;
   const granted = await ensurePermission(handle, { request });
-  if (!granted) return { handle, granted: false, name: handle.name || "" };
-  return { handle, granted: true, name: handle.name || "" };
+  if (!granted) return { mode: "picker", handle, granted: false, name: handle.name || "" };
+  return { mode: "picker", handle, granted: true, name: handle.name || "" };
 }
 
 async function walkDir(root, dirParts, create) {
@@ -318,10 +372,18 @@ export async function writeSessionNotes(sessions, { request = false } = {}) {
   return { ok: true, count: files.length, folder: "PageLens/sessions", files };
 }
 
+function requireLibraryRoot(root) {
+  if (!root) throw new Error(missingLibraryError());
+  if (!root.granted) {
+    throw new Error(root.mode === "path"
+      ? (root.error || "文稿路径不可用。确认已安装 Native Host，并到设置重新填路径。")
+      : "文稿文件夹未授权。到设置点「重新授权」。");
+  }
+  return root;
+}
+
 export async function writeLibraryText(rel, text, { request = false } = {}) {
-  const root = await getLibraryRoot({ request });
-  if (!root) throw new Error("还没有选择文稿文件夹。到设置里选一个目录。");
-  if (!root.granted) throw new Error("文稿文件夹未授权。到设置点「重新授权」。");
+  const root = requireLibraryRoot(await getLibraryRoot({ request }));
   const parts = splitRelPath(rel);
   const name = parts[parts.length - 1];
   if (!TEXT_EXT.has(extOf(name))) {
@@ -329,6 +391,11 @@ export async function writeLibraryText(rel, text, { request = false } = {}) {
   }
   const body = String(text ?? "");
   if (body.length > MAX_TEXT) throw new Error(`文件太大（>${MAX_TEXT} 字）。`);
+  if (root.mode === "path") {
+    const res = await nativeFs({ action: "writeText", root: root.path, rel: parts.join("/"), text: body });
+    if (!res.ok) throw new Error(res.error || "写入文稿失败。");
+    return { ok: true, path: parts.join("/"), bytes: body.length };
+  }
   const dir = await walkDir(root.handle, parts.slice(0, -1), true);
   const file = await dir.getFileHandle(name, { create: true });
   const writable = await file.createWritable();
@@ -338,11 +405,14 @@ export async function writeLibraryText(rel, text, { request = false } = {}) {
 }
 
 export async function readLibraryText(rel, { request = false } = {}) {
-  const root = await getLibraryRoot({ request });
-  if (!root) throw new Error("还没有选择文稿文件夹。到设置里选一个目录。");
-  if (!root.granted) throw new Error("文稿文件夹未授权。到设置点「重新授权」。");
+  const root = requireLibraryRoot(await getLibraryRoot({ request }));
   const parts = splitRelPath(rel);
   const name = parts[parts.length - 1];
+  if (root.mode === "path") {
+    const res = await nativeFs({ action: "readText", root: root.path, rel: parts.join("/") });
+    if (!res.ok) throw new Error(res.error || "读取文稿失败。");
+    return { ok: true, path: parts.join("/"), text: res.text || "", bytes: res.bytes || 0 };
+  }
   const dir = await walkDir(root.handle, parts.slice(0, -1), false);
   const file = await dir.getFileHandle(name, { create: false });
   const blob = await file.getFile();
@@ -351,10 +421,19 @@ export async function readLibraryText(rel, { request = false } = {}) {
 }
 
 export async function listLibrary(rel = "", { request = false } = {}) {
-  const root = await getLibraryRoot({ request });
-  if (!root) throw new Error("还没有选择文稿文件夹。到设置里选一个目录。");
-  if (!root.granted) throw new Error("文稿文件夹未授权。到设置点「重新授权」。");
+  const root = requireLibraryRoot(await getLibraryRoot({ request }));
   const parts = String(rel || "").trim() ? splitRelPath(rel) : [];
+  if (root.mode === "path") {
+    const res = await nativeFs({ action: "readdir", root: root.path, rel: parts.join("/") });
+    if (!res.ok) throw new Error(res.error || "列出文稿失败。");
+    return {
+      ok: true,
+      folder: root.name,
+      path: parts.join("/"),
+      count: res.count || (res.entries || []).length,
+      entries: (res.entries || []).slice(0, 200),
+    };
+  }
   const dir = await walkDir(root.handle, parts, false);
   const entries = [];
   if (typeof dir.entries === "function") {
@@ -397,8 +476,15 @@ function normalizeCues(doc) {
 
 export async function writeVideoDoc(doc, { request = false } = {}) {
   const root = await getLibraryRoot({ request });
-  if (!root) return { ok: false, error: "还没有选择文稿文件夹。" };
-  if (!root.granted) return { ok: false, error: "文稿文件夹未授权。" };
+  if (!root) return { ok: false, error: missingLibraryError() };
+  if (!root.granted) {
+    return {
+      ok: false,
+      error: root.mode === "path"
+        ? (root.error || "文稿路径不可用。")
+        : "文稿文件夹未授权。",
+    };
+  }
   const identity = doc.identity || videoIdentity(doc.url || "");
   const folder = folderNameFor(identity);
   if (!doc.complete) {

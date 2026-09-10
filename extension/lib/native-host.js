@@ -17,12 +17,21 @@ export function describeNativeError(err, extensionId) {
   return msg || "Native Host 调用失败。";
 }
 
-export async function nativeSend(message) {
+export async function nativeSend(message, { timeoutMs = 12000 } = {}) {
   if (typeof chrome === "undefined" || typeof chrome.runtime?.sendNativeMessage !== "function") {
     return { ok: false, error: "当前环境没有 Native Messaging。" };
   }
   try {
-    const res = await chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, message);
+    const send = chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, message);
+    const ms = Number(timeoutMs);
+    const res = Number.isFinite(ms) && ms > 0
+      ? await Promise.race([
+          send,
+          new Promise((_, reject) => {
+            setTimeout(() => reject(new Error(`Native Host 超时（${Math.round(ms / 1000)}s）`)), ms);
+          }),
+        ])
+      : await send;
     if (res && typeof res === "object") return res;
     return { ok: false, error: "host 返回无效。" };
   } catch (err) {
@@ -43,6 +52,17 @@ export async function execNativeShell({ command, cwd, timeoutMs } = {}) {
     cwd: cwd ? String(cwd) : undefined,
     timeoutMs,
   });
+}
+
+export async function nativeFs(payload, extra = {}) {
+  const action = String(payload?.action || "");
+  const override = Number(extra.timeoutMs);
+  const timeoutMs = Number.isFinite(override) && override > 0
+    ? override
+    : action === "scanSkills"
+      ? 15000
+      : 12000;
+  return nativeSend({ op: "fs", ...(payload || {}) }, { timeoutMs });
 }
 
 export function formatExecResult(res) {

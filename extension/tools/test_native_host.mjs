@@ -3,6 +3,7 @@ import {
   describeNativeError,
   formatExecResult,
   installHint,
+  nativeFs,
   nativeSend,
   pingNativeHost,
 } from "../lib/native-host.js";
@@ -34,14 +35,17 @@ globalThis.chrome = {
     id: "abcdefghijklmnopqrstuvwxyzabcdef",
     sendNativeMessage: async (name, msg) => {
       assert(name === NATIVE_HOST_NAME, "name");
-      if (msg.op === "ping") return { ok: true, op: "ping", version: "1.0.0" };
+      if (msg.op === "ping") return { ok: true, op: "ping", version: "1.1.0" };
+      if (msg.op === "fs" && msg.action === "stat") return { ok: true, kind: "directory", path: "/tmp/notes", name: "notes" };
       return { ok: false, error: "nope" };
     },
   },
 };
 
 const ping = await pingNativeHost();
-assert(ping.ok && ping.version === "1.0.0" && ping.ms >= 0, "ping");
+assert(ping.ok && ping.version === "1.1.0" && ping.ms >= 0, "ping");
+const stat = await nativeFs({ action: "stat", path: "/tmp/notes" });
+assert(stat.ok && stat.kind === "directory", "native fs");
 
 const bad = await nativeSend({ op: "exec" });
 assert(bad.ok === false, "exec mocked fail");

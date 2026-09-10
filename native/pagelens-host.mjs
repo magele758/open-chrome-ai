@@ -9,9 +9,23 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  expandUserPath,
+  fileExt,
+  isSkillFile,
+  looksAbsolutePath,
+  MAX_FS_TEXT,
+  MAX_SKILL_COUNT,
+  MAX_SKILL_DEPTH,
+  parseSkillMeta,
+  SKILL_META_HEAD,
+  shouldSkipDir,
+  splitRelParts,
+  TEXT_FILE_EXT,
+} from "../extension/lib/fs-path.js";
 
 export const HOST_NAME = "com.pagelens.host";
-export const HOST_VERSION = "1.0.0";
+export const HOST_VERSION = "1.1.0";
 export const DEFAULT_TIMEOUT_MS = 60_000;
 export const MAX_TIMEOUT_MS = 300_000;
 export const MAX_OUTPUT = 200_000;
@@ -144,6 +158,197 @@ export function execCommand({ command, cwd, timeoutMs } = {}) {
   });
 }
 
+function resolveAbs(raw) {
+  const expanded = expandUserPath(raw, os.homedir());
+  if (!expanded) throw new Error("路径不能为空。");
+  if (expanded.includes("\0")) throw new Error("路径不合法。");
+  if (!path.isAbsolute(expanded) && !looksAbsolutePath(expanded)) {
+    throw new Error("必须是绝对路径（或以 ~ 开头）。");
+  }
+  const abs = path.resolve(expanded);
+  if (!path.isAbsolute(abs)) throw new Error("必须是绝对路径（或以 ~ 开头）。");
+  return abs;
+}
+
+export function safeJoinRoot(root, rel) {
+  const base = resolveAbs(root);
+  const parts = String(rel || "").trim() ? splitRelParts(rel) : [];
+  const abs = path.resolve(base, ...parts);
+  const prefix = base.endsWith(path.sep) ? base : base + path.sep;
+  if (abs !== base && !abs.startsWith(prefix)) throw new Error("路径超出目录。");
+  return abs;
+}
+
+function sortEntries(entries) {
+  entries.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  return entries;
+}
+
+function readFileHead(filePath, max = SKILL_META_HEAD) {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buf = Buffer.alloc(max);
+    const n = fs.readSync(fd, buf, 0, max, 0);
+    return buf.subarray(0, n).toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function scanSkillTreeFromPath(root, { maxSkills = MAX_SKILL_COUNT, maxDepth = MAX_SKILL_DEPTH } = {}) {
+  const files = [];
+  let truncated = false;
+
+  const walk = (dir, prefix, depth) => {
+    if (truncated) return;
+    if (depth > maxDepth) return;
+    let names = [];
+    try {
+      names = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of names) {
+      if (truncated) return;
+      const name = ent.name;
+      if (ent.isDirectory()) {
+        if (shouldSkipDir(name)) continue;
+        walk(path.join(dir, name), prefix ? `${prefix}/${name}` : name, depth + 1);
+        continue;
+      }
+      if (!ent.isFile() || !isSkillFile(name)) continue;
+      if (files.length >= maxSkills) {
+        truncated = true;
+        return;
+      }
+      const rel = prefix ? `${prefix}/${name}` : name;
+      let text = "";
+      try {
+        text = readFileHead(path.join(dir, name));
+      } catch {
+        continue;
+      }
+      const meta = parseSkillMeta(text);
+      files.push({
+        path: rel,
+        name: meta?.name || "",
+        when: meta?.when || "",
+      });
+    }
+  };
+
+  walk(root, "", 0);
+  return { files, truncated };
+}
+
+export function handleFs(req) {
+  const action = String(req?.action || "").trim();
+  try {
+    if (action === "stat") {
+      const abs = resolveAbs(req.path);
+      if (!fs.existsSync(abs)) return { ok: false, op: "fs", action, error: `路径不存在：${abs}` };
+      const st = fs.statSync(abs);
+      return {
+        ok: true,
+        op: "fs",
+        action,
+        path: abs,
+        name: path.basename(abs) || abs,
+        kind: st.isDirectory() ? "directory" : "file",
+      };
+    }
+    if (action === "readdir") {
+      const abs = safeJoinRoot(req.root || req.path, req.rel || "");
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+        return { ok: false, op: "fs", action, error: `不是目录：${abs}` };
+      }
+      const names = fs.readdirSync(abs, { withFileTypes: true });
+      const relParts = String(req.rel || "").trim() ? splitRelParts(req.rel) : [];
+      const entries = [];
+      for (const ent of names.slice(0, 200)) {
+        const kind = ent.isDirectory() ? "directory" : "file";
+        entries.push({
+          name: ent.name,
+          kind,
+          path: [...relParts, ent.name].join("/"),
+        });
+      }
+      return {
+        ok: true,
+        op: "fs",
+        action,
+        folder: path.basename(abs),
+        path: relParts.join("/"),
+        count: entries.length,
+        entries: sortEntries(entries),
+      };
+    }
+    if (action === "readText") {
+      const rel = String(req.rel || "").trim();
+      const parts = splitRelParts(rel);
+      const abs = safeJoinRoot(req.root || req.path, rel);
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+        return { ok: false, op: "fs", action, error: `文件不存在：${abs}` };
+      }
+      const text = fs.readFileSync(abs, "utf8");
+      if (text.length > MAX_FS_TEXT) {
+        return {
+          ok: true,
+          op: "fs",
+          action,
+          text: `${text.slice(0, MAX_FS_TEXT)}\n【已截断】`,
+          bytes: text.length,
+          path: parts.join("/"),
+          truncated: true,
+        };
+      }
+      return { ok: true, op: "fs", action, text, bytes: text.length, path: parts.join("/") };
+    }
+    if (action === "writeText") {
+      const rel = String(req.rel || "").trim();
+      const parts = splitRelParts(rel);
+      const name = parts[parts.length - 1];
+      if (!TEXT_FILE_EXT.has(fileExt(name))) {
+        return { ok: false, op: "fs", action, error: `只能写入 ${[...TEXT_FILE_EXT].join("、")} 文件。` };
+      }
+      const body = String(req.text ?? "");
+      if (body.length > MAX_FS_TEXT) {
+        return { ok: false, op: "fs", action, error: `文件太大（>${MAX_FS_TEXT} 字）。` };
+      }
+      const abs = safeJoinRoot(req.root, rel);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, body, "utf8");
+      return { ok: true, op: "fs", action, path: parts.join("/"), bytes: body.length };
+    }
+    if (action === "scanSkills") {
+      const abs = resolveAbs(req.path);
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+        return { ok: false, op: "fs", action, error: `不是目录：${abs}` };
+      }
+      const scanned = scanSkillTreeFromPath(abs, {
+        maxSkills: Number(req.maxSkills) || MAX_SKILL_COUNT,
+        maxDepth: Number(req.maxDepth) || MAX_SKILL_DEPTH,
+      });
+      return {
+        ok: true,
+        op: "fs",
+        action,
+        path: abs,
+        name: path.basename(abs) || abs,
+        count: scanned.files.length,
+        truncated: scanned.truncated,
+        files: scanned.files,
+      };
+    }
+    return { ok: false, op: "fs", action, error: `未知 fs action：${action || "(空)"}` };
+  } catch (err) {
+    return { ok: false, op: "fs", action, error: err.message || String(err) };
+  }
+}
+
 export async function handleRequest(req) {
   const op = String(req?.op || "").trim();
   if (op === "ping") {
@@ -163,6 +368,9 @@ export async function handleRequest(req) {
       timeoutMs: req.timeoutMs,
     });
     return { op: "exec", ...out };
+  }
+  if (op === "fs") {
+    return handleFs(req);
   }
   return { ok: false, error: `未知 op：${op || "(空)"}` };
 }
