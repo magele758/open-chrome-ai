@@ -3,3 +3,6 @@
 .tmp/
 extension/local-settings.json
 extension/apply-local.html
+.cursor/
+__pycache__/
+*.pyc
