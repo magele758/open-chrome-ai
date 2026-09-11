@@ -4,7 +4,7 @@ Chrome 侧栏里的页面 Agent：打开就能问「这一页 / 这段视频在�
 
 模型用你自己的密钥（BYOK），走 OpenAI 兼容接口。中文优先。不经过我们的服务器。
 
-当前版本 **0.10.0**（Manifest V3，主界面是 Side Panel，不是弹窗）。
+当前版本 **0.11.0**（Manifest V3，主界面是 Side Panel，不是弹窗）。
 
 ---
 
@@ -228,7 +228,24 @@ python3 extension/tools/mock_llm.py
 
 侧栏是唯一编排中心。`sw.js` 只做开栏、右键选区、录音转发。模型、工具、同传都在 side panel 里跑。本机能力走 Native Host 或 `127.0.0.1` 助手。没有独立后端；密钥和对话在本机。
 
-主循环从 [ppeng-agent-core](https://github.com/magele758/ppeng-agent-core) 的 L4 `createAgentLoop` 扣成浏览器版：`prepare → model → tools`，不另起进程、没有 Node daemon。最多 12 轮。发给模型前会修补残缺的 `tool_calls`，并压缩超长的旧工具结果。
+主循环从 [ppeng-agent-core](https://github.com/magele758/ppeng-agent-core) 的 L4 `createAgentLoop` 扣成浏览器版：`prepare → model → tools`，不另起进程、没有 Node daemon。最多 12 轮。发给模型前会修补残缺的 `tool_calls`，并结合 **Tool Guardian** 治理长工具返回，配合 **Micro-Compact** 与 **Safe Session Cut** 控制上下文。
+
+#### 上下文治理与长输出拦截（Tool Output Guardian）
+
+浏览器侧栏没有独立后端与重量级向量库，当工具返回超长内容（如整页抓取、大量历史记录、API 报错日志）时，容易反复撑爆上下文甚至导致模型遗忘前文任务。PageLens 采用纯本地、零配置的治理机制：
+
+1. **长返回拦截与归档（Tool Output Guardian）**：
+   - 工具执行返回超过 1800 字符时，自动拦截并存入 `ArtifactStore`（L1 内存快表 + L2 IndexedDB `pagelens-data` 双层持久化）。
+   - 向上下文注入紧凑的结构化引导卡片（Handle 句柄、总字数、分卷页数及前 450 字符前瞻预览），保护上下文窗口。
+   - 内置安全白名单防止检索工具递归拦截。
+2. **Agentic 搜索与分页召回**：
+   - 提供核心常驻工具 `search_tool_artifact`（支持关键词与正则表达式，纯 JS 内存快速词法扫描，单次匹配 < 2ms）与 `read_tool_page`（按页翻阅指定分卷）。
+   - **无需引入外部 Embedding 模型配置**，零外部网络请求，精准匹配代码、报错、参数和文字。
+3. **Micro-Compact 微压缩**：
+   - 历史迭代中已消费的旧 tool 结果在下一轮自动收拢为单行 Stub 标记（保留 tool call 和 artifact 引用句柄，剔除长正文），释放注意力与上下文预算。
+4. **Safe Session Cut 安全会话截断**：
+   - 多轮超长对话（≥14 轮且超出预算）时，保留首轮 User 任务意图（防目标漂移）与最近的活跃交互窗口，安全裁剪中间冗余轮次。
+   - 严格遵循 `tool_calls` 与 `tool` 结果成对裁剪（Tool Wave 原子性规则），杜绝 OpenAI 协议报错；底层 IndexedDB 始终保留全量无损历史，删除会话时级联清理对应 Artifacts。
 
 工具分两层：
 
@@ -283,6 +300,8 @@ flowchart LR
     Loop[loop.js]
     Ctx[context.js]
     Tools[tools.js]
+    Guardian[tool-guardian.js]
+    ArtStore[artifact-store.js]
     Skills[skills.js]
     PageFns[page-fns.js]
     Comp[companions.js]
@@ -328,6 +347,9 @@ flowchart LR
   App --> persist
   Loop --> Ctx
   Loop --> Tools
+  Loop --> Guardian
+  Guardian --> ArtStore
+  Tools --> ArtStore
   Tools --> Skills
   Tools --> PageFns
   Tools --> Comp
@@ -350,7 +372,7 @@ flowchart LR
 |---|---|---|
 | 入口 | `sidepanel/app.js` | UI、会话、设置、编排 Agent / 总结 / 同传 |
 | 后台 | `sw.js` | 开侧栏、右键选区、转发 `pl.audio.*` |
-| Agent | `loop` / `context` / `tools` / `skills` | `prepare → model → tools` |
+| Agent | `loop` / `context` / `tools` / `tool-guardian` / `artifact-store` / `skills` | `prepare → model → tools`，长工具结果拦截归档与 Agentic 召回 |
 | 读页 | `page-pack` `extract` `pdf-text` | 抽正文 / PDF |
 | 视频 | `captions` `full-transcript` `interpret*` `tab-audio*` | 文稿、完整音轨、当前页同传 |
 | 模型 | `openai` `asr` `tts` `summarize-transcript` | 聊天、转写、配音、长文汇总 |
@@ -451,6 +473,7 @@ node extension/tools/test_loop.mjs
 node extension/tools/test_tools.mjs
 node extension/tools/test_sessions.mjs
 node extension/tools/test_context.mjs
+node extension/tools/test_guardian.mjs
 node extension/tools/test_markdown.mjs
 node extension/tools/test_companions.mjs
 node extension/tools/test_asr.mjs

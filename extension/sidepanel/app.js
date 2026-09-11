@@ -25,6 +25,7 @@ import {
 import { initMarkdown, formatAnswer, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createAgentLoop } from "../lib/agent/loop.js";
 import { createAgentTools, resolveActiveTools, checkHitlRequirement } from "../lib/agent/tools.js";
+import { deleteSessionArtifacts } from "../lib/agent/artifact-store.js";
 import { auditToolCall } from "../lib/agent/guardrail.js";
 import { loadRuntimeSkills, shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
 import { applySlashItem, composeSkillPrompt, filterSlashItems, parseSlashToken, slashItemsFromSkills, userInvokedSkill } from "../lib/slash.js";
@@ -867,6 +868,7 @@ async function removeHistoryItem(id) {
   if (!confirm("删除这条对话？不可恢复。")) return;
   if (id === state.sessionId) await settleBusy();
   await deleteSession(id);
+  await deleteSessionArtifacts(id);
   if (state.sessionId === id) {
     state.sessionId = null;
     state.sessionCreatedAt = null;
@@ -1912,6 +1914,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     }
     persistSession();
     result = await loop.run(userText, {
+      sessionId: state.sessionId,
       history,
       resume: Boolean(resume),
       turnsUsed: turnsUsed || 0,

@@ -48,6 +48,7 @@ import {
   cosePublish,
   probeCompanions,
 } from "./companions.js";
+import { searchArtifacts, readArtifactPage } from "./artifact-store.js";
 
 const NOTES_KEY = "pagelensNotes";
 
@@ -774,6 +775,43 @@ export function createAgentTools(ctx) {
       },
     },
     {
+      name: "search_tool_artifact",
+      description:
+        "搜索被归档暂存的长工具输出内容（支持关键词或正则表达式）。若不传 handle，则自动在当前会话的所有归档文档中全局搜索。返回匹配行、页码及上下文片段。",
+      parameters: obj(
+        {
+          query: { type: "string", description: "搜索关键词或正则表达式" },
+          handle: { type: "string", description: "可选的目标文档句柄，如 art_s1_extract_xxx；省略则搜索全部" },
+        },
+        ["query"],
+      ),
+      async execute(args) {
+        const sessionId = ctx.getSessionId?.() || "default";
+        const query = String(args?.query || "").trim();
+        const handle = args?.handle ? String(args.handle).trim() : null;
+        const res = await searchArtifacts({ query, handle, sessionId });
+        return toToolText(res);
+      },
+    },
+    {
+      name: "read_tool_page",
+      description: "按页读取被归档暂存的工具输出内容（每页约 3000 字）。",
+      parameters: obj(
+        {
+          handle: { type: "string", description: "目标文档句柄，如 art_s1_extract_xxx" },
+          page: { type: "integer", description: "页码，从 1 开始；默认 1" },
+        },
+        ["handle"],
+      ),
+      async execute(args) {
+        const sessionId = ctx.getSessionId?.() || "default";
+        const handle = String(args?.handle || "").trim();
+        const page = args?.page != null ? Number(args.page) : 1;
+        const res = await readArtifactPage({ handle, page, sessionId });
+        return toToolText(res);
+      },
+    },
+    {
       name: "clipboard_write",
       description: "把文本写入系统剪贴板。",
       parameters: obj({ text: { type: "string", description: "要复制的文本" } }, ["text"]),
@@ -1094,6 +1132,8 @@ export const TOOL_DOMAINS = {
     "get_links",
     "find_in_page",
     "query_dom",
+    "search_tool_artifact",
+    "read_tool_page",
   ],
   dom_interact: [
     "list_controls",

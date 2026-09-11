@@ -7,6 +7,7 @@
  */
 
 import { CHAR_BUDGET, cloneHistory, packForModel, repairMessages } from "./context.js";
+import { interceptToolOutput } from "./tool-guardian.js";
 
 const MAX_TURNS = 12;
 const TOOL_RESULT_CHARS = 12000;
@@ -24,6 +25,7 @@ async function runLoop(host, userText, options) {
   const onEvent = options.onEvent || (() => {});
   const budget = host.charBudget || CHAR_BUDGET;
   const maxTurns = host.maxTurns || MAX_TURNS;
+  const sessionId = options.sessionId || host.sessionId || "default";
 
   let history = cloneHistory(options.history || []);
   if (!options.resume) {
@@ -50,7 +52,7 @@ async function runLoop(host, userText, options) {
   checkpoint();
 
   if (repaired.pending.length) {
-    const aborted = await appendToolResults(host, repaired.pending, history, signal, onEvent, checkpoint);
+    const aborted = await appendToolResults(host, repaired.pending, history, signal, onEvent, checkpoint, sessionId);
     if (aborted) {
       onEvent({ type: "abort" });
       return { reason: "abort", text: lastText, history, turnsUsed };
@@ -64,7 +66,7 @@ async function runLoop(host, userText, options) {
     }
     onEvent({ type: "turn_prepared", turn: turnsUsed });
 
-    const packedHist = packForModel(history, { budget });
+    const packedHist = packForModel(history, { budget, sessionId });
     if (packedHist.compressed) {
       onEvent({
         type: "compressed",
@@ -133,7 +135,7 @@ async function runLoop(host, userText, options) {
     }
 
     checkpoint();
-    const aborted = await appendToolResults(host, calls, history, signal, onEvent, checkpoint);
+    const aborted = await appendToolResults(host, calls, history, signal, onEvent, checkpoint, sessionId);
     if (aborted) {
       onEvent({ type: "abort" });
       return { reason: "abort", text: lastText, history, turnsUsed };
@@ -145,10 +147,10 @@ async function runLoop(host, userText, options) {
   return { reason: "max_turns", text: lastText, history, turnsUsed };
 }
 
-async function appendToolResults(host, calls, history, signal, onEvent, checkpoint) {
+async function appendToolResults(host, calls, history, signal, onEvent, checkpoint, sessionId = "default") {
   for (const call of calls) {
     if (signal?.aborted) return true;
-    const drained = await runToolList(host, [call], signal, onEvent);
+    const drained = await runToolList(host, [call], signal, onEvent, sessionId);
     history.push(...drained.results);
     checkpoint();
     if (drained.aborted) return true;
@@ -156,7 +158,7 @@ async function appendToolResults(host, calls, history, signal, onEvent, checkpoi
   return false;
 }
 
-async function runToolList(host, calls, signal, onEvent) {
+async function runToolList(host, calls, signal, onEvent, sessionId = "default") {
   const results = [];
   for (const call of calls) {
     if (signal?.aborted) return { results, aborted: true };
@@ -192,6 +194,23 @@ async function runToolList(host, calls, signal, onEvent) {
         content = await tool.execute(args, { signal });
         if (content != null && typeof content !== "string") {
           content = JSON.stringify(content);
+        }
+        if (ok && content) {
+          const guarded = await interceptToolOutput({
+            sessionId,
+            toolName: call.name,
+            content,
+            threshold: host.toolArchiveThreshold,
+          });
+          if (guarded.intercepted) {
+            onEvent({
+              type: "tool_archived",
+              name: call.name,
+              handle: guarded.handle,
+              originalLength: guarded.originalLength,
+            });
+            content = guarded.content;
+          }
         }
       }
     } catch (err) {
