@@ -9,7 +9,7 @@ export function hasRunawayRepetition(text) {
     const unit = [...match[1]].length;
     const length = [...match[0]].length;
     const repeats = length / unit;
-    if (unit < 4 ? repeats >= 6 && length >= 12 : repeats >= 3 && length >= 18) return true;
+    if (unit === 1 ? repeats >= 5 : unit <= 3 ? repeats >= 4 && length >= 8 : repeats >= 3 && length >= 12) return true;
   }
   return false;
 }
@@ -28,6 +28,7 @@ export const WHISPER_HALLUCINATION_PATTERNS = [
   /不吝赐教|批评指正|请多关照/i,
   /(?:感谢|谢谢)(?:您的?)?(?:收看|观看|大家|支持)/i,
   /(?:欢迎|记得|请)(?:订阅|点赞|关注|一键三连)/i,
+  /独播剧场|影视剧场|独家剧场/i,
   /subtitles?\s+(?:by|provided\s+by)/i,
   /(?:translated|captions?|transcribed)\s+by/i,
   /amara\.org/i,
@@ -80,11 +81,15 @@ export function isWhisperHallucination(text, { sliceSeconds = 0, segments = [] }
 
   // 4. Abnormal duration inflation (Whisper 30s padding on silence)
   if (Array.isArray(segments) && segments.length > 0) {
+    const maxEnd = Math.max(...segments.map((seg) => Number(seg.end) || 0));
+    if (maxEnd >= 24 && Number(sliceSeconds) > 0 && sliceSeconds <= 8) {
+      return true;
+    }
     for (const seg of segments) {
       const segStart = Number(seg.start) || 0;
       const segEnd = Number(seg.end) || 0;
       const segDuration = segEnd - segStart;
-      if (segDuration >= 26 && Number(sliceSeconds) > 0 && sliceSeconds <= 8) {
+      if (segDuration >= 20 && Number(sliceSeconds) > 0 && sliceSeconds <= 8) {
         if (compact.length < 35 || WHISPER_HALLUCINATION_PATTERNS.some((p) => p.test(compact))) {
           return true;
         }

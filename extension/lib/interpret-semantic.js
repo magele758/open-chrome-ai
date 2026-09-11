@@ -31,6 +31,32 @@ function sentenceEnds(text) {
   return ends;
 }
 
+function isEquivalentChar(a, b) {
+  if (a === b) return true;
+  if (/[''ʼ`’]/.test(a) && /[''ʼ`’]/.test(b)) return true;
+  if (/[""“”«»]/.test(a) && /[""“”«»]/.test(b)) return true;
+  if (/[\-–—]/.test(a) && /[\-–—]/.test(b)) return true;
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function alignPrefixToInput(candidatePrefix, input) {
+  if (!candidatePrefix || !input) return null;
+  let i = 0, j = 0;
+  while (i < candidatePrefix.length && j < input.length) {
+    const c1 = candidatePrefix[i], c2 = input[j];
+    if (c1 === c2) { i++; j++; }
+    else if (/\s/.test(c1) && !/\s/.test(c2)) { i++; }
+    else if (!/\s/.test(c1) && /\s/.test(c2)) { j++; }
+    else if (isEquivalentChar(c1, c2)) { i++; j++; }
+    else { return null; }
+  }
+  if (i < candidatePrefix.length) {
+    while (i < candidatePrefix.length && /\s/.test(candidatePrefix[i])) i++;
+    if (i < candidatePrefix.length) return null;
+  }
+  return j;
+}
+
 export function validateSemanticTranslation(raw, input) {
   let text = String(raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
@@ -55,6 +81,38 @@ export function validateSemanticTranslation(raw, input) {
   if (!json || typeof json.prefix !== 'string' || typeof json.suffix !== 'string' || typeof json.translation !== 'string') {
     throw new Error('语义分句返回格式不正确');
   }
+
+  // Tolerant prefix alignment: resolve whitespace and punctuation drift without triggering retries
+  if (json.prefix.trim()) {
+    if (json.prefix + json.suffix !== input) {
+      const norm = s => s.replace(/\s*([,.;:!?])\s*/g, '$1 ').replace(/\s+/g, ' ').trim();
+      const inNorm = norm(input);
+      if (norm(json.prefix + json.suffix) === inNorm || norm(json.prefix + ' ' + json.suffix) === inNorm) {
+        const end = alignPrefixToInput(json.prefix.trim(), input);
+        if (end !== null) {
+          json.prefix = input.slice(0, end);
+          json.suffix = input.slice(end);
+        }
+      } else {
+        const firstWord = json.prefix.trim().split(/\s+/)[0];
+        const idx = input.indexOf(firstWord);
+        if (idx > 0 && idx < 80 && /^[\s\u4e00-\u9fff\p{P}]+$/u.test(input.slice(0, idx))) {
+          const subInput = input.slice(idx);
+          if (norm(json.prefix + json.suffix) === norm(subInput) || norm(json.prefix + ' ' + json.suffix) === norm(subInput)) {
+            const end = alignPrefixToInput(json.prefix.trim(), subInput);
+            if (end !== null) {
+              json.prefix = input.slice(0, idx + end);
+              json.suffix = input.slice(idx + end);
+            }
+          }
+        }
+      }
+    }
+  } else {
+    json.prefix = '';
+    json.suffix = input;
+  }
+
   if (json.prefix + json.suffix !== input || (json.prefix && !json.prefix.trim()) ||
       Boolean(json.prefix) !== Boolean(json.translation.trim())) throw new Error('语义分句未完整保留原文');
   const n = json.prefix.length;

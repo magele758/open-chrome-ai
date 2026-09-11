@@ -35,6 +35,7 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
   let draining = false;
   let buffering = true;
   let partialBuffer = false;
+  let transformation = Promise.resolve();
   let synthesis = Promise.resolve();
   let committing = 0;
   let jobLink = linkJobController(signal);
@@ -193,12 +194,25 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
       const prepared = new Promise(resolve => { job.resolve = resolve; waiting.push(job); });
       startPreparation();
       committing++;
-      synthesis = synthesis.then(async () => {
+
+      const transformTask = transformation.then(async () => {
         try {
           const input = await prepared;
+          if (stale(job)) return null;
+          return transform ? await transform(input, jobCtx(job)) : input;
+        } catch (err) {
+          report(err);
+          return null;
+        }
+      });
+      transformation = transformTask;
+
+      synthesis = synthesis.then(async () => {
+        try {
+          const outputs = await transformTask;
           if (stale(job)) { release(); return; }
-          const outputs = transform ? await transform(input, jobCtx(job)) : input;
-          await emitOutputs(outputs, job);
+          if (outputs) await emitOutputs(outputs, job);
+          else release();
         } catch (err) { report(err); release(); }
         finally { committing--; notify(); }
       });
@@ -239,6 +253,7 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
         if (!closed && !cancelled && flush) {
           const job = { generation, signal: jobLink.controller.signal };
           await Promise.race([(async () => {
+            await transformation;
             const outputs = await flush(jobCtx(job));
             if (!stale(job)) await emitOutputs(outputs, job, false);
           })().catch(report), aborted]);

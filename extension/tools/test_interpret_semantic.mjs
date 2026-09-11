@@ -184,6 +184,10 @@ const bounded = promise => withInterpretDeadline(() => promise, undefined, 1500)
   assert.deepEqual(validateSemanticTranslation(JSON.stringify(valid), src), valid);
   assert.deepEqual(validateSemanticTranslation(`<think>reasoning about translation</think>\`\`\`json\n${JSON.stringify(valid)}\n\`\`\``, src), valid);
   assert.deepEqual(validateSemanticTranslation(`Here is the result:\n${JSON.stringify(valid)}\nHope it helps!`, src), valid);
+  // Tolerates dropped space between sentences
+  assert.deepEqual(validateSemanticTranslation(JSON.stringify({ prefix: 'The first sentence.', translation: '第一句话。', suffix: 'We need to' }), src), { prefix: 'The first sentence.', translation: '第一句话。', suffix: ' We need to' });
+  // Tolerates model inserting standard space after comma
+  assert.deepEqual(validateSemanticTranslation(JSON.stringify({ prefix: 'Hello, world.', translation: '你好，世界。', suffix: 'Next' }), 'Hello,world. Next'), { prefix: 'Hello,world.', translation: '你好，世界。', suffix: ' Next' });
   assert.throws(() => validateSemanticTranslation(JSON.stringify({ ...valid, suffix: '' }), src), /保留原文/);
   assert.throws(() => validateSemanticTranslation(JSON.stringify({ prefix: 'sent', suffix: 'ence', translation: '句子' }), 'sentence'), /单词/);
   assert.throws(() => validateSemanticTranslation(JSON.stringify({ prefix: 'We need to', suffix: '', translation: '我们需要' }), 'We need to'), /半句话/);

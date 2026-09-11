@@ -10,7 +10,7 @@ import { injectVideo, injectPageAudio, sleep } from "./chrome.js";
 import { recordPageSlice } from "./tab-audio.js";
 import { collapseRollingCues, filenameForMime, transcribeAudio } from "./asr.js";
 import { completeChat } from "./openai.js";
-import { checkSpeechText, isWeakSpeechText, isWhisperHallucination } from "./speech-quality.js";
+import { checkSpeechText, hasRunawayRepetition, isWeakSpeechText, isWhisperHallucination } from "./speech-quality.js";
 import { isAsrReady, isModelReady, isTtsReady, resolveModel } from "./storage.js";
 import { assessVoiceQuality, isQuietBlob, recordSlice } from "./tab-audio-record.js";
 import { createInterpretPipeline } from "./interpret-pipeline.js";
@@ -627,6 +627,9 @@ export async function runInterpret(opts) {
         }), s);
         const src = stripTimeline(joinSegmentText(segments));
         const sliceSeconds = Number(item.end) - Number(item.start);
+        if (hasRunawayRepetition(src)) {
+          throw new Error("语音识别出现异常重复，已跳过本段，继续听下一段。");
+        }
         const isHallucination = isWhisperHallucination(src, { sliceSeconds, segments });
         if (!src || isWeakSpeechText(src, sliceSeconds) || isHallucination || signal.aborted || s.aborted) {
           debugLog("interpret.skipped", {
