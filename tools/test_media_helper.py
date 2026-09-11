@@ -76,6 +76,42 @@ class MediaTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_cache_hit_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as cache_dir, tempfile.TemporaryDirectory() as out1, tempfile.TemporaryDirectory() as out2:
+            file = str(Path(source) / 'test_video.mp4')
+            subprocess.run([helper.executable('ffmpeg'), '-v', 'error', '-f', 'lavfi', '-i', 'color=s=160x90:r=10', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=16000', '-t', '4', '-c:v', 'libx264', '-c:a', 'aac', file], check=True)
+            server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(QuietHandler, directory=source))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            orig_cache = helper.CACHE_DIR
+            orig_part = helper.PART_SECONDS
+            helper.CACHE_DIR = Path(cache_dir)
+            helper.PART_SECONDS = 2
+            try:
+                target_url = f'http://127.0.0.1:{server.server_port}/test_video.mp4'
+                job1 = {'dir': out1, 'cancel': threading.Event(), 'process': None}
+                helper.extract(job1, target_url, None)
+                self.assertEqual(job1['status'], 'ready')
+                self.assertTrue(any(Path(cache_dir).iterdir()), 'Cache should be populated')
+
+                # Second extract should hit cache even if server is shut down!
+                server.shutdown()
+                server.server_close()
+
+                job2 = {'dir': out2, 'cancel': threading.Event(), 'process': None}
+                helper.extract(job2, target_url, None)
+                self.assertEqual(job2['status'], 'ready')
+                self.assertEqual(len(job2['parts']), len(job1['parts']))
+                self.assertEqual(job2['duration'], job1['duration'])
+
+                # Test cleanup
+                helper.CACHE_MAX_AGE_SECONDS = -1
+                helper.clean_cache()
+                self.assertEqual(len(list(Path(cache_dir).iterdir())), 0)
+            finally:
+                helper.CACHE_DIR = orig_cache
+                helper.PART_SECONDS = orig_part
+                helper.CACHE_MAX_AGE_SECONDS = 7 * 86400
+
 
 if __name__ == '__main__':
     unittest.main()

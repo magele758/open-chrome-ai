@@ -1,5 +1,5 @@
 // Local, bounded diagnostic log. No persistence, requests, credentials or audio bodies.
-export const DEBUG_BUILD = 'audio-only-debug-1';
+export const DEBUG_BUILD = 'semantic-interpret-v1';
 const LIMIT = 600;
 const entries = [];
 let sequence = 0;

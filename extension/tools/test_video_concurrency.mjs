@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { usableTranscript } from '../lib/captions.js';
+import { estimateTokens } from '../lib/openai.js';
 
 // Exercise the actual panel handlers with deferred network/capture operations.
 const source = await readFile(new URL('../sidepanel/app.js', import.meta.url), 'utf8');
@@ -15,9 +16,33 @@ function harness() {
   const state = { tab: { id: 1, url: 'https://video.test', title: 'video' }, pack: { video: {} }, settings: { asr: {} }, share: true, messages: [], busy: false };
   let interpretationSignal;
   let captured = 0;
+  let currentAbort = null;
+  const interpretController = {
+    isRunning: tabId => state.interpret?.status === 'running',
+    getState: tabId => state.interpret || { status: 'idle' },
+    getRunningTasks: () => state.interpret?.status === 'running' ? [state.interpret] : [],
+    stop: async tabId => {
+      if (currentAbort) currentAbort.abort();
+      state.interpret = { status: 'idle' };
+    },
+    start: async ({ tab, settings, onCaptionsReady }) => {
+      const abort = new AbortController();
+      currentAbort = abort;
+      interpretationSignal = abort.signal;
+      state.interpret = { status: 'running', mode: 'audio' };
+      try {
+        const res = await live.promise;
+        if (res?.captions) onCaptionsReady?.(res.captions);
+        state.interpret = { status: 'idle' };
+      } catch (e) {
+        state.interpret = { status: 'error', error: e.message };
+      }
+    },
+  };
   const context = vm.createContext({
-    state, AbortController, usableTranscript,
-    $: id => { if (!elements.has(id)) elements.set(id, { classList: { toggle() {} } }); return elements.get(id); },
+    state, AbortController, usableTranscript, interpretController, estimateTokens,
+    document: { createElement: () => ({ classList: { toggle() {} }, append() {}, appendChild() {}, setAttribute() {} }) },
+    $: id => { if (!elements.has(id)) elements.set(id, { classList: { toggle() {} }, appendChild() {}, append() {} }); return elements.get(id); },
     renderContext() {}, syncPackToLibrary: async () => ({}), abortRecording() {}, discardCapture: async () => {},
     renderSettingsForm() {}, setView() {}, needModelMessage: () => '', requireModel: () => ({}), isAsrReady: () => true,
     injectVideo: async () => ({ ok: true, paused: true, currentTime: 3 }),

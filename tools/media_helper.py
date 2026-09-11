@@ -2,6 +2,7 @@
 """PageLens full-media bridge. Standard library + yt-dlp + ffmpeg, loopback only."""
 import argparse
 import errno
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,8 @@ DEFAULT_PORT = 18789
 SERVICE = 'pagelens-media'
 CONDA_ENV = 'pagelens-media'
 PORT = DEFAULT_PORT
+CACHE_DIR = Path.home() / '.cache' / SERVICE
+CACHE_MAX_AGE_SECONDS = 7 * 86400
 
 
 def conda_prefixes():
@@ -183,12 +186,68 @@ def downloader_args():
     return args
 
 
+def clean_cache():
+    if not CACHE_DIR.is_dir():
+        return
+    now = time.time()
+    try:
+        for item in CACHE_DIR.iterdir():
+            if not item.is_dir():
+                continue
+            meta_file = item / 'meta.json'
+            if meta_file.is_file():
+                try:
+                    meta = json.loads(meta_file.read_text(encoding='utf-8'))
+                    cached_at = meta.get('cached_at', 0)
+                    if now - cached_at > CACHE_MAX_AGE_SECONDS:
+                        shutil.rmtree(item, ignore_errors=True)
+                except Exception:
+                    shutil.rmtree(item, ignore_errors=True)
+            else:
+                try:
+                    if now - item.stat().st_mtime > 3600:
+                        shutil.rmtree(item, ignore_errors=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def extract(job, url, media_url):
     try:
+        target = media_url or url
+        root = Path(job['dir'])
+        target_hash = hashlib.sha256(f'{target}_{PART_SECONDS}'.encode('utf-8')).hexdigest()[:24]
+        target_cache_dir = CACHE_DIR / target_hash
+        meta_file = target_cache_dir / 'meta.json'
+
+        if meta_file.is_file():
+            try:
+                meta = json.loads(meta_file.read_text(encoding='utf-8'))
+                cached_parts = meta.get('parts', [])
+                cached_duration = float(meta.get('duration', 0))
+                if (
+                    cached_duration > 0
+                    and cached_parts
+                    and meta.get('part_seconds') == PART_SECONDS
+                    and all((target_cache_dir / f"part-{p['index']:05d}.wav").is_file() for p in cached_parts)
+                ):
+                    for p in cached_parts:
+                        src_part = target_cache_dir / f"part-{p['index']:05d}.wav"
+                        dst_part = root / f"part-{p['index']:05d}.wav"
+                        try:
+                            os.link(src_part, dst_part)
+                        except OSError:
+                            shutil.copyfile(src_part, dst_part)
+                    job.update(status='ready', duration=cached_duration, parts=cached_parts)
+                    print(json.dumps({'event': 'media.cache-hit', 'target': target, 'duration': cached_duration}, ensure_ascii=False), flush=True)
+                    return
+            except Exception:
+                shutil.rmtree(target_cache_dir, ignore_errors=True)
+
         base = downloader_args()
         job['status'] = 'extracting'
         # A selected direct source avoids accidentally downloading another video on a multi-video page.
-        target = media_url or url
         info = json.loads(run(job, base + ['--skip-download', '--dump-single-json', '--', target]))
         if info.get('is_live') or info.get('live_status') in ('is_live', 'is_upcoming', 'post_live'):
             raise RuntimeError('直播尚未形成完整媒体文件，暂时无法生成完整文稿。')
@@ -198,7 +257,6 @@ def extract(job, url, media_url):
         if job['cancel'].is_set():
             return
         job['status'] = 'downloading'
-        root = Path(job['dir'])
         run(job, base + ['-f', 'bestaudio/best', '--no-part', '-o', str(root / 'source.%(ext)s'), '--', target])
         files = list(root.glob('source.*'))
         if len(files) != 1:
@@ -216,6 +274,24 @@ def extract(job, url, media_url):
         if not parts or abs(offset - actual) > max(1, actual * .001):
             raise RuntimeError('音轨分段不完整，已停止。')
         files[0].unlink()
+
+        # Save to persistent cache
+        try:
+            target_cache_dir.mkdir(parents=True, exist_ok=True)
+            for path in root.glob('part-*.wav'):
+                shutil.copyfile(path, target_cache_dir / path.name)
+            meta = {
+                'url': url,
+                'media_url': media_url,
+                'duration': actual,
+                'parts': parts,
+                'part_seconds': PART_SECONDS,
+                'cached_at': time.time(),
+            }
+            (target_cache_dir / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+        except Exception:
+            pass
+
         job.update(status='ready', duration=actual, parts=parts)
     except Exception as exc:
         job.update(status='error', error=str(exc))
@@ -329,17 +405,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def reap():
+    last_cache_clean = 0
     while True:
         time.sleep(60)
         with LOCK:
             expired = [key for key, job in JOBS.items() if time.time() - job['created'] > 3600]
             for key in expired:
                 cancel(JOBS.pop(key))
+        if time.time() - last_cache_clean > 3600:
+            clean_cache()
+            last_cache_clean = time.time()
 
 
 def serve(port):
     global PORT
     PORT = int(port)
+    clean_cache()
     threading.Thread(target=reap, daemon=True).start()
     print(f'PageLens media helper: http://127.0.0.1:{PORT}', flush=True)
     try:

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-09-11
+
+### Changed
+- 同声传译改为按序组句：保留未完成句尾，模型在同一次请求中判断可翻译前缀并输出中文，校验前缀与后缀能完整还原原文。
+- 翻译携带最近三条已确认原文/译文，维护有界术语参考；识别失败缺口、拖动和换会话会清理相关状态。
+- 配音队列支持一块音频产生零至多条句段；开播不足一批时继续采音，结束时提交剩余尾句。识别、翻译与合成请求均有超时。
+- 移除英文 800 字符、中文 240 字符的静默截断；模型明确报告输出截断时拒绝配音。TTS 失败的译文按时间顺序显示。
+- 新增跨块否定、乱序、分句格式校验、尾句、上下文、超时和队列回归测试；日志 build 为 `semantic-interpret-v1`，新归档标记处理版本。
+
 ## [0.11.0] - 2026-09-11
 
 ### Added

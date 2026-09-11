@@ -22,6 +22,7 @@ import {
   recordSecondsForRate,
   shouldHoldForSync,
   shouldTranslate,
+  isValidChineseTranslation,
   speechBoundsFromAsr,
   timedCues,
   videoSliceBounds,
@@ -39,6 +40,12 @@ assert(chineseRatio("hello world") < 0.1, "en ratio");
 assert(chineseRatio("这是中文句子") > 0.8, "zh ratio");
 assert(shouldTranslate("The model is trained on video."), "translate en");
 assert(!shouldTranslate("这个模型在视频上训练。"), "skip zh");
+
+assert(isValidChineseTranslation("我最初是在2022年在Twitter上注意到Harrison的", "I first noticed Harrison on Twitter in 2022"), "valid zh with proper nouns");
+assert(isValidChineseTranslation("你好世界", "hello world"), "simple zh");
+assert(!isValidChineseTranslation("I noticed Harrison on Twitter in 2022", "I first noticed Harrison on Twitter in 2022"), "untranslated en rejected");
+assert(!isValidChineseTranslation("", "hello world"), "empty rejected");
+assert(isValidChineseTranslation("2024.", "2024."), "numeric preserved");
 
 assert(cleanTranslation("<think>plan</think>\n你好世界", "x") === "你好世界", "strip think before timeline tags");
 assert(cleanTranslation("译文：你好世界", "x") === "你好世界", "strip prefix");

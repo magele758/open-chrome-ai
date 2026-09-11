@@ -200,6 +200,7 @@ export async function saveFullMediaArchive({
   lines = [],
   cues = [],
   audioBlob = null,
+  processingVersion = 'chunk-v0',
 } = {}) {
   if (!videoId) return null;
   const now = Date.now();
@@ -207,6 +208,7 @@ export async function saveFullMediaArchive({
 
   const archiveRecord = {
     videoId,
+    processingVersion,
     title: String(title || "视频同传").trim(),
     url: String(url || ""),
     duration: Number(duration) || 0,

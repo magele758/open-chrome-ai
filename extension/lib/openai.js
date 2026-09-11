@@ -208,12 +208,15 @@ function chatBody(model, { messages, temperature, maxTokens, stream }) {
  * Thinking models can spend max_tokens on reasoning and return empty content;
  * retry with a larger budget, then the same streaming path as sidepanel chat.
  */
-export async function completeChat(model, { messages, temperature = 0.2, maxTokens = 400, signal } = {}) {
+export async function completeChat(model, { messages, temperature = 0.2, maxTokens = 400, signal, rejectTruncated = false } = {}) {
   const once = async (tokens) => {
     const response = await postChat(model, chatBody(model, { messages, temperature, maxTokens: tokens, stream: false }), signal);
     return response.json();
   };
   let json = await once(maxTokens);
+  if (rejectTruncated && /^(length|max_tokens)$/i.test(json.choices?.[0]?.finish_reason || '')) {
+    throw new Error('译文超过输出上限，已跳过本段，避免播放不完整译文。');
+  }
   let text = messageText(json);
   const finish = String(json.choices?.[0]?.finish_reason || "").toLowerCase();
   if (!text && maxTokens && (finish === "length" || finish === "max_tokens")) {

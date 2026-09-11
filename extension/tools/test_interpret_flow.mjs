@@ -81,7 +81,9 @@ function mockTranslateFetch({ delay } = {}) {
     const zh = /second|Cue 1 |cue 1 /i.test(src) ? '第二句' : /Cue (\d+)/.test(src)
       ? `第${src.match(/Cue (\d+)/)[1]}句`
       : '你好世界';
-    return Response.json({ choices: [{ message: { content: zh } }] });
+    const content = body.messages[0]?.content?.includes('"prefix"')
+      ? JSON.stringify({ prefix: src, translation: zh, suffix: '' }) : zh;
+    return Response.json({ choices: [{ message: { content } }] });
   };
 }
 
@@ -126,8 +128,8 @@ function mockRecordSlice() {
       } catch { /* form upload */ }
     }
     return Response.json({
-      text: 'Hello from the speaker',
-      segments: [{ start: 0, text: 'Hello from the speaker' }],
+      text: 'Hello from the speaker.',
+      segments: [{ start: 0, text: 'Hello from the speaker.' }],
     });
   };
   const refs = [];
@@ -172,8 +174,8 @@ function mockRecordSlice() {
       } catch { /* form upload */ }
     }
     return Response.json({
-      text: 'Hello from the speaker',
-      segments: [{ start: 0, text: 'Hello from the speaker' }],
+      text: 'Hello from the speaker.',
+      segments: [{ start: 0, text: 'Hello from the speaker.' }],
     });
   };
   const need = openingReadyCount(true);
@@ -240,8 +242,8 @@ function mockRecordSlice() {
       } catch { /* form upload */ }
     }
     return Response.json({
-      text: 'Hello from the speaker',
-      segments: [{ start: 0, text: 'Hello from the speaker' }],
+      text: 'Hello from the speaker.',
+      segments: [{ start: 0, text: 'Hello from the speaker.' }],
     });
   };
   const abort = new AbortController();
@@ -339,7 +341,7 @@ console.log('ok audio-only interpret: TTS reference, opening buffer, user pause,
 }
 console.log('PASS bad ASR skipped before display/TTS; subsequent speech still completes');
 
-function mockAsrAndTranslate(text = 'Hello from the speaker now') {
+function mockAsrAndTranslate(text = 'Hello from the speaker now.') {
   return async (_url, options = {}) => {
     const body = options.body;
     if (typeof body === 'string') {
@@ -393,11 +395,17 @@ console.log('PASS 2x slice timestamps follow video.currentTime');
   globalThis.fetch = mockAsrAndTranslate();
   const events = [];
   const abort = new AbortController();
+  let records = 0;
   const running = runInterpret({
     tabId: 1,
     settings: { text: textSettings, asr: { baseUrl: 'https://asr.test/v1', model: 'w' }, tts: { preset: 'off', baseUrl: '' } },
     capture: { stream: { id: 'tab' }, playback: { setGain() {} } },
     recordSlice: async () => {
+      if (records++ > 0) {
+        // Real recording takes time. Hold the next slice while the clock moves
+        // past the first caption instead of finishing the entire mock video.
+        await new Promise(resolve => abort.signal.addEventListener('abort', resolve, { once: true }));
+      }
       player.currentTime += 5;
       return { blob: loudWav(), mime: 'audio/wav', seconds: 5 };
     },
@@ -454,7 +462,7 @@ console.log('PASS seek revision clears the line and realigns');
   installChrome(player);
   const translation = mockTranslateFetch();
   globalThis.fetch = async (url, opts = {}) => String(url).includes('asr.test')
-    ? Response.json({ text: 'Hello from the speaker', segments: [{ start: 0, end: 5, text: 'Hello from the speaker' }] })
+    ? Response.json({ text: 'Hello from the speaker.', segments: [{ start: 0, end: 5, text: 'Hello from the speaker.' }] })
     : translation(url, opts);
   const third = gate(), abort = new AbortController();
   let dubs = 0, closed = false;
@@ -484,4 +492,46 @@ console.log('PASS seek revision clears the line and realigns');
   await running;
   assert(closed, 'independent audio job is cleaned up');
   console.log('PASS independent source holds video until three complete dubs');
+}
+
+// Real orchestration: no startup sentence, cross-chunk negation, then an EOF tail.
+{
+  const player = { currentTime: 0, duration: 15, paused: false, advance: 0, seekRevision: 0 };
+  installChrome(player);
+  const sources = ["I don't think.", 'this is a good idea.', 'We can discuss another option'];
+  const requests = [];
+  let asrIndex = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).includes('asr.test')) {
+      const text = sources[asrIndex++];
+      return Response.json({ segments: [{ start: 0, end: 5, text }] });
+    }
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    const src = body.messages.at(-1).content;
+    const structured = body.messages[0].content.includes('"prefix"');
+    const last = src === sources[2];
+    const zh = last ? '我们可以讨论另一个方案。' : '我不认为这是个好主意。';
+    return Response.json({ choices: [{ message: { content: structured
+      ? JSON.stringify(last ? { prefix: '', translation: '', suffix: src } : { prefix: src, translation: zh, suffix: '' })
+      : zh } }] });
+  };
+  const result = await runInterpret({
+    tabId: 1,
+    settings: { text: textSettings, asr: { baseUrl: 'https://asr.test/v1', model: 'w' }, tts: { preset: 'off' } },
+    capture: { stream: {}, playback: { setGain() {} } },
+    recordSlice: async () => {
+      player.currentTime += 5;
+      return { blob: loudWav(), mime: 'audio/wav', seconds: 5 };
+    },
+  });
+  assert.deepEqual(result.lines.map(line => line.src), ["I don't think this is a good idea.", sources[2]]);
+  assert.deepEqual(result.lines.map(line => line.zh), ['我不认为这是个好主意。', '我们可以讨论另一个方案。']);
+  assert.equal(result.lines[0].start, 0);
+  assert.equal(result.lines[0].end, 10);
+  assert.equal(result.lines[1].end, 15);
+  assert.equal(requests.length, 3, 'one combined translation, one defer decision, one EOF translation');
+  assert.equal(requests[2].messages[2].content, '我不认为这是个好主意。', 'EOF translation receives confirmed previous meaning');
+  assert.equal(asrIndex, 3);
+  console.log('PASS semantic startup obtains continuation; negation and EOF tail translated once with context');
 }

@@ -14,6 +14,8 @@ import { checkSpeechText, isWeakSpeechText, isWhisperHallucination } from "./spe
 import { isAsrReady, isModelReady, isTtsReady, resolveModel } from "./storage.js";
 import { assessVoiceQuality, isQuietBlob, recordSlice } from "./tab-audio-record.js";
 import { createInterpretPipeline } from "./interpret-pipeline.js";
+import { createSemanticBuffer, withInterpretDeadline, unfinishedSpeech, validateSemanticTranslation } from "./interpret-semantic.js";
+import { createInterpretContext } from "./interpret-context.js";
 import { blobToWav, synthesizeTts } from "./tts.js";
 import { videoIdentity } from "./library.js";
 import { composeFullDubTrack, saveFullMediaArchive } from "./audio-composer.js";
@@ -39,7 +41,7 @@ export const MAX_PROCESS_LAG_SECONDS = 2.8;
 export const SYNC_HOLD_PENDING = 6;
 
 const TRANSLATE_SYSTEM =
-  "你是同声传译员。把用户给出的口语转成通顺的简体中文，只输出译文，不要引号、不要解释、不要原文。若输入已是中文，原样润色成可朗读的短句。";
+  "你是同声传译员。忠实地将当前口语译成简体中文，只输出当前原文的译文，不要引号、解释或原文。保留否定、条件、比较、数字、因果和不确定语气。前面的对话仅供理解指代与统一术语，不能重复翻译。专名不确定时保留原名。输入可能是未说完的分句，不得编造后半句、补充结论或遗漏内容。";
 
 export function chineseRatio(text) {
   const s = String(text || "");
@@ -52,6 +54,14 @@ export function chineseRatio(text) {
 
 export function shouldTranslate(text) {
   return chineseRatio(text) < 0.5;
+}
+
+export function isValidChineseTranslation(zh, src = "") {
+  const text = String(zh || "").trim();
+  if (!text) return false;
+  if (/[\u4e00-\u9fff]/.test(text)) return true;
+  if (/[A-Za-z]/.test(src)) return false;
+  return true;
 }
 
 export function cueKey(cue) {
@@ -311,7 +321,6 @@ export function cleanTranslation(raw, fallback) {
   s = s.replace(/\s*\n+\s*/g, " ").replace(/\s+/g, " ").trim();
   s = stripTimeline(s);
   checkSpeechText(s, "翻译结果");
-  if (s.length > 240) s = s.slice(0, 240);
   return s || checkSpeechText(stripTimeline(fallback), "语音识别");
 }
 
@@ -414,7 +423,7 @@ async function playTab(tabId, fromStart) {
   }
 }
 
-export async function translateToZh(model, text, signal, trace = {}) {
+export async function translateToZh(model, text, signal, trace = {}, context = [], terms = []) {
   debugLog("translation.input", { ...trace, text });
   const src = checkSpeechText(stripTimeline(text), "语音识别");
   if (!src) return "";
@@ -429,19 +438,55 @@ export async function translateToZh(model, text, signal, trace = {}) {
   if (!isModelReady(model)) {
     throw new Error("同传需要已配置的文本模型。到设置填写文本模型的 base_url / model / key。");
   }
-  const raw = await completeChat(model, {
+  debugLog("translation.context", { ...trace, context });
+  const raw = await withInterpretDeadline(requestSignal => completeChat(model, {
     messages: [
-      { role: "system", content: TRANSLATE_SYSTEM },
-      { role: "user", content: src.slice(0, 800) },
+      { role: "system", content: TRANSLATE_SYSTEM + (terms.length ? `\n术语参考（若当前语义不符可修正）：${JSON.stringify(terms)}` : '') },
+      ...context.flatMap(p => [
+        { role: "user", content: p.src },
+        { role: "assistant", content: p.zh },
+      ]),
+      { role: "user", content: src },
     ],
     temperature: 0.15,
-    maxTokens: 220,
-    signal,
-  });
+    maxTokens: Math.min(1800, Math.max(300, Math.ceil(src.length * 1.5))),
+    rejectTruncated: true,
+    signal: requestSignal,
+  }), signal);
   debugLog("translation.raw", { ...trace, text: raw });
   const result = cleanTranslation(raw, src);
   debugLog("translation.result", { ...trace, text: result });
   return result;
+}
+
+export async function translateSemanticPrefix(model, src, signal, context = [], trace = {}, terms = []) {
+  if (!isModelReady(model)) throw new Error('同传需要已配置的文本模型。');
+  const system = `${TRANSLATE_SYSTEM}\n当前输入是连续语音的缓冲，ASR 可能在半句话后误加句号，不能仅凭标点认定完整。请只翻译从开头起语义完整、可以确定的连续前缀，保留末尾尚未说完的部分。可以一次包含多个完整句子。严格返回 JSON：{"prefix":"原文已确认前缀","translation":"前缀的中文译文","suffix":"原文未完成后缀"}。prefix 与 suffix 必须逐字拼回当前输入，包括空格和标点，不得改写原文，不得切断单词。没有可确认前缀时 prefix 和 translation 都为空字符串，suffix 为全部输入。不要翻译后缀，不要附加解释。可选 terms 数组记录当前前缀与译文中确实出现的明确专名或技术术语，每项为 {"source":"原词","target":"译词"}，最多20项，不要猜测。术语参考（若当前语义不符可修正）：${JSON.stringify(terms)}`;
+  debugLog('translation.input', { ...trace, text: src, semantic: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const raw = await withInterpretDeadline(requestSignal => completeChat(model, {
+      messages: [
+        { role: 'system', content: system },
+        ...context.flatMap(p => [{ role: 'user', content: p.src }, { role: 'assistant', content: p.zh }]),
+        { role: 'user', content: src },
+      ],
+      temperature: 0.1, maxTokens: Math.min(3000, Math.max(1024, Math.ceil(src.length * 3))),
+      rejectTruncated: true, signal: requestSignal,
+    }), signal);
+    signal?.throwIfAborted();
+    debugLog('translation.raw', { ...trace, text: raw, semantic: true, attempt });
+    try {
+      const parsed = validateSemanticTranslation(raw, src);
+      if (parsed.prefix) {
+        parsed.translation = cleanTranslation(parsed.translation, '');
+        if (!isValidChineseTranslation(parsed.translation, parsed.prefix)) throw new Error('没有返回有效的中文译文');
+      }
+      return parsed;
+    } catch (error) {
+      debugLog('translation.validation-error', { ...trace, attempt, error });
+      if (attempt) throw error;
+    }
+  }
 }
 
 /**
@@ -506,10 +551,62 @@ export async function runInterpret(opts) {
     return voiceRefForTime(voiceBank, line?.start, sessionRef);
   }
 
+  // Internal session switch for comparing/rolling back the semantic path.
+  const semanticEnabled = opts.semanticTranslation !== false;
+  const translationContext = createInterpretContext();
+  const semantic = createSemanticBuffer({ modelBoundaries: true, onEvent: event => {
+    if (event.type === 'semantic.gap') translationContext.reset();
+    debugLog(event.type, { runId, ...event });
+  } });
+  async function translateUnit(line, job) {
+    const s = jobSignal(job);
+    try {
+      const zh = line.pretranslated ?? await translateToZh(textModel, line.src, s, line.trace,
+        semanticEnabled ? translationContext.snapshot() : [], semanticEnabled ? translationContext.terms() : []);
+      s.throwIfAborted();
+      if (semanticEnabled) translationContext.commit(line.src, zh, line.terms);
+      if (line.pretranslated !== undefined) debugLog('translation.result', { ...line.trace, text: zh });
+      return { ...line, zh };
+    } catch (err) {
+      // A missing translation must not leave stale antecedents in the context.
+      if (!s.aborted) translationContext.reset();
+      throw err;
+    }
+  }
+
   const pipeline = createInterpretPipeline({
     signal,
     prebuffer: openingReady,
     capacity: 8,
+    onReset: generation => { semantic.reset(generation); translationContext.reset(); },
+    transform: async (item, job) => {
+      if (!item) translationContext.reset();
+      if (!semanticEnabled) return item?.src ? [item] : [];
+      const units = semantic.push(item);
+      if (units.length || !semantic.pendingText) return units;
+      const pending = semantic.pendingText;
+      // Chinese does not need a translation request just to detect a boundary.
+      if (!shouldTranslate(pending)) {
+        if (/[。！？.!?]$/.test(pending)) return semantic.flush('sentence');
+        return [];
+      }
+      if (unfinishedSpeech(pending) && !/[.!?。！？]\s+\S/.test(pending)) return [];
+      const s = jobSignal(job);
+      try {
+        const context = translationContext.snapshot();
+        debugLog('translation.context', { ...item?.trace, context });
+        const parsed = await translateSemanticPrefix(textModel, pending, s, context, item?.trace, translationContext.terms());
+        s.throwIfAborted();
+        if (!parsed.prefix) return [];
+        return [{ ...semantic.commitPrefix(parsed.prefix), pretranslated: parsed.translation, terms: parsed.terms }];
+      } catch (error) {
+        if (s.aborted) throw error;
+        // Preserve the tail for the next block; hard budgets still ensure progress.
+        debugLog('semantic.deferred', { ...item?.trace, error });
+        return [];
+      }
+    },
+    flush: () => semanticEnabled ? semantic.flush('end') : [],
     onError: err => emit({ type: "warn", message: err?.message || String(err) }),
     prepare: async (item, job) => {
       const trace = { runId, chunk: ++chunkNumber, start: item.start, seconds: item.seconds, generation: job.generation };
@@ -517,16 +614,17 @@ export async function runInterpret(opts) {
       // VAD pure music / no speech pass-through: skip model calling and let background music play directly
       if (item.vad && item.vad.speechDetected === false && Number(item.vad.lastRms) < 0.015) {
         debugLog("audio.skipped", { ...trace, reason: "vad-no-speech-music-passthrough" });
-        return null;
+        return { empty: true, start: item.start, end: item.end, trace };
       }
       try {
         const s = jobSignal(job);
         let ownRef = item.referenceBlob || null;
         if (!ownRef && item.blob) ownRef = await voiceRefFromBlob(item.blob);
+        s.throwIfAborted();
         if (ownRef) rememberSlice(ownRef, { start: item.start, end: item.end });
-        const segments = await transcribeAudio(asr, item.blob, {
-          filename: filenameForMime(item.mime), signal: s, allowEmpty: true, trace,
-        });
+        const segments = await withInterpretDeadline(requestSignal => transcribeAudio(asr, item.blob, {
+          filename: filenameForMime(item.mime), signal: requestSignal, allowEmpty: true, trace,
+        }), s);
         const src = stripTimeline(joinSegmentText(segments));
         const sliceSeconds = Number(item.end) - Number(item.start);
         const isHallucination = isWhisperHallucination(src, { sliceSeconds, segments });
@@ -536,11 +634,10 @@ export async function runInterpret(opts) {
             reason: !src ? "empty-asr" : isHallucination ? "whisper-hallucination" : signal.aborted || s.aborted ? "cancelled" : "weak-asr",
             text: src,
           });
-          return null;
+          return !src && !s.aborted ? { empty: true, start: item.start, end: item.end, trace } : null;
         }
         const bounds = speechBoundsFromAsr(segments, item.start, item.end, item.seconds);
-        const zh = await translateToZh(textModel, src, s, trace);
-        return { start: bounds.start, end: bounds.end, src, zh, ownRef, trace };
+        return { start: bounds.start, end: bounds.end, src, ownRef, trace };
       } catch (error) {
         debugLog("interpret.chunk-error", {
           ...trace,
@@ -553,31 +650,31 @@ export async function runInterpret(opts) {
     synthesize: async (line, job) => {
       const s = jobSignal(job);
       if (signal.aborted || s.aborted) return null;
+      line = await translateUnit(line, job);
       const spoken = stripTimeline(line?.zh);
       const ready = spoken ? { ...line, zh: spoken } : line;
-      if (!ttsOn || !spoken || shouldTranslate(spoken)) {
+      if (!ttsOn || line.noDub || !spoken || !isValidChineseTranslation(spoken, line.src)) {
         if (lineDisplayAction(lastTime, ready) === "show") presentLine(ready);
         return spoken ? { ...ready, dubbed: false } : null;
       }
       const referenceBlob = liveVoiceRef(ready);
       try {
         debugLog("tts.request", { ...line.trace, text: spoken, hasVoiceReference: Boolean(referenceBlob) });
-        const out = await dub(settings.tts, spoken, {
-          signal: s,
+        const out = await withInterpretDeadline(requestSignal => dub(settings.tts, spoken, {
+          signal: requestSignal,
           lang: settings.tts.lang || "ZH",
           ...(referenceBlob ? { referenceBlob } : {}),
-        });
+        }), s, 30000);
         debugLog("tts.ready", { ...line.trace, bytes: out.blob?.size });
         return { ...ready, blob: out.blob, dubbed: true, referenceBlob };
       } catch (err) {
         debugLog("tts.error", { ...line.trace, error: err });
-        if (!s.aborted && !signal.aborted) presentLine(ready);
         if (err?.name === "AbortError") return null;
         if (!ttsWarned) {
           ttsWarned = true;
           emit({ type: "warn", message: `配音未开始，仅显示译文：${err?.message || err}` });
         }
-        return null;
+        return { ...ready, dubbed: false };
       }
     },
     play: async item => {
@@ -669,7 +766,8 @@ export async function runInterpret(opts) {
     lastPresented = { start: line.start, end: line.end, src: line.src, zh: line.zh };
     debugLog("interpret.line", { ...line.trace, src: line.src, zh: line.zh, identical: line.src === line.zh, tts: ttsOn });
     lines.push(line);
-    emit({ type: "line", start: line.start, end: line.end, src: line.src, zh: line.zh, mode });
+    emit({ type: "line", start: line.start, end: line.end, src: line.src, zh: line.zh, mode,
+      utteranceId: line.utteranceId, sourceChunkIds: line.sourceChunkIds, timingQuality: line.timingQuality });
   }
   function maybeClearStale(t) {
     if (!lastPresented || !Number.isFinite(Number(t))) return;
@@ -1013,6 +1111,8 @@ export async function runInterpret(opts) {
       const item = { ...slice, start: bounds.start, end: bounds.end };
       if (!isQuietBlob(slice.blob)) pipeline.enqueue(item);
       else debugLog("audio.skipped", { runId, start, bytes: slice.blob?.size, reason: "byte-size-only" });
+      // Yield even when a custom capture source resolves immediately.
+      await sleep(0);
     }
     clockAlive = false;
     // Finish the final text segments on natural end; explicit stop cancels them.
@@ -1035,6 +1135,7 @@ export async function runInterpret(opts) {
             lines,
             cues: linesToCaptions(lines).cues,
             audioBlob: fullAudio,
+            processingVersion: semanticEnabled ? 'semantic-v1' : 'chunk-v0',
           });
           emit({ type: "archive_saved", archive });
         }

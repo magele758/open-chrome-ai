@@ -1,5 +1,5 @@
 /** Bounded, ordered preparation -> synthesis -> buffered playback.
- * Preparation overlaps (two ASR/translation jobs); GPU synthesis is serial,
+ * Preparation overlaps (two ASR jobs); semantic transformation and synthesis are ordered,
  * independently of playback. Each item carries its own audio reference.
  * flushAhead() drops queued/future work for a new generation (seek) but
  * leaves the segment that is currently playing.
@@ -20,7 +20,10 @@ function linkJobController(outer) {
 }
 
 export function createInterpretPipeline({ prepare, synthesize, play, signal,
+  transform, flush, onReset = () => {},
   onError = () => {}, onBuffer = () => {}, capacity = 12, prebuffer = 2 }) {
+  capacity = Math.max(1, Number(capacity) || 12);
+  prebuffer = Math.min(capacity, Math.max(1, Number(prebuffer) || 2));
   let count = 0;
   let preparing = 0;
   let closed = false;
@@ -33,6 +36,7 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
   let buffering = true;
   let partialBuffer = false;
   let synthesis = Promise.resolve();
+  let committing = 0;
   let jobLink = linkJobController(signal);
   const waiting = [];
   const ready = [];
@@ -56,6 +60,7 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
   });
   const cancel = () => {
     cancelled = true;
+    count -= ready.length;
     ready.length = 0;
     try { jobLink.controller.abort(); } catch { /* already */ }
     notify();
@@ -78,6 +83,31 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
     if (cancelled) while (waiting.length) waiting.shift().resolve(null);
   }
 
+  // One ordered source item may emit zero or many semantic units. Account for
+  // every output before awaiting TTS so playback cannot close on a transient 0.
+  async function emitOutputs(outputs, job, holdsSlot = true) {
+    const items = (Array.isArray(outputs) ? outputs : outputs ? [outputs] : []);
+    count += items.length - (holdsSlot ? 1 : 0);
+    notify();
+    for (const input of items) {
+      // A single source chunk can fan out; bound synthesized audio separately
+      // from the outstanding source/semantic count used for capture backpressure.
+      while (!stale(job) && ready.length >= capacity) await wait();
+      if (stale(job)) { release(); continue; }
+      try {
+        const output = await synthesize(input, jobCtx(job));
+        if (stale(job)) { release(); continue; }
+        settled++;
+        const key = startKey(input.start);
+        if (output) { audioReady++; ready.push(output); notify(); }
+        else {
+          if (key != null) failedStarts.add(key);
+          release();
+        }
+      } catch (err) { report(err); release(); }
+    }
+  }
+
   const playback = (async () => {
     while (!cancelled) {
       if (closed && !ready.length) break;
@@ -91,6 +121,7 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
       partialBuffer = false;
       const item = ready.shift();
       playingStart = startKey(item?.start);
+      notify();
       try { await play(item); } catch (err) { report(err); }
       finally {
         if (playingStart != null) playedStarts.add(playingStart);
@@ -138,7 +169,7 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
       while (!cancelled && !closed && audioReady < n) {
         if (count <= 0) return false;
         // Items sitting in ready[] still hold count (prebuffer). That is not in-flight work.
-        if (waiting.length === 0 && preparing === 0 && count <= ready.length) {
+        if (waiting.length === 0 && preparing === 0 && committing === 0 && count <= ready.length) {
           return audioReady >= n;
         }
         await wait();
@@ -161,30 +192,25 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
       const job = { item, generation, signal: jobLink.controller.signal };
       const prepared = new Promise(resolve => { job.resolve = resolve; waiting.push(job); });
       startPreparation();
+      committing++;
       synthesis = synthesis.then(async () => {
-        const input = await prepared;
-        if (!input || stale(job)) { release(); return; }
         try {
-          const output = await synthesize(input, jobCtx(job));
+          const input = await prepared;
           if (stale(job)) { release(); return; }
-          settled++;
-          const key = startKey(input.start);
-          if (output) { audioReady++; ready.push(output); notify(); }
-          else {
-            if (key != null) failedStarts.add(key);
-            notify();
-            release();
-          }
+          const outputs = transform ? await transform(input, jobCtx(job)) : input;
+          await emitOutputs(outputs, job);
         } catch (err) { report(err); release(); }
+        finally { committing--; notify(); }
       });
       return true;
     },
     flushAhead() {
       generation++;
+      onReset(generation);
       buffering = true;
       partialBuffer = false;
       settled = 0;
-      audioReady = playingStart != null ? 1 : 0;
+      audioReady = 0;
       failedStarts.clear();
       playedStarts.clear();
       if (playingStart != null) playedStarts.add(playingStart);
@@ -210,6 +236,13 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
       });
       try {
         await Promise.race([synthesis, aborted]);
+        if (!closed && !cancelled && flush) {
+          const job = { generation, signal: jobLink.controller.signal };
+          await Promise.race([(async () => {
+            const outputs = await flush(jobCtx(job));
+            if (!stale(job)) await emitOutputs(outputs, job, false);
+          })().catch(report), aborted]);
+        }
         closed = true;
         notify();
         await Promise.race([playback, aborted]);
