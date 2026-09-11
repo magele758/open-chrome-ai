@@ -54,29 +54,34 @@ PageLens 要做的是：**能用的「内容理解侧栏」**，主场是网页�
 
 YouTube 以及页里带 `<video>` 的站点：
 
-- 识别时长、当前进度、有没有字幕
-- YouTube 优先拉 timedtext 字幕；其它页尝试 HTML5 `textTracks`
-- **一键总结**：卡片「一键总结」/ 输入框旁「总」。先获取完整字幕；没有字幕则下载完整音轨、分段 ASR 生成全文，再让文本模型分段阅读并汇总。不会跟随视频播放或移动播放进度
-- **同声传译**：卡片「同声传译」/ 输入框旁「译」。始终在当前观看页进行，不新开标签。默认按声音约 5 秒一切（需 ASR），即使页面有字幕也不自动跟轴；可点「用字幕 / 按声音」改成跟字幕轴。翻译走设置里的**文本模型**。配了 TTS 则用当前原声切片当临时音色，队列配音在合成时取最新样本；截取失败才退回设置里的参考音。失败时仍显示译文。处理积压时会暂停画面等待。没配 TTS 只出中文字幕。侧栏「开原声 / 关原声」只切页面喇叭，不影响中文配音和识别
+- 识别时长、当前进度和音频文稿状态
+- 不读取 YouTube timedtext、HTML5 textTracks 或下载字幕；旧的来源不明缓存不再复用
+- **一键总结**：卡片「一键总结」/ 输入框旁「总」。下载完整音轨、分段 ASR 生成全文，再让文本模型分段阅读并汇总。已有完整音频文稿则直接复用。不会跟随视频播放或移动播放进度；可与同声传译同时运行，停止其中一项不影响另一项
+- **同声传译**：卡片「同声传译」/ 输入框旁「译」。始终在当前观看页进行，不新开标签。始终按声音约 5 秒一切（需 ASR），不读取字幕。翻译走设置里的**文本模型**。配了 TTS 则用当前原声切片当临时音色，队列配音在合成时取最新样本；截取失败才退回设置里的参考音。失败时仍显示译文。处理积压时会暂停画面等待。没配 TTS 只出中文字幕。侧栏「开原声 / 关原声」只切页面喇叭，不影响中文配音和识别
 - 同一页有多个 `<video>` 时，自动选主播放器（YouTube 的 `html5-main-video`、正在播的、面积最大的）。多于一个会显示「画面 1/N」，可点切换
 - 只要文稿、不总结：点「只要文稿」
 - 答案里的 `12:04` 可点，播放器跳到该秒
 
-无字幕视频、以及默认同传（按声音）需要在设置里配 **语音转写（ASR）**：`base_url` + `model`（如 `whisper-1` / `whisper-large-v3`），云端填 `api_key`，本地 `http://127.0.0.1:端口` 可以不填。自建走 `POST {base_url}/v1/transcribe`，也可走 Groq / OpenAI 的 `/audio/transcriptions`。扩展不内置 Whisper，也不去解析视频直链。
+同传默认先准备好 3 段中文配音再开播，配音播空后也按 3 段重新缓冲；处理队列最多容纳 8 段，积压到 6 段时集中暂停采音、消化积压，减少频繁停顿。会跟随用户暂停、恢复和倍速；拖动进度后丢弃旧位置的待播内容。自动暂停画面等待时，中文配音继续播放以消化积压，不截掉句子开头追赶进度。当前页采音需要先收集一段声音，再识别、翻译和合成，因此仍有处理延迟，不保证口型同步。
 
-完整文稿提取需要保持侧栏打开；没有可直接读取的字幕时，需要启动本机媒体服务（见下文）。音轨按约 5 分钟分段转写，没有原先 30 分钟的录制上限。直播、受保护媒体或下载失败会明确报错，不会把片段当全文。同传仍从当前进度开始，点「停止同传」结束。
+视频总结和同声传译需要在设置里配 **语音转写（ASR）**：`base_url` + `model`（如 `whisper-1` / `whisper-large-v3`），云端填 `api_key`，本地 `http://127.0.0.1:端口` 可以不填。自建走 `POST {base_url}/v1/transcribe`，也可走 Groq / OpenAI 的 `/audio/transcriptions`。扩展不内置 Whisper，也不去解析视频直链。
+
+完整文稿提取需要保持侧栏打开；提取完整音轨需要启动本机媒体服务（见下文）。音轨按约 5 分钟分段转写，没有原先 30 分钟的录制上限。直播、受保护媒体或下载失败会明确报错，不会把片段当全文。同传仍从当前进度开始，点「停止同传」结束。
 
 完整媒体服务使用本机 `yt-dlp`、`ffmpeg`、`ffprobe`，只监听回环地址，不自动读取浏览器 Cookie：
 
 ```sh
-python3 tools/media_helper.py
+conda create -n pagelens-media -c conda-forge python=3.12 ffmpeg yt-dlp -y   # 只需一次
+conda run -n pagelens-media python tools/media_helper.py --ensure
 ```
 
-默认地址 `http://127.0.0.1:18789`。先尝试整条字幕，再下载完整音轨；音频分段发往设置里的 ASR，原音轨不发给文本模型。成功、失败或取消后清理临时音频；意外关闭侧栏留下的任务一小时后清理。若提示媒体服务未启动，重新运行上面的命令。站点需登录或 yt-dlp 不支持时会失败，不回退到播放录音。完整文稿保留在扩展缓存；选了文稿文件夹还会写入 `original.vtt` 和 `transcript.md`。长文稿总结会阅读全文，旧录音缓存完整性未知时会重新提取。
+YouTube 下载还需要可用的 Deno 或 Node.js，服务会自动检测并传给下载器。若旧版下载器出现 HTTP 403，更新实际使用的 yt-dlp 及其 EJS 组件（pip 安装使用 `python -m pip install -U 'yt-dlp[default]'`）。服务会忽略用户级下载器配置，避免额外字幕下载或输出格式覆盖。
+
+默认地址 `http://127.0.0.1:18789`。点「一键总结」时若服务未就绪会尝试自动拉起。只下载完整音轨，不读取站点字幕；音频分段发往设置里的 ASR，原音轨不发给文本模型。成功、失败或取消后清理临时音频；意外关闭侧栏留下的任务一小时后清理。若本机已启动仍提示未连接，到扩展详情的网站设置允许「本地网络」。站点需登录或 yt-dlp 不支持时会失败，不回退到播放录音。完整文稿保留在扩展缓存；选了文稿文件夹还会写入 `original.vtt` 和 `transcript.md`。长文稿总结会阅读全文，旧录音缓存完整性未知时会重新提取。
 
 ### 文稿文件夹
 
-设置里可以「选择文件夹」，或填绝对路径（需已安装 Native Host，支持 `~`）。Obsidian 库、`~/Movies/PageLens` 都可以。之后有字幕或转写完成时，会写成普通文件，而不是堆在扩展存储里。对话也可以一键写入同一目录：
+设置里可以「选择文件夹」，或填绝对路径（需已安装 Native Host，支持 `~`）。Obsidian 库、`~/Movies/PageLens` 都可以。之后音频转写完成时，会写成普通文件，而不是堆在扩展存储里。对话也可以一键写入同一目录：
 
 ```
 你选的目录/
@@ -124,12 +129,12 @@ node native/install-native-host.mjs --extension-id <扩展ID>
 
 ### 高级：自建转写与配音（可选）
 
-不配也能用读页、问答、点选。只有无字幕要转写、或想朗读一句时才填。
+不配也能用读页、问答、点选。视频转写、同声传译需要 ASR，朗读或配音需要 TTS。
 
 设置里：
 
 - **语音转写**：预设「自建 /v1/transcribe」，`base_url` 填你的转写根地址（示例 `http://127.0.0.1:8002`）。扩展调用 `POST {base_url}/v1/transcribe`，用返回的 `segments[].start/end/text`。也仍支持 OpenAI 形态的 `/audio/transcriptions`。
-- **配音**：Index-TTS 2.5 Gradio（示例 `http://127.0.0.1:7860`）。`/gen_single` 用 `Same as the voice reference` + 参考 wav 克隆音色。同传有字幕或无字幕都会截原声当临时参考；上传或设置里「从当前视频截取音色」供试听／朗读，也是截取失败时的退路。同传期间会关掉原片声音，停止后恢复。
+- **配音**：Index-TTS 2.5 Gradio（示例 `http://127.0.0.1:7860`）。`/gen_single` 用 `Same as the voice reference` + 参考 wav 克隆音色。同传截取原声当临时参考；上传或设置里「从当前视频截取音色」供试听／朗读，也是截取失败时的退路。同传期间会关掉原片声音，停止后恢复。
 
 接口说明、curl 示例见 [docs/advanced-asr-tts.md](docs/advanced-asr-tts.md)。不要把内网 IP 或机器路径写进仓库。翻译专用端口先不接。
 
@@ -173,9 +178,9 @@ Session Buddy、Omni 这类「管标签」扩展没有对外接口，调不到�
 
 设置里的槽位：
 
-- **文本模型**：摘要、问答、字幕理解
+- **文本模型**：摘要、问答、文稿理解
 - **多模态模型**：看截图。若就是同一个视觉模型，勾选「与文本模型相同」
-- **语音转写（ASR）**：无字幕视频。自建 `/v1/transcribe`，或 Groq / OpenAI 兼容 `/audio/transcriptions`
+- **语音转写（ASR）**：视频总结和同声传译。自建 `/v1/transcribe`，或 Groq / OpenAI 兼容 `/audio/transcriptions`
 - **配音（可选）**：Index-TTS Gradio。不配不影响其它功能
 
 文本/多模态：`POST {base_url}/chat/completions`。自建 ASR：`POST {base_url}/v1/transcribe`。也可继续用 OpenAI 形态的 `/audio/transcriptions`。预设里有 OpenAI、SiliconFlow、DeepSeek、Kimi、通义、火山、Ollama、LM Studio 等，也可完全自定义。
@@ -227,7 +232,7 @@ python3 extension/tools/mock_llm.py
 
 工具分两层：
 
-1. **高层语义工具**：抽页、截图、点击填写、列/开/关标签、任务分组、书签、历史、字幕 / 转写视频、文稿文件夹、Automa / COSE、`run_shell`（需 Native Host）等
+1. **高层语义工具**：抽页、截图、点击填写、列/开/关标签、任务分组、书签、历史、音频转写视频、文稿文件夹、Automa / COSE、`run_shell`（需 Native Host）等
 2. **`chrome_call` 白名单**：tabs / windows / bookmarks / history / notifications / tts / tabGroups 等已授权 API
 
 不开放：cookies、debugger、downloads、proxy、裸读 `chrome.storage`（密钥在里面）。
@@ -287,7 +292,7 @@ flowchart LR
     Pack[page-pack.js]
     Ext[extract.js]
     Pdf[pdf-text.js]
-    Yt[youtube.js]
+    Yt[音频文稿缓存]
     Caps[captions.js]
   end
 
@@ -346,12 +351,12 @@ flowchart LR
 | 入口 | `sidepanel/app.js` | UI、会话、设置、编排 Agent / 总结 / 同传 |
 | 后台 | `sw.js` | 开侧栏、右键选区、转发 `pl.audio.*` |
 | Agent | `loop` / `context` / `tools` / `skills` | `prepare → model → tools` |
-| 读页 | `page-pack` `extract` `pdf-text` `youtube` | 抽正文 / PDF / YouTube 字幕 |
+| 读页 | `page-pack` `extract` `pdf-text` | 抽正文 / PDF |
 | 视频 | `captions` `full-transcript` `interpret*` `tab-audio*` | 文稿、完整音轨、当前页同传 |
 | 模型 | `openai` `asr` `tts` `summarize-transcript` | 聊天、转写、配音、长文汇总 |
 | 磁盘 | `library` `skill-folder` `sessions` `idb-kv` | 文稿夹、Skill 目录、对话、大缓存 |
 | 本机桥 | `native-host` + `native/pagelens-host` | `ping` / `exec` / `fs` |
-| 助手 | `tools/media_helper.py` | 无字幕时拉完整音轨，不是 Agent 进程 |
+| 助手 | `tools/media_helper.py` | 下载完整音轨，不是 Agent 进程 |
 
 ### 对话与侧栏按钮
 
@@ -369,10 +374,10 @@ flowchart TB
 
   subgraph video [侧栏按钮]
     SumBtn[一键总结] --> Caps2[captions / full-transcript]
-    Caps2 -->|无字幕| Helper[media_helper + ASR]
+    Caps2 -->|提取音频| Helper[media_helper + ASR]
     Caps2 --> Sum[summarize-transcript]
     SiBtn[同声传译] --> Live[interpret 当前页切片]
-    Live --> Asr2[ASR 或字幕轴]
+    Live --> Asr2[音频 ASR]
     Asr2 --> Zh[文本模型翻译]
     Zh -.-> Tts2[可选 TTS 叠音]
   end
@@ -398,7 +403,7 @@ flowchart TB
 ## 待办
 
 - **给其他 Agent 调用 PageLens（选型后再做）**  
-  目标：Grok / Claude Code 等本机 Agent 能用你正在看的 Chrome（读页、字幕、转写、文稿目录），插件不要变重，也不要自己养一个常驻网关。  
+  目标：Grok / Claude Code 等本机 Agent 能用你正在看的 Chrome（读页、音频转写、文稿目录），插件不要变重，也不要自己养一个常驻网关。
   约束：MV3 扩展不能在 `127.0.0.1` 上 listen；IBM 的 ACP 已并进 A2A，不必单独实现。A2A 也要服务端端口，先放着。  
   现状：PageLens → 本机已用 Native Messaging（`run_shell`）。反方向（Grok / Claude 调 PageLens）还没有 MCP / inbox。  
   候选（未拍板）：
@@ -467,3 +472,11 @@ node extension/tools/test_tts.mjs
 node extension/tools/test_pdf.mjs
 node extension/tools/test_video_pick.mjs
 ```
+
+### 视频调试日志
+
+重新加载扩展并重新打开侧栏后，点击顶部「日志」可下载本次侧栏的 JSON 日志；也可右键侧栏空白处选择「检查」，在 Console 中筛选 `[PageLens debug]`。日志默认启用，仅在本次页面内存中保留最近 600 条，关闭或刷新侧栏会清空；长文本最多保留 4000 字符，数组最多 30 项。
+
+复现问题后、刷新页面前导出。用 `runId` 和 `chunk` 对齐同一音频片段：`audio.chunk` 是时间位置、格式和大小，`asr.result` 是识别原文，`translation.raw` 是模型返回的译文，`translation.bypass` 表示中文原文直接显示，`interpret.line` 是实际展示内容，`interpret.chunk-error` 是跳过原因。`tts.request/ready/error` 记录配音处理；`transcript.*` 区分完整音轨提取与缓存。`panel.loaded` 的 build 可确认是否加载了日志版本。
+
+日志含识别文字和译文，不保存音频、密钥或请求头，也不会自动上传。

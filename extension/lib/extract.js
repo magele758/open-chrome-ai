@@ -405,26 +405,3 @@ export function highlightQuote(needle) {
   }
   return false;
 }
-
-/** MAIN world: YouTube player payload. */
-export function readYoutubeCaptionTracks() {
-  const player =
-    window.ytInitialPlayerResponse ||
-    window.ytplayer?.config?.args?.player_response ||
-    null;
-  let parsed = player;
-  if (typeof parsed === "string") {
-    try {
-      parsed = JSON.parse(parsed);
-    } catch {
-      parsed = null;
-    }
-  }
-  const tracks = parsed?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-  return tracks.map((t) => ({
-    baseUrl: t.baseUrl,
-    languageCode: t.languageCode,
-    kind: t.kind,
-    name: t.name?.simpleText || "",
-  }));
-}

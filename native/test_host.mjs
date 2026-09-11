@@ -20,6 +20,7 @@ function assert(cond, msg) {
 
 const ping = await handleRequest({ op: "ping" });
 assert(ping.ok && ping.name === HOST_NAME && ping.version, "ping");
+assert(ping.repoRoot && fs.existsSync(path.join(ping.repoRoot, "tools/media_helper.py")), "ping repoRoot");
 
 const unknown = await handleRequest({ op: "nope" });
 assert(unknown.ok === false && /未知/.test(unknown.error), "unknown op");

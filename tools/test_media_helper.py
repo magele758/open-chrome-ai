@@ -1,12 +1,15 @@
 """Integration check with local media: real yt-dlp download and ffmpeg segmentation."""
 import functools
+import http.client
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import media_helper as helper
 
 
@@ -38,6 +41,40 @@ class MediaTest(unittest.TestCase):
                 helper.PART_SECONDS = original
                 server.shutdown()
                 server.server_close()
+
+    def test_health_cors_and_ensure_when_running(self):
+        server = ThreadingHTTPServer(('127.0.0.1', 0), helper.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_port
+        origin = 'chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef'
+        try:
+            self.assertTrue(helper.probe(port))
+            conn = http.client.HTTPConnection('127.0.0.1', port, timeout=2)
+            conn.request('OPTIONS', '/jobs', headers={
+                'Origin': origin,
+                'Access-Control-Request-Method': 'POST',
+                'Access-Control-Request-Private-Network': 'true',
+            })
+            preflight = conn.getresponse()
+            self.assertEqual(preflight.status, 204)
+            self.assertEqual(preflight.getheader('Access-Control-Allow-Private-Network'), 'true')
+            preflight.read()
+            conn.request('GET', '/health', headers={'Origin': origin})
+            health = conn.getresponse()
+            body = json.loads(health.read().decode())
+            self.assertEqual(health.status, 200)
+            self.assertEqual(body['service'], 'pagelens-media')
+            self.assertEqual(health.getheader('Access-Control-Allow-Private-Network'), 'true')
+            conn.request('OPTIONS', '/health', headers={'Origin': 'null', 'Access-Control-Request-Private-Network': 'true'})
+            null_origin = conn.getresponse()
+            self.assertEqual(null_origin.status, 204)
+            null_origin.read()
+            conn.close()
+            with patch('sys.stdout', new_callable=io.StringIO):
+                self.assertEqual(helper.ensure(port), 0)
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == '__main__':

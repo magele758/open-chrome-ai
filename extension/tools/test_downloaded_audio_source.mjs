@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import { openInterpretSource, pcmWav, readPcmWav } from '../lib/downloaded-audio-source.js';
+const a = new Uint8Array(32000).fill(11), b = new Uint8Array(32000).fill(22);
+const id = 'a'.repeat(32), calls = [];
+const fetchImpl = async (url, options = {}) => {
+  calls.push([url, options.method]);
+  if (url.endsWith('/health')) return Response.json({ service: 'pagelens-media' });
+  if (options.method === 'DELETE') return Response.json({ ok: true });
+  if (url.endsWith('/jobs')) return Response.json({ id });
+  if (url.includes('/audio/')) return new Response(pcmWav([url.endsWith('/0') ? a : b]));
+  return Response.json({ status: 'ready', duration: 2, parts: [{ index: 0, start: 0, duration: 1 }, { index: 1, start: 1, duration: 1 }] });
+};
+const source = await openInterpretSource({ url: 'https://example.test/video', fetchImpl });
+const part = await source.slice(.5, 1);
+const pcm = readPcmWav(await part.blob.arrayBuffer());
+assert.equal(pcm.length, 32000);
+assert(pcm.subarray(0, 16000).every(n => n === 11));
+assert(pcm.subarray(16000).every(n => n === 22));
+assert.equal(part.start, .5);
+assert.equal(part.end, 1.5);
+assert.equal((await source.slice(1.8, 5)).seconds, .2);
+assert.equal(await source.slice(2, 5), null);
+assert.equal(calls.filter(([url]) => url.includes('/audio/')).length, 2, 'reuse downloaded parts');
+await source.close();
+assert(calls.some(([, method]) => method === 'DELETE'));
+assert.throws(() => readPcmWav(new ArrayBuffer(20)));
+console.log('PASS downloaded audio: cross-part timing, exact samples, short tail, cache, cleanup');

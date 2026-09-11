@@ -14,6 +14,7 @@
         <button type="button" id="btn-new" title="新对话">新</button>
         <button type="button" id="btn-history" title="对话历史">历</button>
         <button type="button" id="btn-obsidian" title="把当前对话写入文稿文件夹（Obsidian 可直接打开）">入</button>
+        <button type="button" id="btn-debug-export" title="导出本次侧栏调试日志（含识别原文和译文）">日志</button>
         <button type="button" id="btn-settings" title="设置">设</button>
       </div>
     </header>
@@ -29,9 +30,8 @@
           <button type="button" class="x" id="btn-unpin" title="不分享此页">×</button>
         </div>
         <div class="ctx-actions" id="ctx-actions">
-          <button type="button" class="ctx-action primary" id="btn-summarize-video" title="一键取出台词并总结。有字幕直接总结。">一键总结</button>
-          <button type="button" class="ctx-action primary" id="btn-interpret" title="边看边出中文。已关闭跟字幕，按声音约 5 秒一切。">同声传译</button>
-          <button type="button" class="ctx-action hidden busy" id="btn-interpret-captions" title="当前不跟字幕。点此改回有字幕就跟轴。">按声音</button>
+          <button type="button" class="ctx-action primary" id="btn-summarize-video" title="下载完整音轨并转写总结，可与同声传译同时进行。">一键总结</button>
+          <button type="button" class="ctx-action primary" id="btn-interpret" title="边看边出中文，按声音约 5 秒一切。">同声传译</button>
           <button type="button" class="ctx-action hidden" id="btn-original-audio" title="开启或关闭原视频声音">关原声</button>
           <button type="button" class="ctx-action" id="btn-transcribe" title="只取出带时间戳的台词，不自动总结">只要文稿</button>
           <button type="button" class="ctx-action hidden" id="btn-video-switch" title="页面里有多个视频时，切换要总结/同传的那一个">画面</button>
@@ -69,7 +69,7 @@
 
       <div class="block" id="block-text">
         <h3>文本模型</h3>
-        <p class="lead" style="margin-top:-4px">摘要、问答、字幕理解走这条。</p>
+        <p class="lead" style="margin-top:-4px">摘要、问答、文稿理解走这条。</p>
       </div>
 
       <div class="block" id="block-mm">
@@ -84,7 +84,7 @@
 
       <div class="block" id="block-asr">
         <h3>语音转写（ASR）</h3>
-        <p class="lead" style="margin-top:-4px">可选。无字幕视频才需要。自建服务选预设「自建 /v1/transcribe」，<code>POST {host}/v1/transcribe</code>；也可填 Groq / OpenAI 的 <code>/audio/transcriptions</code>。扩展不内置 Whisper。详见仓库 <code>docs/advanced-asr-tts.md</code>。</p>
+        <p class="lead" style="margin-top:-4px">视频总结和同声传译需要。自建服务选预设「自建 /v1/transcribe」，<code>POST {host}/v1/transcribe</code>；也可填 Groq / OpenAI 的 <code>/audio/transcriptions</code>。扩展不内置 Whisper。详见仓库 <code>docs/advanced-asr-tts.md</code>。</p>
       </div>
 
       <div class="block" id="block-tts">

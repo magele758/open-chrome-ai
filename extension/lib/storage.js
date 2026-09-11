@@ -65,7 +65,6 @@ export function defaultSettings() {
     shareActiveTab: true,
     nativeShell: true,
     skillsEnabled: false,
-    interpretUseCaptions: false,
     shortcuts: [],
   };
 }
@@ -83,7 +82,7 @@ export function normalizeSettings(raw) {
   merged.uiFont = ["md", "lg", "xl"].includes(raw?.uiFont) ? raw.uiFont : "md";
   merged.nativeShell = raw?.nativeShell !== false;
   merged.skillsEnabled = raw?.skillsEnabled === true;
-  merged.interpretUseCaptions = raw?.interpretUseCaptions === true;
+  delete merged.interpretUseCaptions;
   merged.shortcuts = Array.isArray(raw?.shortcuts)
     ? raw.shortcuts.map((s) => ({
         id: String(s?.id || crypto.randomUUID()),
@@ -150,9 +149,7 @@ export function isTtsReady(tts) {
   return Boolean(tts?.baseUrl?.trim());
 }
 
-export function useInterpretCaptions(settings) {
-  return settings?.interpretUseCaptions === true;
-}
+
 
 export function isSkillsEnabled(settings) {
   return settings?.skillsEnabled === true;

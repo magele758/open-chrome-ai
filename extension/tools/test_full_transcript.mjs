@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { acquireFullTranscript } from '../lib/full-transcript.js';
+import { acquireFullTranscript, ensureMediaHelper, helperRequestInit, mediaHelperStartHint, probeMediaHelper } from '../lib/full-transcript.js';
 import { summarizeTranscript, splitTranscript } from '../lib/summarize-transcript.js';
 import { getCachedTranscript, setCachedTranscript, videoIdentity } from '../lib/captions.js';
 import { formatTranscript } from '../lib/asr.js';
@@ -36,8 +36,7 @@ assert.equal(deleted, 2, 'failure also cleans up');
 const abort = new AbortController();
 await assert.rejects(acquireFullTranscript({ url: 'https://video.test', asr, fetchImpl, signal: abort.signal, onProgress: p => { if (p.status === 'uploading') abort.abort(); } }), /abort/i);
 assert.equal(deleted, 3);
-const sub = await acquireFullTranscript({ url: 'https://video.test', fetchImpl: async (url, opts = {}) => opts.method === 'POST' ? Response.json({ id }) : opts.method === 'DELETE' ? Response.json({}) : Response.json({ status: 'ready', duration: 10, subtitle: { format: 'vtt', body: 'WEBVTT\n\n00:00:01.000 --> 00:00:09.000\nfull subtitles\n' } }) });
-assert.equal(sub.complete, true, 'subtitles do not need ASR');
+await assert.rejects(acquireFullTranscript({ url: 'https://video.test', asr, fetchImpl: async (url, opts = {}) => opts.method === 'POST' ? Response.json({ id }) : opts.method === 'DELETE' ? Response.json({}) : Response.json({ status: 'ready', duration: 10, subtitle: { format: 'vtt', body: 'untrusted subtitles' } }) }), /没有取得完整音轨/, 'old helper subtitle responses are never consumed');
 const store = {};
 globalThis.chrome = { storage: { local: {
   get: async (keys) => {
@@ -53,7 +52,7 @@ globalThis.chrome = { storage: { local: {
   remove: async (keys) => { for (const k of [].concat(keys)) delete store[k]; },
 } } };
 const large = formatTranscript(Array.from({ length: 1200 }, (_, i) => ({ start: i, text: `cue ${i} ${'full text '.repeat(4)}` })));
-await setCachedTranscript('https://video.test', { ...large, complete: true });
+await setCachedTranscript('https://video.test', { ...large, complete: true, source: "asr-full" });
 const cached = await getCachedTranscript('https://video.test');
 assert.equal(cached.text, large.text);
 assert.equal(cached.cues.length, 1200);
@@ -67,12 +66,12 @@ const legacyUrl = 'https://legacy.test/video';
 const legacyKey = await asrItemKey(legacyUrl);
 store[legacyKey] = { text: 'legacy transcript', cues: [{ start: 1, text: 'hi' }], complete: true };
 const migrated = await getCachedTranscript(legacyUrl);
-assert.equal(migrated.text, 'legacy transcript');
+assert.equal(migrated, null, 'unverified legacy cache is ignored');
 assert.equal(store[legacyKey], undefined, 'legacy chrome item removed');
 assert.equal(idb.get(legacyKey)?.text, 'legacy transcript');
 
 for (let i = 0; i < 25; i++) {
-  await setCachedTranscript(`https://video.test/v${i}`, { text: `t${i}`, cues: [], complete: true });
+  await setCachedTranscript(`https://video.test/v${i}`, { text: `t${i}`, cues: [], complete: true, source: 'asr-full' });
 }
 assert.equal(store['pl.asr.index']?.length, 24, 'asr cache cap');
 const droppedKey = await asrItemKey('https://video.test/v0');
@@ -94,4 +93,39 @@ const summary = await summarizeTranscript({ text, model: {}, complete: async (_m
 } });
 assert.equal(summary, 'complete summary');
 for (let i = 0; i < 7; i++) assert(seen.some(s => s.includes(`MARKER_${i}`)));
-console.log('PASS full acquisition, silent segments, offsets, failure/cancel cleanup, subtitle-only, untruncated cache, whole-document summary');
+
+assert.match(mediaHelperStartHint(), /conda run -n pagelens-media python tools\/media_helper.py --ensure/);
+assert.match(mediaHelperStartHint(), /不会改为跟随播放录音/);
+assert.equal(helperRequestInit({ method: 'POST' }).targetAddressSpace, 'loopback');
+assert.equal(helperRequestInit({ method: 'POST' }).method, 'POST');
+assert.equal((await probeMediaHelper({ fetchImpl: async () => { throw new TypeError('Failed to fetch'); } })).ok, false);
+assert.equal((await probeMediaHelper({ fetchImpl: async () => Response.json({ ok: true, service: 'pagelens-media' }) })).ok, true);
+assert.equal((await probeMediaHelper({ fetchImpl: async () => Response.json({ ok: true, service: 'other' }) })).ok, false);
+
+globalThis.fetch = async () => Response.json({ segments: [{ start: 1, end: 3, text: 'RECOVERED' }] });
+let started = 0;
+let up = false;
+const flaky = async (url, options = {}) => {
+  if (!up) throw new TypeError('Failed to fetch');
+  if (String(url).endsWith('/health')) return Response.json({ ok: true, service: 'pagelens-media' });
+  if (options.method === 'POST') return Response.json({ id });
+  if (options.method === 'DELETE') return Response.json({ ok: true });
+  if (String(url).includes('/audio/')) return new Response(new Blob(['audio'], { type: 'audio/wav' }));
+  return Response.json({ status: 'ready', duration: 610, parts: [{ index: 0, start: 0, duration: 300 }, { index: 1, start: 300, duration: 300 }, { index: 2, start: 600, duration: 10 }] });
+};
+const recovered = await acquireFullTranscript({
+  url: 'https://video.test', asr, fetchImpl: flaky,
+  startImpl: async () => { started += 1; up = true; },
+});
+assert.equal(recovered.complete, true);
+assert.equal(recovered.source, 'asr-full');
+assert.equal(started, 1, 'helper is started once after a connection failure');
+
+const stillDown = async () => { throw new TypeError('Failed to fetch'); };
+await assert.rejects(
+  acquireFullTranscript({ url: 'https://video.test', asr, fetchImpl: stillDown, startImpl: async () => {} }),
+  /完整媒体服务未启动/,
+);
+assert.equal((await ensureMediaHelper({ fetchImpl: stillDown, startImpl: async () => {} })).ok, false);
+
+console.log('PASS full acquisition, silent segments, offsets, failure/cancel cleanup, reject subtitle-only, untruncated cache, whole-document summary, helper auto-start');

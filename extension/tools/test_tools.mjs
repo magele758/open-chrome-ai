@@ -93,11 +93,9 @@ globalThis.chrome = {
         if (cmd === "state") return [{ result: { ok: true, currentTime: 1, duration: 10, paused: false, ended: false, count: 1 } }];
         if (cmd === "control") return [{ result: { ok: true, paused: false } }];
         if (cmd === "seek") return [{ result: { ok: true } }];
-        if (cmd === "tracks") return [{ result: { status: "missing" } }];
         if (cmd === "pick" || cmd === "list") return [{ result: { ok: true, videos: [], count: 0 } }];
         return [{ result: { ok: true } }];
       }
-      if (func.name === "readTextTracks") return [{ result: { status: "missing" } }];
       if (func.name === "readVideoState") return [{ result: { ok: true, currentTime: 1, duration: 10, paused: false, ended: false } }];
       if (func.name === "controlVideo") return [{ result: { ok: true, paused: false } }];
       if (func.name === "runJs") return [{ result: { ok: true, result: "ok" } }];

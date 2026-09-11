@@ -99,6 +99,12 @@ export function plInterpretVideo(command, options = {}) {
       // Preserve pitch while fitting the translated speech to this source span.
       audio.preservesPitch = true;
       const time = Math.max(0, Math.min(audio.duration, (video.currentTime - segment.start) * ratio));
+      // Absorb only the load/inject delay. Larger gaps stay on gradual rate
+      // correction so speech is not skipped.
+      if (!state.clockSnapped && !state.tail && Math.abs(time - audio.currentTime) < 0.45) {
+        audio.currentTime = time;
+        state.clockSnapped = true;
+      }
       // Correct drift gradually. Seeking the audio clock here can skip words
       // or repeat syllables; allow any remaining speech to drain at the end.
       const correction = state.tail ? 1 : Math.max(0.9, Math.min(1.1, 1 + (time - audio.currentTime) * 0.05));
@@ -193,6 +199,7 @@ export function plInterpretVideo(command, options = {}) {
         if (!(audio.duration > 0) || !Number.isFinite(audio.duration)) { finish({ ok: false, error: '中文配音时长无效' }); return; }
         if (!(options.end > options.start)) { finish({ ok: false, error: '视频分段时间无效' }); return; }
         state.loaded = true;
+        state.clockSnapped = false;
         finish(snapshot());
         audio.onerror = () => { state.error = '中文配音播放失败'; state.pause(); };
         audio.onended = () => { state.audioFinished = true; state.tick(); };

@@ -2,6 +2,32 @@ import assert from 'node:assert/strict';
 import { createInterpretPipeline } from '../lib/interpret-pipeline.js';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const gate = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+const batches = [];
+const buffered = createInterpretPipeline({
+  prebuffer: 3, capacity: 8,
+  prepare: async x => x, synthesize: async x => x,
+  play: async x => { batches.push(x.id); },
+});
+buffered.enqueue({ id: 1 });
+buffered.enqueue({ id: 2 });
+await tick();
+assert.deepEqual(batches, [], 'wait for three completed segments before starting');
+buffered.enqueue({ id: 3 });
+await tick();
+assert.deepEqual(batches, [1, 2, 3]);
+buffered.enqueue({ id: 4 });
+buffered.enqueue({ id: 5 });
+await tick();
+assert.deepEqual(batches, [1, 2, 3], 'after starvation refill a batch before resuming');
+buffered.enqueue({ id: 6 });
+await tick();
+assert.deepEqual(batches, [1, 2, 3, 4, 5, 6]);
+buffered.enqueue({ id: 7 });
+buffered.enqueue({ id: 8 });
+await tick();
+await buffered.waitUntilPendingAtMost(0);
+assert.deepEqual(batches, [1, 2, 3, 4, 5, 6, 7, 8], 'paused capture can drain a partial batch without deadlock');
+await buffered.finish();
 const a = gate(), b = gate(), playing = gate();
 const prepared = [], synthesized = [], played = [];
 const pipeline = createInterpretPipeline({
@@ -141,5 +167,24 @@ dubGate.resolve();
 assert.equal(await hasWait, true);
 assert.equal(audioPipe.hasAudio(4), true);
 await audioPipe.finish();
+
+const holdPlay = gate();
+const pendingPipe = createInterpretPipeline({
+  prepare: async item => item,
+  synthesize: async item => item,
+  play: async () => { await holdPlay.promise; },
+  prebuffer: 1,
+  capacity: 4,
+});
+pendingPipe.enqueue({ id: 1, start: 0 });
+pendingPipe.enqueue({ id: 2, start: 5 });
+pendingPipe.enqueue({ id: 3, start: 10 });
+await tick();
+assert.equal(pendingPipe.pending >= 2, true, 'three enqueued items sit above the sync hold');
+const drained = pendingPipe.waitUntilPendingAtMost(1);
+holdPlay.resolve();
+await pendingPipe.finish();
+await drained;
+assert.equal(pendingPipe.pending, 0, 'pending drain unblocks the sync hold');
 
 console.log('ok interpretation pipeline: overlap, order, references, buffering, drain, abort, capacity, recovery, generation flush');

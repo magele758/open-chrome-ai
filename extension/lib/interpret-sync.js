@@ -5,7 +5,7 @@ import { createInterpretPipeline } from './interpret-pipeline.js';
 import { recordPageSlice } from './tab-audio.js';
 import { blobToWav, synthesizeTts } from './tts.js';
 import { transcribeAudio, filenameForMime, silentWav } from './asr.js';
-import { stripTimeline } from './interpret.js';
+import { playbackRateOf, recordSecondsForRate, stripTimeline, videoSliceBounds } from './interpret.js';
 
 async function base64(blob) {
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -123,12 +123,22 @@ export async function runSynchronizedInterpret({ tabId, settings, cues, signal, 
           if (!before?.ok) throw new Error('后台取声标签页已关闭');
           if (before.ended || before.currentTime >= before.duration - 0.03) break;
           const remaining = before.duration - before.currentTime;
-          const slice = await recordPageSlice(source.tabId, Math.min(chunkSeconds, remaining), epochSignal);
+          const rate = playbackRateOf(before);
+          const recSec = Math.min(recordSecondsForRate(chunkSeconds, rate), Math.max(0.8, remaining / rate));
+          const slice = await recordPageSlice(source.tabId, recSec, epochSignal);
           epochSignal.throwIfAborted();
           const after = await injectVideo(source.tabId, 'state');
           if (!after?.ok) throw new Error('后台取声标签页已关闭');
           if (after.currentTime <= before.currentTime + 0.02) throw new Error('后台视频播放停滞，请检查视频是否正常加载。');
-          const item = { ...slice, start: before.currentTime, end: after.currentTime };
+          const item = {
+            ...slice,
+            ...videoSliceBounds({
+              start: before.currentTime,
+              afterTime: after.currentTime,
+              wallSeconds: slice.seconds,
+              rate: playbackRateOf(after, rate),
+            }),
+          };
           if (cues.length) {
             const selected = cues.filter((c, index) => {
               // Recorder delivery can run a few milliseconds past a boundary.

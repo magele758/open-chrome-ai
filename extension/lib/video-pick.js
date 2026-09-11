@@ -113,7 +113,7 @@ export function plVideo(cmd, arg) {
     if (el.muted && !globalThis.__plSiMute) el.muted = false;
     if (o.action === "pause") {
       el.pause();
-      return { ok: true, paused: true, currentTime: el.currentTime, duration: el.duration };
+      return { ok: Boolean(el.paused), paused: Boolean(el.paused), currentTime: el.currentTime, duration: el.duration };
     }
     const play = el.play?.();
     if (play && typeof play.then === "function") {
@@ -192,6 +192,32 @@ export function plVideo(cmd, arg) {
     }
   };
 
+  if (cmd === "watch") {
+    globalThis.__plLiveWatch?.dispose();
+    const watch = { el, seekRevision: 0, pauseRevision: 0,
+      userPaused: Boolean(el.paused && !o.initiallyPlaying), ignoredPauses: 0, ignoredPlays: 0 };
+    const pause = () => {
+      if (watch.ignoredPauses) watch.ignoredPauses--;
+      else if (!el.ended) { watch.userPaused = true; watch.pauseRevision++; }
+    };
+    const play = () => { if (watch.ignoredPlays) watch.ignoredPlays--; else watch.userPaused = false; };
+    const seek = () => { watch.seekRevision++; };
+    el.addEventListener('pause', pause);
+    el.addEventListener('play', play);
+    el.addEventListener('seeking', seek);
+    watch.dispose = () => {
+      el.removeEventListener('pause', pause);
+      el.removeEventListener('play', play);
+      el.removeEventListener('seeking', seek);
+    };
+    globalThis.__plLiveWatch = watch;
+    return { ok: true };
+  }
+  if (cmd === "unwatch") {
+    globalThis.__plLiveWatch?.dispose();
+    delete globalThis.__plLiveWatch;
+    return { ok: true };
+  }
   if (cmd === "state") {
     const tap = globalThis.__plAudioTap;
     const live = tapLive(tap, el);
@@ -205,12 +231,24 @@ export function plVideo(cmd, arg) {
       seeking: Boolean(el.seeking),
       readyState: el.readyState || 0,
       muted: Boolean(el.muted),
+      ...(globalThis.__plLiveWatch?.el === el ? {
+        userPaused: globalThis.__plLiveWatch.userPaused,
+        seekRevision: globalThis.__plLiveWatch.seekRevision,
+        pauseRevision: globalThis.__plLiveWatch.pauseRevision,
+      } : {}),
       silenced: Boolean(globalThis.__plSiMute && live && (speakerOff(tap) || (tap?.fallback && el.muted))),
       index: idx,
       count: all.length,
     };
   }
-  if (cmd === "control") return playResult(el);
+  if (cmd === "control") {
+    const watch = globalThis.__plLiveWatch;
+    if (o.system && watch?.el === el) {
+      if (o.action === 'pause' && !el.paused) watch.ignoredPauses++;
+      if (o.action === 'play' && el.paused) watch.ignoredPlays++;
+    }
+    return playResult(el);
+  }
   if (cmd === "silence") {
     globalThis.__plSiMute = true;
     const tap = globalThis.__plAudioTap;
@@ -255,46 +293,6 @@ export function plVideo(cmd, arg) {
       src: el.currentSrc || el.src || "",
       duration: Number.isFinite(el.duration) ? el.duration : null,
       live: el.duration === Infinity,
-      tracks: [...el.querySelectorAll('track[src]')]
-        .filter(t => !t.kind || ['subtitles', 'captions'].includes(t.kind))
-        .sort((a, b) => Number(b.default) - Number(a.default))
-        .map(t => t.src).filter(src => /^https?:/.test(src)),
-    };
-  }
-  if (cmd === "tracks") {
-    const fmt = (seconds) => {
-      if (!Number.isFinite(seconds)) return "0:00";
-      const s = Math.max(0, Math.floor(seconds));
-      const h = Math.floor(s / 3600);
-      const m = Math.floor((s % 3600) / 60);
-      const r = s % 60;
-      if (h) return `${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
-      return `${m}:${String(r).padStart(2, "0")}`;
-    };
-    const cues = [];
-    for (const track of el.textTracks || []) {
-      const list = track.cues;
-      if (!list) continue;
-      for (let i = 0; i < list.length; i += 1) {
-        const cue = list[i];
-        const text = String(cue.text || "").replace(/\s+/g, " ").trim();
-        if (text) cues.push({ start: cue.startTime, end: cue.endTime, text });
-      }
-    }
-    if (!cues.length) {
-      return {
-        status: "missing",
-        languages: [...(el.textTracks || [])].map((t) => t.language || t.label || ""),
-        index: idx,
-        count: all.length,
-      };
-    }
-    return {
-      status: "ready",
-      text: cues.map((c) => `[${fmt(c.start)}] ${c.text}`).join("\n"),
-      cues,
-      index: idx,
-      count: all.length,
     };
   }
   return { ok: false, error: "unknown-cmd" };

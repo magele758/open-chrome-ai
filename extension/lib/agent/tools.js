@@ -397,7 +397,7 @@ export function createAgentTools(ctx) {
     {
       name: "get_captions",
       description:
-        "读取视频字幕。YouTube 走 timedtext；其他页尝试 HTML5 textTracks；若本页刚转写过则返回缓存。无字幕时不要编造台词，应改用 transcribe_video。",
+        "读取已有音频转写缓存，不读取站点字幕。没有文稿时调用 transcribe_video。",
       parameters: obj({ tabId: tabIdProp() }),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
@@ -405,15 +405,15 @@ export function createAgentTools(ctx) {
         const caps = await loadPageCaptions(tabId, tab.url);
         if (caps.status === "ready" && caps.text) {
           ctx.setCaptions?.(caps);
-          return `${caps.complete ? "完整文稿" : "字幕片段（完整性未知）"}，共 ${caps.text.length} 字。\n` + caps.text;
+          return `${caps.complete ? "完整文稿" : "音频文稿片段（完整性未知）"}，共 ${caps.text.length} 字。\n` + caps.text;
         }
-        return `字幕不可用（${caps.status || "missing"}）。用户要总结/章节/原文时调用 transcribe_video。`;
+        return `音频文稿不可用（${caps.status || "missing"}）。用户要总结/章节/原文时调用 transcribe_video。`;
       },
     },
     {
       name: "transcribe_video",
       description:
-        "直接获取完整字幕或下载完整音轨并分段 ASR，保存完整文稿。不播放或录制标签。无字幕时需要本机媒体服务和 ASR；直播或获取失败会明确报错。",
+        "下载完整音轨并分段 ASR，保存完整文稿。不播放或录制标签。需要本机媒体服务和 ASR；直播或获取失败会明确报错。",
       parameters: obj({
         tabId: tabIdProp(),
         force: { type: "boolean", description: "即使已有完整文稿也重新提取" },
@@ -430,8 +430,8 @@ export function createAgentTools(ctx) {
           });
           ctx.setCaptions?.(caps);
           const note = caps.reused
-            ? "已有字幕，未重新提取。要重提请传 force=true。\n\n"
-            : "已转写并写入字幕槽。\n\n";
+            ? "已有完整音频文稿，未重新提取。要重提请传 force=true。\n\n"
+            : "已转写并保存文稿。\n\n";
           const lib = caps.library ? `已写入文稿文件夹 ${caps.library}/\n\n` : caps.libraryError ? `文稿未落盘：${caps.libraryError}\n\n` : "";
           return lib + note + String(caps.text || "");
         } catch (err) {
@@ -942,14 +942,14 @@ export function createAgentTools(ctx) {
     },
     {
       name: "save_video_doc",
-      description: "把当前视频字幕/转写稿写入文稿文件夹（original.vtt、transcript.md、meta.json）。需已选择文件夹。",
+      description: "把当前视频音频转写稿写入文稿文件夹（original.vtt、transcript.md、meta.json）。需已选择文件夹。",
       parameters: obj({ tabId: tabIdProp() }),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
         const tab = await chrome.tabs.get(tabId);
         const caps = await loadPageCaptions(tabId, tab.url);
         if (caps.status !== "ready" || !caps.text) {
-          return "当前视频没有字幕可保存。先 get_captions 或 transcribe_video。";
+          return "当前视频没有音频文稿可保存。先 get_captions 或 transcribe_video。";
         }
         ctx.setCaptions?.(caps);
         const saved = await syncPackToLibrary({

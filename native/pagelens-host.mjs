@@ -25,7 +25,7 @@ import {
 } from "../extension/lib/fs-path.js";
 
 export const HOST_NAME = "com.pagelens.host";
-export const HOST_VERSION = "1.1.0";
+export const HOST_VERSION = "1.2.0";
 export const DEFAULT_TIMEOUT_MS = 60_000;
 export const MAX_TIMEOUT_MS = 300_000;
 export const MAX_OUTPUT = 200_000;
@@ -359,6 +359,7 @@ export async function handleRequest(req) {
       version: HOST_VERSION,
       shell: process.env.SHELL || "",
       platform: process.platform,
+      repoRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
     };
   }
   if (op === "exec") {

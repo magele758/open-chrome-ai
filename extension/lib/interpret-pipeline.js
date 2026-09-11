@@ -29,6 +29,9 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
   let settled = 0;
   let playingStart = null;
   let audioReady = 0;
+  let draining = false;
+  let buffering = true;
+  let partialBuffer = false;
   let synthesis = Promise.resolve();
   let jobLink = linkJobController(signal);
   const waiting = [];
@@ -76,16 +79,16 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
   }
 
   const playback = (async () => {
-    let buffering = true;
     while (!cancelled) {
       if (closed && !ready.length) break;
-      if (buffering && !closed && ready.length < prebuffer) {
+      if (buffering && !closed && ready.length < (draining || partialBuffer ? 1 : prebuffer)) {
         onBuffer(ready.length, prebuffer);
         await wait();
         continue;
       }
       if (!ready.length) { buffering = true; continue; }
       buffering = false;
+      partialBuffer = false;
       const item = ready.shift();
       playingStart = startKey(item?.start);
       try { await play(item); } catch (err) { report(err); }
@@ -99,11 +102,29 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
 
   return {
     get pending() { return count; },
+    get buffering() { return buffering; },
+    releasePartialBuffer() {
+      // All work settled but some slices contained no speech or failed.
+      if (ready.length > 0 && count === ready.length) {
+        partialBuffer = true;
+        notify();
+      }
+    },
     get full() { return count >= capacity; },
     get generation() { return generation; },
     async waitForRoom() {
       // Leave headroom after pausing capture, avoiding constant pause/resume.
       while (!cancelled && count > Math.floor(capacity / 2)) await wait();
+    },
+    async waitUntilPendingAtMost(n = 1) {
+      const cap = Number(n);
+      const limit = Number.isFinite(cap) ? Math.max(0, cap) : 1;
+      // Capture is paused here: let a short final batch drain too.
+      draining = true;
+      notify();
+      try {
+        while (!cancelled && count > limit) await wait();
+      } finally { draining = false; notify(); }
     },
     async waitUntilSettled(n = 1) {
       while (!cancelled && !closed && settled < n) {
@@ -160,6 +181,8 @@ export function createInterpretPipeline({ prepare, synthesize, play, signal,
     },
     flushAhead() {
       generation++;
+      buffering = true;
+      partialBuffer = false;
       settled = 0;
       audioReady = playingStart != null ? 1 : 0;
       failedStarts.clear();

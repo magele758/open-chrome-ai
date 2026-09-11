@@ -1,4 +1,4 @@
-import { defaultSettings, normalizeSettings, isAsrReady, isModelReady, isTtsReady, useInterpretCaptions, isSkillsEnabled, ASR_PRESETS } from "../lib/storage.js";
+import { defaultSettings, normalizeSettings, isAsrReady, isModelReady, isTtsReady, isSkillsEnabled, ASR_PRESETS } from "../lib/storage.js";
 import {
   transcriptionsUrl,
   transcribeUrl,
@@ -100,10 +100,6 @@ assert(ASR_PRESETS.some((p) => p.id === "groq"), "groq preset");
 assert(ASR_PRESETS.some((p) => p.id === "v1-transcribe"), "v1 preset");
 assert(defaultSettings().asr, "default asr slot");
 assert(defaultSettings().tts.preset === "off", "tts off");
-assert(useInterpretCaptions(defaultSettings()) === false, "captions off by default");
-assert(useInterpretCaptions(normalizeSettings({ interpretUseCaptions: true })) === true, "persist captions on");
-assert(useInterpretCaptions(normalizeSettings({ interpretUseCaptions: false })) === false, "persist captions off");
-assert(useInterpretCaptions(normalizeSettings({})) === false, "missing flag stays off");
 assert(defaultSettings().skillsEnabled === false, "skills off by default");
 assert(isSkillsEnabled(defaultSettings()) === false, "skills helper off");
 assert(isSkillsEnabled(normalizeSettings({})) === false, "missing skills stays off");
@@ -163,3 +159,5 @@ assert(fetchFile === "silent.wav", "filename " + fetchFile);
 assert(out[0].text === "hello" && out[1].start === 1.5, "transcribeAudio segments");
 
 console.log("PASS asr");
+
+assert(!("interpretUseCaptions" in normalizeSettings({ interpretUseCaptions: true })), "legacy caption switch removed");

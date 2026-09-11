@@ -512,6 +512,7 @@ export async function writeVideoDoc(doc, { request = false } = {}) {
     url: doc.url || "",
     duration: doc.duration || null,
     source: doc.source || "",
+    audioOnly: ["asr-full", "asr", "asr-cache", "interpret"].includes(doc.source),
     complete: doc.complete === true,
     cueCount: cues.length,
     hasZh: merged.some((c) => c.zh),
@@ -537,7 +538,8 @@ export async function readVideoDocFromLibrary(url, { request = false } = {}) {
     if (!cues.length) return null;
     const formatted = formatTranscript(cues);
     const meta = await readLibraryText(`${folder}/meta.json`, { request }).then(r => JSON.parse(r.text)).catch(() => ({}));
-    return { status: "ready", ...formatted, source: "library", complete: meta.complete === true, duration: meta.duration };
+    if (meta.audioOnly !== true && !["asr-full", "asr"].includes(meta.source)) return null;
+    return { status: "ready", ...formatted, source: meta.source || "unknown", complete: meta.complete === true, duration: meta.duration };
   } catch {
     return null;
   }

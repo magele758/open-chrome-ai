@@ -1,3 +1,4 @@
+import { debugId, debugLog } from "./debug-log.js";
 import { formatTime } from "./prompts.js";
 
 function trimSlash(url) {
@@ -236,7 +237,7 @@ async function postV1Transcribe(model, blob, filename, signal) {
  * OpenAI `/audio/transcriptions` 或自建 `POST /v1/transcribe`。
  * @returns {Array<{start:number,end?:number,text:string}>}
  */
-export async function transcribeAudio(model, blob, { filename, signal, allowEmpty = false } = {}) {
+async function transcribeAudioRequest(model, blob, { filename, signal, allowEmpty = false } = {}) {
   if (!blob || !blob.size) throw new Error("没有可转写的音频。");
   const name = filename || filenameForMime(blob.type);
   if (asrProtocol(model) === "v1-transcribe") {
@@ -263,6 +264,22 @@ export async function transcribeAudio(model, blob, { filename, signal, allowEmpt
     throw err;
   }
   throw new Error("转写结果是空的。");
+}
+
+export async function transcribeAudio(model, blob, options = {}) {
+  const trace = { requestId: debugId('asr'), ...options.trace };
+  const started = Date.now();
+  debugLog('asr.request', { ...trace, protocol: asrProtocol(model), model: model?.model,
+    language: asrLanguageValue(model) || 'auto', bytes: blob?.size, mime: blob?.type });
+  try {
+    const segments = await transcribeAudioRequest(model, blob, options);
+    debugLog('asr.result', { ...trace, elapsedMs: Date.now() - started, segmentCount: segments.length, segments });
+    return segments;
+  } catch (error) {
+    debugLog('asr.error', { ...trace, elapsedMs: Date.now() - started, error,
+      status: String(error?.message || '').match(/\b[45]\d{2}\b/)?.[0], aborted: options.signal?.aborted === true });
+    throw error;
+  }
 }
 
 export async function testTranscriptions(model) {

@@ -1,4 +1,6 @@
-import { defaultSettings, loadSettings, saveSettings, applyOptionalLocalSettings, resolveModel, isModelReady, isAsrReady, isTtsReady, useInterpretCaptions, isSkillsEnabled, presetsFor } from "../lib/storage.js";
+import { debugLog, exportDebugLog, DEBUG_BUILD } from "../lib/debug-log.js";
+debugLog("panel.loaded", { build: DEBUG_BUILD, source: "audio-only" });
+import { defaultSettings, loadSettings, saveSettings, applyOptionalLocalSettings, resolveModel, isModelReady, isAsrReady, isTtsReady, isSkillsEnabled, presetsFor } from "../lib/storage.js";
 import { streamTurn, testConnection, multimodalUserContent } from "../lib/openai.js";
 import { testTranscriptions } from "../lib/asr.js";
 import { testTts, synthesizeTts, getTtsRef, setTtsRef, clearTtsRef, blobToWav, TTS_LANGS } from "../lib/tts.js";
@@ -9,7 +11,7 @@ import { summarizeTranscript } from "../lib/summarize-transcript.js";
 import { loadPageCaptions, transcribeTab, usableTranscript } from "../lib/captions.js";
 import { abortRecording, beginCapture, beginTabCapture, discardCapture, recordFromCapture } from "../lib/tab-audio.js";
 import { injectVideo } from "../lib/chrome.js";
-import { captionsForInterpret, runInterpret } from "../lib/interpret.js";
+import { runInterpret } from "../lib/interpret.js";
 import {
   libraryStatus,
   pickLibraryFolder,
@@ -167,16 +169,16 @@ function renderContext() {
     bits.push(formatTime(video.duration));
     const src = state.pack?.captionsSource;
     if (state.pack?.captionsStatus === "ready") {
-      bits.push(src === "asr-full" || src === "asr" || src === "asr-cache" ? "已转写" : "有字幕");
+      bits.push("已转写");
     } else {
-      bits.push("无字幕");
+      bits.push("尚未转写");
     }
     const tr = state.transcribe;
     const si = state.interpret;
     if (si?.status === "running") {
-      bits.push(si.mode === "captions" ? "同传中（跟字幕）" : "同传中（按声音）");
+      bits.push("同传中（按声音）");
       if (si.hint) bits.push(si.hint);
-    } else if (useInterpretCaptions(state.settings) === false) {
+    } else {
       bits.push("同传按声音切句");
     }
     if (tr?.status === "recording") {
@@ -206,7 +208,6 @@ function renderTranscribeAction() {
   const btn = $("btn-transcribe");
   const sum = $("btn-summarize-video");
   const siBtn = $("btn-interpret");
-  const capBtn = $("btn-interpret-captions");
   const audioBtn = $("btn-original-audio");
   const bar = $("btn-summarize-bar");
   const siBar = $("btn-interpret-bar");
@@ -224,46 +225,31 @@ function renderTranscribeAction() {
   if (btn) {
     btn.textContent = draftLabel;
     btn.classList.toggle("busy", Boolean(recording));
-    btn.disabled = (!canShare && !recording) || interpreting;
+    btn.disabled = !canShare && !recording;
   }
   if (sum) {
-    sum.textContent = recording ? "提取中…" : interpreting ? "一键总结" : "一键总结";
-    sum.disabled = recording || interpreting || !canShare;
+    sum.textContent = recording ? "提取中…" : "一键总结";
+    sum.disabled = recording || state.busy || !canShare;
   }
   const videoCount = Number(state.pack?.videoCount) || (Array.isArray(state.pack?.videos) ? state.pack.videos.length : 0);
   const hasPlayer = Boolean(state.pack?.video) || videoCount > 0 || interpreting;
   if (siBtn) {
-    const followCaps = useInterpretCaptions(state.settings);
     siBtn.textContent = interpreting ? "停止同传" : "同声传译";
-    siBtn.title = interpreting
-      ? "停止同传"
-      : followCaps
-        ? "边看边出中文。有字幕则跟轴；无字幕按声音识别。"
-        : "边看边出中文。已关闭跟字幕，按声音约 5 秒一切。";
+    siBtn.title = interpreting ? "停止同传" : "按声音识别并翻译，可与一键总结同时进行。";
     siBtn.classList.toggle("busy", Boolean(interpreting));
-    siBtn.disabled = recording || (!canShare && !interpreting);
-  }
-  if (capBtn) {
-    const followCaps = useInterpretCaptions(state.settings);
-    capBtn.classList.toggle("hidden", !hasPlayer || (!canShare && !interpreting));
-    capBtn.textContent = followCaps ? "用字幕" : "按声音";
-    capBtn.title = followCaps
-      ? "当前跟字幕轴断句。点此改为按声音约 5 秒一切。"
-      : "当前不跟字幕。点此改回有字幕就跟轴。";
-    capBtn.classList.toggle("busy", !followCaps);
-    capBtn.disabled = interpreting || !canShare;
+    siBtn.disabled = !canShare && !interpreting;
   }
   if (bar) {
     bar.textContent = recording ? "■" : "总";
     bar.title = recording ? "停止提取" : "一键总结";
     bar.classList.toggle("busy", Boolean(recording));
-    bar.disabled = interpreting;
+    bar.disabled = state.busy && !recording;
   }
   if (siBar) {
     siBar.textContent = interpreting ? "■" : "译";
     siBar.title = interpreting ? "停止同传" : "同声传译";
     siBar.classList.toggle("busy", Boolean(interpreting));
-    siBar.disabled = recording;
+    siBar.disabled = !canShare && !interpreting;
   }
   if (audioBtn) {
     const on = state.originalAudioOn !== false;
@@ -2038,7 +2024,6 @@ function needAsrSettings(message) {
 
 async function startTranscribe({ force = false } = {}) {
   if (!state.tab?.id) return null;
-  if (state.interpret?.status === "running") stopInterpret();
   if (isTranscribing()) {
     state.workAbort?.abort();
     return null;
@@ -2047,7 +2032,7 @@ async function startTranscribe({ force = false } = {}) {
   const tab = { ...state.tab };
   const abort = new AbortController();
   state.workAbort = abort;
-  state.transcribe = { status: "extracting", hint: "正在获取完整字幕或音轨" };
+  state.transcribe = { status: "extracting", hint: "正在获取完整音轨" };
   renderContext();
   try {
     const caps = await transcribeTab({
@@ -2074,9 +2059,8 @@ async function startTranscribe({ force = false } = {}) {
 }
 
 async function startSummarizeVideo() {
-  if (state.interpret?.status === "running") stopInterpret();
   if (isTranscribing()) {
-    pushError("正在获取文稿，请稍候再点「一键总结」。");
+    state.workAbort?.abort();
     return;
   }
   if (state.busy) return;
@@ -2095,10 +2079,11 @@ async function startSummarizeVideo() {
   let caps = packed?.complete ? packed : null;
   if (!caps?.text) {
     const extracted = await startTranscribe();
-    caps = usableTranscript(extracted) || packed;
+    if (!extracted && state.transcribe?.status === "idle") return;
+    caps = extracted?.complete ? usableTranscript(extracted) : null;
   }
   if (!caps?.text) {
-    pushError(state.transcribe?.error || "没有可总结的文稿。有字幕会直接总结；否则请启动本机媒体服务。");
+    pushError(state.transcribe?.error || "没有可总结的完整音频文稿。请配置 ASR 并启动本机媒体服务。");
     return;
   }
   const title = state.pack?.title || state.tab?.title;
@@ -2111,6 +2096,7 @@ async function startSummarizeVideo() {
   $("btn-send").textContent = "■";
   $("btn-send").title = "停止";
   renderMessages();
+  renderContext();
   try {
     botMsg.text = await summarizeTranscript({
       text: caps.text, title, model, language: state.settings.answerLanguage, signal: abort.signal,
@@ -2126,18 +2112,8 @@ async function startSummarizeVideo() {
     $("btn-send").textContent = "↑";
     $("btn-send").title = "发送（Enter）";
     renderMessages();
-    await persistSession();
-  }
-}
-
-async function toggleInterpretCaptions() {
-  if (state.interpret?.status === "running") return;
-  const next = useInterpretCaptions(state.settings) === false;
-  try {
-    state.settings = await saveSettings({ ...state.settings, interpretUseCaptions: next });
     renderContext();
-  } catch (err) {
-    pushError("无法保存同传设置：" + (err?.message || err));
+    await persistSession();
   }
 }
 
@@ -2162,24 +2138,11 @@ async function startInterpret() {
     stopInterpret();
     return;
   }
-  if (isTranscribing()) {
-    startTranscribe();
+  if (!isAsrReady(state.settings.asr)) {
+    needAsrSettings("按声音同传需要先配置语音转写（ASR）");
     return;
   }
-  const followCaps = useInterpretCaptions(state.settings);
-  const cues = captionsForInterpret(
-    state.pack?.captionsStatus === "ready" ? state.pack.captionsCues : [],
-    followCaps,
-  );
-  if (!cues.length && !isAsrReady(state.settings.asr)) {
-    needAsrSettings(followCaps ? "无字幕视频要同传，先配置语音转写（ASR）" : "按声音同传需要先配置语音转写（ASR）");
-    return;
-  }
-  if (cues.length && shouldNeedTranslate(cues) && !requireModel("text")) {
-    pushError(needModelMessage("text"));
-    return;
-  }
-  if (!cues.length && !requireModel("text")) {
+  if (!requireModel("text")) {
     pushError(needModelMessage("text"));
     return;
   }
@@ -2190,41 +2153,28 @@ async function startInterpret() {
     await injectVideo(state.tab.id, "pick", { fresh: true });
     const st = await injectVideo(state.tab.id, "state");
     startAt = Number(st?.currentTime) || 0;
-    openingHold = Boolean(st?.ok && !st.paused && !st.ended);
-    if (openingHold) await injectVideo(state.tab.id, "control", { action: "pause" });
-  } catch {
-    openingHold = false;
+    openingHold = Boolean(st?.ok && !st.ended);
+    const held = await injectVideo(state.tab.id, "control", { action: "pause", system: true });
+    const verified = await injectVideo(state.tab.id, "state");
+    if (!held?.ok || !verified?.paused) throw new Error("播放器未能暂停，未开始同传。请重试。");
+  } catch (err) {
+    state.interpret = { status: "error", error: err.message || String(err) };
+    renderContext();
+    return;
   }
 
-  let capture = null;
-  const needCapture = !cues.length || isTtsReady(state.settings.tts);
-  if (needCapture) {
-    try {
-      capture = await beginCapture(state.tab.id, { fromStart: false, autoplay: false });
-    } catch (err) {
-      if (!cues.length) {
-        if (openingHold) {
-          try { await injectVideo(state.tab.id, "control", { action: "play" }); } catch { /* leave paused */ }
-        }
-        state.interpret = { status: "error", error: err.message || String(err) };
-        renderContext();
-        return;
-      }
-      capture = null;
-    }
-  }
-
+  const capture = null;
   const abort = new AbortController();
   state.siAbort = abort;
   state.siCapture = capture;
   state.originalAudioOn = false;
-  state.interpret = { status: "running", mode: cues.length ? "captions" : "audio", message: "同传已开始…" };
+  state.interpret = { status: "running", mode: "audio", message: "同传已开始…" };
   renderContext();
   try {
     const result = await runInterpret({
       tabId: state.tab.id,
+      sourceUrl: state.tab.url,
       settings: state.settings,
-      cues,
       startAt,
       openingHold,
       capture,
@@ -2257,7 +2207,7 @@ async function startInterpret() {
       },
     });
     if (state.siAbort !== abort) return;
-    if (result?.captions?.status === "ready") applyCaptions(result.captions);
+    if (result?.captions?.status === "ready" && !state.pack?.captionsComplete && !isTranscribing()) applyCaptions(result.captions);
     state.originalAudioOn = true;
     if (state.interpret?.status === "running") {
       state.interpret = {
@@ -2282,11 +2232,6 @@ async function startInterpret() {
     if (state.siAbort === abort) state.siAbort = null;
     renderContext();
   }
-}
-
-function shouldNeedTranslate(cues) {
-  const sample = (cues || []).slice(0, 8).map((c) => c.text).join(" ");
-  return /[A-Za-z]{3,}/.test(sample) && !/[\u4e00-\u9fff]{8,}/.test(sample);
 }
 
 async function captureTab(tabId) {
@@ -2372,6 +2317,7 @@ function bindComposer() {
 }
 
 function wire() {
+  $("btn-debug-export")?.addEventListener("click", () => downloadText(`pagelens-debug-${Date.now()}.json`, exportDebugLog(), "application/json"));
   bindComposer();
   try {
   on("btn-settings", "click", () => {
@@ -2421,7 +2367,6 @@ function wire() {
   });
   $("btn-summarize-video")?.addEventListener("click", () => startSummarizeVideo());
   $("btn-interpret")?.addEventListener("click", () => startInterpret());
-  $("btn-interpret-captions")?.addEventListener("click", () => toggleInterpretCaptions());
   $("btn-original-audio")?.addEventListener("click", () => toggleOriginalAudio());
   $("btn-summarize-bar")?.addEventListener("click", () => startSummarizeVideo());
   $("btn-interpret-bar")?.addEventListener("click", () => startInterpret());

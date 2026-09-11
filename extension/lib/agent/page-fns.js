@@ -291,40 +291,6 @@ export function scrollPage(opts) {
   return { ok: false, error: "需要 selector、percent 或 y" };
 }
 
-export function readTextTracks() {
-  const fmt = (seconds) => {
-    if (!Number.isFinite(seconds)) return "0:00";
-    const s = Math.max(0, Math.floor(seconds));
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const r = s % 60;
-    if (h) return `${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
-    return `${m}:${String(r).padStart(2, "0")}`;
-  };
-  const video = [...document.querySelectorAll("video")].find((el) => el.offsetWidth > 0);
-  if (!video) return { status: "no-video" };
-  const cues = [];
-  for (const track of video.textTracks || []) {
-    const list = track.cues;
-    if (!list) continue;
-    for (let i = 0; i < list.length && cues.length < 400; i += 1) {
-      const cue = list[i];
-      const text = String(cue.text || "").replace(/\s+/g, " ").trim();
-      if (text) cues.push({ start: cue.startTime, text });
-    }
-  }
-  if (!cues.length) {
-    return {
-      status: "missing",
-      languages: [...(video.textTracks || [])].map((t) => t.language || t.label || ""),
-    };
-  }
-  return {
-    status: "ready",
-    text: cues.map((c) => `[${fmt(c.start)}] ${c.text}`).join("\n"),
-  };
-}
-
 export function readVideoState() {
   const video =
     [...document.querySelectorAll("video")].find((el) => el.offsetWidth > 0) ||

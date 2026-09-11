@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """PageLens full-media bridge. Standard library + yt-dlp + ffmpeg, loopback only."""
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import uuid
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -18,16 +21,113 @@ from urllib.parse import urlparse
 JOBS = {}
 LOCK = threading.RLock()
 PART_SECONDS = 300
+DEFAULT_PORT = 18789
+SERVICE = 'pagelens-media'
+CONDA_ENV = 'pagelens-media'
+PORT = DEFAULT_PORT
+
+
+def conda_prefixes():
+    prefixes = []
+    if os.environ.get('CONDA_PREFIX'):
+        prefixes.append(os.environ['CONDA_PREFIX'])
+    bases = []
+    if os.environ.get('CONDA_EXE'):
+        bases.append(Path(os.environ['CONDA_EXE']).resolve().parent.parent)
+    bases.extend((
+        Path('/opt/homebrew/Caskroom/miniconda/base'),
+        Path('/usr/local/Caskroom/miniconda/base'),
+        Path.home() / 'miniconda3',
+        Path.home() / 'anaconda3',
+        Path.home() / 'miniforge3',
+        Path.home() / 'mambaforge',
+    ))
+    seen = set()
+    ordered = []
+    for base in bases:
+        if not base.is_dir():
+            continue
+        candidates = [base]
+        envs = base / 'envs'
+        if envs.is_dir():
+            candidates.extend(p for p in sorted(envs.iterdir()) if p.is_dir())
+        for candidate in candidates:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            # Prefer the dedicated helper env when looking up binaries.
+            if candidate.name == CONDA_ENV:
+                ordered.insert(0, key)
+            else:
+                ordered.append(key)
+    for prefix in prefixes:
+        if prefix not in seen:
+            ordered.insert(0, prefix)
+    return ordered
+
+
+def enrich_path():
+    extras = [str(Path.home() / '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin']
+    extras.extend(str(Path(prefix) / 'bin') for prefix in conda_prefixes())
+    existing = os.environ.get('PATH', '')
+    os.environ['PATH'] = os.pathsep.join([*extras, existing])
+
+
+def find_executable(name):
+    found = shutil.which(name)
+    if found:
+        return found
+    for candidate in (
+        Path.home() / '.local/bin' / name,
+        Path('/opt/homebrew/bin') / name,
+        Path('/usr/local/bin') / name,
+        *(Path(prefix) / 'bin' / name for prefix in conda_prefixes()),
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 def executable(name):
-    found = shutil.which(name)
-    for candidate in (Path.home() / '.local/bin' / name, Path('/opt/homebrew/bin') / name):
-        if not found and candidate.is_file():
-            found = str(candidate)
+    found = find_executable(name)
     if not found:
-        raise RuntimeError(f'缺少 {name}，请安装后重试。')
+        raise RuntimeError(
+            f'缺少 {name}。请先执行：conda create -n {CONDA_ENV} -c conda-forge python=3.12 ffmpeg yt-dlp -y'
+        )
     return found
+
+
+def launch_commands():
+    return (
+        f'conda run -n {CONDA_ENV} python tools/media_helper.py --ensure',
+        f'conda create -n {CONDA_ENV} -c conda-forge python=3.12 ffmpeg yt-dlp -y',
+    )
+
+
+def health_payload():
+    bins = {name: bool(find_executable(name)) for name in ('yt-dlp', 'ffmpeg', 'ffprobe')}
+    return {
+        'ok': True,
+        'service': SERVICE,
+        'version': 3,
+        'port': PORT,
+        'bins': bins,
+        'ready': all(bins.values()),
+    }
+
+
+def probe(port, timeout=1.5):
+    request = urllib.request.Request(
+        f'http://127.0.0.1:{int(port)}/health',
+        headers={'Accept': 'application/json'},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode('utf-8'))
+        return data.get('service') == SERVICE
+    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError, OSError):
+        return False
 
 
 def run(job, args):
@@ -48,8 +148,19 @@ def run(job, args):
     if job['cancel'].is_set():
         raise RuntimeError('已取消')
     if proc.returncode:
-        # Never return signed URLs or request headers in errors.
-        raise RuntimeError('媒体提取失败：站点可能需要登录、链接已失效或格式不受支持。请更新 yt-dlp 后重试。')
+        # Classify diagnostics without exposing signed URLs or request headers.
+        detail = err.decode('utf-8', errors='replace').lower()
+        if '403' in detail and ('forbidden' in detail or 'http' in detail):
+            reason = '下载音轨被站点拒绝（HTTP 403）。请更新 yt-dlp 及 yt-dlp-ejs，并确认 Node.js 或 Deno 可用。'
+        elif 'sign in' in detail or 'login' in detail:
+            reason = '站点要求登录或人机验证，当前下载服务无法获取该视频。'
+        elif 'javascript' in detail or 'challenge' in detail or 'ejs' in detail:
+            reason = 'YouTube JavaScript 解析失败。请更新 yt-dlp[default]，并安装 Node.js 或 Deno。'
+        else:
+            reason = '媒体提取失败：链接已失效或格式不受支持。请更新 yt-dlp 后重试。'
+        print(json.dumps({'event': 'media.command-error', 'tool': Path(args[0]).name,
+                          'exit': proc.returncode, 'reason': reason}, ensure_ascii=False), flush=True)
+        raise RuntimeError(reason)
     return out
 
 
@@ -58,32 +169,23 @@ def duration(job, path):
     return float(data['format']['duration'])
 
 
-def fetch_subtitle(info):
-    candidates = []
-    for auto, group in enumerate(('subtitles', 'automatic_captions')):
-        for lang, formats in (info.get(group) or {}).items():
-            if not (lang.startswith('zh') or lang.startswith('en') or not candidates):
-                continue
-            for entry in formats:
-                if entry.get('ext') in ('json3', 'vtt') and entry.get('url'):
-                    score = (10 if lang.startswith('zh') else 5 if lang.startswith('en') else 0) - auto
-                    candidates.append((score, entry))
-    for _, entry in sorted(candidates, key=lambda x: -x[0])[:4]:
-        try:
-            request = urllib.request.Request(entry['url'], headers=info.get('http_headers') or {})
-            with urllib.request.urlopen(request, timeout=20) as response:
-                body = response.read(32 * 1024 * 1024).decode('utf-8-sig')
-            if body.strip():
-                return {'format': entry['ext'], 'body': body}
-        except Exception:
-            continue
-    return None
+def downloader_args():
+    args = [executable('yt-dlp'), '--ignore-config', '--no-playlist',
+            '--no-write-subs', '--no-write-auto-subs', '--no-warnings',
+            '--socket-timeout', '30', '--retries', '2']
+    # YouTube requires the EJS solver and an explicitly enabled JS runtime.
+    # Use an installed runtime; never download executable scripts on demand.
+    for runtime in ('deno', 'node'):
+        binary = find_executable(runtime)
+        if binary:
+            args.extend(['--js-runtimes', f'{runtime}:{binary}'])
+            break
+    return args
 
 
 def extract(job, url, media_url):
     try:
-        ytdlp = executable('yt-dlp')
-        base = [ytdlp, '--no-playlist', '--no-warnings', '--socket-timeout', '30', '--retries', '2']
+        base = downloader_args()
         job['status'] = 'extracting'
         # A selected direct source avoids accidentally downloading another video on a multi-video page.
         target = media_url or url
@@ -93,11 +195,7 @@ def extract(job, url, media_url):
         if info.get('_type') in ('playlist', 'multi_video'):
             raise RuntimeError('请打开单个视频页面再提取完整文稿。')
         expected = float(info.get('duration') or 0)
-        subtitle = fetch_subtitle(info)
         if job['cancel'].is_set():
-            return
-        if subtitle:
-            job.update(status='ready', subtitle=subtitle, duration=expected, parts=[])
             return
         job['status'] = 'downloading'
         root = Path(job['dir'])
@@ -145,14 +243,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def allowed(self):
         origin = self.headers.get('Origin', '')
-        return not origin or origin.startswith('chrome-extension://')
+        return not origin or origin == 'null' or origin.startswith('chrome-extension://')
+
+    def cors_headers(self):
+        origin = self.headers.get('Origin')
+        if self.allowed() and origin:
+            self.send_header('Access-Control-Allow-Origin', origin)
+            self.send_header('Vary', 'Origin')
+        self.send_header('Access-Control-Allow-Private-Network', 'true')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Access-Control-Request-Private-Network')
 
     def reply(self, code, data, mime='application/json'):
         body = json.dumps(data, ensure_ascii=False).encode() if mime == 'application/json' else data
         self.send_response(code)
-        if self.allowed() and self.headers.get('Origin'):
-            self.send_header('Access-Control-Allow-Origin', self.headers['Origin'])
-            self.send_header('Vary', 'Origin')
+        self.cors_headers()
         self.send_header('Content-Type', mime)
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
@@ -166,9 +271,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed():
             return self.reply(403, {'error': 'Origin denied'})
         self.send_response(204)
-        self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.cors_headers()
+        self.send_header('Access-Control-Max-Age', '600')
         self.end_headers()
 
     def do_POST(self):
@@ -198,15 +302,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.allowed():
             return self.reply(403, {})
-        if self.path == '/health':
-            return self.reply(200, {'ok': True, 'service': 'pagelens-media', 'version': 1})
+        if self.path in ('/health', '/'):
+            return self.reply(200, health_payload())
         pieces = self.path.strip('/').split('/')
         job = JOBS.get(pieces[1]) if len(pieces) >= 2 and pieces[0] == 'jobs' else None
         if not job:
             return self.reply(404, {})
         job['created'] = time.time()
         if len(pieces) == 2:
-            return self.reply(200, {k: job[k] for k in ('id', 'status', 'error', 'duration', 'parts', 'subtitle') if k in job})
+            return self.reply(200, {k: job[k] for k in ('id', 'status', 'error', 'duration', 'parts') if k in job})
         if len(pieces) == 4 and pieces[2] == 'audio' and pieces[3].isdigit() and job['status'] == 'ready':
             index = int(pieces[3])
             if index < len(job.get('parts', [])):
@@ -233,12 +337,73 @@ def reap():
                 cancel(JOBS.pop(key))
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--port', type=int, default=18789)
-    args = parser.parse_args()
-    for name in ('yt-dlp', 'ffmpeg', 'ffprobe'):
-        executable(name)
+def serve(port):
+    global PORT
+    PORT = int(port)
     threading.Thread(target=reap, daemon=True).start()
-    print(f'PageLens media helper: http://127.0.0.1:{args.port}', flush=True)
-    ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
+    print(f'PageLens media helper: http://127.0.0.1:{PORT}', flush=True)
+    try:
+        ThreadingHTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
+    except OSError as exc:
+        busy = getattr(exc, 'errno', None) in (errno.EADDRINUSE, 48)
+        if busy and probe(PORT):
+            print(f'already http://127.0.0.1:{PORT}', flush=True)
+            return
+        if busy:
+            raise SystemExit(f'端口 {PORT} 已被其他程序占用，不是 PageLens 媒体服务。') from exc
+        raise
+
+
+def spawn_detached(port):
+    script = str(Path(__file__).resolve())
+    args = [sys.executable, script, '--port', str(int(port))]
+    if os.name == 'nt':
+        subprocess.Popen(args, close_fds=True, start_new_session=True)
+        return
+    child = os.fork()
+    if child > 0:
+        return
+    os.setsid()
+    if os.fork() > 0:
+        os._exit(0)
+    log = Path(tempfile.gettempdir()) / 'pagelens-media-helper.log'
+    sys.stdout.flush()
+    sys.stderr.flush()
+    with open(os.devnull, 'rb') as devnull, open(log, 'ab') as handle:
+        os.dup2(devnull.fileno(), sys.stdin.fileno())
+        os.dup2(handle.fileno(), sys.stdout.fileno())
+        os.dup2(handle.fileno(), sys.stderr.fileno())
+    try:
+        serve(port)
+    finally:
+        os._exit(0)
+
+
+def ensure(port):
+    if probe(port):
+        print(f'already http://127.0.0.1:{int(port)}', flush=True)
+        return 0
+    spawn_detached(port)
+    for _ in range(40):
+        time.sleep(0.1)
+        if probe(port):
+            print(f'PageLens media helper: http://127.0.0.1:{int(port)}', flush=True)
+            return 0
+    start, create = launch_commands()
+    raise SystemExit(
+        '媒体服务启动失败。请在仓库根目录执行：\n'
+        f'  {start}\n'
+        f'若尚未建环境：{create}\n'
+        f'日志：{Path(tempfile.gettempdir()) / "pagelens-media-helper.log"}'
+    )
+
+
+if __name__ == '__main__':
+    enrich_path()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--port', type=int, default=DEFAULT_PORT)
+    parser.add_argument('--ensure', action='store_true', help='若未就绪则在后台拉起后退出')
+    args = parser.parse_args()
+    if args.ensure:
+        raise SystemExit(ensure(args.port))
+    serve(args.port)

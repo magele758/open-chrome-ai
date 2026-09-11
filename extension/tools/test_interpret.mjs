@@ -1,22 +1,31 @@
 import {
+  audioOffsetForVideo,
   chineseRatio,
+  isTooLateForDub,
   cleanTranslation,
   cueKey,
   stripTimeline,
   isImplausibleReset,
   isSeekJump,
   joinSegmentText,
+  lineDisplayAction,
   linesToCaptions,
   LOOKAHEAD_MAX_CUES,
+  mapAsrSegmentsToVideo,
   OPENING_READY_TEXT,
   OPENING_READY_TTS,
   openingReadyCount,
   pickLiveCue,
   pickLookaheadCues,
+  playbackRateOf,
   pruneSpokenOnSeek,
+  recordSecondsForRate,
+  shouldHoldForSync,
   shouldTranslate,
+  speechBoundsFromAsr,
   timedCues,
-  captionsForInterpret,
+  videoSliceBounds,
+  waitForLineClock,
   voiceRefForTime,
   voiceRefFromBlob,
   withCueEnds,
@@ -102,6 +111,9 @@ assert(isSeekJump(2, 40), "seek forward jump");
 assert(isSeekJump(8, 8.1, { paused: true }) === false, "tiny pause drift is not seek");
 assert(isSeekJump(8, 12, { paused: true }), "paused scrub is seek");
 assert(!isSeekJump(10, 15.2, { audioChunk: true }), "audio chunk advance is not seek");
+assert(isSeekJump(10, 20, { audioChunk: true }), "unrated 10s jump is seek");
+assert(!isSeekJump(10, 20, { audioChunk: true, playbackRate: 2 }), "2x chunk advance is not seek");
+assert(!isSeekJump(10, 16, { playbackRate: 2 }), "2x forward slack follows rate");
 const spokenSeek = new Set(many.slice(0, 8).map((c) => cueKey(c)));
 pruneSpokenOnSeek(many, spokenSeek, 40);
 assert(spokenSeek.has(cueKey(many[0])), "past spoken keys remain");
@@ -137,8 +149,55 @@ assert(await voiceRefFromBlob(new Blob([new Uint8Array(8)], { type: "audio/wav" 
   assert(voiceRefForTime([a, b], 4.1, "fb") === "new", "later overlapping slice wins");
 }
 
-assert(captionsForInterpret([{ start: 1, text: "hi" }]).length === 0, "default ignores captions");
-assert(captionsForInterpret([{ start: 1, text: "hi" }], true).length === 1, "use captions");
-assert(captionsForInterpret([{ start: 1, text: "hi" }], false).length === 0, "ignore captions");
+assert(playbackRateOf({ playbackRate: 2 }) === 2, "read player rate");
+assert(playbackRateOf({ playbackRate: 0 }) === 1, "invalid rate falls back");
+assert(Math.abs(recordSecondsForRate(5, 2) - 2.5) < 1e-9, "record shorter wall time at 2x");
+assert(Math.abs(recordSecondsForRate(5, 0.5) - 10) < 1e-9, "record longer wall time at 0.5x");
+
+{
+  const hit = videoSliceBounds({ start: 10, afterTime: 20, wallSeconds: 5, rate: 2 });
+  assert(hit.start === 10 && hit.end === 20, "slice end follows video clock");
+  const fallback = videoSliceBounds({ start: 10, afterTime: 10.05, wallSeconds: 5, rate: 2 });
+  assert(fallback.start === 10 && fallback.end === 20, "stale player read falls back to rate * wall");
+}
+
+const mapped = mapAsrSegmentsToVideo(
+  [{ start: 0.5, end: 2, text: "hello" }, { start: 2.2, end: 4.8, text: "world" }],
+  10,
+  20,
+  5,
+);
+assert(Math.abs(mapped[0].start - 11) < 1e-9, "asr start scaled onto video");
+assert(Math.abs(mapped[1].end - 19.6) < 1e-9, "asr end scaled onto video");
+const absMapped = mapAsrSegmentsToVideo([{ start: 10.4, end: 14.1, text: "on clock" }], 10, 15, 5);
+assert(Math.abs(absMapped[0].start - 10.4) < 1e-9, "already-absolute asr stays on video clock");
+{
+  const spoken = speechBoundsFromAsr([{ start: 1, end: 4, text: "speech" }], 10, 20, 5);
+  assert(spoken.start === 12 && spoken.end === 18, "caption window is spoken span, not recorder wall");
+}
+
+assert(lineDisplayAction(9.7, { start: 10, end: 15 }) === "wait", "too early waits for video clock");
+assert(lineDisplayAction(10.1, { start: 10, end: 15 }) === "show", "in-window shows");
+assert(lineDisplayAction(16, { start: 10, end: 15 }) === "show", "late but newest line still shows");
+assert(lineDisplayAction(18.2, { start: 10, end: 15 }, { expire: true }) === "skip", "already-shown caption expires");
+assert(isTooLateForDub(16.4, { start: 10, end: 15 }) === true, "dub past the slice is skipped");
+assert(isTooLateForDub(12, { start: 10, end: 15 }) === false, "mid-slice dub still plays");
+assert(audioOffsetForVideo({ videoTime: 12, start: 10, end: 15, audioDuration: 5 }) === 2, "late start joins mid speech");
+assert(audioOffsetForVideo({ videoTime: 12, start: 10, end: 15, audioDuration: 5, held: true }) === 0, "hold does not skip speech");
+assert(shouldHoldForSync({ pending: 2 }) === false, "two slices leave room for batch buffering");
+assert(shouldHoldForSync({ pending: 6 }) === true, "six pending slices pause capture to drain a batch");
+assert(shouldHoldForSync({ pending: 1 }) === false, "one in-flight slice may continue");
+assert(shouldHoldForSync({ pending: 1, lagSeconds: 4 }) === true, "measured lag pauses the picture");
+
+{
+  let t = 8.5;
+  const action = await waitForLineClock({
+    line: { start: 10, end: 14 },
+    readTime: async () => { t += 1; return t; },
+    pollMs: 0,
+  });
+  assert(action === "show", "waiter releases when video reaches the line");
+  assert(t >= 10, "waiter polled the video clock");
+}
 
 console.log("ok interpret");
