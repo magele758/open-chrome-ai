@@ -527,3 +527,139 @@ label.field input, label.field select {
 }
 .attach button { border: 0; background: transparent; color: var(--muted); }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+/* HITL Security & Interception */
+.hitl-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #fef08a;
+  color: #854d0e;
+  border: 1px solid #fde047;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+.hitl-badge:hover {
+  background: #fde047;
+}
+
+.audit-notice {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 550;
+  margin-bottom: 6px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audit-notice.visible {
+  display: inline-flex;
+}
+
+.hitl-modal {
+  position: absolute;
+  top: 48px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(28, 25, 23, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.hitl-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.16);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hitl-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.hitl-icon { font-size: 16px; }
+.hitl-title {
+  font-weight: 650;
+  font-size: 13px;
+  color: var(--ink);
+  flex: 1;
+}
+.hitl-timer {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--danger);
+  background: #fee2e2;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.hitl-desc {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.hitl-cmd {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: #292524;
+  color: #fafaf9;
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+}
+
+.hitl-session-check {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.hitl-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.hitl-actions button {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 550;
+}
+.hitl-actions button.primary {
+  background: var(--accent);
+  color: #ffffff;
+  border: 0;
+}
+.hitl-actions button.primary:hover {
+  filter: brightness(1.06);
+}

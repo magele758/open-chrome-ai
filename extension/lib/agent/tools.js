@@ -154,12 +154,16 @@ export function createAgentTools(ctx) {
       parameters: obj({ tabId: tabIdProp() }),
       async execute(args) {
         const tabId = args?.tabId != null ? Number(args.tabId) : ctx.getTabId?.();
-        const dataUrl = ctx.capture
-          ? await ctx.capture(tabId)
-          : await captureTab(tabId, ctx.getWindowId?.());
-        if (!dataUrl) return "截图失败。";
-        ctx.setImage?.(dataUrl);
-        return "已截取当前画面，已附加到本轮对话。请用文字描述你看到的关键信息，或继续回答用户。";
+        try {
+          const dataUrl = ctx.capture
+            ? await ctx.capture(tabId)
+            : await captureTab(tabId, ctx.getWindowId?.());
+          if (!dataUrl) return "截图失败：未获取到页面画面。";
+          ctx.setImage?.(dataUrl);
+          return "已截取当前画面，已附加到本轮对话。请用文字描述你看到的关键信息，或继续回答用户。";
+        } catch (err) {
+          return `截图失败：${err?.message || String(err)}`;
+        }
       },
     },
     {
@@ -1048,11 +1052,240 @@ export function createAgentTools(ctx) {
         return toToolText(result);
       },
     },
+    {
+      name: "request_toolsets",
+      description:
+        "当当前任务需要更多专业能力时申请挂载工具集。可选工具集：'dom_interact'（页面点击与填写）、'browser_mgmt'（标签管理与书签）、'system_ops'（本地文件/Shell/技能）、'media_player'（视频控制与转写）。",
+      parameters: obj(
+        {
+          toolsets: {
+            type: "array",
+            items: {
+              type: "string",
+              enum: ["dom_interact", "browser_mgmt", "system_ops", "media_player"],
+            },
+            description: "需要挂载的工具集名称列表",
+          },
+        },
+        ["toolsets"],
+      ),
+      async execute(args) {
+        const list = Array.isArray(args?.toolsets) ? args.toolsets : [];
+        if (ctx.onRequestToolsets) {
+          ctx.onRequestToolsets(list);
+        }
+        return `已动态挂载工具集：${list.join(", ") || "无"}。请在下一轮继续执行任务。`;
+      },
+    },
   ];
   if (ctx.enableSkills === false || ctx.settings?.skillsEnabled === false) {
     return tools.filter((t) => t.name !== "load_skill");
   }
   return tools;
+}
+
+/** 50+ 工具领域分类表 */
+export const TOOL_DOMAINS = {
+  core_reader: [
+    "extract_page",
+    "get_page_info",
+    "screenshot",
+    "get_selection",
+    "get_links",
+    "find_in_page",
+    "query_dom",
+  ],
+  dom_interact: [
+    "list_controls",
+    "click",
+    "fill",
+    "select_option",
+    "press_key",
+    "wait_for",
+    "scroll_page",
+    "run_js",
+  ],
+  browser_mgmt: [
+    "list_tabs",
+    "open_tab",
+    "switch_tab",
+    "close_tab",
+    "close_task_group",
+    "reload_tab",
+    "navigate_tab",
+    "search_bookmarks",
+    "create_bookmark_folder",
+    "add_bookmark",
+    "bookmark_open_tabs",
+    "search_history",
+  ],
+  system_ops: [
+    "run_shell",
+    "load_skill",
+    "save_video_doc",
+    "save_session_note",
+    "list_library",
+    "read_library",
+    "write_library",
+    "library_info",
+    "automa_execute",
+    "cose_accounts",
+    "cose_publish",
+    "remember",
+    "recall",
+    "notify",
+    "clipboard_write",
+    "list_companion_extensions",
+    "chrome_call",
+  ],
+  media_player: [
+    "seek_video",
+    "highlight_quote",
+    "get_captions",
+    "transcribe_video",
+    "capture_voice_ref",
+    "tts_speak",
+  ],
+};
+
+/** 只读安全命令白名单匹配（智能模式放行） */
+export function isShellCommandWhitelisted(cmd) {
+  const s = String(cmd || "").trim();
+  if (!s) return false;
+  // 禁止命令拼接、管道、子 shell 及输出重定向
+  if (/[;&|`]|\$\(/.test(s)) return false;
+  if (/>/.test(s)) return false;
+
+  const allowed = [
+    /^git\s+(status|log|diff|branch|show|remote|rev-parse)(\s.*)?$/,
+    /^ls(\s.*)?$/,
+    /^pwd$/,
+    /^cat\s+[^-].*$/,
+    /^which\s+.*$/,
+    /^echo\s+.*$/,
+    /^head(\s.*)?$/,
+    /^tail(\s.*)?$/,
+    /^grep(\s.*)?$/,
+    /^find(\s.*)?$/,
+    /^uname(\s.*)?$/,
+    /^file\s+.*$/,
+    /^wc(\s.*)?$/,
+    /^node\s+--version$/,
+    /^python3?\s+--version$/,
+  ];
+  return allowed.some((re) => re.test(s));
+}
+
+/** 判断工具是否属于高危特权类 */
+export function isToolPrivileged(toolName, args = {}) {
+  if (toolName === "run_shell") return true;
+  if (toolName === "cose_publish") return true;
+  if (toolName === "close_tab" || toolName === "close_task_group") return true;
+  if (toolName === "write_library") return true;
+  if (toolName === "automa_execute") return true;
+  if (toolName === "chrome_call") {
+    const method = String(args?.method || "");
+    if (/remove|delete|update/i.test(method)) return true;
+  }
+  return false;
+}
+
+/** HITL 拦截鉴权规则计算 */
+export function checkHitlRequirement({
+  toolName,
+  args = {},
+  hitlMode = "balanced",
+  sessionOverride = false,
+}) {
+  if (hitlMode === "autonomous" || sessionOverride) {
+    return { needsConfirmation: false };
+  }
+  if (!isToolPrivileged(toolName, args)) {
+    return { needsConfirmation: false };
+  }
+  if (hitlMode === "strict") {
+    return {
+      needsConfirmation: true,
+      needsAudit: false,
+      reason: `严格模式：特权操作 [${toolName}] 需手动授权`,
+    };
+  }
+  // hitlMode === "balanced" (智能模式：支持 AI 审查中间态)
+  if (toolName === "run_shell") {
+    const cmd = args?.command;
+    if (isShellCommandWhitelisted(cmd)) {
+      return { needsConfirmation: false };
+    }
+    return {
+      needsConfirmation: true,
+      needsAudit: true,
+      reason: `智能审查模式：非白名单命令待安全审核 [${cmd || ""}]`,
+    };
+  }
+  return {
+    needsConfirmation: true,
+    needsAudit: true,
+    reason: `智能审查模式：特权操作 [${toolName}] 待安全审核`,
+  };
+}
+
+/** 动态工具路由器：按意图裁剪工具集 */
+export function resolveActiveTools({
+  userText = "",
+  tools = [],
+  hasVideo = false,
+  requestedDomains = [],
+  allTools = false,
+}) {
+  if (allTools) return tools;
+
+  const activeDomains = new Set(["core_reader"]);
+  for (const d of requestedDomains) {
+    if (TOOL_DOMAINS[d]) activeDomains.add(d);
+  }
+
+  const text = String(userText || "").toLowerCase();
+
+  // 视频意图或当前页含视频
+  if (hasVideo || /视频|字幕|同传|播放|时间戳|video|transcript|caption/i.test(text)) {
+    activeDomains.add("media_player");
+  }
+
+  // DOM 页面交互意图
+  if (
+    /点击|填写|输入|按键|滚动|选择|登录|提交|按钮|控件|下拉|click|fill|submit|input|button|scroll/i.test(
+      text,
+    )
+  ) {
+    activeDomains.add("dom_interact");
+  }
+
+  // 标签管理意图
+  if (
+    /标签|窗口|书签|历史|关闭|切到|刷新|导航|tab|bookmark|history|window/i.test(
+      text,
+    )
+  ) {
+    activeDomains.add("browser_mgmt");
+  }
+
+  // 系统/Shell/Skill/文件意图
+  if (
+    /shell|命令|终端|运行|执行|脚本|skill|obsidian|文稿|入库|保存|note|library|exec|bash|zsh/i.test(
+      text,
+    )
+  ) {
+    activeDomains.add("system_ops");
+  }
+
+  const allowedNames = new Set(["request_toolsets"]);
+  for (const domain of activeDomains) {
+    for (const name of TOOL_DOMAINS[domain] || []) {
+      allowedNames.add(name);
+    }
+  }
+
+  return tools.filter((t) => allowedNames.has(t.name));
 }
 
 /** @deprecated 用 createAgentTools */

@@ -25,6 +25,7 @@
     "type": "module"
   },
   "permissions": [
+    "activeTab",
     "sidePanel",
     "storage",
     "scripting",
@@ -35,14 +36,30 @@
     "history",
     "notifications",
     "clipboardWrite",
+    "clipboardRead",
     "unlimitedStorage",
     "tabCapture",
     "offscreen",
-    "nativeMessaging"
+    "nativeMessaging",
+    "tts",
+    "alarms",
+    "webNavigation",
+    "favicon"
   ],
   "host_permissions": [
+    "<all_urls>",
     "http://*/*",
-    "https://*/*"
+    "https://*/*",
+    "file://*/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icons/*",
+        "skills/*"
+      ],
+      "matches": ["<all_urls>"]
+    }
   ],
   "commands": {
     "_execute_action": {

@@ -7,6 +7,7 @@ import {
   jsonSafe,
   restrictedUrl,
   compactTab,
+  captureTab,
 } from "../lib/chrome.js";
 import { runJs } from "../lib/agent/page-fns.js";
 
@@ -171,7 +172,7 @@ const ctx = {
     text: "正文一段",
     kind: "generic",
   }),
-  capture: async () => "data:image/jpeg;base64,xx",
+  capture: async (id) => captureTab(id, 10),
   setImage: () => {},
   getTaskGroupId: () => 42,
   setTaskGroupId: () => {},
@@ -196,6 +197,8 @@ for (const t of tools) {
 }
 
 assert(restrictedUrl("chrome://extensions"), "chrome url");
+assert(restrictedUrl("chrome-search://local-ntp/local-ntp.html"), "chrome-search url");
+assert(restrictedUrl("chrome-untrusted://new-tab-page/"), "chrome-untrusted url");
 assert(restrictedUrl("file:///tmp/x"), "file url");
 assert(!restrictedUrl("https://example.com/a"), "https ok");
 assert(isHttpUrl("https://x.com"), "http url");
@@ -245,6 +248,28 @@ try {
   deniedInject = /受限/.test(err.message || "");
 }
 assert(deniedInject, "inject blocked on chrome://");
+
+const shotNormal = await byName.screenshot.execute({ tabId: 1 });
+assert(/已截取当前画面/.test(shotNormal), "screenshot normal ok: " + shotNormal);
+
+const shotBlocked = await byName.screenshot.execute({ tabId: 9 });
+assert(/受限|截图失败/.test(shotBlocked), "screenshot blocked on restricted tab: " + shotBlocked);
+
+const shotAuto = await captureTab();
+assert(shotAuto === "data:image/jpeg;base64,xx", "captureTab auto resolves active tab");
+
+const origCapture = chrome.tabs.captureVisibleTab;
+chrome.tabs.captureVisibleTab = async () => {
+  throw new Error("Either the '' or 'activeTab' permission is required.");
+};
+let caughtPermission = "";
+try {
+  await captureTab(1);
+} catch (e) {
+  caughtPermission = e.message;
+}
+chrome.tabs.captureVisibleTab = origCapture;
+assert(/系统安全策略保护/.test(caughtPermission), "captureTab translates activeTab error: " + caughtPermission);
 
 const info = await byName.get_page_info.execute({});
 assert(/Alpha/.test(info), "get_page_info");

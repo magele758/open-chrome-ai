@@ -70,6 +70,12 @@ export const CHROME_CALL_ALLOW = [
   "tts.pause",
   "tts.resume",
   "tts.getVoices",
+  "alarms.get",
+  "alarms.getAll",
+  "alarms.clear",
+  "alarms.clearAll",
+  "webNavigation.getFrame",
+  "webNavigation.getAllFrames",
   "runtime.getPlatformInfo",
   "runtime.getURL",
   "i18n.getUILanguage",
@@ -84,8 +90,18 @@ export function restrictedUrl(url) {
   if (!url) return true;
   if (/chrome\.google\.com\/webstore|chromewebstore\.google\.com/i.test(url)) return true;
   try {
-    const protocol = new URL(url).protocol;
-    if (BLOCKED_PROTOCOLS.has(protocol)) return true;
+    const parsed = new URL(url);
+    const protocol = parsed.protocol;
+    if (
+      protocol.startsWith("chrome-") ||
+      protocol.startsWith("edge-") ||
+      protocol.startsWith("brave-") ||
+      protocol.startsWith("opera-") ||
+      BLOCKED_PROTOCOLS.has(protocol)
+    ) {
+      return true;
+    }
+    if (parsed.hostname === "newtab") return true;
   } catch {
     return true;
   }
@@ -217,18 +233,48 @@ export async function ensureTaskGroup(tabId, { groupId, title, color } = {}) {
 }
 
 export async function captureTab(tabId, windowId) {
-  let win = windowId;
+  let targetTab = null;
   if (tabId) {
-    const tab = await chrome.tabs.get(tabId);
-    if (restrictedUrl(tab?.url)) throw new Error(`受限页，无法截图：${tab?.url || ""}`);
-    if (!tab.active) {
-      await chrome.tabs.update(tabId, { active: true });
+    try {
+      targetTab = await chrome.tabs.get(tabId);
+    } catch {
+      targetTab = null;
+    }
+  }
+  if (!targetTab && chrome.tabs?.query) {
+    try {
+      const query = { active: true };
+      if (windowId != null) query.windowId = windowId;
+      else query.currentWindow = true;
+      const [active] = await chrome.tabs.query(query);
+      targetTab = active || null;
+    } catch {
+      targetTab = null;
+    }
+  }
+
+  if (targetTab) {
+    if (restrictedUrl(targetTab.url)) {
+      throw new Error(`受限页，无法截图：${targetTab.url || "系统页面"}`);
+    }
+    if (!targetTab.active && targetTab.id) {
+      await chrome.tabs.update(targetTab.id, { active: true });
       await sleep(280);
     }
-    win = tab.windowId;
   }
+
+  const win = targetTab?.windowId ?? windowId;
   if (win == null) throw new Error("没有可截取的窗口");
-  return chrome.tabs.captureVisibleTab(win, { format: "jpeg", quality: 80 });
+
+  try {
+    return await chrome.tabs.captureVisibleTab(win, { format: "jpeg", quality: 80 });
+  } catch (err) {
+    const msg = err?.message || String(err);
+    if (/activeTab|permission|cannot access/i.test(msg)) {
+      throw new Error("当前页面受系统安全策略保护无法截图，请切换到常规网页后重试。若刚更新插件，请在扩展管理页重新加载插件。");
+    }
+    throw err;
+  }
 }
 
 function extractWriteUrls(method, args) {

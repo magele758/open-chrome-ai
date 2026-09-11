@@ -1,5 +1,6 @@
 import { debugId, debugLog } from "./debug-log.js";
 import { formatTime } from "./prompts.js";
+import { isWhisperHallucination } from "./speech-quality.js";
 
 function trimSlash(url) {
   return String(url || "").trim().replace(/\/+$/, "");
@@ -144,7 +145,8 @@ export function collapseRollingCues(cues) {
 }
 
 export function formatTranscript(segments, offset = 0) {
-  const cues = collapseRollingCues((segments || [])
+  const filtered = (segments || []).filter((s) => !isWhisperHallucination(s?.text, { segments: [s] }));
+  const cues = collapseRollingCues(filtered
     .map((s) => {
       const start = Math.max(0, (Number(s.start) || 0) + Number(offset || 0));
       const endRaw = Number(s.end);

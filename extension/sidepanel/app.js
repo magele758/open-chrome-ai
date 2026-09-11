@@ -12,6 +12,7 @@ import { loadPageCaptions, transcribeTab, usableTranscript } from "../lib/captio
 import { abortRecording, beginCapture, beginTabCapture, discardCapture, recordFromCapture } from "../lib/tab-audio.js";
 import { injectVideo } from "../lib/chrome.js";
 import { runInterpret } from "../lib/interpret.js";
+import { InterpretController } from "./interpret-controller.js";
 import {
   libraryStatus,
   pickLibraryFolder,
@@ -23,7 +24,8 @@ import {
 } from "../lib/library.js";
 import { initMarkdown, formatAnswer, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createAgentLoop } from "../lib/agent/loop.js";
-import { createAgentTools } from "../lib/agent/tools.js";
+import { createAgentTools, resolveActiveTools, checkHitlRequirement } from "../lib/agent/tools.js";
+import { auditToolCall } from "../lib/agent/guardrail.js";
 import { loadRuntimeSkills, shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
 import { applySlashItem, composeSkillPrompt, filterSlashItems, parseSlashToken, slashItemsFromSkills, userInvokedSkill } from "../lib/slash.js";
 import { pickSkillFolder, clearSkillFolderHandle, setSkillFolderPath, ensureSkillBody, skillFolderStatus } from "../lib/skill-folder.js";
@@ -94,7 +96,9 @@ const state = {
   library: { configured: false, granted: false, name: "" },
   skillFolder: { configured: false, granted: false, name: "", count: 0 },
   nativeHost: { ok: false, checked: false },
+  sessionHitlOverride: null,
 };
+
 
 function modelSummary() {
   const text = resolveModel(state.settings, "text");
@@ -517,6 +521,117 @@ function applySession(session) {
   renderMessages();
 }
 
+function updateHitlBadge() {
+  const badge = $("hitl-badge");
+  if (!badge) return;
+  const isAuto = state.settings.hitlMode === "autonomous" || state.sessionHitlOverride === true;
+  badge.classList.toggle("hidden", !isAuto);
+  if (state.sessionHitlOverride === true) {
+    badge.textContent = "⚡️本场免确认";
+    badge.title = "本场会话已信任，点击切回智能模式";
+  } else if (state.settings.hitlMode === "autonomous") {
+    badge.textContent = "⚡️全自动";
+    badge.title = "当前处于全自动模式，点击切回智能模式";
+  }
+}
+
+function showTransientAuditNotice(text) {
+  let el = $("audit-notice");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "audit-notice";
+    el.className = "audit-notice";
+    const composer = document.querySelector(".composer");
+    if (composer) composer.insertBefore(el, composer.firstChild);
+  }
+  el.textContent = text;
+  el.classList.add("visible");
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => {
+    el.classList.remove("visible");
+  }, 2800);
+}
+
+function showHitlModal({ toolName, args, reason, signal, timeoutSeconds, onDecision }) {
+  const modal = $("hitl-modal");
+  const descEl = $("hitl-desc");
+  const cmdEl = $("hitl-cmd");
+  const timerEl = $("hitl-timer");
+  const rememberEl = $("hitl-session-remember");
+  const btnApprove = $("btn-hitl-approve");
+  const btnReject = $("btn-hitl-reject");
+
+  if (!modal) {
+    onDecision({ allow: false, reason: "无法弹出授权确认窗口" });
+    return;
+  }
+
+  if (descEl) descEl.textContent = reason || `模型申请执行特权操作: ${toolName}`;
+  const cmd = args?.command || (toolName === "run_shell" ? "" : JSON.stringify(args, null, 2));
+  if (cmd && cmdEl) {
+    cmdEl.textContent = cmd;
+    cmdEl.classList.remove("hidden");
+  } else if (cmdEl) {
+    cmdEl.classList.add("hidden");
+  }
+
+  if (rememberEl) rememberEl.checked = false;
+  modal.classList.remove("hidden");
+
+  let timeLeft = timeoutSeconds || 30;
+  if (timerEl) timerEl.textContent = `${timeLeft}s`;
+
+  let timerId = null;
+  let finished = false;
+
+  const cleanup = () => {
+    if (finished) return;
+    finished = true;
+    if (timerId) clearInterval(timerId);
+    modal.classList.add("hidden");
+    btnApprove?.removeEventListener("click", handleApprove);
+    btnReject?.removeEventListener("click", handleReject);
+  };
+
+  const handleApprove = () => {
+    cleanup();
+    if (rememberEl?.checked) {
+      state.sessionHitlOverride = true;
+      updateHitlBadge();
+    }
+    onDecision({ allow: true });
+  };
+
+  const handleReject = () => {
+    cleanup();
+    onDecision({ allow: false, reason: "用户在侧栏主动拒绝执行该特权操作。" });
+  };
+
+  btnApprove?.addEventListener("click", handleApprove);
+  btnReject?.addEventListener("click", handleReject);
+
+  timerId = setInterval(() => {
+    timeLeft -= 1;
+    if (timeLeft <= 0) {
+      cleanup();
+      onDecision({ allow: false, reason: "授权超时未确认，操作已取消。" });
+    } else if (timerEl) {
+      timerEl.textContent = `${timeLeft}s`;
+    }
+  }, 1000);
+
+  if (signal) {
+    signal.addEventListener(
+      "abort",
+      () => {
+        cleanup();
+        onDecision({ allow: false, reason: "操作已被用户中止。" });
+      },
+      { once: true },
+    );
+  }
+}
+
 async function startNewSession() {
   await settleBusy();
   await persistSession();
@@ -528,6 +643,8 @@ async function startNewSession() {
   state.run = null;
   state.taskGroupId = null;
   state.transcribe = null;
+  state.sessionHitlOverride = null;
+  updateHitlBadge();
   state.recordAbort?.abort();
   state.workAbort?.abort();
   abortRecording();
@@ -825,6 +942,7 @@ function renderSettingsForm() {
   $("answer-lang").value = state.settings.answerLanguage;
   $("ui-font").value = state.settings.uiFont || "md";
   if ($("native-shell")) $("native-shell").checked = state.settings.nativeShell !== false;
+  if ($("hitl-mode")) $("hitl-mode").value = state.settings.hitlMode || "balanced";
   if ($("skills-enabled")) $("skills-enabled").checked = skillsOn();
   syncSkillFolderControls();
   renderLibraryStatus();
@@ -1649,62 +1767,118 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
   let tools;
   let loop;
   try {
+    const requestedDomains = new Set();
     tools = createAgentTools({
-    getTabId: () => state.tab?.id,
-    getWindowId: () => state.tab?.windowId,
-    refreshPack: async () => {
-      await refreshTab();
-      return state.pack;
-    },
-    capture: captureTab,
-    setImage: (url) => {
-      state.image = url;
-      renderAttach();
-    },
-    onTabsMutated: async () => {
-      await refreshTab();
-    },
-    getTaskGroupId: () => state.taskGroupId,
-    setTaskGroupId: (id) => {
-      state.taskGroupId = id;
-    },
-    getTaskGroupTitle: () => {
-      const user = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
-      const line = String(user?.text || "任务").split("\n")[0].trim().slice(0, 24);
-      return `PL · ${line || "任务"}`;
-    },
-    getAbortSignal: () => state.abort?.signal,
-    getSessionId: () => state.sessionId,
-    setCaptions: applyCaptions,
-    onTranscribeProgress: (info) => {
-      state.transcribe = { ...(state.transcribe || {}), ...info };
-      renderContext();
-    },
-    skills,
-    settings: state.settings,
-    nativeShell: state.settings.nativeShell !== false,
-    enableSkills: useSkills,
-  });
+      getTabId: () => state.tab?.id,
+      getWindowId: () => state.tab?.windowId,
+      refreshPack: async () => {
+        await refreshTab();
+        return state.pack;
+      },
+      capture: captureTab,
+      setImage: (url) => {
+        state.image = url;
+        renderAttach();
+      },
+      onTabsMutated: async () => {
+        await refreshTab();
+      },
+      getTaskGroupId: () => state.taskGroupId,
+      setTaskGroupId: (id) => {
+        state.taskGroupId = id;
+      },
+      getTaskGroupTitle: () => {
+        const user = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
+        const line = String(user?.text || "任务").split("\n")[0].trim().slice(0, 24);
+        return `PL · ${line || "任务"}`;
+      },
+      getAbortSignal: () => state.abort?.signal,
+      getSessionId: () => state.sessionId,
+      setCaptions: applyCaptions,
+      onTranscribeProgress: (info) => {
+        state.transcribe = { ...(state.transcribe || {}), ...info };
+        renderContext();
+      },
+      onRequestToolsets: (domains) => {
+        for (const d of domains) requestedDomains.add(d);
+      },
+      skills,
+      settings: state.settings,
+      nativeShell: state.settings.nativeShell !== false,
+      enableSkills: useSkills,
+    });
 
     loop = createAgentLoop({
-    maxTurns: 12,
-    systemPrompt: [systemPrompt(state.settings, { useSkills }), useSkills ? skillCatalogText(skills) : ""].filter(Boolean).join("\n\n"),
-    tools,
-    model: {
-      async runTurn({ messages, tools: turnTools, signal, onTextDelta }) {
-        const visionReady = Boolean(state.image) && isModelReady(resolveModel(state.settings, "multimodal"));
-        const active = visionReady ? resolveModel(state.settings, "multimodal") : model;
-        let msgs = messages;
-        if (visionReady) {
-          msgs = [
-            ...messages,
-            { role: "user", content: multimodalUserContent("当前标签页截图：", state.image) },
-          ];
-        }
-        return streamTurn(active, { messages: msgs, tools: turnTools, signal }, onTextDelta);
+      maxTurns: 12,
+      systemPrompt: [systemPrompt(state.settings, { useSkills }), useSkills ? skillCatalogText(skills) : ""].filter(Boolean).join("\n\n"),
+      get tools() {
+        const lastUser = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
+        return resolveActiveTools({
+          userText: userText || lastUser?.text || "",
+          tools,
+          hasVideo: Boolean(state.pack?.hasVideo),
+          requestedDomains: Array.from(requestedDomains),
+        });
       },
-    },
-  });
+      async interceptToolCall({ tool, args, call, signal }) {
+        const hitlMode = state.settings.hitlMode || "balanced";
+        const sessionOverride = Boolean(state.sessionHitlOverride);
+        const req = checkHitlRequirement({
+          toolName: tool.name,
+          args,
+          hitlMode,
+          sessionOverride,
+        });
+        if (!req.needsConfirmation) {
+          return { allow: true };
+        }
+
+        // AI 审查中间态 (Guardrail Audit)
+        if (req.needsAudit && isModelReady(resolveModel(state.settings, "text"))) {
+          const lastUser = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
+          const audit = await auditToolCall({
+            toolName: tool.name,
+            args,
+            userText: userText || lastUser?.text || "",
+            model: resolveModel(state.settings, "text"),
+            signal,
+          });
+
+          if (audit.verdict === "SAFE") {
+            const shortCmd = args?.command ? ` (${String(args.command).slice(0, 24)})` : "";
+            showTransientAuditNotice(`🛡️ AI 审查已放行: ${tool.name}${shortCmd}`);
+            return { allow: true, reason: audit.reason, audited: true };
+          }
+
+          req.reason = `⚠️ AI 审查预警 [${audit.risk.toUpperCase()}]：${audit.reason}，请人工核查！`;
+        }
+
+        return new Promise((resolve) => {
+          showHitlModal({
+            toolName: tool.name,
+            args,
+            reason: req.reason,
+            signal,
+            timeoutSeconds: state.settings.hitlTimeoutSeconds || 30,
+            onDecision: resolve,
+          });
+        });
+      },
+      model: {
+        async runTurn({ messages, tools: turnTools, signal, onTextDelta }) {
+          const visionReady = Boolean(state.image) && isModelReady(resolveModel(state.settings, "multimodal"));
+          const active = visionReady ? resolveModel(state.settings, "multimodal") : model;
+          let msgs = messages;
+          if (visionReady) {
+            msgs = [
+              ...messages,
+              { role: "user", content: multimodalUserContent("当前标签页截图：", state.image) },
+            ];
+          }
+          return streamTurn(active, { messages: msgs, tools: turnTools, signal }, onTextDelta);
+        },
+      },
+    });
   } catch (err) {
     console.error("[pagelens] executeLoop setup", err);
     botMsg.text = "请求失败：" + (err.message || String(err));
@@ -2014,6 +2188,7 @@ function stopInterpret() {
   discardCapture(capture).catch(() => {});
 }
 
+
 function needAsrSettings(message) {
   renderSettingsForm();
   setView("settings");
@@ -2217,7 +2392,7 @@ async function startInterpret() {
       };
     }
     renderContext();
-    } catch (err) {
+  } catch (err) {
     if (state.siAbort !== abort) return;
     if (err?.name === "AbortError" || /abort/i.test(err?.message || "")) {
       state.interpret = { ...(state.interpret || {}), status: "idle" };
@@ -2544,6 +2719,17 @@ function wire() {
     paintNativeHostStatus(state.nativeHost);
     renderModelLine();
   });
+  $("hitl-mode")?.addEventListener("change", (e) => {
+    state.settings.hitlMode = e.target.value;
+    updateHitlBadge();
+  });
+  $("hitl-badge")?.addEventListener("click", () => {
+    state.sessionHitlOverride = false;
+    state.settings.hitlMode = "balanced";
+    saveSettings(state.settings).catch(() => {});
+    updateHitlBadge();
+    if ($("hitl-mode")) $("hitl-mode").value = "balanced";
+  });
   $("btn-native-copy-id")?.addEventListener("click", async () => {
     try {
       await copyText(chrome.runtime.id);
@@ -2633,6 +2819,7 @@ async function boot() {
     markWired();
     syncComposerHints();
     renderModelLine();
+    updateHitlBadge();
     renderSkills();
     renderMessages();
     console.info("[pagelens] wired");

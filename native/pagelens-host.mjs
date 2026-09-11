@@ -376,6 +376,249 @@ export async function handleRequest(req) {
   return { ok: false, error: `未知 op：${op || "(空)"}` };
 }
 
+export const MCP_TOOLS = [
+  {
+    name: "exec_command",
+    description: "Execute a shell command on the host system (with timeout and output clipping)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "The shell command to execute" },
+        cwd: { type: "string", description: "Working directory (absolute path). Defaults to home dir." },
+        timeoutMs: { type: "number", description: "Timeout in milliseconds (default 60000, max 300000)" },
+      },
+      required: ["command"],
+    },
+  },
+  {
+    name: "read_file",
+    description: "Read text contents of a file from the host filesystem",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute path or root directory path" },
+        rel: { type: "string", description: "Optional relative path under root" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "write_file",
+    description: "Write text contents to a file on the host filesystem",
+    inputSchema: {
+      type: "object",
+      properties: {
+        root: { type: "string", description: "Root directory path" },
+        rel: { type: "string", description: "Relative file path under root" },
+        text: { type: "string", description: "Text content to write" },
+      },
+      required: ["root", "rel", "text"],
+    },
+  },
+  {
+    name: "list_directory",
+    description: "List files and directories within a directory on the host filesystem",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute path to directory" },
+        rel: { type: "string", description: "Optional relative path under path" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "scan_skills",
+    description: "Scan and parse Antigravity/Agent skill definitions (.md files) in a directory tree",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Directory path to scan" },
+        maxSkills: { type: "number", description: "Maximum skills to return (default 200)" },
+        maxDepth: { type: "number", description: "Maximum directory recursion depth (default 4)" },
+      },
+      required: ["path"],
+    },
+  },
+];
+
+export async function handleMcpRequest(req) {
+  if (!req || typeof req !== "object") {
+    return { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } };
+  }
+  const { id, method, params } = req;
+
+  if (method === "notifications/initialized") {
+    return null;
+  }
+
+  if (method === "initialize") {
+    return {
+      jsonrpc: "2.0",
+      id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: {
+          tools: {},
+        },
+        serverInfo: {
+          name: "pagelens-host",
+          version: HOST_VERSION,
+        },
+      },
+    };
+  }
+
+  if (method === "ping") {
+    return { jsonrpc: "2.0", id, result: {} };
+  }
+
+  if (method === "tools/list") {
+    return {
+      jsonrpc: "2.0",
+      id,
+      result: {
+        tools: MCP_TOOLS,
+      },
+    };
+  }
+
+  if (method === "tools/call") {
+    const name = String(params?.name || "");
+    const args = params?.arguments || {};
+
+    if (name === "exec_command") {
+      const res = await execCommand({
+        command: args.command,
+        cwd: args.cwd,
+        timeoutMs: args.timeoutMs,
+      });
+      const text = res.ok
+        ? [res.stdout, res.stderr].filter(Boolean).join("\n") || `(Command exited with code ${res.code})`
+        : `Error: ${res.error}`;
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text }],
+          isError: !res.ok || (res.code != null && res.code !== 0),
+        },
+      };
+    }
+
+    if (name === "read_file") {
+      const res = handleFs({
+        action: "readText",
+        path: args.path,
+        root: args.root || args.path,
+        rel: args.rel || "",
+      });
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: res.ok ? res.text : `Error: ${res.error}` }],
+          isError: !res.ok,
+        },
+      };
+    }
+
+    if (name === "write_file") {
+      const res = handleFs({
+        action: "writeText",
+        root: args.root,
+        rel: args.rel,
+        text: args.text,
+      });
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: res.ok ? `Successfully wrote ${res.bytes} characters to ${res.path}` : `Error: ${res.error}` }],
+          isError: !res.ok,
+        },
+      };
+    }
+
+    if (name === "list_directory") {
+      const res = handleFs({
+        action: "readdir",
+        path: args.path,
+        root: args.path,
+        rel: args.rel || "",
+      });
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: res.ok ? JSON.stringify(res.entries, null, 2) : `Error: ${res.error}` }],
+          isError: !res.ok,
+        },
+      };
+    }
+
+    if (name === "scan_skills") {
+      const res = handleFs({
+        action: "scanSkills",
+        path: args.path,
+        maxSkills: args.maxSkills,
+        maxDepth: args.maxDepth,
+      });
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: res.ok ? JSON.stringify(res.files, null, 2) : `Error: ${res.error}` }],
+          isError: !res.ok,
+        },
+      };
+    }
+
+    return {
+      jsonrpc: "2.0",
+      id,
+      error: { code: -32601, message: `Tool not found: ${name}` },
+    };
+  }
+
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: { code: -32601, message: `Method not found: ${method}` },
+  };
+}
+
+export function attachMcpStdio(stdin = process.stdin, stdout = process.stdout) {
+  let lineBuf = "";
+  stdin.setEncoding("utf8");
+  stdin.on("data", async (chunk) => {
+    lineBuf += chunk;
+    const lines = lineBuf.split("\n");
+    lineBuf = lines.pop();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        const reply = await handleMcpRequest(parsed);
+        if (reply) {
+          stdout.write(JSON.stringify(reply) + "\n");
+        }
+      } catch (err) {
+        stdout.write(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32700, message: `JSON parse error: ${err.message || String(err)}` },
+          }) + "\n",
+        );
+      }
+    }
+  });
+  stdin.on("end", () => process.exit(0));
+  stdin.on("error", () => process.exit(1));
+}
+
 function writeReply(obj) {
   process.stdout.write(encodeMessage(obj));
 }
@@ -407,6 +650,11 @@ export function attachStdio(stdin = process.stdin, stdoutWrite = writeReply) {
 }
 
 if (isMain) {
+  const isMcp = process.argv.includes("--mcp") || Boolean(process.env.PAGELENS_MCP);
   process.stdin.resume();
-  attachStdio();
+  if (isMcp) {
+    attachMcpStdio();
+  } else {
+    attachStdio();
+  }
 }

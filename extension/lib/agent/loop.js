@@ -174,6 +174,21 @@ async function runToolList(host, calls, signal, onEvent) {
         ok = false;
         content = `unknown tool: ${call.name}`;
       } else {
+        if (typeof host.interceptToolCall === "function") {
+          const check = await host.interceptToolCall({ tool, args, call, signal });
+          if (check && check.allow === false) {
+            ok = false;
+            content = check.reason || `[安全拦截] 用户拒绝或未授权执行工具: ${call.name}`;
+            results.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content,
+            });
+            onEvent({ type: "tools_intercepted", name: call.name, reason: content });
+            onEvent({ type: "tools_done", name: call.name, ok, content: content.slice(0, 1500) });
+            continue;
+          }
+        }
         content = await tool.execute(args, { signal });
         if (content != null && typeof content !== "string") {
           content = JSON.stringify(content);

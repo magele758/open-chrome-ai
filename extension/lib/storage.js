@@ -64,6 +64,8 @@ export function defaultSettings() {
     uiFont: "md",
     shareActiveTab: true,
     nativeShell: true,
+    hitlMode: "balanced",
+    hitlTimeoutSeconds: 30,
     skillsEnabled: false,
     shortcuts: [],
   };
@@ -81,6 +83,9 @@ export function normalizeSettings(raw) {
   if (!["ZH", "EN", "JA", "AR", "ES"].includes(merged.tts.lang)) merged.tts.lang = "ZH";
   merged.uiFont = ["md", "lg", "xl"].includes(raw?.uiFont) ? raw.uiFont : "md";
   merged.nativeShell = raw?.nativeShell !== false;
+  merged.hitlMode = ["strict", "balanced", "autonomous"].includes(raw?.hitlMode) ? raw.hitlMode : "balanced";
+  const timeout = Number(raw?.hitlTimeoutSeconds);
+  merged.hitlTimeoutSeconds = Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.max(timeout, 5), 300) : 30;
   merged.skillsEnabled = raw?.skillsEnabled === true;
   delete merged.interpretUseCaptions;
   merged.shortcuts = Array.isArray(raw?.shortcuts)

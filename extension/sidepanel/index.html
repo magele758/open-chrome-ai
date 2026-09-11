@@ -9,7 +9,7 @@
 <body>
   <div id="app">
     <header class="header">
-      <div class="brand"><span class="mark"></span> PageLens</div>
+      <div class="brand"><span class="mark"></span> PageLens <span class="hitl-badge hidden" id="hitl-badge" title="当前处于全自动模式">⚡️全自动</span></div>
       <div class="icon-btns">
         <button type="button" id="btn-new" title="新对话">新</button>
         <button type="button" id="btn-history" title="对话历史">历</button>
@@ -20,6 +20,27 @@
     </header>
 
     <section id="view-chat" class="view">
+      <div id="hitl-modal" class="hitl-modal hidden">
+        <div class="hitl-card">
+          <div class="hitl-header">
+            <span class="hitl-icon">⚠️</span>
+            <span class="hitl-title">特权操作需要授权</span>
+            <span class="hitl-timer" id="hitl-timer">30s</span>
+          </div>
+          <div class="hitl-body">
+            <div class="hitl-desc" id="hitl-desc"></div>
+            <pre class="hitl-cmd hidden" id="hitl-cmd"></pre>
+            <label class="check hitl-session-check" id="hitl-session-label">
+              <input type="checkbox" id="hitl-session-remember" />
+              信任本场对话（本会话免确认）
+            </label>
+          </div>
+          <div class="hitl-actions">
+            <button type="button" class="secondary" id="btn-hitl-reject">拒绝</button>
+            <button type="button" class="primary" id="btn-hitl-approve">允许执行</button>
+          </div>
+        </div>
+      </div>
       <div class="ctx">
         <div class="ctx-label" id="ctx-label">当前标签</div>
         <div class="card">
@@ -134,7 +155,15 @@
           <input type="checkbox" id="native-shell" />
           允许执行本机命令
         </label>
-        <p class="lead" id="native-host-id" style="margin-top:0"></p>
+        <div class="field" style="margin-top:8px">
+          <label for="hitl-mode" style="font-size:12px;font-weight:600;color:var(--ink);display:block;margin-bottom:4px">安全授权模式（HITL）</label>
+          <select id="hitl-mode" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--surface)">
+            <option value="balanced">⚖️ 智能审查模式（推荐）：只读直接放行，AI 审查安全意图放行，仅异常时弹窗</option>
+            <option value="strict">🛡️ 严格模式：任何特权与 Shell 命令 100% 物理弹窗确认</option>
+            <option value="autonomous">⚡️ 全自动模式：所有命令自动静默执行，零弹窗中断</option>
+          </select>
+        </div>
+        <p class="lead" id="native-host-id" style="margin-top:6px"></p>
         <div class="row-btns">
           <button class="secondary" type="button" id="btn-native-copy-id">复制扩展 ID</button>
           <button class="secondary" type="button" id="btn-native-copy-install">复制安装命令</button>

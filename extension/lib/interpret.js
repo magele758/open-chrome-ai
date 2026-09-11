@@ -10,9 +10,9 @@ import { injectVideo, injectPageAudio, sleep } from "./chrome.js";
 import { recordPageSlice } from "./tab-audio.js";
 import { collapseRollingCues, filenameForMime, transcribeAudio } from "./asr.js";
 import { completeChat } from "./openai.js";
-import { checkSpeechText, isWeakSpeechText } from "./speech-quality.js";
+import { checkSpeechText, isWeakSpeechText, isWhisperHallucination } from "./speech-quality.js";
 import { isAsrReady, isModelReady, isTtsReady, resolveModel } from "./storage.js";
-import { isQuietBlob, recordSlice } from "./tab-audio-record.js";
+import { assessVoiceQuality, isQuietBlob, recordSlice } from "./tab-audio-record.js";
 import { createInterpretPipeline } from "./interpret-pipeline.js";
 import { blobToWav, synthesizeTts } from "./tts.js";
 
@@ -321,14 +321,36 @@ export function joinSegmentText(segments) {
     .trim();
 }
 
-/** Index-TTS prompt from a captured slice. Quiet/failed clips are ignored. */
-export async function voiceRefFromBlob(blob) {
+/** Index-TTS prompt from a captured slice. Quiet/failed clips or non-voice audio are ignored. */
+export async function voiceRefFromBlob(blob, options = {}) {
   if (!blob || isQuietBlob(blob)) return null;
+  let wav = blob;
   try {
-    return await blobToWav(blob);
+    wav = await blobToWav(blob);
   } catch {
-    return blob;
+    wav = blob;
   }
+  if (options.checkQuality !== false) {
+    try {
+      const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
+      if (AC && typeof wav.arrayBuffer === "function") {
+        const ctx = new AC();
+        try {
+          const audio = await ctx.decodeAudioData(await wav.arrayBuffer());
+          const ch = audio.getChannelData(0);
+          const assessment = assessVoiceQuality(ch, audio.sampleRate);
+          if (!assessment.ok) {
+            return null; // Reject low SNR / pure noise / insufficient speech
+          }
+        } finally {
+          ctx.close?.().catch(() => {});
+        }
+      }
+    } catch {
+      /* If decoding is not supported in the current environment, fallback to wav */
+    }
+  }
+  return wav;
 }
 
 export function voiceSliceEnd(slice, fallbackSeconds = VOICE_SAMPLE_SECONDS) {
@@ -394,6 +416,10 @@ export async function translateToZh(model, text, signal, trace = {}) {
   debugLog("translation.input", { ...trace, text });
   const src = checkSpeechText(stripTimeline(text), "语音识别");
   if (!src) return "";
+  if (isWhisperHallucination(src)) {
+    debugLog("translation.bypass", { ...trace, reason: "hallucination-dropped", text: src });
+    return "";
+  }
   if (!shouldTranslate(src)) {
     debugLog("translation.bypass", { ...trace, reason: "already-Chinese", text: src });
     return src;
@@ -495,15 +521,24 @@ export async function runInterpret(opts) {
         });
         const src = stripTimeline(joinSegmentText(segments));
         const sliceSeconds = Number(item.end) - Number(item.start);
-        if (!src || isWeakSpeechText(src, sliceSeconds) || signal.aborted || s.aborted) {
-          debugLog("interpret.skipped", { ...trace, reason: !src ? "empty-asr" : signal.aborted || s.aborted ? "cancelled" : "weak-asr" });
+        const isHallucination = isWhisperHallucination(src, { sliceSeconds, segments });
+        if (!src || isWeakSpeechText(src, sliceSeconds) || isHallucination || signal.aborted || s.aborted) {
+          debugLog("interpret.skipped", {
+            ...trace,
+            reason: !src ? "empty-asr" : isHallucination ? "whisper-hallucination" : signal.aborted || s.aborted ? "cancelled" : "weak-asr",
+            text: src,
+          });
           return null;
         }
         const bounds = speechBoundsFromAsr(segments, item.start, item.end, item.seconds);
         const zh = await translateToZh(textModel, src, s, trace);
         return { start: bounds.start, end: bounds.end, src, zh, ownRef, trace };
       } catch (error) {
-        debugLog("interpret.chunk-error", { ...trace, error, reason: /异常重复/.test(error?.message || "") ? "runaway-repetition" : "request-failed" });
+        debugLog("interpret.chunk-error", {
+          ...trace,
+          error,
+          reason: /异常重复/.test(error?.message || "") ? "runaway-repetition" : /静音幻觉/.test(error?.message || "") ? "whisper-hallucination" : "request-failed",
+        });
         throw error;
       }
     },
