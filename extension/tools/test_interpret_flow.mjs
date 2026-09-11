@@ -535,3 +535,44 @@ console.log('PASS seek revision clears the line and realigns');
   assert.equal(asrIndex, 3);
   console.log('PASS semantic startup obtains continuation; negation and EOF tail translated once with context');
 }
+
+// Custom bufferSegments (e.g. 5) buffers 5 complete dubs before releasing hold.
+{
+  const player = { currentTime: 0, duration: 60, paused: false, ended: false, advance: 0 };
+  installChrome(player);
+  const translation = mockTranslateFetch();
+  globalThis.fetch = async (url, opts = {}) => String(url).includes('asr.test')
+    ? Response.json({ text: 'Speech slice', segments: [{ start: 0, end: 5, text: 'Speech slice' }] })
+    : translation(url, opts);
+  const fifth = gate(), abort = new AbortController();
+  let dubs = 0, closed = false;
+  const running = runInterpret({
+    tabId: 1, startAt: 0, signal: abort.signal,
+    settings: {
+      text: textSettings,
+      asr: { baseUrl: 'https://asr.test/v1', model: 'w' },
+      tts: { baseUrl: 'https://tts.test', bufferSegments: 5 },
+    },
+    openSource: async () => ({
+      duration: 60,
+      close: async () => { closed = true; },
+      slice: async start => ({ blob: loudWav(), mime: 'audio/wav', start, end: start + 5, seconds: 5 }),
+    }),
+    recordSlice: async () => { throw new Error('must not capture live'); },
+    synthesizeTts: async () => {
+      dubs++;
+      if (dubs === 5) await fifth.promise;
+      return { blob: loudWav() };
+    },
+  });
+  await waitUntil(() => dubs === 5);
+  assert(player.paused, 'paused while buffering 5 segments');
+  assert.equal(player.cmds.filter(c => c === 'play').length, 0, 'no playback before 5 segments ready');
+  fifth.resolve();
+  await waitUntil(() => player.cmds.includes('play'));
+  abort.abort();
+  await running;
+  assert(closed);
+  console.log('PASS custom bufferSegments=5 buffers 5 complete dubs before starting playback');
+}
+

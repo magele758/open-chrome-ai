@@ -239,6 +239,7 @@ export class InterpretController {
         sourceUrl: tab.url,
         title: tab.title,
         settings,
+        bufferSegments: Number(settings?.tts?.bufferSegments) || 5,
         startAt,
         openingHold,
         capture: task.currentCapture,

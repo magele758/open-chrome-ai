@@ -1741,6 +1741,13 @@ function ttsFields(tts) {
     <label class="field">时长系数 duration_factor
       <input data-k="tts.durationFactor" type="number" min="0.5" max="2" step="0.05" value="${escapeAttr(tts.durationFactor)}" />
     </label>
+    <label class="field">同传缓冲深度
+      <select data-k="tts.bufferSegments">
+        <option value="3" ${Number(tts.bufferSegments) === 3 ? "selected" : ""}>3 段（快速起播 · 约 15 秒）</option>
+        <option value="5" ${(!tts.bufferSegments || Number(tts.bufferSegments) === 5) ? "selected" : ""}>5 段（推荐流畅 · 约 25 秒防中断）</option>
+        <option value="8" ${Number(tts.bufferSegments) === 8 ? "selected" : ""}>8 段（深度缓冲 · 约 40 秒抗抖动）</option>
+      </select>
+    </label>
     <div class="tts-ref">
       <label class="field">参考音色
         <input id="tts-ref-file" type="file" accept="audio/wav,audio/x-wav,audio/mpeg,.wav,.mp3" />
@@ -1880,6 +1887,7 @@ function writeField(el) {
   const [group, key] = el.dataset.k.split(".");
   if (!state.settings[group]) state.settings[group] = {};
   if (key === "durationFactor") state.settings[group][key] = Number(el.value) || 1;
+  else if (key === "bufferSegments") state.settings[group][key] = Number(el.value) || 5;
   else state.settings[group][key] = el.value;
   if (key === "preset") {
     const preset = presetsFor(group).find((p) => p.id === el.value);

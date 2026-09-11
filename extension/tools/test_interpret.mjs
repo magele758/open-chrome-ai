@@ -96,6 +96,10 @@ assert(OPENING_READY_TTS <= LOOKAHEAD_MAX_CUES, "tts opening stays within lookah
 assert(OPENING_READY_TEXT <= LOOKAHEAD_MAX_CUES, "text opening stays within lookahead");
 assert(openingReadyCount(true) === OPENING_READY_TTS, "tts opening count");
 assert(openingReadyCount(false) === OPENING_READY_TEXT, "text opening count");
+assert(openingReadyCount(true, { bufferSegments: 5 }) === 5, "custom tts opening count 5");
+assert(openingReadyCount(true, { bufferSegments: 8 }) === 8, "custom tts opening count 8");
+assert(openingReadyCount(true, { bufferSegments: 20 }) === 10, "clamped max bufferSegments 10");
+assert(openingReadyCount(false, { bufferSegments: 5 }) === OPENING_READY_TEXT, "text opening ignores bufferSegments");
 assert(ahead.length === LOOKAHEAD_MAX_CUES, `lookahead capped at ${LOOKAHEAD_MAX_CUES}, got ${ahead.length}`);
 assert(ahead[0].cue.text.includes("cue 0"), "lookahead starts at current");
 assert(!ahead.some((h) => h.cue.start >= 20), "lookahead stops at ~20s");

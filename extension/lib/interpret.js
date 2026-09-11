@@ -27,7 +27,11 @@ export const LOOKAHEAD_MAX_SECONDS = 20;
 export const OPENING_READY_TTS = 3;
 export const OPENING_READY_TEXT = 1;
 
-export function openingReadyCount(ttsOn) {
+export function openingReadyCount(ttsOn, { bufferSegments } = {}) {
+  const custom = Number(bufferSegments);
+  if (ttsOn && Number.isFinite(custom) && custom >= 1) {
+    return Math.min(10, Math.max(1, Math.round(custom)));
+  }
   const n = ttsOn ? OPENING_READY_TTS : OPENING_READY_TEXT;
   return Math.min(LOOKAHEAD_MAX_CUES, Math.max(1, n));
 }
@@ -267,17 +271,17 @@ export function audioOffsetForVideo({ videoTime, start, end, audioDuration, held
   return Math.max(0, Math.min(dur * 0.92, lag * (dur / span)));
 }
 
-export function isTooLateForDub(videoTime, line) {
+export function isTooLateForDub(videoTime, line, grace = DISPLAY_LATE_GRACE_SECONDS) {
   const t = Number(videoTime);
   const start = Number(line?.start);
   if (!Number.isFinite(t) || !Number.isFinite(start)) return false;
   const rawEnd = Number(line?.end);
   const until = Number.isFinite(rawEnd) && rawEnd > start ? rawEnd : start + CHUNK_SECONDS;
-  return t > until + DISPLAY_LATE_GRACE_SECONDS;
+  return t > until + grace;
 }
 
-export function shouldHoldForSync({ pending = 0, lagSeconds = 0 } = {}) {
-  if (Number(pending) >= SYNC_HOLD_PENDING) return true;
+export function shouldHoldForSync({ pending = 0, lagSeconds = 0, holdPending = SYNC_HOLD_PENDING } = {}) {
+  if (Number(pending) >= Number(holdPending)) return true;
   return Number(lagSeconds) > MAX_PROCESS_LAG_SECONDS;
 }
 
@@ -516,7 +520,8 @@ export async function runInterpret(opts) {
   const asr = settings?.asr;
   const textModel = resolveModel(settings, "text");
   const ttsOn = isTtsReady(settings?.tts);
-  const openingReady = openingReadyCount(ttsOn);
+  const customBuffer = opts.bufferSegments ?? opts.settings?.tts?.bufferSegments;
+  const openingReady = openingReadyCount(ttsOn, { bufferSegments: customBuffer });
   const independent = Boolean(opts.sourceUrl || opts.openSource);
   let source = null;
   let sourceCursor = Number(opts.startAt) || 0;
@@ -534,22 +539,28 @@ export async function runInterpret(opts) {
   const jobSignal = job => job?.signal || signal;
   const dub = typeof opts.synthesizeTts === "function" ? opts.synthesizeTts : synthesizeTts;
 
-  function rememberSlice(blob, range) {
-    if (!blob) return null;
-    sessionRef = blob;
-    const start = Number(range?.start);
-    if (!Number.isFinite(start)) return blob;
-    const end = voiceSliceEnd({ start, end: range?.end });
-    voiceBank.push({ start, end, blob });
-    return blob;
+  function rememberSlice(ref, range) {
+    if (!ref) return null;
+    sessionRef = ref;
+    const item = { ref, blob: ref, start: range?.start, end: range?.end };
+    voiceBank.push(item);
+    if (voiceBank.length > 8) voiceBank.shift();
+    return ref;
   }
 
-  function liveVoiceRef(line) {
-    if (line?.ownRef) return line.ownRef;
-    const now = opts.voiceRefNow?.();
+  async function rememberVoice(blob, range) {
+    if (!ttsOn || !blob || isQuietBlob(blob)) return null;
+    const ownRef = await voiceRefFromBlob(blob);
+    if (!sessionRef) sessionRef = ownRef;
+    return rememberSlice(ownRef, range);
+  }
+
+  function effectiveRef(line) {
+    const now = line?.ownRef;
     if (now) return now;
     return voiceRefForTime(voiceBank, line?.start, sessionRef);
   }
+  const liveVoiceRef = effectiveRef;
 
   // Internal session switch for comparing/rolling back the semantic path.
   const semanticEnabled = opts.semanticTranslation !== false;
@@ -574,10 +585,11 @@ export async function runInterpret(opts) {
     }
   }
 
+  const pipelineCapacity = Math.max(16, openingReady * 3);
   const pipeline = createInterpretPipeline({
     signal,
     prebuffer: openingReady,
-    capacity: 8,
+    capacity: pipelineCapacity,
     onReset: generation => { semantic.reset(generation); translationContext.reset(); },
     transform: async (item, job) => {
       if (!item) translationContext.reset();
@@ -718,7 +730,10 @@ export async function runInterpret(opts) {
         const live = await injectVideo(tabId, "state");
         handleSeek(live, { audioChunk: true });
         noteUserOverride(live);
-        if (isTooLateForDub(progressTime(live), item)) {
+        const lateGrace = Number.isFinite(opts.lateGraceSeconds)
+          ? Number(opts.lateGraceSeconds)
+          : (openingReady >= 4 ? 2.5 : DISPLAY_LATE_GRACE_SECONDS);
+        if (isTooLateForDub(progressTime(live), item, lateGrace)) {
           debugLog("playback.delayed", { ...item.trace, videoTime: progressTime(live) });
           if (!userPaused && !systemHold) await holdForSystem("sync-dub");
         }
@@ -1049,7 +1064,8 @@ export async function runInterpret(opts) {
         }
         // The producer reads downloaded audio without advancing the video.
         if (sourceCursor >= source.duration) break;
-        if (pipeline.full || sourceCursor > Number(st.currentTime) + 40) {
+        const maxLookaheadSec = Math.max(80, openingReady * CHUNK_SECONDS * 3);
+        if (pipeline.full || sourceCursor > Number(st.currentTime) + maxLookaheadSec) {
           pipeline.releasePartialBuffer();
           if (pipeline.pending === 0 && !userPaused) await resumeSystemHoldIfAllowed();
           await sleep(100);
@@ -1064,12 +1080,13 @@ export async function runInterpret(opts) {
         pipeline.enqueue(slice);
         continue;
       }
-      if (pipeline.full || shouldHoldForSync({ pending: pipeline.pending })) {
+      const holdPending = Math.max(SYNC_HOLD_PENDING, openingReady + 4);
+      if (pipeline.full || shouldHoldForSync({ pending: pipeline.pending, holdPending })) {
         if (!userPaused) {
           await holdForSystem(HOLD_BACKLOG);
           status("正在集中处理配音缓冲，完成后继续播放…");
         }
-        await pipeline.waitUntilPendingAtMost(1);
+        await pipeline.waitUntilPendingAtMost(Math.max(1, Math.min(3, openingReady - 2)));
         if (signal.aborted) break;
         await resumeSystemHoldIfAllowed();
       }
