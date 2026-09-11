@@ -15,6 +15,8 @@ import { isAsrReady, isModelReady, isTtsReady, resolveModel } from "./storage.js
 import { assessVoiceQuality, isQuietBlob, recordSlice } from "./tab-audio-record.js";
 import { createInterpretPipeline } from "./interpret-pipeline.js";
 import { blobToWav, synthesizeTts } from "./tts.js";
+import { videoIdentity } from "./library.js";
+import { composeFullDubTrack, saveFullMediaArchive } from "./audio-composer.js";
 
 export const CHUNK_SECONDS = 5;
 export const VOICE_SAMPLE_SECONDS = 4;
@@ -478,6 +480,7 @@ export async function runInterpret(opts) {
   opts.signal?.addEventListener("abort", stop, { once: true });
   if (opts.signal?.aborted) stop();
   const lines = [];
+  const dubbedSegments = [];
   let ttsWarned = false;
   let sessionRef = null;
   const voiceBank = [];
@@ -511,6 +514,11 @@ export async function runInterpret(opts) {
     prepare: async (item, job) => {
       const trace = { runId, chunk: ++chunkNumber, start: item.start, seconds: item.seconds, generation: job.generation };
       debugLog("audio.chunk", { ...trace, bytes: item.blob?.size, mime: item.mime });
+      // VAD pure music / no speech pass-through: skip model calling and let background music play directly
+      if (item.vad && item.vad.speechDetected === false && Number(item.vad.lastRms) < 0.015) {
+        debugLog("audio.skipped", { ...trace, reason: "vad-no-speech-music-passthrough" });
+        return null;
+      }
       try {
         const s = jobSignal(job);
         let ownRef = item.referenceBlob || null;
@@ -574,6 +582,15 @@ export async function runInterpret(opts) {
     },
     play: async item => {
       if (signal.aborted || item?.trace?.generation !== pipeline.generation) return;
+      if (item?.dubbed && item?.blob) {
+        dubbedSegments.push({
+          start: item.start,
+          end: item.end,
+          blob: item.blob,
+          src: item.src,
+          zh: item.zh,
+        });
+      }
       if (independent) {
         const st = await injectVideo(tabId, "state");
         handleSeek(st, { audioChunk: true });
@@ -624,7 +641,11 @@ export async function runInterpret(opts) {
               held: Boolean(state.systemHold),
             }),
           }),
-          onStart: () => { playingLine = item; presentLine(item); },
+          onStart: () => {
+            playingLine = item;
+            presentLine(item);
+            applySpeaker().catch(() => {});
+          },
           onTiming: timing => debugLog("playback.timing", { ...item.trace, ...timing }),
         });
       } catch (err) {
@@ -635,6 +656,7 @@ export async function runInterpret(opts) {
         }
       } finally {
         playingLine = null;
+        applySpeaker().catch(() => {});
         if (systemHold === "sync-dub") await resumeSystemHoldIfAllowed();
       }
     },
@@ -682,8 +704,8 @@ export async function runInterpret(opts) {
     }
   }
 
-  async function applySpeaker(st) {
-    if (wantOriginal()) {
+  async function applySpeaker(st, { music = false } = {}) {
+    if (wantOriginal() || music) {
       if (silenced || st?.silenced) {
         capture?.playback?.setGain?.(1);
         try { await injectVideo(tabId, "restore"); } catch { /* page may have closed */ }
@@ -995,7 +1017,33 @@ export async function runInterpret(opts) {
     clockAlive = false;
     // Finish the final text segments on natural end; explicit stop cancels them.
     await pipeline.finish();
-    return { mode, lines, captions: linesToCaptions(lines) };
+
+    let fullAudio = null;
+    let archive = null;
+    if (dubbedSegments.length > 0) {
+      try {
+        const lastSeg = dubbedSegments[dubbedSegments.length - 1];
+        const totalDuration = Math.max(Number(lastTime) || 0, (Number(lastSeg?.end) || 0) + 1);
+        fullAudio = await composeFullDubTrack(dubbedSegments, { totalDuration });
+        const videoId = opts.sourceUrl ? videoIdentity(opts.sourceUrl) : null;
+        if (videoId && fullAudio) {
+          archive = await saveFullMediaArchive({
+            videoId,
+            title: opts.title || "视频同传",
+            url: opts.sourceUrl,
+            duration: totalDuration,
+            lines,
+            cues: linesToCaptions(lines).cues,
+            audioBlob: fullAudio,
+          });
+          emit({ type: "archive_saved", archive });
+        }
+      } catch (composeErr) {
+        debugLog("composer.error", { error: composeErr });
+      }
+    }
+
+    return { mode, lines, captions: linesToCaptions(lines), fullAudio, archive };
   } finally {
     clockAlive = false;
     debugLog("interpret.end", { runId, lines: lines.length, cancelled: signal.aborted });

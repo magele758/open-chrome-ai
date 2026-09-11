@@ -63,6 +63,40 @@ function parseSseDelta(line) {
   }
 }
 
+export function estimateTokens(text) {
+  if (!text) return 0;
+  const str = typeof text === "string" ? text : JSON.stringify(text);
+  const cjkMatches = str.match(/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/g);
+  const cjkCount = cjkMatches ? cjkMatches.length : 0;
+  const nonCjk = str.replace(/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/g, "");
+  const nonCjkTokens = Math.ceil(nonCjk.length / 3.8);
+  return Math.max(1, Math.round(cjkCount * 1.2 + nonCjkTokens));
+}
+
+export function estimateMessagesTokens(messages) {
+  if (!Array.isArray(messages) || !messages.length) return 0;
+  let total = 2; // primer
+  for (const m of messages) {
+    total += 4; // overhead per message
+    if (typeof m.content === "string") {
+      total += estimateTokens(m.content);
+    } else if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (part?.type === "text") total += estimateTokens(part.text);
+        else if (part?.type === "image_url") total += 256;
+      }
+    }
+    if (m.name) total += estimateTokens(m.name);
+    if (Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) {
+        total += estimateTokens(tc.function?.name || tc.name || "");
+        total += estimateTokens(tc.function?.arguments || tc.arguments || "");
+      }
+    }
+  }
+  return total;
+}
+
 function parseSseTurn(line) {
   const trimmed = line.trim();
   if (!trimmed.startsWith("data:")) return null;
@@ -72,6 +106,11 @@ function parseSseTurn(line) {
   try {
     const json = JSON.parse(data);
     const choice = json.choices?.[0] || {};
+    const usage = json.usage ? {
+      promptTokens: json.usage.prompt_tokens ?? json.usage.input_tokens ?? 0,
+      completionTokens: json.usage.completion_tokens ?? json.usage.output_tokens ?? 0,
+      totalTokens: json.usage.total_tokens ?? 0,
+    } : null;
     return {
       content: normalizeContent(choice.delta?.content ?? choice.message?.content ?? choice.text ?? ""),
       reasoning: normalizeContent(
@@ -82,6 +121,7 @@ function parseSseTurn(line) {
         ? choice.delta.tool_calls
         : (Array.isArray(choice.message?.tool_calls) ? choice.message.tool_calls : []),
       finishReason: choice.finish_reason || "",
+      usage,
     };
   } catch {
     return null;
@@ -274,24 +314,42 @@ export async function streamTurn(model, input, onTextDelta) {
     stream: true,
     temperature: 0.3,
     messages: input.messages,
+    stream_options: { include_usage: true },
   };
   if (input.tools?.length) {
     body.tools = input.tools;
     body.tool_choice = "auto";
   }
-  const response = await fetch(url, {
+
+  let response = await fetch(url, {
     method: "POST",
     headers: headersFor(model),
     signal: input.signal,
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error(await readError(response));
+
+  if (!response.ok) {
+    const errText = await readError(response);
+    if (/stream_options|extra_forbidden|unrecognized_field/i.test(errText)) {
+      delete body.stream_options;
+      response = await fetch(url, {
+        method: "POST",
+        headers: headersFor(model),
+        signal: input.signal,
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw new Error(await readError(response));
+    } else {
+      throw new Error(errText);
+    }
+  }
 
   let content = "";
   let reasoning = "";
   const toolBucket = [];
   let finishReason = "";
   let sawDone = false;
+  let turnUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
   const consumeEvent = (ev) => {
     if (!ev) return false;
@@ -309,6 +367,11 @@ export async function streamTurn(model, input, onTextDelta) {
     if (ev.reasoning) reasoning += ev.reasoning;
     if (ev.toolCalls?.length) mergeToolCallDeltas(toolBucket, ev.toolCalls);
     if (ev.finishReason) finishReason = ev.finishReason;
+    if (ev.usage) {
+      if (ev.usage.promptTokens) turnUsage.promptTokens = ev.usage.promptTokens;
+      if (ev.usage.completionTokens) turnUsage.completionTokens = ev.usage.completionTokens;
+      if (ev.usage.totalTokens) turnUsage.totalTokens = ev.usage.totalTokens;
+    }
     return false;
   };
 
@@ -318,7 +381,20 @@ export async function streamTurn(model, input, onTextDelta) {
     if (!finishReason) finishReason = toolCalls.length ? "tool_calls" : "stop";
     // Gemini OpenAI compat often reports finish_reason=stop on streamed tool calls.
     if (toolCalls.length && finishReason === "stop") finishReason = "tool_calls";
-    return { content, toolCalls, finishReason };
+    if (!turnUsage.promptTokens) {
+      turnUsage.promptTokens = estimateMessagesTokens(input.messages);
+    }
+    if (!turnUsage.completionTokens) {
+      let outTokens = estimateTokens(content || reasoning || "");
+      for (const tc of toolCalls) {
+        outTokens += estimateTokens(tc.name + (tc.arguments || ""));
+      }
+      turnUsage.completionTokens = outTokens;
+    }
+    if (!turnUsage.totalTokens) {
+      turnUsage.totalTokens = turnUsage.promptTokens + turnUsage.completionTokens;
+    }
+    return { content, toolCalls, finishReason, usage: turnUsage };
   };
 
   if (!response.body) {
@@ -331,7 +407,23 @@ export async function streamTurn(model, input, onTextDelta) {
       name: c.function?.name,
       arguments: c.function?.arguments || "{}",
     }));
-    return { content, toolCalls: calls, finishReason: choice.finish_reason || (calls.length ? "tool_calls" : "stop") };
+    const usage = json.usage ? {
+      promptTokens: json.usage.prompt_tokens ?? json.usage.input_tokens ?? 0,
+      completionTokens: json.usage.completion_tokens ?? json.usage.output_tokens ?? 0,
+      totalTokens: json.usage.total_tokens ?? 0,
+    } : null;
+    const finalUsage = usage || {
+      promptTokens: estimateMessagesTokens(input.messages),
+      completionTokens: estimateTokens(content),
+      totalTokens: 0,
+    };
+    if (!finalUsage.totalTokens) finalUsage.totalTokens = finalUsage.promptTokens + finalUsage.completionTokens;
+    return {
+      content,
+      toolCalls: calls,
+      finishReason: choice.finish_reason || (calls.length ? "tool_calls" : "stop"),
+      usage: finalUsage,
+    };
   }
 
   const reader = response.body.getReader();
@@ -371,10 +463,21 @@ export async function streamTurn(model, input, onTextDelta) {
           ? c.function.arguments
           : JSON.stringify(c.function?.arguments || {}),
       })).filter((c) => c.name);
+      const usage = json.usage ? {
+        promptTokens: json.usage.prompt_tokens ?? json.usage.input_tokens ?? 0,
+        completionTokens: json.usage.completion_tokens ?? json.usage.output_tokens ?? 0,
+        totalTokens: json.usage.total_tokens ?? 0,
+      } : {
+        promptTokens: estimateMessagesTokens(input.messages),
+        completionTokens: estimateTokens(content),
+        totalTokens: 0,
+      };
+      if (!usage.totalTokens) usage.totalTokens = usage.promptTokens + usage.completionTokens;
       return {
         content,
         toolCalls: calls,
         finishReason: choice.finish_reason || (calls.length ? "tool_calls" : "stop"),
+        usage,
       };
     }
   }

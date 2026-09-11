@@ -238,11 +238,17 @@ async function idbDelete(...keys) {
   }
 }
 
+let cachedRootHandle = null;
+
 export async function getSavedHandle() {
-  return idbGet(ROOT_KEY);
+  if (cachedRootHandle) return cachedRootHandle;
+  const handle = await idbGet(ROOT_KEY);
+  if (handle) cachedRootHandle = handle;
+  return handle;
 }
 
 export async function setSavedHandle(handle) {
+  cachedRootHandle = handle || null;
   await idbPut(ROOT_KEY, handle);
   await idbDelete(PATH_KEY);
 }
@@ -254,6 +260,7 @@ export async function getSavedLibraryPath() {
 }
 
 export async function clearSavedHandle() {
+  cachedRootHandle = null;
   await idbDelete(ROOT_KEY, PATH_KEY);
 }
 
@@ -264,15 +271,37 @@ export async function ensurePermission(handle, { request = false } = {}) {
     if (typeof handle.queryPermission === "function") {
       const q = await handle.queryPermission(opts);
       if (q === "granted") return true;
-      if (!request) return false;
+      const qRead = await handle.queryPermission({ mode: "read" });
+      if (qRead === "granted") return true;
+    }
+    // Test if handle is directly accessible in current memory session without prompt
+    if (typeof handle.keys === "function") {
+      try {
+        const iter = handle.keys();
+        await iter.next();
+        return true;
+      } catch {
+        /* not accessible */
+      }
     }
     if (request && typeof handle.requestPermission === "function") {
-      return (await handle.requestPermission(opts)) === "granted";
+      try {
+        const res = await handle.requestPermission(opts);
+        if (res === "granted") return true;
+      } catch {
+        /* requestPermission might fail in extension sidepanel */
+      }
+      try {
+        const resRead = await handle.requestPermission({ mode: "read" });
+        if (resRead === "granted") return true;
+      } catch {
+        /* ignore */
+      }
     }
   } catch {
     return false;
   }
-  return Boolean(handle);
+  return false;
 }
 
 function missingLibraryError() {
@@ -298,11 +327,26 @@ export async function pickLibraryFolder() {
   if (typeof window === "undefined" || typeof window.showDirectoryPicker !== "function") {
     throw new Error("当前 Chrome 不支持选择文件夹。需要较新的 Chrome，并在侧栏里点选。");
   }
-  const handle = await window.showDirectoryPicker({
+  const oldHandle = await getSavedHandle();
+  const options = {
     id: "pagelens-library",
     mode: "readwrite",
-    startIn: "documents",
-  });
+  };
+  if (oldHandle) {
+    options.startIn = oldHandle;
+  } else {
+    options.startIn = "documents";
+  }
+  let handle;
+  try {
+    handle = await window.showDirectoryPicker(options);
+  } catch (err) {
+    if (options.startIn !== "documents") {
+      handle = await window.showDirectoryPicker({ id: "pagelens-library", mode: "readwrite", startIn: "documents" });
+    } else {
+      throw err;
+    }
+  }
   await setSavedHandle(handle);
   return { ok: true, mode: "picker", name: handle.name, granted: true };
 }

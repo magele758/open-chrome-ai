@@ -1,7 +1,7 @@
 import { debugLog, exportDebugLog, DEBUG_BUILD } from "../lib/debug-log.js";
 debugLog("panel.loaded", { build: DEBUG_BUILD, source: "audio-only" });
 import { defaultSettings, loadSettings, saveSettings, applyOptionalLocalSettings, resolveModel, isModelReady, isAsrReady, isTtsReady, isSkillsEnabled, presetsFor } from "../lib/storage.js";
-import { streamTurn, testConnection, multimodalUserContent } from "../lib/openai.js";
+import { streamTurn, testConnection, multimodalUserContent, estimateTokens } from "../lib/openai.js";
 import { testTranscriptions } from "../lib/asr.js";
 import { testTts, synthesizeTts, getTtsRef, setTtsRef, clearTtsRef, blobToWav, TTS_LANGS } from "../lib/tts.js";
 import { highlightQuote } from "../lib/extract.js";
@@ -13,6 +13,7 @@ import { abortRecording, beginCapture, beginTabCapture, discardCapture, recordFr
 import { injectVideo } from "../lib/chrome.js";
 import { runInterpret } from "../lib/interpret.js";
 import { InterpretController } from "./interpret-controller.js";
+import { loadFullMediaArchive, cleanExpiredMediaArchives } from "../lib/audio-composer.js";
 import {
   libraryStatus,
   pickLibraryFolder,
@@ -21,6 +22,7 @@ import {
   syncPackToLibrary,
   writeSessionNote,
   writeSessionNotes,
+  videoIdentity,
 } from "../lib/library.js";
 import { initMarkdown, formatAnswer, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createAgentLoop } from "../lib/agent/loop.js";
@@ -98,7 +100,106 @@ const state = {
   skillFolder: { configured: false, granted: false, name: "", count: 0 },
   nativeHost: { ok: false, checked: false },
   sessionHitlOverride: null,
+  dubPlaying: false,
+  activeToolDomains: new Set(),
 };
+
+const interpretController = new InterpretController();
+
+interpretController.subscribe((event, taskState) => {
+  if (!state.tab?.id || taskState?.tabId === state.tab.id) {
+    state.interpret = taskState;
+    if (taskState?.status === "running") {
+      state.originalAudioOn = taskState.originalAudioOn;
+    }
+  }
+  renderContext();
+});
+
+let dubPlayerAudio = null;
+let dubPlayerTimer = null;
+
+function stopDubPlayback() {
+  if (dubPlayerTimer) {
+    clearInterval(dubPlayerTimer);
+    dubPlayerTimer = null;
+  }
+  if (dubPlayerAudio) {
+    try {
+      dubPlayerAudio.pause();
+      dubPlayerAudio.src = "";
+    } catch { /* ignore */ }
+    dubPlayerAudio = null;
+  }
+  state.dubPlaying = false;
+  if (state.tab?.id) {
+    injectVideo(state.tab.id, "restore").catch(() => {});
+  }
+  renderTranscribeAction();
+}
+
+async function toggleDubPlayback() {
+  const archive = state.pack?.archive;
+  if (!archive?.audioBlob) return;
+  if (state.dubPlaying) {
+    stopDubPlayback();
+    return;
+  }
+
+  const tabId = state.tab?.id;
+  if (!tabId) return;
+
+  try {
+    const blobUrl = URL.createObjectURL(archive.audioBlob);
+    dubPlayerAudio = new Audio(blobUrl);
+    state.dubPlaying = true;
+    renderTranscribeAction();
+
+    await injectVideo(tabId, "silence");
+    const st = await injectVideo(tabId, "state");
+    const startTime = Number(st?.currentTime) || 0;
+    dubPlayerAudio.currentTime = startTime;
+
+    if (st?.ok && !st.paused) {
+      dubPlayerAudio.play().catch(() => {});
+    }
+
+    dubPlayerAudio.onended = () => {
+      stopDubPlayback();
+    };
+
+    if (dubPlayerTimer) clearInterval(dubPlayerTimer);
+    dubPlayerTimer = setInterval(async () => {
+      if (!state.dubPlaying || !dubPlayerAudio) {
+        if (dubPlayerTimer) clearInterval(dubPlayerTimer);
+        dubPlayerTimer = null;
+        return;
+      }
+      try {
+        const liveSt = await injectVideo(tabId, "state");
+        if (!liveSt?.ok) {
+          stopDubPlayback();
+          return;
+        }
+        if (liveSt.paused && !dubPlayerAudio.paused) {
+          dubPlayerAudio.pause();
+        } else if (!liveSt.paused && dubPlayerAudio.paused) {
+          dubPlayerAudio.play().catch(() => {});
+        }
+        const delta = Math.abs(dubPlayerAudio.currentTime - (Number(liveSt.currentTime) || 0));
+        if (delta > 0.4) {
+          dubPlayerAudio.currentTime = Number(liveSt.currentTime) || 0;
+        }
+      } catch {
+        stopDubPlayback();
+      }
+    }, 500);
+
+  } catch (err) {
+    stopDubPlayback();
+    pushError("播放配音失败：" + (err?.message || err));
+  }
+}
 
 
 function modelSummary() {
@@ -219,9 +320,9 @@ function renderTranscribeAction() {
   const sw = $("btn-video-switch");
   const live = $("si-live");
   const tr = state.transcribe;
-  const si = state.interpret;
   const recording = isTranscribing();
-  const interpreting = si?.status === "running";
+  const interpreting = interpretController.isRunning(state.tab?.id);
+  const si = interpretController.getState(state.tab?.id);
   const asrCaps = state.pack?.captionsSource === "asr-full" || state.pack?.captionsSource === "asr" || state.pack?.captionsSource === "asr-cache" || state.pack?.captionsSource === "interpret";
   const capsReady = state.pack?.captionsStatus === "ready";
   const canShare = Boolean(state.share && state.tab);
@@ -243,6 +344,17 @@ function renderTranscribeAction() {
     siBtn.title = interpreting ? "停止同传" : "按声音识别并翻译，可与一键总结同时进行。";
     siBtn.classList.toggle("busy", Boolean(interpreting));
     siBtn.disabled = !canShare && !interpreting;
+  }
+  const archiveBtn = $("btn-play-archive");
+  const hasArchive = Boolean(state.pack?.archive?.hasAudio);
+  if (archiveBtn) {
+    archiveBtn.classList.toggle("hidden", !hasArchive || (!canShare && !state.dubPlaying));
+    if (hasArchive) {
+      const days = state.pack.archive.remainingDays ?? 7;
+      archiveBtn.textContent = state.dubPlaying ? "停止配音" : `播放配音 (剩${days}天)`;
+      archiveBtn.title = `播放一周内已生成的完整中文配音 (剩余${days}天)`;
+      archiveBtn.classList.toggle("busy", Boolean(state.dubPlaying));
+    }
   }
   if (bar) {
     bar.textContent = recording ? "■" : "总";
@@ -270,6 +382,44 @@ function renderTranscribeAction() {
     sw.textContent = videoCount > 1 ? `画面 ${idx + 1}/${videoCount}` : "画面";
     sw.disabled = recording || interpreting;
   }
+
+  const bgTasksEl = $("ctx-bg-tasks");
+  if (bgTasksEl) {
+    const runningTasks = interpretController.getRunningTasks();
+    const otherTasks = runningTasks.filter((t) => t.tabId !== state.tab?.id);
+    bgTasksEl.classList.toggle("hidden", otherTasks.length === 0);
+    bgTasksEl.innerHTML = "";
+    for (const t of otherTasks) {
+      const row = document.createElement("div");
+      row.className = "bg-task-item";
+      const tag = document.createElement("span");
+      tag.className = "bg-task-tag";
+      tag.textContent = "后台同传中";
+      const title = document.createElement("span");
+      title.className = "bg-task-title";
+      title.textContent = t.title || "标签页 " + t.tabId;
+      title.title = t.title || t.url || "";
+      const switchBtn = document.createElement("button");
+      switchBtn.type = "button";
+      switchBtn.className = "bg-task-btn";
+      switchBtn.textContent = "切到该页";
+      switchBtn.onclick = () => {
+        if (typeof chrome !== "undefined" && chrome.tabs?.update) {
+          chrome.tabs.update(t.tabId, { active: true }).catch(() => {});
+        }
+      };
+      const stopBtn = document.createElement("button");
+      stopBtn.type = "button";
+      stopBtn.className = "bg-task-btn danger";
+      stopBtn.textContent = "停止";
+      stopBtn.onclick = () => {
+        interpretController.stop(t.tabId).catch(() => {});
+      };
+      row.append(tag, title, switchBtn, stopBtn);
+      bgTasksEl.appendChild(row);
+    }
+  }
+
   if (live) {
     live.classList.toggle("hidden", !interpreting && !si?.zh);
     if (si?.zh) $("si-zh").textContent = si.zh;
@@ -328,6 +478,121 @@ function renderSkills() {
   add.textContent = "+";
   add.addEventListener("click", () => openShortcutSettings());
   el.appendChild(add);
+}
+
+function formatTokenCount(num) {
+  const n = Math.max(0, Number(num) || 0);
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return String(n);
+}
+
+function formatDuration(ms) {
+  const n = Math.max(0, Number(ms) || 0);
+  if (n < 1000) return `${n}ms`;
+  return `${(n / 1000).toFixed(1)}s`;
+}
+
+function finishReasonLabel(reason) {
+  const map = {
+    stop: "正常结束",
+    max_turns: "轮次上限",
+    abort: "已中断",
+    error: "异常退出",
+    tool_calls: "工具调用",
+    length: "超长截断",
+  };
+  return map[reason] || reason || "结束";
+}
+
+function createMessageFooter(msg) {
+  const footer = document.createElement("div");
+  footer.className = "msg-footer";
+
+  const stats = document.createElement("div");
+  stats.className = "msg-stats";
+
+  if (msg.metrics) {
+    const dur = document.createElement("span");
+    dur.className = "stat-item stat-duration";
+    dur.title = `运行时长：${msg.metrics.durationMs}ms`;
+    dur.innerHTML = `<span class="stat-icon">⏱️</span><span class="stat-val">${formatDuration(msg.metrics.durationMs)}</span>`;
+    stats.appendChild(dur);
+
+    const inTok = document.createElement("span");
+    inTok.className = "stat-item stat-tokens-in";
+    inTok.title = `输入 Token：${msg.metrics.inputTokens}`;
+    inTok.innerHTML = `<span class="stat-icon">📥</span><span class="stat-val">${formatTokenCount(msg.metrics.inputTokens)}</span>`;
+    stats.appendChild(inTok);
+
+    const outTok = document.createElement("span");
+    outTok.className = "stat-item stat-tokens-out";
+    outTok.title = `输出 Token：${msg.metrics.outputTokens}`;
+    outTok.innerHTML = `<span class="stat-icon">📤</span><span class="stat-val">${formatTokenCount(msg.metrics.outputTokens)}</span>`;
+    stats.appendChild(outTok);
+
+    const reason = document.createElement("span");
+    reason.className = `stat-item stat-reason ${msg.metrics.finishReason || ""}`;
+    reason.title = `结束原因：${msg.metrics.finishReason || "未知"}`;
+    reason.innerHTML = `<span class="stat-icon">🏁</span><span class="stat-val">${finishReasonLabel(msg.metrics.finishReason)}</span>`;
+    stats.appendChild(reason);
+  }
+  footer.appendChild(stats);
+
+  const dlBtn = document.createElement("button");
+  dlBtn.type = "button";
+  dlBtn.className = "btn-download-trace";
+  dlBtn.title = "下载本次会话执行 Trace 日志（JSON）";
+  dlBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Trace</span>`;
+  dlBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    downloadMessageTrace(msg);
+  });
+  footer.appendChild(dlBtn);
+
+  return footer;
+}
+
+function downloadMessageTrace(msg) {
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const sid = state.sessionId ? state.sessionId.slice(0, 8) : "session";
+  const filename = `pagelens-trace-${sid}-${ts}.json`;
+
+  const traceData = msg.traceLog || {
+    version: "1.0",
+    sessionId: state.sessionId,
+    timestamp: new Date().toISOString(),
+    metrics: msg.metrics,
+    trace: msg.trace,
+    content: msg.text,
+    steps: [],
+  };
+
+  const exportPayload = {
+    ...traceData,
+    conversationContext: {
+      sessionId: state.sessionId,
+      sessionTitle: state.sessionTitle,
+      page: state.tab ? { url: state.tab.url, title: state.tab.title } : null,
+      messagesSummary: (state.messages || []).map((m) => ({
+        role: m.role,
+        textPreview: String(m.text || "").slice(0, 100),
+        metrics: m.metrics,
+      })),
+    },
+  };
+
+  const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 1000);
 }
 
 function renderMessages() {
@@ -390,6 +655,9 @@ function renderMessages() {
       const streamingThis = state.busy && msg === state.messages[state.messages.length - 1];
       fillBotBody(body, msg.text || (state.busy ? "…" : ""), { mermaid: !streamingThis && !msg.error });
       wrap.appendChild(body);
+      if (msg.metrics) {
+        wrap.appendChild(createMessageFooter(msg));
+      }
     }
     root.appendChild(wrap);
   }
@@ -644,6 +912,7 @@ async function startNewSession() {
   state.run = null;
   state.taskGroupId = null;
   state.transcribe = null;
+  state.activeToolDomains = new Set();
   state.sessionHitlOverride = null;
   updateHitlBadge();
   state.recordAbort?.abort();
@@ -877,6 +1146,7 @@ async function removeHistoryItem(id) {
     state.image = null;
     state.run = null;
     state.taskGroupId = null;
+    state.activeToolDomains = new Set();
     renderAttach();
     renderMessages();
   }
@@ -1669,12 +1939,14 @@ async function refreshTab() {
   const prevId = state.tab?.id;
   const tab = await pickTargetTab();
   const recording = isTranscribing();
-  const interpreting = state.interpret?.status === "running";
+  const interpreting = interpretController.isRunning(tab?.id);
   if (!recording && !interpreting && tab?.id !== prevId) state.transcribe = null;
-  if (interpreting && tab?.id && prevId && tab.id !== prevId) stopInterpret();
   if (recording && (tab?.id !== prevId || tab?.url !== state.tab?.url)) state.workAbort?.abort();
+  if (tab?.id !== prevId && state.dubPlaying) stopDubPlayback();
   state.tab = tab || null;
-  if ((recording || state.interpret?.status === "running") && tab?.id === prevId) {
+  state.interpret = interpretController.getState(tab?.id);
+  state.originalAudioOn = interpretController.getTask(tab?.id)?.originalAudioOn ?? true;
+  if ((recording || interpreting) && tab?.id === prevId) {
     renderContext();
     return;
   }
@@ -1695,6 +1967,28 @@ async function refreshTab() {
       state.pack.captionsCues = caps.cues;
       state.pack.captionsComplete = caps.complete === true;
       if (caps.status === "ready") syncPackToLibrary(state.pack).catch(() => {});
+    }
+
+    if (tab.url && (state.pack?.hasVideo || state.pack?.video || /youtube\.com|youtu\.be|bilibili\.com/.test(tab.url))) {
+      const videoId = videoIdentity(tab.url);
+      if (videoId) {
+        try {
+          const archive = await loadFullMediaArchive(videoId);
+          if (archive && archive.hasAudio) {
+            state.pack = state.pack || {};
+            state.pack.archive = archive;
+            if (!state.pack.captionsText && archive.lines?.length) {
+              state.pack.captionsStatus = "ready";
+              state.pack.captionsSource = "dub-archive";
+              state.pack.captionsText = archive.lines.map((l) => l.zh).join("\n");
+              state.pack.captionsCues = archive.cues;
+              state.pack.captionsComplete = true;
+            }
+          }
+        } catch (err) {
+          console.warn("[pagelens] load archive error", err);
+        }
+      }
     }
   } catch {
     state.pack = {
@@ -1754,6 +2048,9 @@ function paintBot(botMsg) {
   }
   const body = wrap.querySelector(".body");
   if (body) fillBotBody(body, botMsg.text || "…", { mermaid: false });
+  if (botMsg.metrics && !wrap.querySelector(".msg-footer")) {
+    wrap.appendChild(createMessageFooter(botMsg));
+  }
   const root = $("msgs");
   if (root) root.scrollTop = root.scrollHeight;
 }
@@ -1769,7 +2066,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
   let tools;
   let loop;
   try {
-    const requestedDomains = new Set();
+    const requestedDomains = new Set(state.activeToolDomains || []);
     tools = createAgentTools({
       getTabId: () => state.tab?.id,
       getWindowId: () => state.tab?.windowId,
@@ -1802,7 +2099,10 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         renderContext();
       },
       onRequestToolsets: (domains) => {
-        for (const d of domains) requestedDomains.add(d);
+        for (const d of domains) {
+          requestedDomains.add(d);
+          state.activeToolDomains?.add?.(d);
+        }
       },
       skills,
       settings: state.settings,
@@ -1812,11 +2112,13 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
 
     loop = createAgentLoop({
       maxTurns: 12,
+      allTools: tools,
       systemPrompt: [systemPrompt(state.settings, { useSkills }), useSkills ? skillCatalogText(skills) : ""].filter(Boolean).join("\n\n"),
       get tools() {
         const lastUser = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
         return resolveActiveTools({
           userText: userText || lastUser?.text || "",
+          history,
           tools,
           hasVideo: Boolean(state.pack?.hasVideo),
           requestedDomains: Array.from(requestedDomains),
@@ -1906,6 +2208,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
 
   let result = null;
   let failed = false;
+  const loopStartTime = Date.now();
   try {
     try {
       renderMessages();
@@ -1971,9 +2274,26 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         botMsg.text = result?.reason === "abort" ? "已停止。" : "模型未返回正文，请重试或检查模型服务。";
         botMsg.error = result?.reason !== "abort";
       }
+      if (result?.metrics) {
+        botMsg.metrics = result.metrics;
+        botMsg.traceLog = {
+          version: "1.0",
+          sessionId: state.sessionId,
+          timestamp: new Date().toISOString(),
+          model: (typeof model === "object" ? model?.model : String(model)) || "unknown",
+          durationMs: result.metrics.durationMs,
+          metrics: result.metrics,
+          userPrompt: userText || "",
+          botResponse: botMsg.text || "",
+          trace: botMsg.trace ? [...botMsg.trace] : [],
+          steps: result.traceSteps || [],
+        };
+      }
       renderMessages();
     }
   } catch (err) {
+    const durMs = Math.max(1, Date.now() - loopStartTime);
+    const isAbort = err?.name === "AbortError" || state.stopIntent === "user";
     if (err?.name === "AbortError") {
       console.warn("[pagelens] executeLoop abort");
       botMsg.text = botMsg.text || (state.stopIntent === "user" ? "已停止。" : "已中断，重新打开侧栏会继续。");
@@ -1983,6 +2303,26 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       botMsg.error = true;
       failed = true;
     }
+    botMsg.metrics = {
+      durationMs: durMs,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      finishReason: isAbort ? "abort" : "error",
+    };
+    botMsg.traceLog = {
+      version: "1.0",
+      sessionId: state.sessionId,
+      timestamp: new Date().toISOString(),
+      model: (typeof model === "object" ? model?.model : String(model)) || "unknown",
+      durationMs: durMs,
+      metrics: botMsg.metrics,
+      userPrompt: userText || "",
+      botResponse: botMsg.text || "",
+      trace: botMsg.trace ? [...botMsg.trace] : [],
+      steps: [],
+      error: err?.message || String(err),
+    };
     renderMessages();
   } finally {
     const userStop = state.stopIntent === "user";
@@ -2178,17 +2518,9 @@ function applyCaptions(caps) {
   if (caps.status === "ready") syncPackToLibrary(state.pack).catch(() => {});
 }
 
-function stopInterpret() {
-  state.siAbort?.abort();
-  abortRecording();
-  const capture = state.siCapture;
-  state.siCapture = null;
-  state.originalAudioOn = true;
-  if (state.interpret?.status === "running") {
-    state.interpret = { ...(state.interpret || {}), status: "idle" };
-    renderContext();
-  }
-  discardCapture(capture).catch(() => {});
+function stopInterpret(tabId) {
+  const targetId = tabId || state.tab?.id;
+  interpretController.stop(targetId).catch(() => {});
 }
 
 
@@ -2275,14 +2607,58 @@ async function startSummarizeVideo() {
   $("btn-send").title = "停止";
   renderMessages();
   renderContext();
+  const sumStart = Date.now();
   try {
     botMsg.text = await summarizeTranscript({
       text: caps.text, title, model, language: state.settings.answerLanguage, signal: abort.signal,
       onProgress: hint => { botMsg.text = hint; paintBot(botMsg); },
     });
+    const durMs = Math.max(1, Date.now() - sumStart);
+    const inTok = estimateTokens(caps.text + " " + (title || ""));
+    const outTok = estimateTokens(botMsg.text || "");
+    botMsg.metrics = {
+      durationMs: durMs,
+      inputTokens: inTok,
+      outputTokens: outTok,
+      totalTokens: inTok + outTok,
+      finishReason: "stop",
+    };
+    botMsg.traceLog = {
+      version: "1.0",
+      sessionId: state.sessionId,
+      timestamp: new Date().toISOString(),
+      model: model?.model || "unknown",
+      durationMs: durMs,
+      metrics: botMsg.metrics,
+      userPrompt: "总结整个视频的完整文稿，列出要点和带时间戳的章节。",
+      botResponse: botMsg.text,
+      trace: [{ name: "总结文稿", ok: true }],
+      steps: [{ type: "summarize_transcript", durationMs: durMs, timestamp: Date.now() }],
+    };
   } catch (error) {
+    const durMs = Math.max(1, Date.now() - sumStart);
     botMsg.text = error?.name === 'AbortError' ? '已停止总结，完整文稿已保留。' : `全文总结失败：${error.message || error}`;
     botMsg.error = error?.name !== 'AbortError';
+    botMsg.metrics = {
+      durationMs: durMs,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      finishReason: error?.name === 'AbortError' ? 'abort' : 'error',
+    };
+    botMsg.traceLog = {
+      version: "1.0",
+      sessionId: state.sessionId,
+      timestamp: new Date().toISOString(),
+      model: model?.model || "unknown",
+      durationMs: durMs,
+      metrics: botMsg.metrics,
+      userPrompt: "总结整个视频的完整文稿，列出要点和带时间戳的章节。",
+      botResponse: botMsg.text,
+      trace: [{ name: "总结文稿", ok: false }],
+      steps: [],
+      error: error?.message || String(error),
+    };
   } finally {
     state.busy = false;
     state.abort = null;
@@ -2297,23 +2673,19 @@ async function startSummarizeVideo() {
 
 async function toggleOriginalAudio() {
   if (!state.tab?.id) return;
-  const next = state.originalAudioOn === false;
-  state.originalAudioOn = next;
-  renderContext();
   try {
-    await injectVideo(state.tab.id, next ? "restore" : "silence");
-    state.siCapture?.playback?.setGain?.(next ? 1 : 0);
-  } catch (err) {
-    state.originalAudioOn = !next;
+    const next = await interpretController.toggleOriginalAudio(state.tab.id);
+    state.originalAudioOn = next;
     renderContext();
+  } catch (err) {
     pushError("无法切换原声：" + (err?.message || err));
   }
 }
 
 async function startInterpret() {
   if (!state.tab?.id) return;
-  if (state.interpret?.status === "running") {
-    stopInterpret();
+  if (interpretController.isRunning(state.tab.id)) {
+    await interpretController.stop(state.tab.id);
     return;
   }
   if (!isAsrReady(state.settings.asr)) {
@@ -2325,90 +2697,18 @@ async function startInterpret() {
     return;
   }
 
-  let startAt = 0;
-  let openingHold = false;
   try {
-    await injectVideo(state.tab.id, "pick", { fresh: true });
-    const st = await injectVideo(state.tab.id, "state");
-    startAt = Number(st?.currentTime) || 0;
-    openingHold = Boolean(st?.ok && !st.ended);
-    const held = await injectVideo(state.tab.id, "control", { action: "pause", system: true });
-    const verified = await injectVideo(state.tab.id, "state");
-    if (!held?.ok || !verified?.paused) throw new Error("播放器未能暂停，未开始同传。请重试。");
-  } catch (err) {
-    state.interpret = { status: "error", error: err.message || String(err) };
-    renderContext();
-    return;
-  }
-
-  const capture = null;
-  const abort = new AbortController();
-  state.siAbort = abort;
-  state.siCapture = capture;
-  state.originalAudioOn = false;
-  state.interpret = { status: "running", mode: "audio", message: "同传已开始…" };
-  renderContext();
-  try {
-    const result = await runInterpret({
-      tabId: state.tab.id,
-      sourceUrl: state.tab.url,
+    await interpretController.start({
+      tab: state.tab,
       settings: state.settings,
-      startAt,
-      openingHold,
-      capture,
-      signal: abort.signal,
-      wantOriginalAudio: () => state.siAbort === abort && state.originalAudioOn,
-      onEvent: (ev) => {
-        if (state.siAbort !== abort) return;
-        if (ev.type === "line") {
-          state.interpret = {
-            ...(state.interpret || {}),
-            status: "running",
-            src: ev.src,
-            zh: ev.zh,
-            mode: ev.mode,
-            hint: "",
-          };
-        } else if (ev.type === "status") {
-          state.interpret = {
-            ...(state.interpret || {}),
-            status: "running",
-            message: ev.message || state.interpret?.message,
-            hint: ev.hint || "",
-            mode: ev.mode || state.interpret?.mode,
-            ...(ev.clearLine ? { zh: "", src: "" } : {}),
-          };
-        } else if (ev.type === "warn") {
-          state.interpret = { ...(state.interpret || {}), status: "running", hint: ev.message };
+      onCaptionsReady: (captions) => {
+        if (state.tab?.id === captions.tabId || !state.pack?.captionsComplete) {
+          applyCaptions(captions);
         }
-        renderContext();
       },
     });
-    if (state.siAbort !== abort) return;
-    if (result?.captions?.status === "ready" && !state.pack?.captionsComplete && !isTranscribing()) applyCaptions(result.captions);
-    state.originalAudioOn = true;
-    if (state.interpret?.status === "running") {
-      state.interpret = {
-        ...(state.interpret || {}),
-        status: "idle",
-        message: result?.lines?.length ? "同传已结束" : "同传已停止",
-      };
-    }
-    renderContext();
   } catch (err) {
-    if (state.siAbort !== abort) return;
-    if (err?.name === "AbortError" || /abort/i.test(err?.message || "")) {
-      state.interpret = { ...(state.interpret || {}), status: "idle" };
-    } else {
-      state.interpret = { status: "error", error: err.message || String(err) };
-    }
-    renderContext();
-  } finally {
-    if (state.siAbort === abort) state.originalAudioOn = true;
-    await discardCapture(capture);
-    if (state.siCapture === capture) state.siCapture = null;
-    if (state.siAbort === abort) state.siAbort = null;
-    renderContext();
+    pushError("同传启动失败：" + (err?.message || err));
   }
 }
 
@@ -2545,6 +2845,7 @@ function wire() {
   });
   $("btn-summarize-video")?.addEventListener("click", () => startSummarizeVideo());
   $("btn-interpret")?.addEventListener("click", () => startInterpret());
+  $("btn-play-archive")?.addEventListener("click", () => toggleDubPlayback());
   $("btn-original-audio")?.addEventListener("click", () => toggleOriginalAudio());
   $("btn-summarize-bar")?.addEventListener("click", () => startSummarizeVideo());
   $("btn-interpret-bar")?.addEventListener("click", () => startInterpret());
@@ -2609,9 +2910,25 @@ function wire() {
     }
   });
   on("btn-library-reauth", "click", async () => {
-    await refreshLibraryStatus({ request: true });
-    if (state.library.granted && state.pack?.captionsStatus === "ready") {
-      syncPackToLibrary(state.pack).catch(() => {});
+    const el = $("library-status");
+    try {
+      await refreshLibraryStatus({ request: true });
+      if (state.library?.granted) {
+        if (state.pack?.captionsStatus === "ready") syncPackToLibrary(state.pack).catch(() => {});
+        return;
+      }
+      const picked = await pickLibraryFolder();
+      if ($("library-path")) $("library-path").value = "";
+      state.library = { configured: true, granted: true, mode: "picker", name: picked.name, path: "" };
+      paintLibraryStatus(state.library, `已重新授权 · ${picked.name}`);
+      renderModelLine();
+      if (state.pack?.captionsStatus === "ready") syncPackToLibrary(state.pack).catch(() => {});
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      if (el) {
+        el.textContent = err.message || String(err);
+        el.className = "status bad";
+      }
     }
   });
   on("btn-library-clear", "click", async () => {
@@ -2668,9 +2985,22 @@ function wire() {
   });
   $("btn-skills-reauth")?.addEventListener("click", async () => {
     if (!skillsOn()) return;
-    await skillFolderStatus({ request: true });
-    clearSkillsCache();
-    await hydrateSkillFolderStatus();
+    const el = $("skill-folder-status");
+    try {
+      const res = await skillFolderStatus({ request: true });
+      if (!res?.granted) {
+        const picked = await pickSkillFolder();
+        state.skillFolder = { configured: true, granted: true, mode: "picker", name: picked.name, path: "", count: 0 };
+      }
+      clearSkillsCache();
+      await hydrateSkillFolderStatus();
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      if (el) {
+        el.textContent = err.message || String(err);
+        el.className = "status bad";
+      }
+    }
   });
   $("btn-skills-refresh")?.addEventListener("click", async () => {
     if (!skillsOn()) return;
@@ -2849,6 +3179,7 @@ async function boot() {
     console.warn("[pagelens] session", err);
   }
   refreshTab().catch((err) => console.warn("[pagelens] tab", err));
+  cleanExpiredMediaArchives().catch(() => {});
   consumePending().catch(() => {});
   if (!isModelReady(resolveModel(state.settings, "text"))) {
     console.warn("[pagelens] boot no-model");

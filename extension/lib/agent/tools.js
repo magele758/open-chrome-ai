@@ -1272,6 +1272,7 @@ export function checkHitlRequirement({
 /** 动态工具路由器：按意图裁剪工具集 */
 export function resolveActiveTools({
   userText = "",
+  history = [],
   tools = [],
   hasVideo = false,
   requestedDomains = [],
@@ -1284,7 +1285,11 @@ export function resolveActiveTools({
     if (TOOL_DOMAINS[d]) activeDomains.add(d);
   }
 
-  const text = String(userText || "").toLowerCase();
+  let text = String(userText || "").toLowerCase();
+  if (Array.isArray(history) && history.length > 0) {
+    const recent = history.slice(-4).map((m) => (typeof m?.content === "string" ? m.content : "")).join(" ");
+    text += " " + recent.toLowerCase();
+  }
 
   // 视频意图或当前页含视频
   if (hasVideo || /视频|字幕|同传|播放|时间戳|video|transcript|caption/i.test(text)) {
@@ -1309,9 +1314,9 @@ export function resolveActiveTools({
     activeDomains.add("browser_mgmt");
   }
 
-  // 系统/Shell/Skill/文件意图
+  // 系统/Shell/Skill/文件/文稿/Obsidian/授权意图
   if (
-    /shell|命令|终端|运行|执行|脚本|skill|obsidian|文稿|入库|保存|note|library|exec|bash|zsh/i.test(
+    /shell|命令|终端|运行|执行|脚本|skill|obsidian|文稿|入库|保存|note|library|exec|bash|zsh|授权|权限|未授权|重新授权|文件|文件夹|目录|路径|知识库|笔记|读写/i.test(
       text,
     )
   ) {

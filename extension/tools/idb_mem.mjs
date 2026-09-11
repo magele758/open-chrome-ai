@@ -22,6 +22,9 @@ export function installMemoryIndexedDB(global = globalThis) {
         data.delete(key);
         return request(undefined);
       },
+      getAllKeys() {
+        return request([...data.keys()]);
+      },
     };
   }
 

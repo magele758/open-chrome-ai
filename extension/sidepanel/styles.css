@@ -124,6 +124,46 @@ button { cursor: pointer; }
 .ctx-action.busy { color: var(--accent); border-color: #e8c8b0; }
 .ctx-action:disabled { opacity: 0.55; cursor: default; }
 
+.ctx-bg-tasks {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ctx-bg-tasks.hidden { display: none; }
+.bg-task-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f0f7ff;
+  border: 1px solid #cce3ff;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+.bg-task-tag {
+  color: #1a73e8;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.bg-task-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.bg-task-btn {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.bg-task-btn:hover { background: #fffaf6; }
+.bg-task-btn.danger { color: #c92a2a; border-color: #fcc; }
+
 .si-live {
   margin-top: 8px;
   border: 1px solid #e8c8b0;
@@ -248,6 +288,70 @@ button { cursor: pointer; }
   border: 0;
 }
 .msg.bot .body .ref { color: var(--accent); font-weight: 700; cursor: pointer; }
+.msg.bot .msg-footer {
+  margin-top: 10px;
+  padding-top: 7px;
+  border-top: 1px dashed var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  user-select: none;
+}
+.msg.bot .msg-stats {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.msg.bot .stat-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
+}
+.msg.bot .stat-icon {
+  font-size: 11px;
+  opacity: 0.85;
+}
+.msg.bot .stat-val {
+  font-weight: 500;
+}
+.msg.bot .stat-item.stat-reason {
+  color: var(--teal);
+}
+.msg.bot .stat-item.stat-reason.error {
+  color: var(--danger);
+}
+.msg.bot .stat-item.stat-reason.abort {
+  color: #d97706;
+}
+.msg.bot .btn-download-trace {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1.2;
+}
+.msg.bot .btn-download-trace:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: #e8c8b0;
+}
+.msg.bot .btn-download-trace svg {
+  flex-shrink: 0;
+}
 .msg.error { color: var(--danger); font-size: 12px; }
 .msg .meta-row { margin-top: 6px; display: flex; gap: 8px; }
 .msg .meta-row button {

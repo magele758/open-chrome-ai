@@ -53,10 +53,12 @@
         <div class="ctx-actions" id="ctx-actions">
           <button type="button" class="ctx-action primary" id="btn-summarize-video" title="下载完整音轨并转写总结，可与同声传译同时进行。">一键总结</button>
           <button type="button" class="ctx-action primary" id="btn-interpret" title="边看边出中文，按声音约 5 秒一切。">同声传译</button>
+          <button type="button" class="ctx-action hidden" id="btn-play-archive" title="直接播放7天内已生成的完整中文配音">播放配音</button>
           <button type="button" class="ctx-action hidden" id="btn-original-audio" title="开启或关闭原视频声音">关原声</button>
           <button type="button" class="ctx-action" id="btn-transcribe" title="只取出带时间戳的台词，不自动总结">只要文稿</button>
           <button type="button" class="ctx-action hidden" id="btn-video-switch" title="页面里有多个视频时，切换要总结/同传的那一个">画面</button>
         </div>
+        <div class="ctx-bg-tasks hidden" id="ctx-bg-tasks"></div>
         <div class="si-live hidden" id="si-live">
           <div class="si-zh" id="si-zh"></div>
           <div class="si-src" id="si-src"></div>

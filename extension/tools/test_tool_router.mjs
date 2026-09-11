@@ -82,12 +82,25 @@ const expNames = expanded.map((t) => t.name);
 assert(expNames.includes("click"), "expanded has click");
 assert(expNames.includes("run_shell"), "expanded has run_shell");
 
-// 7. allTools flag
-const full = resolveActiveTools({
-  userText: "纯阅读",
+// 8. Authorization keyword and history context
+const authTools = resolveActiveTools({
+  userText: "我授权了，还是显示未授权",
   tools: allTools,
-  allTools: true,
+  hasVideo: false,
 });
-assert(full.length === allTools.length, "allTools returns all tools");
+const authNames = authTools.map((t) => t.name);
+assert(authNames.includes("library_info"), "has library_info when mentioning 授权");
+assert(authNames.includes("list_library"), "has list_library when mentioning 授权");
+
+const historyTools = resolveActiveTools({
+  userText: "试一下",
+  history: [
+    { role: "assistant", content: "请重新授权 Obsidian 文稿文件夹" }
+  ],
+  tools: allTools,
+  hasVideo: false,
+});
+const histNames = historyTools.map((t) => t.name);
+assert(histNames.includes("library_info"), "has library_info when previous history mentioned obsidian/授权");
 
 console.log("PASS test_tool_router.mjs");

@@ -102,3 +102,18 @@ export async function idbDel(keys) {
     /* ignore */
   }
 }
+
+export async function idbListKeys() {
+  if (!idbAvailable()) return [];
+  try {
+    const db = await openDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(DATA_STORE, "readonly");
+      const req = tx.objectStore(DATA_STORE).getAllKeys();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return [];
+  }
+}

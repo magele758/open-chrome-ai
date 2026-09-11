@@ -1,6 +1,7 @@
 /**
- * PageLens Live Interpretation Finite State Machine (FSM) & Controller.
- * Manages video probe, capture setup, stream lifecycle, audio-gain toggle, and cleanup.
+ * PageLens Live Interpretation Multi-Task Manager & Controller.
+ * Manages video probe, capture setup, stream lifecycle, audio-gain toggle, and multi-tab tasks.
+ * Interpretation continues in background when switching tabs until the specific tab is closed or stopped.
  */
 
 import { injectVideo } from "../lib/chrome.js";
@@ -15,13 +16,15 @@ export const InterpretState = {
   ERROR: "error",
 };
 
-export class InterpretController {
-  constructor() {
+export class InterpretTask {
+  constructor({ tabId, sourceUrl, title = "" }) {
+    this.tabId = tabId;
+    this.sourceUrl = sourceUrl || "";
+    this.title = title || "";
     this.fsmState = InterpretState.IDLE;
     this.abortController = null;
     this.currentCapture = null;
-    this.originalAudioOn = true;
-    this.currentTabId = null;
+    this.originalAudioOn = false;
     this.details = {
       mode: "audio",
       message: "",
@@ -30,13 +33,20 @@ export class InterpretController {
       zh: "",
       error: "",
     };
-    this.listeners = new Set();
   }
 
   getState() {
     return {
+      tabId: this.tabId,
+      title: this.title,
+      url: this.sourceUrl,
       fsmState: this.fsmState,
-      status: this.fsmState === InterpretState.RUNNING ? "running" : this.fsmState === InterpretState.ERROR ? "error" : "idle",
+      status:
+        this.fsmState === InterpretState.RUNNING
+          ? "running"
+          : this.fsmState === InterpretState.ERROR
+          ? "error"
+          : "idle",
       originalAudioOn: this.originalAudioOn,
       ...this.details,
     };
@@ -45,16 +55,101 @@ export class InterpretController {
   isRunning() {
     return this.fsmState === InterpretState.RUNNING || this.fsmState === InterpretState.PREPARING;
   }
+}
+
+export class InterpretController {
+  constructor() {
+    this.tasks = new Map();
+    this.currentTabId = null;
+    this.listeners = new Set();
+
+    // Default fallback state for when no tasks exist
+    this.defaultDetails = {
+      mode: "audio",
+      message: "",
+      hint: "",
+      src: "",
+      zh: "",
+      error: "",
+    };
+
+    if (typeof chrome !== "undefined" && chrome.tabs?.onRemoved) {
+      chrome.tabs.onRemoved.addListener((removedTabId) => {
+        this.handleTabRemoved(removedTabId).catch(() => {});
+      });
+    }
+  }
+
+  async handleTabRemoved(tabId) {
+    if (this.tasks.has(tabId)) {
+      await this.stop(tabId);
+    }
+  }
+
+  getTask(tabId) {
+    const id = tabId || this.currentTabId;
+    if (id && this.tasks.has(id)) return this.tasks.get(id);
+    return null;
+  }
+
+  getState(tabId) {
+    const task = this.getTask(tabId);
+    if (task) return task.getState();
+
+    // Fallback: only when tabId was not explicitly passed and currentTabId is empty
+    if (!tabId && !this.currentTabId) {
+      for (const t of this.tasks.values()) {
+        if (t.isRunning()) return t.getState();
+      }
+    }
+
+    return {
+      fsmState: InterpretState.IDLE,
+      status: "idle",
+      originalAudioOn: true,
+      ...this.defaultDetails,
+    };
+  }
+
+  get fsmState() {
+    const active = this.getTask();
+    return active ? active.fsmState : InterpretState.IDLE;
+  }
+
+  get originalAudioOn() {
+    const active = this.getTask();
+    return active ? active.originalAudioOn : true;
+  }
+
+  isRunning(tabId) {
+    if (tabId) {
+      const task = this.tasks.get(tabId);
+      return Boolean(task?.isRunning());
+    }
+    for (const task of this.tasks.values()) {
+      if (task.isRunning()) return true;
+    }
+    return false;
+  }
+
+  getRunningTasks() {
+    const out = [];
+    for (const task of this.tasks.values()) {
+      if (task.isRunning()) out.push(task.getState());
+    }
+    return out;
+  }
 
   subscribe(listener) {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
-  notify(event) {
+  notify(event, tabId) {
+    const state = this.getState(tabId);
     for (const listener of this.listeners) {
       try {
-        listener(event, this.getState());
+        listener(event, state);
       } catch (err) {
         console.error("[InterpretController] listener error", err);
       }
@@ -63,33 +158,45 @@ export class InterpretController {
 
   async toggleOriginalAudio(tabId) {
     const targetId = tabId || this.currentTabId;
-    if (!targetId) return this.originalAudioOn;
+    if (!targetId) return true;
 
-    const next = !this.originalAudioOn;
-    this.originalAudioOn = next;
-    this.notify({ type: "audio_toggled", originalAudioOn: next });
+    const task = this.tasks.get(targetId);
+    const prev = task ? task.originalAudioOn : false;
+    const next = !prev;
+
+    if (task) task.originalAudioOn = next;
+    this.notify({ type: "audio_toggled", originalAudioOn: next, tabId: targetId }, targetId);
 
     try {
       await injectVideo(targetId, next ? "restore" : "silence");
-      this.currentCapture?.playback?.setGain?.(next ? 1 : 0);
+      task?.currentCapture?.playback?.setGain?.(next ? 1 : 0);
     } catch (err) {
-      this.originalAudioOn = !next;
-      this.notify({ type: "audio_toggled", originalAudioOn: !next });
+      if (task) task.originalAudioOn = prev;
+      this.notify({ type: "audio_toggled", originalAudioOn: prev, tabId: targetId }, targetId);
       throw new Error("无法切换原声：" + (err?.message || err));
     }
-    return this.originalAudioOn;
+    return next;
   }
 
   async start({ tab, settings, onCaptionsReady }) {
     if (!tab?.id) throw new Error("没有可操作的标签页");
-    if (this.isRunning()) {
-      await this.stop();
+    if (this.isRunning(tab.id)) {
+      await this.stop(tab.id);
       return;
     }
 
     this.currentTabId = tab.id;
-    this.fsmState = InterpretState.PREPARING;
-    this.details = {
+    let task = this.tasks.get(tab.id);
+    if (!task) {
+      task = new InterpretTask({ tabId: tab.id, sourceUrl: tab.url, title: tab.title });
+      this.tasks.set(tab.id, task);
+    } else {
+      task.sourceUrl = tab.url;
+      task.title = tab.title || task.title;
+    }
+
+    task.fsmState = InterpretState.PREPARING;
+    task.details = {
       mode: "audio",
       message: "正在探测播放器并暂停画面…",
       hint: "",
@@ -97,7 +204,7 @@ export class InterpretController {
       zh: "",
       error: "",
     };
-    this.notify({ type: "preparing" });
+    this.notify({ type: "preparing", tabId: tab.id }, tab.id);
 
     let startAt = 0;
     let openingHold = false;
@@ -112,103 +219,132 @@ export class InterpretController {
         throw new Error("播放器未能暂停，未开始同传。请重试。");
       }
     } catch (err) {
-      this.fsmState = InterpretState.ERROR;
-      this.details.error = err.message || String(err);
-      this.notify({ type: "error", error: this.details.error });
+      task.fsmState = InterpretState.ERROR;
+      task.details.error = err.message || String(err);
+      this.notify({ type: "error", error: task.details.error, tabId: tab.id }, tab.id);
       return;
     }
 
     const abort = new AbortController();
-    this.abortController = abort;
-    this.currentCapture = null;
-    this.originalAudioOn = false;
-    this.fsmState = InterpretState.RUNNING;
-    this.details.message = "同传已开始…";
-    this.notify({ type: "started" });
+    task.abortController = abort;
+    task.currentCapture = null;
+    task.originalAudioOn = false;
+    task.fsmState = InterpretState.RUNNING;
+    task.details.message = "同传已开始…";
+    this.notify({ type: "started", tabId: tab.id }, tab.id);
 
     try {
       const result = await runInterpret({
         tabId: tab.id,
         sourceUrl: tab.url,
+        title: tab.title,
         settings,
         startAt,
         openingHold,
-        capture: this.currentCapture,
+        capture: task.currentCapture,
         signal: abort.signal,
-        wantOriginalAudio: () => this.abortController === abort && this.originalAudioOn,
+        wantOriginalAudio: () => task.abortController === abort && task.originalAudioOn,
         onEvent: (ev) => {
-          if (this.abortController !== abort) return;
+          if (task.abortController !== abort) return;
           if (ev.type === "line") {
-            this.details.src = ev.src || "";
-            this.details.zh = ev.zh || "";
-            this.details.mode = ev.mode || this.details.mode;
-            this.details.hint = "";
-            this.notify({ type: "line", line: ev });
+            task.details.src = ev.src || "";
+            task.details.zh = ev.zh || "";
+            task.details.mode = ev.mode || task.details.mode;
+            task.details.hint = "";
+            this.notify({ type: "line", line: ev, tabId: tab.id }, tab.id);
           } else if (ev.type === "status") {
-            this.details.message = ev.message || this.details.message;
-            this.details.hint = ev.hint || "";
-            this.details.mode = ev.mode || this.details.mode;
+            task.details.message = ev.message || task.details.message;
+            task.details.hint = ev.hint || "";
+            task.details.mode = ev.mode || task.details.mode;
             if (ev.clearLine) {
-              this.details.src = "";
-              this.details.zh = "";
+              task.details.src = "";
+              task.details.zh = "";
             }
-            this.notify({ type: "status", status: ev });
+            this.notify({ type: "status", status: ev, tabId: tab.id }, tab.id);
           } else if (ev.type === "warn") {
-            this.details.hint = ev.message || "";
-            this.notify({ type: "warn", message: ev.message });
+            task.details.hint = ev.message || "";
+            this.notify({ type: "warn", message: ev.message, tabId: tab.id }, tab.id);
           }
         },
       });
 
-      if (this.abortController !== abort) return;
+      if (task.abortController !== abort) return;
       if (result?.captions?.status === "ready") {
         onCaptionsReady?.(result.captions);
       }
 
-      this.fsmState = InterpretState.IDLE;
-      this.originalAudioOn = true;
-      this.details.message = result?.lines?.length ? "同传已结束" : "同传已停止";
-      this.notify({ type: "stopped", result });
+      task.fsmState = InterpretState.IDLE;
+      task.originalAudioOn = true;
+      task.details.message = result?.lines?.length ? "同传已结束" : "同传已停止";
+      this.notify({ type: "stopped", result, tabId: tab.id }, tab.id);
     } catch (err) {
-      if (this.abortController !== abort) return;
+      if (task.abortController !== abort) return;
       if (err?.name === "AbortError" || /abort/i.test(err?.message || "")) {
-        this.fsmState = InterpretState.IDLE;
-        this.details.message = "同传已中止";
-        this.notify({ type: "stopped" });
+        task.fsmState = InterpretState.IDLE;
+        task.details.message = "同传已中止";
+        this.notify({ type: "stopped", tabId: tab.id }, tab.id);
       } else {
-        this.fsmState = InterpretState.ERROR;
-        this.details.error = err.message || String(err);
-        this.notify({ type: "error", error: this.details.error });
+        task.fsmState = InterpretState.ERROR;
+        task.details.error = err.message || String(err);
+        this.notify({ type: "error", error: task.details.error, tabId: tab.id }, tab.id);
       }
     } finally {
-      if (this.abortController === abort) {
-        this.originalAudioOn = true;
-        this.abortController = null;
+      if (task.abortController === abort) {
+        task.originalAudioOn = true;
+        task.abortController = null;
       }
-      const cap = this.currentCapture;
-      this.currentCapture = null;
+      const cap = task.currentCapture;
+      task.currentCapture = null;
       if (cap) {
         discardCapture(cap).catch(() => {});
       }
-      if (this.fsmState === InterpretState.RUNNING || this.fsmState === InterpretState.PREPARING) {
-        this.fsmState = InterpretState.IDLE;
+      if (task.fsmState === InterpretState.RUNNING || task.fsmState === InterpretState.PREPARING) {
+        task.fsmState = InterpretState.IDLE;
       }
-      this.notify({ type: "idle" });
+      this.notify({ type: "idle", tabId: tab.id }, tab.id);
+      this.tasks.delete(tab.id);
     }
   }
 
-  async stop() {
-    this.fsmState = InterpretState.STOPPING;
-    this.abortController?.abort();
-    abortRecording();
-    const cap = this.currentCapture;
-    this.currentCapture = null;
-    this.originalAudioOn = true;
-    this.fsmState = InterpretState.IDLE;
-    this.details.message = "同传已停止";
-    this.notify({ type: "stopped" });
-    if (cap) {
-      await discardCapture(cap).catch(() => {});
+  async stop(tabId) {
+    const targetId = tabId || this.currentTabId;
+    const task = targetId ? this.tasks.get(targetId) : null;
+
+    if (task) {
+      task.fsmState = InterpretState.STOPPING;
+      task.abortController?.abort();
+      const cap = task.currentCapture;
+      task.currentCapture = null;
+      task.originalAudioOn = true;
+      task.fsmState = InterpretState.IDLE;
+      task.details.message = "同传已停止";
+      this.notify({ type: "stopped", tabId: targetId }, targetId);
+      if (cap) {
+        await discardCapture(cap).catch(() => {});
+      }
+      this.tasks.delete(targetId);
+      return;
     }
+
+    let stoppedCount = 0;
+    // Stop all tasks if no specific tab given
+    for (const [id, t] of this.tasks.entries()) {
+      t.fsmState = InterpretState.STOPPING;
+      t.abortController?.abort();
+      const cap = t.currentCapture;
+      t.currentCapture = null;
+      t.originalAudioOn = true;
+      t.fsmState = InterpretState.IDLE;
+      this.notify({ type: "stopped", tabId: id }, id);
+      stoppedCount++;
+      if (cap) {
+        await discardCapture(cap).catch(() => {});
+      }
+    }
+    if (stoppedCount === 0) {
+      this.notify({ type: "stopped" });
+    }
+    abortRecording();
+    this.tasks.clear();
   }
 }

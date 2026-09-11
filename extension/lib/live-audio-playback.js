@@ -42,17 +42,8 @@ export async function playFollowingVideo({ blob, start, end, signal, readState, 
             audio.pause();
           } else {
             const rate = Number(state.playbackRate) || 1;
-            const span = Number(end) - Number(start);
-            const fit = audio.duration > 0 && Number.isFinite(audio.duration) && span > 0
-              ? Math.max(0.85, Math.min(1.25, audio.duration / span)) : 1;
-            let targetRate = rate * fit;
-            if (audio.duration > 0 && span > 0 && Number.isFinite(audio.currentTime)) {
-              const mapped = Math.max(0, Math.min(audio.duration,
-                (Number(state.currentTime) - Number(start)) * (audio.duration / span)));
-              const correction = Math.max(0.9, Math.min(1.1, 1 + (mapped - audio.currentTime) * 0.05));
-              targetRate *= correction;
-            }
-            audio.playbackRate = Math.max(0.25, Math.min(4, targetRate));
+            // Natural speech rate follows video playback rate, free of fluctuating span compression
+            audio.playbackRate = Math.max(0.25, Math.min(4, rate));
             if (audio.paused) {
               // Always speak the full sentence, including after resume.
               // Correct timing by rate/holding the picture, never by skipping words.

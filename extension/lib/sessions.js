@@ -141,11 +141,21 @@ export function normalizeMessage(raw) {
         .filter((t) => t.name)
         .slice(0, 40)
     : undefined;
+  const metrics = raw?.metrics && typeof raw.metrics === "object" ? {
+    durationMs: Math.max(0, Number(raw.metrics.durationMs) || 0),
+    inputTokens: Math.max(0, Number(raw.metrics.inputTokens) || 0),
+    outputTokens: Math.max(0, Number(raw.metrics.outputTokens) || 0),
+    totalTokens: Math.max(0, Number(raw.metrics.totalTokens) || 0),
+    finishReason: String(raw.metrics.finishReason || ""),
+  } : undefined;
+  const traceLog = raw?.traceLog && typeof raw.traceLog === "object" ? raw.traceLog : undefined;
   return {
     role: raw?.role === "user" ? "user" : "bot",
     text: String(raw?.text || "").slice(0, MAX_TEXT),
     error: raw?.error ? true : undefined,
     trace: trace?.length ? trace : undefined,
+    metrics,
+    traceLog,
     hasImage: Boolean(raw?.image || raw?.hasImage) || undefined,
   };
 }
