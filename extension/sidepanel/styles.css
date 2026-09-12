@@ -352,6 +352,28 @@ button { cursor: pointer; }
 .msg.bot .btn-download-trace svg {
   flex-shrink: 0;
 }
+.msg.bot .btn-clip-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1.2;
+}
+.msg.bot .btn-clip-card:hover {
+  background: #fef3c7;
+  color: #b45309;
+  border-color: #fcd34d;
+}
+.msg.bot .btn-clip-card svg {
+  flex-shrink: 0;
+}
 .msg.error { color: var(--danger); font-size: 12px; }
 .msg .meta-row { margin-top: 6px; display: flex; gap: 8px; }
 .msg .meta-row button {
@@ -766,4 +788,293 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 }
 .hitl-actions button.primary:hover {
   filter: brightness(1.06);
+}
+
+/* 智能回显横幅 (Smart Recall Banner) */
+.recall-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fefce8;
+  border: 1px solid #fef08a;
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #854d0e;
+}
+.recall-banner.hidden {
+  display: none !important;
+}
+.recall-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.recall-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recall-text {
+  font-weight: 500;
+}
+.recall-ops {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.recall-btn {
+  background: #ffffff;
+  border: 1px solid #fde047;
+  color: #a16207;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.recall-btn:hover {
+  background: #fef9c3;
+}
+.recall-close {
+  background: transparent;
+  border: 0;
+  color: #a16207;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  opacity: 0.7;
+}
+.recall-close:hover {
+  opacity: 1;
+}
+
+/* 剪藏弹窗 (Clip Modal) */
+.clip-modal {
+  position: absolute;
+  top: 48px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(28, 25, 23, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+  overflow-y: auto;
+}
+.clip-modal.hidden {
+  display: none !important;
+}
+.clip-card {
+  width: 100%;
+  max-width: 400px;
+  max-height: 90vh;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.18);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+.clip-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+.clip-icon {
+  font-size: 16px;
+}
+.clip-title {
+  font-weight: 650;
+  font-size: 14px;
+  color: var(--ink);
+  flex: 1;
+}
+.btn-modal-x {
+  background: transparent;
+  border: 0;
+  font-size: 18px;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.btn-modal-x:hover {
+  color: var(--ink);
+}
+.clip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.clip-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.clip-field .field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.clip-field input,
+.clip-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: inherit;
+}
+.clip-field textarea {
+  resize: vertical;
+  line-height: 1.4;
+}
+.clip-field input:focus,
+.clip-field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.clip-preview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.clip-preview-section .field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.clip-content-preview {
+  max-height: 80px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.clip-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}
+.clip-options .check {
+  font-size: 11px;
+  margin-bottom: 0;
+}
+.clip-options code {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.clip-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.clip-actions button {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.clip-actions button.primary {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+}
+.clip-actions button.primary:hover {
+  filter: brightness(1.06);
+}
+
+/* 剪藏查看弹窗特化 */
+.clip-view-card {
+  max-height: 85vh;
+}
+.clip-view-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.clip-view-item:last-child {
+  margin-bottom: 0;
+}
+.clip-view-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.clip-view-date {
+  font-size: 11px;
+  color: var(--muted);
+}
+.clip-view-tag {
+  display: inline-block;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.clip-view-note {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  background: #fffbeb;
+  border-left: 3px solid #f59e0b;
+  padding: 4px 8px;
+  border-radius: 0 4px 4px 0;
+}
+.clip-view-content {
+  font-size: 11px;
+  color: var(--ink);
+  line-height: 1.45;
+  max-height: 150px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface);
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+.clip-view-path {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
 }

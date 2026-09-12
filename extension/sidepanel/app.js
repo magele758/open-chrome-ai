@@ -24,6 +24,11 @@ import {
   writeSessionNotes,
   videoIdentity,
 } from "../lib/library.js";
+import {
+  executeClipping,
+  getClippingsForUrl,
+  deleteClippingRecord,
+} from "../lib/clippings.js";
 import { initMarkdown, formatAnswer, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createAgentLoop } from "../lib/agent/loop.js";
 import { createAgentTools, resolveActiveTools, checkHitlRequirement } from "../lib/agent/tools.js";
@@ -102,6 +107,9 @@ const state = {
   sessionHitlOverride: null,
   dubPlaying: false,
   activeToolDomains: new Set(),
+  currentClipMsg: null,
+  activeRecallClippings: [],
+  dismissedRecallUrls: new Set(),
 };
 
 const interpretController = new InterpretController();
@@ -539,16 +547,31 @@ function createMessageFooter(msg) {
   }
   footer.appendChild(stats);
 
-  const dlBtn = document.createElement("button");
-  dlBtn.type = "button";
-  dlBtn.className = "btn-download-trace";
-  dlBtn.title = "下载本次会话执行 Trace 日志（JSON）";
-  dlBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Trace</span>`;
-  dlBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    downloadMessageTrace(msg);
-  });
-  footer.appendChild(dlBtn);
+  if (msg.text && !msg.error) {
+    const clipBtn = document.createElement("button");
+    clipBtn.type = "button";
+    clipBtn.className = "btn-clip-card";
+    clipBtn.title = "剪藏此回答至 Obsidian 卡片与 Chrome 书签";
+    clipBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg><span>剪藏</span>`;
+    clipBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openClipModal(msg);
+    });
+    footer.appendChild(clipBtn);
+  }
+
+  if (msg.traceLog || msg.metrics) {
+    const dlBtn = document.createElement("button");
+    dlBtn.type = "button";
+    dlBtn.className = "btn-download-trace";
+    dlBtn.title = "下载本次会话执行 Trace 日志（JSON）";
+    dlBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Trace</span>`;
+    dlBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      downloadMessageTrace(msg);
+    });
+    footer.appendChild(dlBtn);
+  }
 
   return footer;
 }
@@ -655,7 +678,7 @@ function renderMessages() {
       const streamingThis = state.busy && msg === state.messages[state.messages.length - 1];
       fillBotBody(body, msg.text || (state.busy ? "…" : ""), { mermaid: !streamingThis && !msg.error });
       wrap.appendChild(body);
-      if (msg.metrics) {
+      if (!streamingThis && (msg.metrics || (msg.text && !msg.error))) {
         wrap.appendChild(createMessageFooter(msg));
       }
     }
@@ -1131,6 +1154,207 @@ async function importCurrentToLibrary() {
     return;
   }
   await importOneToLibrary(state.sessionId);
+}
+
+function openClipModal(msg) {
+  if (!msg) return;
+  state.currentClipMsg = msg;
+  const modal = $("clip-modal");
+  if (!modal) return;
+
+  const defaultTitle = state.pack?.title || state.tab?.title || "未命名网页";
+  const defaultUrl = state.pack?.url || state.tab?.url || "";
+
+  const titleInput = $("clip-input-title");
+  const urlInput = $("clip-input-url");
+  const noteInput = $("clip-input-note");
+  const tagsInput = $("clip-input-tags");
+  const preview = $("clip-content-preview");
+
+  if (titleInput) titleInput.value = defaultTitle;
+  if (urlInput) urlInput.value = defaultUrl;
+  if (noteInput) noteInput.value = "";
+  if (tagsInput) tagsInput.value = "";
+  if (preview) preview.textContent = msg.text || "";
+
+  modal.classList.remove("hidden");
+  setTimeout(() => noteInput?.focus(), 60);
+}
+
+function closeClipModal() {
+  state.currentClipMsg = null;
+  $("clip-modal")?.classList.add("hidden");
+}
+
+async function submitClipModal() {
+  const msg = state.currentClipMsg;
+  if (!msg) {
+    closeClipModal();
+    return;
+  }
+  const title = $("clip-input-title")?.value?.trim() || "未命名网页";
+  const url = $("clip-input-url")?.value?.trim() || "";
+  const note = $("clip-input-note")?.value?.trim() || "";
+  const tags = $("clip-input-tags")?.value?.trim() || "";
+  const saveObsidian = $("clip-check-obsidian")?.checked ?? true;
+  const saveBookmark = $("clip-check-bookmark")?.checked ?? true;
+
+  const confirmBtn = $("btn-clip-confirm");
+  if (confirmBtn) {
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "保存中…";
+  }
+
+  try {
+    if (saveObsidian) {
+      await ensureLibraryForWrite();
+    }
+    const res = await executeClipping({
+      title,
+      url,
+      note,
+      content: msg.text || "",
+      tags,
+      saveObsidian,
+      saveBookmark,
+    });
+
+    closeClipModal();
+
+    const notices = [];
+    if (saveObsidian) {
+      if (res.clipping.obsidianPath) {
+        notices.push(`已写入 ${res.clipping.obsidianPath}`);
+      } else if (res.obsidianError) {
+        notices.push(`Obsidian 写入失败：${res.obsidianError}`);
+      }
+    }
+    if (saveBookmark) {
+      if (res.clipping.bookmarkId) {
+        notices.push("已加入「PageLens 智库」书签");
+      } else if (res.bookmarkError) {
+        notices.push(`书签保存失败：${res.bookmarkError}`);
+      }
+    }
+    if (!notices.length) notices.push("已记录剪藏");
+    flashStatus(notices.join(" · "), !res.obsidianError);
+
+    if (state.tab?.url) {
+      checkSmartRecall(state.tab.url).catch(() => {});
+    }
+  } catch (err) {
+    if (err?.name === "AbortError") return;
+    console.error("[pagelens] clip submit error", err);
+    flashStatus("剪藏失败：" + (err?.message || err), false);
+  } finally {
+    if (confirmBtn) {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = "确认保存";
+    }
+  }
+}
+
+async function checkSmartRecall(url) {
+  const banner = $("recall-banner");
+  if (!banner) return;
+  if (!url || state.dismissedRecallUrls?.has(url)) {
+    banner.classList.add("hidden");
+    return;
+  }
+  try {
+    const clips = await getClippingsForUrl(url);
+    if (!clips || !clips.length) {
+      banner.classList.add("hidden");
+      state.activeRecallClippings = [];
+      return;
+    }
+    state.activeRecallClippings = clips;
+    const count = clips.length;
+    const latest = clips[0];
+    const when = formatWhen(latest.createdAt);
+    const summary = latest.note ? `：“${latest.note.slice(0, 16)}${latest.note.length > 16 ? "…" : ""}”` : "";
+    const textEl = $("recall-text");
+    if (textEl) {
+      textEl.textContent = `本页曾剪藏 ${count} 条笔记${summary} (${when})`;
+    }
+    banner.classList.remove("hidden");
+  } catch (err) {
+    console.warn("[pagelens] checkSmartRecall error", err);
+    banner.classList.add("hidden");
+  }
+}
+
+function dismissRecallBanner() {
+  if (state.tab?.url) {
+    if (!state.dismissedRecallUrls) state.dismissedRecallUrls = new Set();
+    state.dismissedRecallUrls.add(state.tab.url);
+  }
+  $("recall-banner")?.classList.add("hidden");
+}
+
+function openClipViewModal() {
+  const clips = state.activeRecallClippings;
+  if (!clips?.length) return;
+  const modal = $("clip-view-modal");
+  const body = $("clip-view-body");
+  if (!modal || !body) return;
+
+  body.innerHTML = "";
+  clips.forEach((c) => {
+    const item = document.createElement("div");
+    item.className = "clip-view-item";
+
+    const top = document.createElement("div");
+    top.className = "clip-view-top";
+
+    const dateSpan = document.createElement("span");
+    dateSpan.className = "clip-view-date";
+    dateSpan.textContent = formatWhen(c.createdAt);
+    top.appendChild(dateSpan);
+
+    if (Array.isArray(c.tags) && c.tags.length) {
+      const tagsSpan = document.createElement("div");
+      tagsSpan.style.display = "flex";
+      tagsSpan.style.gap = "4px";
+      c.tags.forEach((t) => {
+        const tag = document.createElement("span");
+        tag.className = "clip-view-tag";
+        tag.textContent = `#${t}`;
+        tagsSpan.appendChild(tag);
+      });
+      top.appendChild(tagsSpan);
+    }
+    item.appendChild(top);
+
+    if (c.note) {
+      const noteEl = document.createElement("div");
+      noteEl.className = "clip-view-note";
+      noteEl.textContent = `💡 备注：${c.note}`;
+      item.appendChild(noteEl);
+    }
+
+    if (c.content) {
+      const contentEl = document.createElement("div");
+      contentEl.className = "clip-view-content";
+      contentEl.textContent = c.content;
+      item.appendChild(contentEl);
+    }
+
+    if (c.obsidianPath) {
+      const pathEl = document.createElement("div");
+      pathEl.className = "clip-view-path";
+      pathEl.textContent = `📁 Obsidian: ${c.obsidianPath}`;
+      item.appendChild(pathEl);
+    }
+
+    body.appendChild(item);
+  });
+
+  modal.classList.remove("hidden");
+}
+
+function closeClipViewModal() {
+  $("clip-view-modal")?.classList.add("hidden");
 }
 
 async function removeHistoryItem(id) {
@@ -1960,6 +2184,7 @@ async function refreshTab() {
   }
   if (!state.share || !tab || restrictedUrl(tab.url)) {
     state.pack = null;
+    $("recall-banner")?.classList.add("hidden");
     renderContext();
     renderSkills();
     return;
@@ -2009,6 +2234,11 @@ async function refreshTab() {
   }
   renderContext();
   renderSkills();
+  if (tab?.url) {
+    checkSmartRecall(tab.url).catch(() => {});
+  } else {
+    $("recall-banner")?.classList.add("hidden");
+  }
 }
 
 function currentKind(wantImage) {
@@ -2839,6 +3069,13 @@ function wire() {
   on("btn-export-all-json", "click", () => exportAll("json"));
   on("btn-import-all-obsidian", "click", () => importAllToLibrary());
   on("btn-obsidian", "click", () => importCurrentToLibrary());
+  on("btn-clip-cancel", "click", () => closeClipModal());
+  on("btn-clip-cancel-x", "click", () => closeClipModal());
+  on("btn-clip-confirm", "click", () => submitClipModal());
+  on("btn-recall-open", "click", () => openClipViewModal());
+  on("btn-recall-dismiss", "click", () => dismissRecallBanner());
+  on("btn-clip-view-close", "click", () => closeClipViewModal());
+  on("btn-clip-view-done", "click", () => closeClipViewModal());
   on("hist-q", "input", () => {
     state.histQuery = $("hist-q").value;
     renderHistory();

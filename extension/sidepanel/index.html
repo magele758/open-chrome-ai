@@ -59,9 +59,81 @@
           <button type="button" class="ctx-action hidden" id="btn-video-switch" title="页面里有多个视频时，切换要总结/同传的那一个">画面</button>
         </div>
         <div class="ctx-bg-tasks hidden" id="ctx-bg-tasks"></div>
+        <div class="recall-banner hidden" id="recall-banner">
+          <span class="recall-icon">💡</span>
+          <div class="recall-content">
+            <span class="recall-text" id="recall-text">曾剪藏笔记</span>
+          </div>
+          <div class="recall-ops">
+            <button type="button" class="recall-btn" id="btn-recall-open">查看笔记</button>
+            <button type="button" class="recall-close" id="btn-recall-dismiss" title="忽略">×</button>
+          </div>
+        </div>
         <div class="si-live hidden" id="si-live">
           <div class="si-zh" id="si-zh"></div>
           <div class="si-src" id="si-src"></div>
+        </div>
+      </div>
+
+      <!-- 剪藏到 Obsidian & 书签 弹窗 -->
+      <div id="clip-modal" class="clip-modal hidden">
+        <div class="clip-card">
+          <div class="clip-header">
+            <span class="clip-icon">🔖</span>
+            <span class="clip-title">剪藏到 Obsidian &amp; 书签</span>
+            <button type="button" class="btn-modal-x" id="btn-clip-cancel-x" title="关闭">×</button>
+          </div>
+          <div class="clip-body">
+            <label class="clip-field">
+              <span class="field-label">标题</span>
+              <input type="text" id="clip-input-title" spellcheck="false" />
+            </label>
+            <label class="clip-field">
+              <span class="field-label">网址</span>
+              <input type="text" id="clip-input-url" spellcheck="false" />
+            </label>
+            <label class="clip-field">
+              <span class="field-label">我的思考 / 备注</span>
+              <textarea id="clip-input-note" rows="3" placeholder="记录关于本回答的灵感、重点、个人评注..."></textarea>
+            </label>
+            <label class="clip-field">
+              <span class="field-label">标签（空格或逗号分隔）</span>
+              <input type="text" id="clip-input-tags" placeholder="如：ai, 架构, 知识库" />
+            </label>
+            <div class="clip-preview-section">
+              <span class="field-label">AI 提炼内容预览</span>
+              <div class="clip-content-preview" id="clip-content-preview"></div>
+            </div>
+            <div class="clip-options">
+              <label class="check">
+                <input type="checkbox" id="clip-check-obsidian" checked />
+                写入 Obsidian 独立卡片 (<code>PageLens/clippings/</code>)
+              </label>
+              <label class="check">
+                <input type="checkbox" id="clip-check-bookmark" checked />
+                同步到 Chrome 书签 (<code>PageLens 智库</code> 文件夹)
+              </label>
+            </div>
+          </div>
+          <div class="clip-actions">
+            <button type="button" class="secondary" id="btn-clip-cancel">取消</button>
+            <button type="button" class="primary" id="btn-clip-confirm">确认保存</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 查看历史剪藏卡片详情弹窗 -->
+      <div id="clip-view-modal" class="clip-modal hidden">
+        <div class="clip-card clip-view-card">
+          <div class="clip-header">
+            <span class="clip-icon">💡</span>
+            <span class="clip-title" id="clip-view-modal-title">本页剪藏笔记</span>
+            <button type="button" class="btn-modal-x" id="btn-clip-view-close" title="关闭">×</button>
+          </div>
+          <div class="clip-body" id="clip-view-body"></div>
+          <div class="clip-actions">
+            <button type="button" class="secondary" id="btn-clip-view-done">关闭</button>
+          </div>
         </div>
       </div>
       <div class="msgs" id="msgs"></div>

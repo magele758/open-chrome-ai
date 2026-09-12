@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **一键剪藏至 Obsidian 独立卡片与 Chrome 书签联动 (Clippings & Footprint Recall)**:
+  - 新增 `extension/lib/clippings.js`：核心剪藏逻辑，生成带标准 YAML Frontmatter（title, url, date, tags, clipping_id, source）与思考备注的独立 Markdown 卡片文件（`PageLens/clippings/YYYY-MM-DD-slug-id.md`）。
+  - Chrome 书签联动：保存时自动查找或创建 Chrome 收藏夹专用目录 `PageLens 智库`，书签标题前置用户随手备注（如 `[思考前15字] 网页标题`），提升地址栏直达与检索体验。
+  - 智能回显（Smart Recall / Footprint Recall）：在用户二次访问曾剪藏过的网页时，侧栏上下文自动弹出轻量回显横幅（`💡 本页曾剪藏过 N 条笔记：“...”`），支持一键点击查看完整历史笔记卡片，形成双向知识闭环。
+  - 新增单条 Assistant 消息底部「⭐ 剪藏」按钮及简洁交互弹窗（支持编辑标题、URL、备注、标签与独立选项开关）。
+  - 新增单元测试 `extension/tools/test_clippings.mjs`，覆盖 URL 规范化过滤、Frontmatter 结构与书签标题组装校验。
+
 ## [0.12.0] - 2026-09-11
 
 ### Changed
