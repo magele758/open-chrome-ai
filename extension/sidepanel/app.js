@@ -547,7 +547,10 @@ function createMessageFooter(msg) {
   }
   footer.appendChild(stats);
 
-  if (msg.text && !msg.error) {
+  const actions = document.createElement("div");
+  actions.className = "msg-actions";
+
+  if (msg.text && !msg.error && msg.text !== "…") {
     const clipBtn = document.createElement("button");
     clipBtn.type = "button";
     clipBtn.className = "btn-clip-card";
@@ -557,7 +560,7 @@ function createMessageFooter(msg) {
       e.stopPropagation();
       openClipModal(msg);
     });
-    footer.appendChild(clipBtn);
+    actions.appendChild(clipBtn);
   }
 
   if (msg.traceLog || msg.metrics) {
@@ -570,8 +573,10 @@ function createMessageFooter(msg) {
       e.stopPropagation();
       downloadMessageTrace(msg);
     });
-    footer.appendChild(dlBtn);
+    actions.appendChild(dlBtn);
   }
+
+  footer.appendChild(actions);
 
   return footer;
 }
@@ -675,10 +680,11 @@ function renderMessages() {
       }
       const body = document.createElement("div");
       body.className = "body";
-      const streamingThis = state.busy && msg === state.messages[state.messages.length - 1];
+      const isLast = msg === state.messages[state.messages.length - 1];
+      const streamingThis = state.busy && isLast && !msg.metrics;
       fillBotBody(body, msg.text || (state.busy ? "…" : ""), { mermaid: !streamingThis && !msg.error });
       wrap.appendChild(body);
-      if (!streamingThis && (msg.metrics || (msg.text && !msg.error))) {
+      if (msg.metrics || (!streamingThis && msg.text && !msg.error && msg.text !== "…")) {
         wrap.appendChild(createMessageFooter(msg));
       }
     }
@@ -2286,7 +2292,9 @@ function paintBot(botMsg) {
   }
   const body = wrap.querySelector(".body");
   if (body) fillBotBody(body, botMsg.text || "…", { mermaid: false });
-  if (botMsg.metrics && !wrap.querySelector(".msg-footer")) {
+  if (botMsg.metrics) {
+    const existing = wrap.querySelector(".msg-footer");
+    if (existing) existing.remove();
     wrap.appendChild(createMessageFooter(botMsg));
   }
   const root = $("msgs");
@@ -2577,6 +2585,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       state.image = null;
       renderAttach();
     }
+    renderMessages();
     await persistSession();
     console.info("[pagelens] executeLoop done", failed ? "fail" : result?.reason || "ok");
   }

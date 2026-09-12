@@ -330,6 +330,12 @@ button { cursor: pointer; }
 .msg.bot .stat-item.stat-reason.abort {
   color: #d97706;
 }
+.msg.bot .msg-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
 .msg.bot .btn-download-trace {
   display: inline-flex;
   align-items: center;
