@@ -128,6 +128,7 @@ async function runLoop(host, userText, options) {
         tools: activeTools.map(toOpenAITool),
         signal,
         onTextDelta: options.onTextDelta,
+        onReasoningDelta: options.onReasoningDelta,
       });
     } catch (err) {
       const msg = String(err?.message || err);
@@ -139,6 +140,7 @@ async function runLoop(host, userText, options) {
           tools: [],
           signal,
           onTextDelta: options.onTextDelta,
+          onReasoningDelta: options.onReasoningDelta,
         });
       } else {
         throw err;
@@ -146,7 +148,7 @@ async function runLoop(host, userText, options) {
     }
 
     turnsUsed += 1;
-    if (!result || typeof result !== "object") result = { content: "", toolCalls: [] };
+    if (!result || typeof result !== "object") result = { content: "", reasoning: "", toolCalls: [] };
     const turnInput = Number(result.usage?.promptTokens) || 0;
     const turnOutput = Number(result.usage?.completionTokens) || 0;
     totalInputTokens += turnInput;
@@ -170,6 +172,7 @@ async function runLoop(host, userText, options) {
       type: "model_done",
       stopReason: finishReason,
       content: result.content || "",
+      reasoning: result.reasoning || "",
     });
 
     if (finalTurn && (result.toolCalls?.length || !result.content?.trim())) {
@@ -200,20 +203,20 @@ async function runLoop(host, userText, options) {
       const reason = finalTurn ? 'max_turns' : 'stop';
       onEvent({ type: "ended", reason });
       checkpoint({ done: true });
-      return { reason, text: result.content || lastText, history, turnsUsed, metrics: buildMetrics(reason), traceSteps };
+      return { reason, text: result.content || lastText, reasoning: result.reasoning || "", history, turnsUsed, metrics: buildMetrics(reason), traceSteps };
     }
 
     checkpoint();
     const aborted = await appendToolResults(host, calls, history, signal, onEvent, checkpoint, sessionId, traceSteps);
     if (aborted) {
       onEvent({ type: "abort" });
-      return { reason: "abort", text: lastText, history, turnsUsed, metrics: buildMetrics("abort"), traceSteps };
+      return { reason: "abort", text: lastText, reasoning: result?.reasoning || "", history, turnsUsed, metrics: buildMetrics("abort"), traceSteps };
     }
   }
 
   onEvent({ type: "ended", reason: "max_turns" });
   checkpoint({ done: true });
-  return { reason: "max_turns", text: lastText, history, turnsUsed, metrics: buildMetrics("max_turns"), traceSteps };
+  return { reason: "max_turns", text: lastText, reasoning: "", history, turnsUsed, metrics: buildMetrics("max_turns"), traceSteps };
 }
 
 function withoutToolCalls(messages) {

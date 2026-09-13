@@ -29,7 +29,7 @@ import {
   getClippingsForUrl,
   deleteClippingRecord,
 } from "../lib/clippings.js";
-import { initMarkdown, formatAnswer, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
+import { initMarkdown, formatAnswer, splitThinking, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createAgentLoop } from "../lib/agent/loop.js";
 import { createAgentTools, resolveActiveTools, checkHitlRequirement } from "../lib/agent/tools.js";
 import { deleteSessionArtifacts } from "../lib/agent/artifact-store.js";
@@ -906,19 +906,103 @@ function renderMessages() {
           .join(" → ");
         wrap.appendChild(tr);
       }
-      const body = document.createElement("div");
-      body.className = "body";
       const isLast = msg === state.messages[state.messages.length - 1];
       const streamingThis = state.busy && isLast && !msg.metrics;
-      fillBotBody(body, msg.text || (state.busy ? "…" : ""), { mermaid: !streamingThis && !msg.error });
-      wrap.appendChild(body);
-      if (msg.metrics || (!streamingThis && msg.text && !msg.error && msg.text !== "…")) {
+      const { thinking, answer, isStreamingThinking } = splitThinking(msg.text, msg.thinking);
+      const isThinkingNow = streamingThis && (isStreamingThinking || (!answer && Boolean(thinking)));
+
+      if (thinking) {
+        wrap.appendChild(createThinkingBox(thinking, { isStreaming: isThinkingNow }));
+      }
+
+      const displayText = answer || (isThinkingNow ? "" : (msg.text || (state.busy ? "…" : "")));
+      if (displayText) {
+        const body = document.createElement("div");
+        body.className = "body";
+        fillBotBody(body, displayText, { mermaid: !streamingThis && !msg.error });
+        wrap.appendChild(body);
+      }
+      if (msg.metrics || (!streamingThis && displayText && !msg.error && displayText !== "…")) {
         wrap.appendChild(createMessageFooter(msg));
       }
     }
     root.appendChild(wrap);
   }
   root.scrollTop = root.scrollHeight;
+}
+
+function createThinkingBox(thinking, { isStreaming = false } = {}) {
+  const details = document.createElement("details");
+  details.className = "thinking-box";
+  if (isStreaming) {
+    details.open = true;
+    details.dataset.autoOpen = "true";
+  }
+
+  const summary = document.createElement("summary");
+  summary.className = "thinking-summary";
+
+  const chevronSvg = `<svg class="thinking-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg>`;
+
+  summary.innerHTML = `
+    ${chevronSvg}
+    <span class="thinking-title">
+      <span class="thinking-icon">💭</span>
+      <span class="thinking-label">${isStreaming ? "正在思考" : "思考过程"}</span>
+      ${isStreaming ? '<span class="thinking-pulse"></span>' : ""}
+    </span>
+    <span class="thinking-badge">${isStreaming ? "思考中" : "点击展开/收起"}</span>
+  `;
+
+  const content = document.createElement("div");
+  content.className = "thinking-content";
+  content.textContent = thinking;
+
+  details.addEventListener("toggle", () => {
+    if (!details.open) {
+      delete details.dataset.autoOpen;
+    }
+  });
+
+  details.appendChild(summary);
+  details.appendChild(content);
+  return details;
+}
+
+function updateThinkingBox(details, thinking, { isStreaming = false } = {}) {
+  const content = details.querySelector(".thinking-content");
+  if (content && content.textContent !== thinking) {
+    content.textContent = thinking;
+    if (isStreaming && details.open) {
+      content.scrollTop = content.scrollHeight;
+    }
+  }
+
+  const label = details.querySelector(".thinking-label");
+  if (label) {
+    label.textContent = isStreaming ? "正在思考" : "思考过程";
+  }
+
+  const pulse = details.querySelector(".thinking-pulse");
+  if (isStreaming && !pulse) {
+    const p = document.createElement("span");
+    p.className = "thinking-pulse";
+    details.querySelector(".thinking-title")?.appendChild(p);
+  } else if (!isStreaming && pulse) {
+    pulse.remove();
+  }
+
+  const badge = details.querySelector(".thinking-badge");
+  if (badge) {
+    badge.textContent = isStreaming ? "思考中" : "点击展开/收起";
+  }
+
+  if (isStreaming && !details.open && details.dataset.autoOpen === "true") {
+    details.open = true;
+  } else if (!isStreaming && details.dataset.autoOpen === "true") {
+    details.open = false;
+    delete details.dataset.autoOpen;
+  }
 }
 
 function fillBotBody(body, text, { mermaid = false } = {}) {
@@ -1036,8 +1120,11 @@ function applySession(session) {
   state.messages = (session.messages || []).map((m) => ({
     role: m.role,
     text: m.text || "",
+    thinking: m.thinking || "",
     error: m.error,
     trace: m.trace,
+    metrics: m.metrics,
+    traceLog: m.traceLog,
     image: null,
   }));
   state.image = null;
@@ -2521,8 +2608,39 @@ function paintBot(botMsg) {
       .map((t) => (t.ok === false ? `${t.name} 失败` : t.name))
       .join(" → ");
   }
-  const body = wrap.querySelector(".body");
-  if (body) fillBotBody(body, botMsg.text || "…", { mermaid: false });
+
+  const { thinking, answer, isStreamingThinking } = splitThinking(botMsg.text, botMsg.thinking);
+  const isThinkingNow = state.busy && (isStreamingThinking || (!answer && Boolean(thinking)));
+
+  let thinkingEl = wrap.querySelector(".thinking-box");
+  if (thinking) {
+    if (!thinkingEl) {
+      thinkingEl = createThinkingBox(thinking, { isStreaming: isThinkingNow });
+      const anchor = wrap.querySelector(".trace") || wrap.querySelector(".who");
+      anchor ? anchor.after(thinkingEl) : wrap.prepend(thinkingEl);
+    } else {
+      updateThinkingBox(thinkingEl, thinking, { isStreaming: isThinkingNow });
+    }
+  } else if (thinkingEl) {
+    thinkingEl.remove();
+    thinkingEl = null;
+  }
+
+  let body = wrap.querySelector(".body");
+  const displayText = answer || (isThinkingNow ? "" : (botMsg.text || "…"));
+  if (displayText) {
+    if (!body) {
+      body = document.createElement("div");
+      body.className = "body";
+      const afterEl = thinkingEl || wrap.querySelector(".trace") || wrap.querySelector(".who");
+      if (afterEl) afterEl.after(body);
+      else wrap.appendChild(body);
+    }
+    fillBotBody(body, displayText, { mermaid: false });
+  } else if (body && !displayText) {
+    body.innerHTML = "";
+  }
+
   if (botMsg.metrics) {
     const existing = wrap.querySelector(".msg-footer");
     if (existing) existing.remove();
@@ -2649,7 +2767,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         });
       },
       model: {
-        async runTurn({ messages, tools: turnTools, signal, onTextDelta }) {
+        async runTurn({ messages, tools: turnTools, signal, onTextDelta, onReasoningDelta }) {
           const visionReady = Boolean(state.image) && isModelReady(resolveModel(state.settings, "multimodal"));
           const active = visionReady ? resolveModel(state.settings, "multimodal") : model;
           let msgs = messages;
@@ -2659,7 +2777,21 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
               { role: "user", content: multimodalUserContent("当前标签页截图：", state.image) },
             ];
           }
-          return streamTurn(active, { messages: msgs, tools: turnTools, signal }, onTextDelta);
+          return streamTurn(active, {
+            messages: msgs,
+            tools: turnTools,
+            signal,
+            onReasoningDelta: (delta) => {
+              if (!botMsg.thinking) botMsg.thinking = "";
+              botMsg.thinking += delta;
+              try {
+                paintBot(botMsg);
+              } catch (err) {
+                console.warn("[pagelens] paintBot", err);
+              }
+              onReasoningDelta?.(delta);
+            },
+          }, onTextDelta);
         },
       },
     });
@@ -2703,6 +2835,15 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       turnsUsed: turnsUsed || 0,
       lastText: lastText || "",
       signal: state.abort.signal,
+      onReasoningDelta: (delta) => {
+        if (!botMsg.thinking) botMsg.thinking = "";
+        botMsg.thinking += delta;
+        try {
+          paintBot(botMsg);
+        } catch (err) {
+          console.warn("[pagelens] paintBot", err);
+        }
+      },
       onTextDelta: (delta) => {
         if (isPlaceholderBotText(botMsg.text)) botMsg.text = "";
         botMsg.text += delta;
@@ -2729,6 +2870,9 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             paintBot(botMsg);
           }
           if (ev.type === "turn_prepared") {
+            if (botMsg.thinking && !botMsg.thinking.endsWith("\n\n")) {
+              botMsg.thinking += "\n\n";
+            }
             if (!isPlaceholderBotText(botMsg.text)) {
               botMsg.trace.push({ name: "思考", ok: true });
               botMsg.text = "";
@@ -2750,9 +2894,15 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     });
     if (!botMsg.error) {
       if (result?.text) botMsg.text = result.text;
+      if (result?.reasoning && !botMsg.thinking) botMsg.thinking = result.reasoning;
+      const parsed = splitThinking(botMsg.text, botMsg.thinking);
+      if (parsed.thinking) botMsg.thinking = parsed.thinking;
+      if (parsed.answer) botMsg.text = parsed.answer;
       else if (isPlaceholderBotText(botMsg.text)) {
-        botMsg.text = result?.reason === "abort" ? "已停止。" : "模型未返回正文，请重试或检查模型服务。";
-        botMsg.error = result?.reason !== "abort";
+        botMsg.text = result?.reason === "abort"
+          ? "已停止。"
+          : (botMsg.thinking ? "（已完成思考，未输出进一步正文）" : "模型未返回正文，请重试或检查模型服务。");
+        botMsg.error = result?.reason !== "abort" && !botMsg.thinking;
       }
       if (result?.metrics) {
         botMsg.metrics = result.metrics;
@@ -2764,6 +2914,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           durationMs: result.metrics.durationMs,
           metrics: result.metrics,
           userPrompt: userText || "",
+          thinking: botMsg.thinking || "",
           botResponse: botMsg.text || "",
           trace: botMsg.trace ? [...botMsg.trace] : [],
           steps: result.traceSteps || [],
@@ -2864,7 +3015,7 @@ async function sendPrompt(userText, options = {}) {
 
   const image = options.image || state.image;
   state.messages.push({ role: "user", text: text || userText, image: image || null });
-  const botMsg = { role: "bot", text: "…", trace: [] };
+  const botMsg = { role: "bot", text: "…", trace: [], thinking: "" };
   state.messages.push(botMsg);
   try {
     renderMessages();

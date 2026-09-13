@@ -111,9 +111,54 @@ export function formatAnswer(text) {
   });
   return purify.sanitize(html, {
     USE_PROFILES: { html: true },
-    ADD_TAGS: ["button"],
-    ADD_ATTR: ["class", "data-t", "data-q", "type", "target", "rel"],
+    ADD_TAGS: ["button", "details", "summary"],
+    ADD_ATTR: ["class", "data-t", "data-q", "type", "target", "rel", "open"],
   });
+}
+
+/**
+ * Splits model response text and explicit reasoning into thinking content and answer text.
+ * Supports:
+ * 1. Closed `<think>...</think>` or `<thought>...</thought>` tags.
+ * 2. Unclosed `<think>...` or `<thought>...` tags during streaming.
+ * 3. Explicit reasoning passed from API delta (reasoning_content).
+ *
+ * @param {string} rawText
+ * @param {string} [explicitThinking=""]
+ * @returns {{ thinking: string, answer: string, isStreamingThinking: boolean }}
+ */
+export function splitThinking(rawText = "", explicitThinking = "") {
+  let text = String(rawText || "");
+  const thinkingParts = [];
+  if (explicitThinking && typeof explicitThinking === "string" && explicitThinking.trim()) {
+    thinkingParts.push(explicitThinking.trim());
+  }
+
+  let isStreamingThinking = false;
+
+  // 1. Check for complete <think>...</think> or <thought>...</thought> blocks
+  const closedTagRe = /<(think|thought)>([\s\S]*?)<\/\1>/gi;
+  let match;
+  while ((match = closedTagRe.exec(text)) !== null) {
+    if (match[2].trim()) thinkingParts.push(match[2].trim());
+  }
+  text = text.replace(closedTagRe, "").trim();
+
+  // 2. Check for unclosed <think> or <thought> (in-progress streaming)
+  const openTagMatch = text.match(/<(think|thought)>([\s\S]*)$/i);
+  if (openTagMatch) {
+    isStreamingThinking = true;
+    const tagContent = openTagMatch[2];
+    if (tagContent.trim()) thinkingParts.push(tagContent.trim());
+    text = text.slice(0, openTagMatch.index).trim();
+  }
+
+  const thinking = thinkingParts.join("\n\n").trim();
+  return {
+    thinking,
+    answer: text,
+    isStreamingThinking,
+  };
 }
 
 function autolinkText(root) {

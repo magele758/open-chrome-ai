@@ -37,12 +37,31 @@ export function normalizeContent(raw) {
   return "";
 }
 
+export function normalizeReasoning(raw) {
+  if (raw == null) return "";
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) {
+    return raw.map((part) => {
+      if (typeof part === "string") return part;
+      if (!part || typeof part !== "object") return "";
+      if (/thinking|thought|reasoning/i.test(String(part.type || ""))) {
+        return part.thinking || part.thought || part.reasoning || (typeof part.text === "string" ? part.text : "");
+      }
+      return "";
+    }).join("");
+  }
+  if (typeof raw === "object") {
+    return raw.thinking || raw.thought || raw.reasoning || (typeof raw.text === "string" ? raw.text : "");
+  }
+  return "";
+}
+
 export function messageText(json) {
   const choice = json?.choices?.[0] || {};
   const msg = choice.message || {};
   const primary = normalizeContent(msg.content ?? choice.delta?.content ?? choice.text ?? "");
   if (primary.trim()) return primary.trim();
-  return normalizeContent(
+  return normalizeReasoning(
     msg.reasoning_content ?? choice.delta?.reasoning_content ?? msg.reasoning ?? "",
   ).trim();
 }
@@ -113,9 +132,11 @@ function parseSseTurn(line) {
     } : null;
     return {
       content: normalizeContent(choice.delta?.content ?? choice.message?.content ?? choice.text ?? ""),
-      reasoning: normalizeContent(
+      reasoning: normalizeReasoning(
         choice.delta?.reasoning_content ?? choice.message?.reasoning_content
-          ?? choice.delta?.reasoning ?? choice.message?.reasoning ?? "",
+          ?? choice.delta?.reasoning ?? choice.message?.reasoning
+          ?? (Array.isArray(choice.delta?.content) ? choice.delta.content : null)
+          ?? ""
       ),
       toolCalls: Array.isArray(choice.delta?.tool_calls)
         ? choice.delta.tool_calls
@@ -353,6 +374,7 @@ export async function streamTurn(model, input, onTextDelta) {
   let finishReason = "";
   let sawDone = false;
   let turnUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  const onReasoning = input?.onReasoningDelta;
 
   const consumeEvent = (ev) => {
     if (!ev) return false;
@@ -360,14 +382,18 @@ export async function streamTurn(model, input, onTextDelta) {
       sawDone = true;
       return true;
     }
+    if (ev.reasoning) {
+      reasoning += ev.reasoning;
+      if (onReasoning) {
+        onReasoning(ev.reasoning);
+      } else if (!ev.content) {
+        onTextDelta?.(ev.reasoning);
+      }
+    }
     if (ev.content) {
       content += ev.content;
       onTextDelta?.(ev.content);
-    } else if (ev.reasoning) {
-      // Same as streamChat: reasoning-only chunks must paint as they arrive.
-      onTextDelta?.(ev.reasoning);
     }
-    if (ev.reasoning) reasoning += ev.reasoning;
     if (ev.toolCalls?.length) mergeToolCallDeltas(toolBucket, ev.toolCalls);
     if (ev.finishReason) finishReason = ev.finishReason;
     if (ev.usage) {
@@ -388,7 +414,7 @@ export async function streamTurn(model, input, onTextDelta) {
       turnUsage.promptTokens = estimateMessagesTokens(input.messages);
     }
     if (!turnUsage.completionTokens) {
-      let outTokens = estimateTokens(content || reasoning || "");
+      let outTokens = estimateTokens(content) + estimateTokens(reasoning);
       for (const tc of toolCalls) {
         outTokens += estimateTokens(tc.name + (tc.arguments || ""));
       }
@@ -397,14 +423,21 @@ export async function streamTurn(model, input, onTextDelta) {
     if (!turnUsage.totalTokens) {
       turnUsage.totalTokens = turnUsage.promptTokens + turnUsage.completionTokens;
     }
-    return { content, toolCalls, finishReason, usage: turnUsage };
+    return { content, reasoning, toolCalls, finishReason, usage: turnUsage };
   };
 
   if (!response.body) {
     const json = await response.json();
     const choice = json.choices?.[0] || {};
     content = messageText(json);
+    const nonStreamReasoning = normalizeReasoning(
+      choice.message?.reasoning_content ?? choice.delta?.reasoning_content
+        ?? choice.message?.reasoning ?? choice.delta?.reasoning
+        ?? (Array.isArray(choice.message?.content) ? choice.message.content : null)
+        ?? ""
+    );
     if (content) onTextDelta?.(content);
+    if (nonStreamReasoning && onReasoning) onReasoning(nonStreamReasoning);
     const calls = (choice.message?.tool_calls || []).map((c) => ({
       id: c.id,
       name: c.function?.name,
@@ -417,12 +450,13 @@ export async function streamTurn(model, input, onTextDelta) {
     } : null;
     const finalUsage = usage || {
       promptTokens: estimateMessagesTokens(input.messages),
-      completionTokens: estimateTokens(content),
+      completionTokens: estimateTokens(content) + estimateTokens(nonStreamReasoning),
       totalTokens: 0,
     };
     if (!finalUsage.totalTokens) finalUsage.totalTokens = finalUsage.promptTokens + finalUsage.completionTokens;
     return {
       content,
+      reasoning: nonStreamReasoning,
       toolCalls: calls,
       finishReason: choice.finish_reason || (calls.length ? "tool_calls" : "stop"),
       usage: finalUsage,
@@ -456,9 +490,16 @@ export async function streamTurn(model, input, onTextDelta) {
   if (empty) {
     const json = parseCompletionJson(rawAll + decoder.decode());
     if (json) {
-      content = messageText(json);
-      if (content) onTextDelta?.(content);
       const choice = json.choices?.[0] || {};
+      content = messageText(json);
+      const fallbackReasoning = normalizeReasoning(
+        choice.message?.reasoning_content ?? choice.delta?.reasoning_content
+          ?? choice.message?.reasoning ?? choice.delta?.reasoning
+          ?? (Array.isArray(choice.message?.content) ? choice.message.content : null)
+          ?? ""
+      );
+      if (content) onTextDelta?.(content);
+      if (fallbackReasoning && onReasoning) onReasoning(fallbackReasoning);
       const calls = (choice.message?.tool_calls || []).map((c) => ({
         id: c.id,
         name: c.function?.name,
@@ -472,12 +513,13 @@ export async function streamTurn(model, input, onTextDelta) {
         totalTokens: json.usage.total_tokens ?? 0,
       } : {
         promptTokens: estimateMessagesTokens(input.messages),
-        completionTokens: estimateTokens(content),
+        completionTokens: estimateTokens(content) + estimateTokens(fallbackReasoning),
         totalTokens: 0,
       };
       if (!usage.totalTokens) usage.totalTokens = usage.promptTokens + usage.completionTokens;
       return {
         content,
+        reasoning: fallbackReasoning || reasoning,
         toolCalls: calls,
         finishReason: choice.finish_reason || (calls.length ? "tool_calls" : "stop"),
         usage,

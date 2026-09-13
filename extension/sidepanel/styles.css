@@ -307,6 +307,95 @@ button { cursor: pointer; }
   margin: 0 0 6px;
   line-height: 1.4;
 }
+/* Collapsible Thinking Box */
+.msg.bot .thinking-box {
+  margin: 4px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #faf9f6;
+  overflow: hidden;
+  font-size: 12px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.msg.bot .thinking-box[open] {
+  background: #fcfbf9;
+  border-color: #d8d2c8;
+}
+.msg.bot .thinking-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--muted);
+  list-style: none;
+  transition: color 0.15s, background 0.15s;
+}
+.msg.bot .thinking-summary::-webkit-details-marker,
+.msg.bot .thinking-summary::marker {
+  display: none;
+}
+.msg.bot .thinking-summary:hover {
+  color: var(--ink);
+  background: rgba(0, 0, 0, 0.025);
+}
+.msg.bot .thinking-chevron {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+  color: var(--muted);
+  stroke: currentColor;
+}
+.msg.bot .thinking-box[open] .thinking-chevron {
+  transform: rotate(90deg);
+}
+.msg.bot .thinking-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.msg.bot .thinking-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+.msg.bot .thinking-label {
+  line-height: 1;
+}
+.msg.bot .thinking-pulse {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  animation: thinking-dot-pulse 1.2s infinite ease-in-out;
+  margin-left: 2px;
+}
+@keyframes thinking-dot-pulse {
+  0%, 100% { transform: scale(0.8); opacity: 0.35; }
+  50% { transform: scale(1.3); opacity: 1; }
+}
+.msg.bot .thinking-badge {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: auto;
+  opacity: 0.8;
+}
+.msg.bot .thinking-content {
+  padding: 8px 11px 9px;
+  border-top: 1px dashed var(--line);
+  color: #57534e;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow-y: auto;
+}
 .msg.bot .body { white-space: normal; word-break: break-word; }
 .msg.bot .body p { margin: 0 0 0.55em; }
 .msg.bot .body p:last-child { margin-bottom: 0; }
