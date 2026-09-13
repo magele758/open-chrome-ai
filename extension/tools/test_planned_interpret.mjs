@@ -186,3 +186,39 @@ for (const race of ['ended-during-resume', 'error-during-background-read']) {
  assert.equal(failures,1,'authentication failure must not expand into per-cue requests');
  console.log('PASS merged-speaker recovery: no dropped cues, preserved voices/timestamps/context, bounded requests and cache reuse');
 }
+
+// Subtitle-first mode: when video subtitles exist, ASR is not needed and transcription is skipped.
+{
+  const subSource = {
+    url: 'https://www.youtube.com/watch?v=mock',
+    duration: 30,
+    subtitles: [
+      { id: 'sub:0', start: 1.0, end: 4.5, src: 'Hello and welcome to this speech.', speaker: 'spk:0' },
+      { id: 'sub:1', start: 5.0, end: 9.0, src: 'Today we discuss artificial intelligence.', speaker: 'spk:0' }
+    ],
+    analyze: async () => ({ fingerprint: 'sub-fp', spans: [{ start: 0, end: 30, kind: 'speech', speaker: 'spk:0' }] }),
+    slice: async () => ({ blob: new Blob([new Uint8Array(16000)], { type: 'audio/wav' }) })
+  };
+  const noAsrSettings = {
+    ...settings,
+    asr: { baseUrl: '', model: '' }
+  };
+  let transcribed = false;
+  const result = await prepareDubPlan({
+    source: subSource,
+    settings: noAsrSettings,
+    signal: new AbortController().signal,
+    transcribe: async () => { transcribed = true; return []; },
+    chat: async (_m, { messages }) => {
+      const input = JSON.parse(messages[1].content);
+      if (Array.isArray(input)) return '简要笔记';
+      return JSON.stringify({ lines: (input.current || []).map(c => ({ ids: [c.id], zh: '测试译文' })) });
+    }
+  });
+  assert.equal(transcribed, false, 'ASR transcription must be skipped when subtitles exist');
+  assert.equal(result.lines.length, 2);
+  assert.equal(result.cues.length, 2);
+  assert.equal(result.cues[0].src, 'Hello and welcome to this speech.');
+  console.log('PASS subtitle-first: native subtitles skip ASR and generate dub plan directly');
+}
+

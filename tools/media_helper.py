@@ -30,6 +30,15 @@ CACHE_DIR = Path.home() / '.cache' / SERVICE
 CACHE_MAX_AGE_SECONDS = 7 * 86400
 
 
+def log_event(data):
+    try:
+        msg = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+        sys.stdout.write(msg + '\n')
+        sys.stdout.flush()
+    except (BrokenPipeError, OSError):
+        pass
+
+
 def conda_prefixes():
     prefixes = []
     if os.environ.get('CONDA_PREFIX'):
@@ -163,8 +172,8 @@ def run(job, args):
             reason = 'YouTube JavaScript 解析失败。请更新 yt-dlp[default]，并安装 Node.js 或 Deno。'
         else:
             reason = '媒体提取失败：链接已失效或格式不受支持。请更新 yt-dlp 后重试。'
-        print(json.dumps({'event': 'media.command-error', 'tool': Path(args[0]).name,
-                          'exit': proc.returncode, 'reason': reason}, ensure_ascii=False), flush=True)
+        log_event({'event': 'media.command-error', 'tool': Path(args[0]).name,
+                   'exit': proc.returncode, 'reason': reason})
         raise RuntimeError(reason)
     return out
 
@@ -215,6 +224,116 @@ def clean_cache():
         pass
 
 
+TRAILING_CONNECTORS = {
+    'from', 'in', 'the', 'of', 'to', 'and', 'or', 'that', 'with', 'for', 'at', 'on', 'a', 'an',
+    'is', 'are', 'was', 'were', 'by', 'as', 'be', 'but', 'so', 'if', 'when', 'into', 'about',
+    'uh', 'um', 'finest', 'my', 'your', 'their', 'our', 'its', 'this', 'these', 'those'
+}
+
+
+def parse_json3_cues(data):
+    words = []
+    for ev in data.get('events', []):
+        t_start = ev.get('tStartMs', 0)
+        dur = ev.get('dDurationMs', 0)
+        segs = ev.get('segs', [])
+        if not segs:
+            continue
+        for seg in segs:
+            text = seg.get('utf8', '')
+            if not text or text == '\n':
+                continue
+            offset = seg.get('tOffsetMs', 0)
+            word_start = t_start + offset
+            words.append({
+                'text': text,
+                'start_ms': word_start,
+                'end_ms': word_start + seg.get('dDurationMs', max(200, dur // max(1, len(segs))))
+            })
+    if not words:
+        return []
+    words.sort(key=lambda x: x['start_ms'])
+
+    import re
+    bracket_re = re.compile(r'^[\[\(].*?[\]\)]$')
+    clean_words = [w for w in words if not bracket_re.match(w['text'].strip())]
+
+    def join_words(w_list):
+        res = ''
+        for w in w_list:
+            if not res or w.startswith(' ') or res.endswith(' '):
+                res += w
+            elif re.match(r'^[.,!?;:\'"]', w):
+                res += w
+            else:
+                res += ' ' + w
+        return res.strip()
+
+    cues = []
+    curr_words = []
+    curr_start = 0
+
+    for i, w in enumerate(clean_words):
+        if not curr_words:
+            curr_start = w['start_ms']
+        curr_words.append(w['text'])
+        clean_text = join_words(curr_words)
+
+        next_gap = 0
+        if i + 1 < len(clean_words):
+            next_gap = clean_words[i + 1]['start_ms'] - w['end_ms']
+
+        last_word = re.sub(r'[^a-zA-Z]', '', clean_text.split()[-1].lower()) if clean_text.split() else ''
+        is_connector = last_word in TRAILING_CONNECTORS
+        has_terminal = bool(re.search(r'[.?!]\s*$', clean_text))
+        is_long_pause = next_gap > 1100 and not is_connector
+        is_max_len = len(curr_words) >= 14 and not is_connector
+        is_last = (i == len(clean_words) - 1)
+        too_short = len(curr_words) < 4 and not has_terminal and not is_last
+
+        if (has_terminal or is_long_pause or is_max_len or is_last) and not too_short and clean_text:
+            end_ms = clean_words[i + 1]['start_ms'] if i + 1 < len(clean_words) else w['end_ms']
+            if end_ms - curr_start < 1000:
+                end_ms = curr_start + 1000
+            start_s = round(curr_start / 1000.0, 3)
+            end_s = round(end_ms / 1000.0, 3)
+            cues.append({
+                'id': f'sub:{len(cues)}',
+                'start': start_s,
+                'end': end_s,
+                'src': clean_text,
+                'speaker': 'spk:0',
+                'overlap': False,
+                'timingQuality': 'segment'
+            })
+            curr_words = []
+    return cues
+
+
+def fetch_subtitles(job, target, info, root):
+    try:
+        sub_tracks = info.get('subtitles', {}).get('en') or info.get('automatic_captions', {}).get('en')
+        if sub_tracks:
+            for track in sub_tracks:
+                if track.get('ext') == 'json3' and track.get('url'):
+                    req = urllib.request.Request(track['url'], headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=5) as r:
+                        json_data = json.loads(r.read().decode('utf-8'))
+                        return parse_json3_cues(json_data)
+        base = downloader_args()
+        sub_prefix = str(root / 'sub.%(ext)s')
+        run(job, base + ['--skip-download', '--write-auto-subs', '--write-subs',
+                         '--sub-langs', 'en.*,en', '--sub-format', 'json3',
+                         '-o', sub_prefix, '--', target])
+        candidates = list(root.glob('sub.*.json3'))
+        if candidates:
+            json_data = json.loads(candidates[0].read_text(encoding='utf-8'))
+            return parse_json3_cues(json_data)
+    except Exception:
+        pass
+    return []
+
+
 def extract(job, url, media_url):
     try:
         target = media_url or url
@@ -228,6 +347,7 @@ def extract(job, url, media_url):
                 meta = json.loads(meta_file.read_text(encoding='utf-8'))
                 cached_parts = meta.get('parts', [])
                 cached_duration = float(meta.get('duration', 0))
+                cached_subtitles = meta.get('subtitles')
                 if (
                     cached_duration > 0
                     and cached_parts
@@ -241,8 +361,8 @@ def extract(job, url, media_url):
                             os.link(src_part, dst_part)
                         except OSError:
                             shutil.copyfile(src_part, dst_part)
-                    job.update(status='ready', duration=cached_duration, parts=cached_parts)
-                    print(json.dumps({'event': 'media.cache-hit', 'target': target, 'duration': cached_duration}, ensure_ascii=False), flush=True)
+                    job.update(status='ready', duration=cached_duration, parts=cached_parts, subtitles=cached_subtitles)
+                    log_event({'event': 'media.cache-hit', 'target': target, 'duration': cached_duration})
                     return
             except Exception:
                 shutil.rmtree(target_cache_dir, ignore_errors=True)
@@ -258,6 +378,12 @@ def extract(job, url, media_url):
         expected = float(info.get('duration') or 0)
         if job['cancel'].is_set():
             return
+
+        # Fast subtitle extraction
+        subtitles = fetch_subtitles(job, target, info, root)
+        if subtitles:
+            job['subtitles'] = subtitles
+            log_event({'event': 'media.subtitles-ready', 'target': target, 'count': len(subtitles)})
         job['status'] = 'downloading'
         run(job, base + ['-f', 'bestaudio/best', '--no-part', '-o', str(root / 'source.%(ext)s'), '--', target])
         files = list(root.glob('source.*'))
@@ -289,12 +415,13 @@ def extract(job, url, media_url):
                 'parts': parts,
                 'part_seconds': PART_SECONDS,
                 'cached_at': time.time(),
+                'subtitles': subtitles,
             }
             (target_cache_dir / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
         except Exception:
             pass
 
-        job.update(status='ready', duration=actual, parts=parts)
+        job.update(status='ready', duration=actual, parts=parts, subtitles=subtitles)
     except Exception as exc:
         job.update(status='error', error=str(exc))
     finally:
@@ -349,14 +476,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type, Access-Control-Request-Private-Network')
 
     def reply(self, code, data, mime='application/json'):
-        body = json.dumps(data, ensure_ascii=False).encode() if mime == 'application/json' else data
-        self.send_response(code)
-        self.cors_headers()
-        self.send_header('Content-Type', mime)
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Cache-Control', 'no-store')
-        self.end_headers()
         try:
+            body = json.dumps(data, ensure_ascii=False).encode() if mime == 'application/json' else data
+            self.send_response(code)
+            self.cors_headers()
+            self.send_header('Content-Type', mime)
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -415,8 +542,10 @@ class Handler(BaseHTTPRequestHandler):
         job['created'] = time.time()
         if len(pieces) == 3 and pieces[2] == 'analysis':
             return self.reply(200, {'status': job.get('analysisStatus', 'missing'), 'error': job.get('analysisError'), 'result': job.get('analysis')})
+        if len(pieces) == 3 and pieces[2] == 'subtitles':
+            return self.reply(200, {'subtitles': job.get('subtitles') or []})
         if len(pieces) == 2:
-            return self.reply(200, {k: job[k] for k in ('id', 'status', 'error', 'duration', 'parts') if k in job})
+            return self.reply(200, {k: job[k] for k in ('id', 'status', 'error', 'duration', 'parts', 'subtitles') if k in job})
         if len(pieces) == 4 and pieces[2] in ('audio', 'background') and pieces[3].isdigit() and job['status'] == 'ready':
             index = int(pieces[3])
             if index < len(job.get('parts', [])):
@@ -442,7 +571,7 @@ def reap():
     while True:
         time.sleep(60)
         with LOCK:
-            expired = [key for key, job in JOBS.items() if time.time() - job['created'] > 3600]
+            expired = [key for key, job in JOBS.items() if time.time() - job['created'] > 14400]
             for key in expired:
                 cancel(JOBS.pop(key))
         if time.time() - last_cache_clean > 3600:
@@ -455,13 +584,13 @@ def serve(port):
     PORT = int(port)
     clean_cache()
     threading.Thread(target=reap, daemon=True).start()
-    print(f'PageLens media helper: http://127.0.0.1:{PORT}', flush=True)
+    log_event(f'PageLens media helper: http://127.0.0.1:{PORT}')
     try:
         ThreadingHTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
     except OSError as exc:
         busy = getattr(exc, 'errno', None) in (errno.EADDRINUSE, 48)
         if busy and probe(PORT):
-            print(f'already http://127.0.0.1:{PORT}', flush=True)
+            log_event(f'already http://127.0.0.1:{PORT}')
             return
         if busy:
             raise SystemExit(f'端口 {PORT} 已被其他程序占用，不是 PageLens 媒体服务。') from exc

@@ -22,34 +22,47 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
   let cues = await cacheGet(recognitionKey);
   if (!cues) {
     const windows = recognitionWindows(spans);
-    const results = new Array(windows.length);
-    let next = 0;
-    await Promise.all(Array.from({ length: Math.min(2, windows.length) }, async () => {
-      while (next < windows.length) {
-        const i = next++, window = windows[i];
-        signal.throwIfAborted();
-        status(`正在转写完整原稿 ${i + 1}/${windows.length}，画面保持暂停…`);
-        const key = await dubKey({ recognitionKey, start: window.start, end: window.end });
-        let segments = await cacheGet(key);
-        if (!segments) {
-          const slice = await source.slice(window.start, window.end - window.start);
-          if (!slice) throw new Error('原音轨切片缺失');
-          segments = await transcribe(settings.asr, slice, { signal });
+    if (source.subtitles?.length) {
+      cues = source.subtitles.map((c, n) => ({
+        id: c.id || `sub:${n}`,
+        start: Math.max(0, Number(c.start) || 0),
+        end: Math.max(Number(c.start) || 0, Math.min(source.duration, Number(c.end) || 0)),
+        src: stripTimeline(c.src || c.text || ''),
+        speaker: c.speaker || 'spk:0',
+        overlap: false,
+        timingQuality: 'segment'
+      })).filter(c => c.src && c.end > c.start);
+      await cacheSet(recognitionKey, cues);
+    } else {
+      const results = new Array(windows.length);
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(2, windows.length) }, async () => {
+        while (next < windows.length) {
+          const i = next++, window = windows[i];
           signal.throwIfAborted();
-          if (!segments.length && window.kind === 'speech') throw new Error(`检测到人声但未识别到文字：${window.start.toFixed(1)}–${window.end.toFixed(1)} 秒。请重试，已完成内容会保留。`);
-          await cacheSet(key, segments);
+          status(`正在转写完整原稿 ${i + 1}/${windows.length}，画面保持暂停…`);
+          const key = await dubKey({ recognitionKey, start: window.start, end: window.end });
+          let segments = await cacheGet(key);
+          if (!segments) {
+            const slice = await source.slice(window.start, window.end - window.start);
+            if (!slice) throw new Error('原音轨切片缺失');
+            segments = await transcribe(settings.asr, slice, { signal });
+            signal.throwIfAborted();
+            if (!segments.length && window.kind === 'speech') throw new Error(`检测到人声但未识别到文字：${window.start.toFixed(1)}–${window.end.toFixed(1)} 秒。请重试，已完成内容会保留。`);
+            await cacheSet(key, segments);
+          }
+          results[i] = segments.map((s, n) => {
+            const span = window.end - window.start;
+            const start = window.start + Math.max(0, Math.min(span, Number(s.start) || 0));
+            const end = window.start + Math.max(0, Math.min(span, Number.isFinite(s.end) ? s.end : Number(segments[n + 1]?.start) || span));
+            return { id: `${i}:${n}`, start, end: Math.max(start, end), src: stripTimeline(s.text),
+              speaker: window.speaker || (s.speaker ? `asr:${i}:${s.speaker}` : `unassigned:${i}:${n}`), overlap: window.overlap, timingQuality: Number.isFinite(s.end) ? 'segment' : 'estimated' };
+          }).filter(c => c.src && c.end > c.start);
         }
-        results[i] = segments.map((s, n) => {
-          const span = window.end - window.start;
-          const start = window.start + Math.max(0, Math.min(span, Number(s.start) || 0));
-          const end = window.start + Math.max(0, Math.min(span, Number.isFinite(s.end) ? s.end : Number(segments[n + 1]?.start) || span));
-          return { id: `${i}:${n}`, start, end: Math.max(start, end), src: stripTimeline(s.text),
-            speaker: window.speaker || (s.speaker ? `asr:${i}:${s.speaker}` : `unassigned:${i}:${n}`), overlap: window.overlap, timingQuality: Number.isFinite(s.end) ? 'segment' : 'estimated' };
-        }).filter(c => c.src && c.end > c.start);
-      }
-    }));
-    cues = results.flat();
-    await cacheSet(recognitionKey, cues);
+      }));
+      cues = results.flat();
+      await cacheSet(recognitionKey, cues);
+    }
   }
   const model = resolveModel(settings, 'text');
   const translationKey = await dubKey({ recognitionKey, cues, model: modelIdentity(model), incrementalContext, version: 2 });
@@ -81,7 +94,13 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
     const key = await dubKey({ translationKey, batch });
     let translated = await cacheGet(key);
     if (!translated) {
-      const system = '将当前对话完整忠实翻译为自然的简体中文口播稿。上下文仅供理解，不能重复翻译。保留全部事实、数字、否定、条件、不确定性，不做摘要。每条原文id必须按顺序恰好出现一次。每条原文单独输出一条中文，ids数组只能含该条原文的一个id；禁止合并句段。speaker只是分段标识，不能根据内容推测它们是同一个人。每段中文不超过500字，覆盖原音频不超过30秒，不得合并间隔超过0.35秒的原文句段。返回JSON {"lines":[{"ids":["原文id"],"zh":"中文"}]}，只翻译current中的内容。';
+      const system = '你是一名专业视频演说同传与配音译者。将当前对话/演讲忠实改写为自然流畅、富有表现力的简体中文口播稿。' +
+        '核心要求：\n' +
+        '1. 口播化表达：遵循中文口语习惯，短句为主，生动地道，彻底去除生硬的字对字欧化翻译腔。\n' +
+        '2. 节奏与字数自适应：中文正常发音速度约为每秒 3.5 到 4 字。请参考每句原声的时长，将中文译文字数控制在合理区间内，确保后续配音节奏契合画面，不赶不拖。\n' +
+        '3. 忠实严谨：保留原意、逻辑、数字与事实，不做主观摘要或添油加醋。\n' +
+        '4. 格式约束：上下文仅供理解，不得重复翻译。每条原文id必须按顺序恰好出现一次，单独输出一条中文，ids数组只能含该条的一个id，禁止跨句合并。' +
+        '返回JSON {"lines":[{"ids":["原文id"],"zh":"中文口播稿"}]}，只翻译current中的内容。';
       const translateGroup = async (current, before, after) => {
         const groupKey = await dubKey({ translationKey, current, before, after, recovery: 1 });
         const saved = await cacheGet(groupKey);
@@ -126,7 +145,6 @@ export async function audioDuration(blob) {
 /** All expensive work is cached independently from playback and seeking. */
 export async function runPlannedInterpret(opts) {
   const { tabId, settings } = opts;
-  if (!isAsrReady(settings.asr)) throw new Error('请先配置语音识别。');
   const controller = new AbortController(), signal = controller.signal;
   const stop = () => controller.abort();
   opts.signal?.addEventListener('abort', stop, { once: true });
@@ -188,6 +206,9 @@ export async function runPlannedInterpret(opts) {
     const media = await video('media');
     source = await (opts.openSource || openInterpretSource)({ url: opts.sourceUrl, mediaUrl: /^https?:/.test(media?.src || '') ? media.src : undefined, signal, onProgress: p => status(p.hint) });
     if (media?.duration > 0 && Math.abs(source.duration - media.duration) > 3) throw new Error('音轨与播放器时长不一致');
+    const hasSubtitles = Boolean(source.subtitles?.length);
+    if (!hasSubtitles && !isAsrReady(settings.asr)) throw new Error('当前视频未检测到字幕，请先配置语音识别（ASR）。');
+    if (hasSubtitles) status('检测到视频字幕，正在使用字幕优先极速起播（免 ASR）…');
     const progressive = !['full', 'buffered'].includes(settings.tts?.preparationMode);
     const coverage = [];
     const coveredUntil = time => {
@@ -254,9 +275,11 @@ export async function runPlannedInterpret(opts) {
         const spans = plan.spans.length ? plan.spans.filter(s => s.end > start && s.start < end).map(s => ({ ...s, start: Math.max(s.start, start) - start, end: Math.min(s.end, end) - start }))
           : [{ start: 0, end: end - start, kind: 'unknown', speaker: null }];
         const context = lines.filter(l => l.end <= start).slice(-12).map(l => `${l.src} → ${l.zh}`).join('\n').slice(-6000);
-        status(`正在后台准备 ${Math.floor(start)}–${Math.ceil(end)} 秒的中文配音…`);
+        status(hasSubtitles ? `正在准备 ${Math.floor(start)}–${Math.ceil(end)} 秒的口播翻译与配音…` : `正在后台准备 ${Math.floor(start)}–${Math.ceil(end)} 秒的中文配音…`);
+        const partSubtitles = source.subtitles ? source.subtitles.filter(c => c.end > start && c.start < end) : null;
         const part = await prepareDubPlan({ source: {
           duration: end - start,
+          subtitles: partSubtitles ? partSubtitles.map(c => ({ ...c, start: Math.max(0, c.start - start), end: Math.min(end - start, c.end - start) })) : null,
           analyze: async () => ({ duration: end - start, fingerprint, spans }),
           slice: (offset, seconds) => source.slice(start + offset, seconds),
         }, settings, signal, status: () => {}, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat, incrementalContext: context });

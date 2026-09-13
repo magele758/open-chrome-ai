@@ -65,7 +65,7 @@ export async function openInterpretSource({ url, mediaUrl, signal, onProgress = 
     if (Math.abs(covered - job.duration) > 1) throw new Error('音轨不完整');
     const cache = new Map();
     return {
-      duration: job.duration, close,
+      duration: job.duration, close, subtitles: job.subtitles || null,
       async analyze() {
         await request(`/jobs/${id}/analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
         for (;;) {

@@ -25,6 +25,7 @@ export const ASR_PRESETS = [
 export const TTS_PRESETS = [
   { id: "off", name: "关闭", baseUrl: "" },
   { id: "index-tts", name: "Index-TTS 2.5（Gradio）", baseUrl: "http://127.0.0.1:7860" },
+  { id: "cosyvoice", name: "CosyVoice 跨语种音色克隆", baseUrl: "http://127.0.0.1:50000" },
   { id: "custom", name: "自定义 Gradio", baseUrl: "" },
 ];
 
