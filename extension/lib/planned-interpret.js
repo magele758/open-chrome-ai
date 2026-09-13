@@ -8,6 +8,8 @@ import { linesToCaptions, stripTimeline, voiceRefFromBlob } from './interpret.js
 import { withInterpretDeadline } from './interpret-semantic.js';
 import { validateAnalysis, recognitionWindows, translationBatches, validateDubTranslation, fitDub, continuousReadySeconds, voiceCandidates } from './dub-timeline.js';
 import { dubKey, readDubCache, writeDubCache, pruneDubCache } from './dub-cache.js';
+import { composeCompactDubTrack, composeFullDubTrack, saveFullMediaArchive } from './audio-composer.js';
+import { videoIdentity } from './library.js';
 
 const modelIdentity = model => ({ baseUrl: model?.baseUrl, model: model?.model, language: model?.language, preset: model?.preset });
 const parseJson = text => JSON.parse(String(text).replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^```(?:json)?\s*|\s*```$/g, '').trim());
@@ -467,6 +469,44 @@ export async function runPlannedInterpret(opts) {
     }
     await source?.close();
     opts.signal?.removeEventListener('abort', stop);
+    try {
+      const dubbedSegments = [];
+      for (const line of lines || []) {
+        const item = ready.get(line.id);
+        if (item?.blob) {
+          dubbedSegments.push({
+            id: line.id,
+            start: line.start,
+            end: item.slotEnd || line.end,
+            zh: line.zh,
+            src: line.src,
+            speaker: line.speaker,
+            blob: item.blob,
+          });
+        }
+      }
+      const videoId = opts.sourceUrl ? videoIdentity(opts.sourceUrl) : null;
+      if (videoId && dubbedSegments.length > 0) {
+        const compactAudio = await composeCompactDubTrack(dubbedSegments, { sampleRate: 24000, gapMs: 250 });
+        const fullAudio = await composeFullDubTrack(dubbedSegments, { totalDuration: source?.duration || 0 });
+        const archive = await saveFullMediaArchive({
+          videoId,
+          title: opts.title || '视频同传',
+          url: opts.sourceUrl,
+          duration: source?.duration || 0,
+          compactDuration: compactAudio.duration,
+          lines,
+          cues: linesToCaptions(lines).cues,
+          compactCues: compactAudio.cues,
+          audioBlob: fullAudio,
+          compactAudioBlob: compactAudio.blob,
+          processingVersion: 'planned-v1',
+        });
+        emit({ type: 'archive_saved', archive });
+      }
+    } catch {
+      // Ignore archive compose error on shutdown
+    }
     void pruneDubCache();
   }
 }

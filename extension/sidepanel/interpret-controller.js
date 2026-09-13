@@ -268,6 +268,8 @@ export class InterpretController {
           } else if (ev.type === "warn") {
             task.details.hint = ev.message || "";
             this.notify({ type: "warn", message: ev.message, tabId: tab.id }, tab.id);
+          } else if (ev.type === "archive_saved") {
+            this.notify({ type: "archive_saved", archive: ev.archive, tabId: tab.id }, tab.id);
           }
         },
       });

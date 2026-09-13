@@ -164,6 +164,107 @@ button { cursor: pointer; }
 .bg-task-btn:hover { background: #fffaf6; }
 .bg-task-btn.danger { color: #c92a2a; border-color: #fcc; }
 
+.compact-player-bar {
+  margin-top: 8px;
+  background: linear-gradient(135deg, #fffaf4 0%, #ffeedd 100%);
+  border: 1px solid #f97316;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 2px 6px rgba(249, 115, 22, 0.08);
+}
+.compact-player-bar.hidden { display: none; }
+.cp-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.cp-title {
+  font-weight: 600;
+  color: #9a3412;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cp-time {
+  font-variant-numeric: tabular-nums;
+  color: #c2410c;
+  font-size: 10px;
+  font-weight: 500;
+}
+.cp-rate-btn {
+  background: #fff;
+  border: 1px solid #fdba74;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  color: #9a3412;
+  cursor: pointer;
+  font-weight: 500;
+}
+.cp-rate-btn:hover { background: #ffedd5; }
+.cp-icon-btn {
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  color: #9a3412;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.cp-icon-btn:hover { color: #ea580c; }
+.cp-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cp-play-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: #ea580c;
+  color: #fff;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.1s, background 0.15s;
+}
+.cp-play-btn:hover {
+  background: #c2410c;
+  transform: scale(1.06);
+}
+.cp-slider {
+  flex: 1;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #fed7aa;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.cp-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ea580c;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+.cp-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+}
+
 .si-live {
   margin-top: 8px;
   border: 1px solid #e8c8b0;

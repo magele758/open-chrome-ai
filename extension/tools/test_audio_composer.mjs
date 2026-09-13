@@ -6,6 +6,7 @@ import { encodeMonoWav } from "../lib/tts.js";
 import {
   extractPcmSamplesFromWav,
   composeFullDubTrack,
+  composeCompactDubTrack,
   calculateExpireAt,
   isArchiveExpired,
   saveFullMediaArchive,
@@ -58,6 +59,22 @@ assert.equal(fullTrackPcm.samples[Math.floor(1.5 * sampleRate)], 0, "Silence bet
 // Check that seg2 exists at 2.2s
 assert.ok(Math.abs(fullTrackPcm.samples[Math.floor(2.2 * sampleRate)] - 0.6) < 0.05, "Seg2 placed at 2.0s");
 console.log("PASS: Compose full dub track with correct timestamps");
+
+console.log("--- 2.1 Testing Compose Compact Dub Track ---");
+// Compact mode: seg1 (0.5s) + 0.25s gap + seg2 (1.0s) = 1.75s total! (No long video pause)
+const compactRes = await composeCompactDubTrack([
+  { id: "line-1", zh: "第一句", src: "sentence one", blob: seg1Blob },
+  { id: "line-2", zh: "第二句", src: "sentence two", blob: seg2Blob },
+], { sampleRate, gapMs: 250 });
+
+assert.ok(compactRes.blob, "Compact blob generated");
+assert.equal(compactRes.cues.length, 2, "2 cues returned");
+assert.equal(compactRes.cues[0].compactStart, 0, "First cue starts at 0s");
+assert.equal(compactRes.cues[0].compactEnd, 0.5, "First cue ends at 0.5s");
+assert.equal(compactRes.cues[1].compactStart, 0.75, "Second cue starts after 0.25s gap (0.75s)");
+assert.equal(compactRes.cues[1].compactEnd, 1.75, "Second cue ends at 1.75s");
+assert.ok(Math.abs(compactRes.duration - 1.75) < 0.01, "Total compact duration is 1.75s");
+console.log("PASS: Compose compact dub track without video timeline gaps");
 
 console.log("--- 3. Testing 7-Day TTL Expiration & Storage ---");
 const now = Date.now();

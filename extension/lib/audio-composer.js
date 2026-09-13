@@ -190,6 +190,103 @@ export async function composeFullDubTrack(segments = [], opts = {}) {
 }
 
 /**
+ * Composes multiple audio segments sequentially without original video timeline gaps (compact audio).
+ * Inserts a natural conversational pause (gapMs, default 250ms) between segments.
+ *
+ * @param {Array<{ id?: string, zh?: string, src?: string, speaker?: string, blob: Blob }>} segments
+ * @param {object} [opts]
+ * @param {number} [opts.sampleRate=24000]
+ * @param {number} [opts.gapMs=250]
+ * @returns {Promise<{ blob: Blob, duration: number, cues: Array }>}
+ */
+export async function composeCompactDubTrack(segments = [], opts = {}) {
+  const validSegments = (Array.isArray(segments) ? segments : []).filter(
+    (s) => s && s.blob
+  );
+
+  const defaultRate = Number(opts.sampleRate) || 24000;
+  const gapSec = Math.max(0, (Number(opts.gapMs) || 250) / 1000);
+
+  if (validSegments.length === 0) {
+    return {
+      blob: encodeMonoWav(new Float32Array(defaultRate), defaultRate),
+      duration: 0,
+      cues: [],
+    };
+  }
+
+  let sampleRate = defaultRate;
+  const decoded = [];
+  let currentOffset = 0;
+  const cues = [];
+
+  for (let i = 0; i < validSegments.length; i += 1) {
+    const seg = validSegments[i];
+    const ab = await seg.blob.arrayBuffer();
+    const pcm = extractPcmSamplesFromWav(ab);
+    if (pcm && pcm.samples.length > 0) {
+      sampleRate = pcm.sampleRate || sampleRate;
+      const segDuration = pcm.samples.length / pcm.sampleRate;
+      const start = currentOffset;
+      const end = start + segDuration;
+      decoded.push({
+        samples: pcm.samples,
+        rate: pcm.sampleRate,
+        start,
+        duration: segDuration,
+      });
+      cues.push({
+        id: seg.id || `cue:${i}`,
+        zh: seg.zh || "",
+        src: seg.src || "",
+        speaker: seg.speaker || "spk:0",
+        compactStart: Math.round(start * 1000) / 1000,
+        compactEnd: Math.round(end * 1000) / 1000,
+      });
+      currentOffset = end + (i < validSegments.length - 1 ? gapSec : 0);
+    }
+  }
+
+  const totalSamples = Math.ceil(currentOffset * sampleRate);
+  const masterBuffer = new Float32Array(Math.max(sampleRate, totalSamples));
+
+  for (const seg of decoded) {
+    const startIdx = Math.floor(seg.start * sampleRate);
+    const ratio = sampleRate / seg.rate;
+    const len = seg.samples.length;
+
+    if (Math.abs(ratio - 1) < 0.01) {
+      for (let i = 0; i < len; i += 1) {
+        const dest = startIdx + i;
+        if (dest < masterBuffer.length) {
+          masterBuffer[dest] = Math.max(-1, Math.min(1, masterBuffer[dest] + seg.samples[i]));
+        }
+      }
+    } else {
+      const targetLen = Math.floor(len * ratio);
+      for (let i = 0; i < targetLen; i += 1) {
+        const srcIdx = i / ratio;
+        const i0 = Math.floor(srcIdx);
+        const i1 = Math.min(len - 1, i0 + 1);
+        const frac = srcIdx - i0;
+        const val = seg.samples[i0] * (1 - frac) + seg.samples[i1] * frac;
+        const dest = startIdx + i;
+        if (dest < masterBuffer.length) {
+          masterBuffer[dest] = Math.max(-1, Math.min(1, masterBuffer[dest] + val));
+        }
+      }
+    }
+  }
+
+  const blob = encodeMonoWav(masterBuffer, sampleRate);
+  return {
+    blob,
+    duration: currentOffset,
+    cues,
+  };
+}
+
+/**
  * Saves a completed interpretation session archive into IndexedDB and Library.
  */
 export async function saveFullMediaArchive({
@@ -200,6 +297,9 @@ export async function saveFullMediaArchive({
   lines = [],
   cues = [],
   audioBlob = null,
+  compactAudioBlob = null,
+  compactDuration = 0,
+  compactCues = [],
   processingVersion = 'chunk-v0',
 } = {}) {
   if (!videoId) return null;
@@ -212,12 +312,16 @@ export async function saveFullMediaArchive({
     title: String(title || "视频同传").trim(),
     url: String(url || ""),
     duration: Number(duration) || 0,
+    compactDuration: Number(compactDuration) || 0,
     createdAt: now,
     expireAt,
     lines: Array.isArray(lines) ? lines : [],
     cues: Array.isArray(cues) ? cues : [],
+    compactCues: Array.isArray(compactCues) ? compactCues : [],
     audioBlob: audioBlob || null,
+    compactAudioBlob: compactAudioBlob || null,
     hasAudio: Boolean(audioBlob && audioBlob.size > 100),
+    hasCompactAudio: Boolean(compactAudioBlob && compactAudioBlob.size > 100),
   };
 
   const key = ARCHIVE_PREFIX + videoId;
@@ -244,6 +348,8 @@ export async function loadFullMediaArchive(videoId) {
 
   return {
     ...item,
+    hasAudio: Boolean(item.audioBlob && item.audioBlob.size > 100),
+    hasCompactAudio: Boolean(item.compactAudioBlob && item.compactAudioBlob.size > 100),
     remainingDays,
     isValid: true,
   };

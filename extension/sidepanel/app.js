@@ -121,11 +121,204 @@ interpretController.subscribe((event, taskState) => {
       state.originalAudioOn = taskState.originalAudioOn;
     }
   }
+  if (event?.type === "archive_saved" && event.archive) {
+    state.pack = state.pack || {};
+    state.pack.archive = event.archive;
+    renderTranscribeAction();
+    renderCompactPlayer();
+  }
   renderContext();
 });
 
 let dubPlayerAudio = null;
 let dubPlayerTimer = null;
+
+let compactPlayerAudio = null;
+let compactPlayerTimer = null;
+let compactPlaying = false;
+let compactRate = 1.0;
+const COMPACT_RATES = [1.0, 1.25, 1.5, 2.0];
+
+function stopCompactPlayback() {
+  if (compactPlayerTimer) {
+    clearInterval(compactPlayerTimer);
+    compactPlayerTimer = null;
+  }
+  if (compactPlayerAudio) {
+    try {
+      compactPlayerAudio.pause();
+      compactPlayerAudio.src = "";
+    } catch { /* ignore */ }
+    compactPlayerAudio = null;
+  }
+  compactPlaying = false;
+  renderCompactPlayer();
+  renderTranscribeAction();
+}
+
+function renderCompactPlayer() {
+  const bar = $("compact-player-bar");
+  const playBtn = $("cp-play-btn");
+  const timeEl = $("cp-time");
+  const rateBtn = $("cp-rate-btn");
+  const slider = $("cp-slider");
+
+  if (!bar) return;
+
+  if (compactPlaying) {
+    bar.classList.remove("hidden");
+    if (playBtn) playBtn.textContent = "⏸";
+  } else {
+    if (playBtn) playBtn.textContent = "▶";
+  }
+
+  if (rateBtn) rateBtn.textContent = `${compactRate.toFixed(1)}x`;
+
+  if (compactPlayerAudio && Number.isFinite(compactPlayerAudio.duration) && compactPlayerAudio.duration > 0) {
+    const cur = compactPlayerAudio.currentTime || 0;
+    const dur = compactPlayerAudio.duration;
+    if (timeEl) timeEl.textContent = `${formatTime(cur)} / ${formatTime(dur)}`;
+    if (slider && !slider.dataset.dragging) {
+      slider.value = String(Math.floor((cur / dur) * 1000));
+    }
+  } else {
+    const archive = state.pack?.archive;
+    const dur = archive?.compactDuration || archive?.duration || 0;
+    if (timeEl) timeEl.textContent = `00:00 / ${formatTime(dur)}`;
+    if (slider && !slider.dataset.dragging) slider.value = "0";
+  }
+}
+
+async function toggleCompactPlayback() {
+  const archive = state.pack?.archive;
+  const audioBlob = archive?.compactAudioBlob || archive?.audioBlob;
+  if (!audioBlob) {
+    const interpreting = interpretController.isRunning(state.tab?.id);
+    if (!interpreting) {
+      pushError("当前视频尚未生成配音，正在自动为你开启同传生成…");
+      startInterpret();
+    } else {
+      pushError("同传正在生成配音中，首句生成后即可点击播放…");
+    }
+    return;
+  }
+
+  if (compactPlaying) {
+    compactPlayerAudio?.pause();
+    compactPlaying = false;
+    renderCompactPlayer();
+    renderTranscribeAction();
+    return;
+  }
+
+  if (state.dubPlaying) stopDubPlayback();
+
+  if (compactPlayerAudio) {
+    try {
+      await compactPlayerAudio.play();
+      compactPlaying = true;
+      renderCompactPlayer();
+      renderTranscribeAction();
+      return;
+    } catch {
+      stopCompactPlayback();
+    }
+  }
+
+  try {
+    const blobUrl = URL.createObjectURL(audioBlob);
+    compactPlayerAudio = new Audio(blobUrl);
+    compactPlayerAudio.playbackRate = compactRate;
+    compactPlayerAudio.preservesPitch = true;
+
+    $("compact-player-bar")?.classList.remove("hidden");
+    compactPlaying = true;
+    renderCompactPlayer();
+    renderTranscribeAction();
+
+    await compactPlayerAudio.play();
+
+    compactPlayerAudio.onended = () => {
+      stopCompactPlayback();
+    };
+
+    compactPlayerAudio.onerror = (e) => {
+      console.warn("[compact-player] error", e);
+      stopCompactPlayback();
+      pushError("纯享音频播放失败");
+    };
+
+    if (compactPlayerTimer) clearInterval(compactPlayerTimer);
+    compactPlayerTimer = setInterval(() => {
+      if (!compactPlaying || !compactPlayerAudio) {
+        if (compactPlayerTimer) clearInterval(compactPlayerTimer);
+        compactPlayerTimer = null;
+        return;
+      }
+      renderCompactPlayer();
+
+      const cur = compactPlayerAudio.currentTime || 0;
+      const cues = archive.compactCues?.length ? archive.compactCues : archive.cues;
+      if (Array.isArray(cues) && cues.length > 0) {
+        const activeCue = cues.find(c => {
+          const s = Number.isFinite(c.compactStart) ? c.compactStart : c.start;
+          const e = Number.isFinite(c.compactEnd) ? c.compactEnd : c.end;
+          return s <= cur && e >= cur;
+        });
+        if (activeCue) {
+          const live = $("si-live");
+          const zh = $("si-zh");
+          const src = $("si-src");
+          if (live && zh && src) {
+            live.classList.remove("hidden");
+            zh.textContent = activeCue.zh || "";
+            src.textContent = activeCue.src || "";
+          }
+        }
+      }
+    }, 250);
+
+  } catch (err) {
+    stopCompactPlayback();
+    pushError("启动纯享播放失败：" + (err?.message || err));
+  }
+}
+
+function seekCompactPlayback(ratio) {
+  if (compactPlayerAudio && Number.isFinite(compactPlayerAudio.duration) && compactPlayerAudio.duration > 0) {
+    compactPlayerAudio.currentTime = Math.max(0, Math.min(compactPlayerAudio.duration, ratio * compactPlayerAudio.duration));
+    renderCompactPlayer();
+  }
+}
+
+function changeCompactRate() {
+  const idx = COMPACT_RATES.indexOf(compactRate);
+  compactRate = COMPACT_RATES[(idx + 1) % COMPACT_RATES.length];
+  if (compactPlayerAudio) compactPlayerAudio.playbackRate = compactRate;
+  renderCompactPlayer();
+}
+
+function downloadCompactAudio() {
+  const archive = state.pack?.archive;
+  const audioBlob = archive?.compactAudioBlob || archive?.audioBlob;
+  if (!audioBlob) return;
+  const url = URL.createObjectURL(audioBlob);
+  const a = document.createElement("a");
+  a.href = url;
+  const title = (state.pack?.title || "中文配音").replace(/[\\/:*?"<>|]/g, "_").trim();
+  a.download = `${title}_纯享中文配音.wav`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 1000);
+}
+
+function closeCompactPlayer() {
+  stopCompactPlayback();
+  $("compact-player-bar")?.classList.add("hidden");
+}
 
 function stopDubPlayback() {
   if (dubPlayerTimer) {
@@ -353,14 +546,39 @@ function renderTranscribeAction() {
     siBtn.classList.toggle("busy", Boolean(interpreting));
     siBtn.disabled = !canShare && !interpreting;
   }
+  const compactBtn = $("btn-compact-player");
+  const compactBarBtn = $("btn-compact-bar");
+  const hasCompact = Boolean(state.pack?.archive?.hasCompactAudio || state.pack?.archive?.hasAudio);
+  if (compactBtn) {
+    compactBtn.classList.toggle("hidden", !hasPlayer);
+    if (compactPlaying) {
+      compactBtn.textContent = "停止纯享";
+      compactBtn.classList.add("busy");
+    } else if (hasCompact) {
+      compactBtn.textContent = "🎧 纯享音频";
+      compactBtn.title = "无缝连续播放中文配音（像听播客一样，无原视频静音等待）";
+      compactBtn.classList.remove("busy");
+    } else if (interpreting) {
+      compactBtn.textContent = "🎧 纯享准备中…";
+      compactBtn.title = "同传正在生成配音，生成后可在此无缝纯享收听";
+      compactBtn.classList.remove("busy");
+    } else {
+      compactBtn.textContent = "🎧 纯享音频";
+      compactBtn.title = "点击启动同传并无缝纯享收听拼接配音";
+      compactBtn.classList.remove("busy");
+    }
+  }
+  if (compactBarBtn) {
+    compactBarBtn.classList.toggle("busy", Boolean(compactPlaying));
+  }
   const archiveBtn = $("btn-play-archive");
   const hasArchive = Boolean(state.pack?.archive?.hasAudio);
   if (archiveBtn) {
     archiveBtn.classList.toggle("hidden", !hasArchive || (!canShare && !state.dubPlaying));
     if (hasArchive) {
       const days = state.pack.archive.remainingDays ?? 7;
-      archiveBtn.textContent = state.dubPlaying ? "停止配音" : `播放配音 (剩${days}天)`;
-      archiveBtn.title = `播放一周内已生成的完整中文配音 (剩余${days}天)`;
+      archiveBtn.textContent = state.dubPlaying ? "停止对齐" : `对齐配音 (剩${days}天)`;
+      archiveBtn.title = `与原视频画面时间轴对齐播放配音 (剩余${days}天)`;
       archiveBtn.classList.toggle("busy", Boolean(state.dubPlaying));
     }
   }
@@ -2226,7 +2444,7 @@ async function refreshTab() {
       if (videoId) {
         try {
           const archive = await loadFullMediaArchive(videoId);
-          if (archive && archive.hasAudio) {
+          if (archive && (archive.hasAudio || archive.hasCompactAudio)) {
             state.pack = state.pack || {};
             state.pack.archive = archive;
             if (!state.pack.captionsText && archive.lines?.length) {
@@ -3112,6 +3330,29 @@ function wire() {
   });
   $("btn-summarize-video")?.addEventListener("click", () => startSummarizeVideo());
   $("btn-interpret")?.addEventListener("click", () => startInterpret());
+  $("btn-compact-player")?.addEventListener("click", () => {
+    $("compact-player-bar")?.classList.remove("hidden");
+    toggleCompactPlayback();
+  });
+  $("btn-compact-bar")?.addEventListener("click", () => {
+    $("compact-player-bar")?.classList.remove("hidden");
+    toggleCompactPlayback();
+  });
+  $("cp-play-btn")?.addEventListener("click", () => toggleCompactPlayback());
+  $("cp-rate-btn")?.addEventListener("click", () => changeCompactRate());
+  $("cp-download-btn")?.addEventListener("click", () => downloadCompactAudio());
+  $("cp-close-btn")?.addEventListener("click", () => closeCompactPlayer());
+  const cpSlider = $("cp-slider");
+  if (cpSlider) {
+    cpSlider.addEventListener("input", (e) => {
+      cpSlider.dataset.dragging = "true";
+      const ratio = Number(e.target.value) / 1000;
+      seekCompactPlayback(ratio);
+    });
+    cpSlider.addEventListener("change", () => {
+      delete cpSlider.dataset.dragging;
+    });
+  }
   $("btn-play-archive")?.addEventListener("click", () => toggleDubPlayback());
   $("btn-original-audio")?.addEventListener("click", () => toggleOriginalAudio());
   $("btn-summarize-bar")?.addEventListener("click", () => startSummarizeVideo());

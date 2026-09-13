@@ -53,10 +53,24 @@
         <div class="ctx-actions" id="ctx-actions">
           <button type="button" class="ctx-action primary" id="btn-summarize-video" title="下载完整音轨并转写总结，可与同声传译同时进行。">一键总结</button>
           <button type="button" class="ctx-action primary" id="btn-interpret" title="边看边出中文，按声音约 5 秒一切。">同声传译</button>
-          <button type="button" class="ctx-action hidden" id="btn-play-archive" title="直接播放7天内已生成的完整中文配音">播放配音</button>
+          <button type="button" class="ctx-action" id="btn-compact-player" title="只听拼接好的中文配音（无缝连续播放，像听播客一样）">🎧 纯享音频</button>
+          <button type="button" class="ctx-action hidden" id="btn-play-archive" title="画面时间轴同步配音（与视频进度对齐）">对齐配音</button>
           <button type="button" class="ctx-action hidden" id="btn-original-audio" title="开启或关闭原视频声音">关原声</button>
           <button type="button" class="ctx-action" id="btn-transcribe" title="只取出带时间戳的台词，不自动总结">只要文稿</button>
           <button type="button" class="ctx-action hidden" id="btn-video-switch" title="页面里有多个视频时，切换要总结/同传的那一个">画面</button>
+        </div>
+        <div class="compact-player-bar hidden" id="compact-player-bar">
+          <div class="cp-header">
+            <span class="cp-title">🎧 纯享中文音频</span>
+            <span class="cp-time" id="cp-time">00:00 / 00:00</span>
+            <button type="button" class="cp-rate-btn" id="cp-rate-btn" title="切换播放倍速">1.0x</button>
+            <button type="button" class="cp-icon-btn" id="cp-download-btn" title="下载完整中文配音 (WAV)">⬇</button>
+            <button type="button" class="cp-icon-btn" id="cp-close-btn" title="关闭纯享播放器">×</button>
+          </div>
+          <div class="cp-controls">
+            <button type="button" class="cp-play-btn" id="cp-play-btn" title="播放 / 暂停">▶</button>
+            <input type="range" class="cp-slider" id="cp-slider" min="0" max="1000" value="0" step="1" />
+          </div>
         </div>
         <div class="ctx-bg-tasks hidden" id="ctx-bg-tasks"></div>
         <div class="recall-banner hidden" id="recall-banner">
@@ -151,6 +165,7 @@
             <button class="ghost" type="button" id="btn-shot" title="截取当前画面">▣</button>
             <button class="ghost" type="button" id="btn-summarize-bar" title="一键总结">总</button>
             <button class="ghost" type="button" id="btn-interpret-bar" title="同声传译">译</button>
+            <button class="ghost" type="button" id="btn-compact-bar" title="纯享音频播放器">🎧</button>
             <textarea id="input" placeholder="问这页 · Enter 发送 · ⇧Enter 换行"></textarea>
             <button class="send" type="button" id="btn-send" title="发送（Enter）">↑</button>
           </div>
