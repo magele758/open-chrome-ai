@@ -431,7 +431,17 @@ function renderTranscribeAction() {
   if (live) {
     live.classList.toggle("hidden", !interpreting && !si?.zh);
     if (si?.zh) $("si-zh").textContent = si.zh;
-    if (si?.src) $("si-src").textContent = si.src;
+    if (si?.src) $("si-src").textContent = (si.speaker && !/^(asr|unassigned):/.test(si.speaker) ? `${si.speaker.replace(/^SPEAKER_(\d+)$/, (_, n) => '说话人 ' + (Number(n) + 1))} · ` : '') + si.src;
+    const edit = $('btn-si-edit');
+    if (edit) {
+      edit.classList.toggle('hidden', !interpreting || !si?.lineId);
+      edit.onclick = async () => {
+        const text = window.prompt('修改本句中文口播稿（只重新生成这一句配音）', si.zh);
+        if (text === null) return;
+        try { await interpretController.editCurrentLine(si.tabId, text); }
+        catch (error) { window.alert(error.message); }
+      };
+    }
     if (interpreting && !si?.zh) {
       $("si-zh").textContent = si?.message || "同传已开始…";
       $("si-src").textContent = si?.hint || "";
@@ -1971,12 +1981,15 @@ function ttsFields(tts) {
     <label class="field">时长系数 duration_factor
       <input data-k="tts.durationFactor" type="number" min="0.5" max="2" step="0.05" value="${escapeAttr(tts.durationFactor)}" />
     </label>
-    <label class="field">同传缓冲深度
-      <select data-k="tts.bufferSegments">
-        <option value="3" ${Number(tts.bufferSegments) === 3 ? "selected" : ""}>3 段（较快起播）</option>
-        <option value="5" ${(!tts.bufferSegments || Number(tts.bufferSegments) === 5) ? "selected" : ""}>5 段（均衡缓冲）</option>
-        <option value="8" ${Number(tts.bufferSegments) === 8 ? "selected" : ""}>8 段（更多缓冲）</option>
+    <label class="field">配音准备方式
+      <select data-k="tts.preparationMode">
+        <option value="progressive" ${tts.preparationMode === 'progressive' ? 'selected' : ''}>快速起播，后台持续翻译与配音（推荐）</option>
+        <option value="full" ${tts.preparationMode === 'full' ? 'selected' : ''}>完整配音后播放（播放时无需等待生成）</option>
+        <option value="buffered" ${tts.preparationMode === 'buffered' ? 'selected' : ''}>全文翻译后，边准备配音边播放</option>
       </select>
+    </label>
+    <label class="field">连续配音预缓存（秒，边准备边播时使用）
+      <input data-k="tts.bufferSeconds" type="number" min="5" max="120" step="5" value="${Number(tts.bufferSeconds) || 30}" />
     </label>
     <div class="tts-ref">
       <label class="field">参考音色
@@ -2117,7 +2130,7 @@ function writeField(el) {
   const [group, key] = el.dataset.k.split(".");
   if (!state.settings[group]) state.settings[group] = {};
   if (key === "durationFactor") state.settings[group][key] = Number(el.value) || 1;
-  else if (key === "bufferSegments") state.settings[group][key] = Number(el.value) || 5;
+  else if (key === "bufferSegments" || key === "bufferSeconds") state.settings[group][key] = Number(el.value) || 5;
   else state.settings[group][key] = el.value;
   if (key === "preset") {
     const preset = presetsFor(group).find((p) => p.id === el.value);

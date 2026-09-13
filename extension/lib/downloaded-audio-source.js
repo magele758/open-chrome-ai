@@ -34,7 +34,7 @@ export async function openInterpretSource({ url, mediaUrl, signal, onProgress = 
   const request = async (path, options = {}) => {
     signal?.throwIfAborted();
     const r = await fetchImpl(MEDIA_HELPER + path, helperRequestInit({ ...options, signal }));
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `媒体服务错误 ${r.status}`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || (path.endsWith('/analysis') && r.status === 404 ? '本机媒体服务版本过旧，请重启媒体服务后重试。' : `媒体服务错误 ${r.status}`));
     return r;
   };
   const close = async () => {
@@ -66,18 +66,30 @@ export async function openInterpretSource({ url, mediaUrl, signal, onProgress = 
     const cache = new Map();
     return {
       duration: job.duration, close,
-      async slice(start, seconds = 5) {
+      async analyze() {
+        await request(`/jobs/${id}/analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        for (;;) {
+          signal?.throwIfAborted();
+          const state = await (await request(`/jobs/${id}/analysis`)).json();
+          if (state.status === 'ready') return state.result;
+          if (state.status === 'error') throw new Error(state.error || '声音分析失败');
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      },
+      async slice(start, seconds = 5, track = 'audio') {
         signal?.throwIfAborted();
+        if (!['audio', 'background'].includes(track)) throw new Error('未知音轨');
         const end = Math.min(job.duration, start + seconds), pieces = [];
         if (!(end > start)) return null;
         for (const p of job.parts) {
           if (p.start >= end || p.start + p.duration <= start) continue;
-          if (!cache.has(p.index)) {
-            const pcm = readPcmWav(await (await request(`/jobs/${id}/audio/${p.index}`)).arrayBuffer());
-            cache.set(p.index, pcm);
+          const cacheKey = `${track}:${p.index}`;
+          if (!cache.has(cacheKey)) {
+            const pcm = readPcmWav(await (await request(`/jobs/${id}/${track}/${p.index}`)).arrayBuffer());
+            cache.set(cacheKey, pcm);
             while (cache.size > 2) cache.delete(cache.keys().next().value);
           }
-          const pcm = cache.get(p.index);
+          const pcm = cache.get(cacheKey);
           const from = Math.round(Math.max(0, start - p.start) * 16000) * 2;
           const to = Math.min(pcm.length, Math.round(Math.min(p.duration, end - p.start) * 16000) * 2);
           pieces.push(pcm.subarray(from, to));

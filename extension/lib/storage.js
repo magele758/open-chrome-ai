@@ -51,6 +51,8 @@ function emptyTts() {
     lang: "ZH",
     durationFactor: 1,
     bufferSegments: 5,
+    preparationMode: "progressive",
+    bufferSeconds: 30,
   };
 }
 
@@ -83,6 +85,11 @@ export function normalizeSettings(raw) {
   merged.tts.durationFactor = Number.isFinite(factor) && factor > 0 ? factor : 1;
   const bufSegs = Number(merged.tts.bufferSegments);
   merged.tts.bufferSegments = Number.isFinite(bufSegs) && bufSegs >= 1 ? Math.min(10, Math.max(1, Math.round(bufSegs))) : 5;
+  merged.tts.preparationMode = ['full', 'buffered', 'progressive'].includes(merged.tts.preparationMode) ? merged.tts.preparationMode : 'progressive';
+  // The previous full mode was an implicit default, not a deliberate long-wait preference.
+  if (!merged.tts.preparationVersion) merged.tts.preparationMode = 'progressive';
+  merged.tts.preparationVersion = 1;
+  merged.tts.bufferSeconds = Math.max(5, Math.min(120, Number(merged.tts.bufferSeconds) || 30));
   if (!["ZH", "EN", "JA", "AR", "ES"].includes(merged.tts.lang)) merged.tts.lang = "ZH";
   merged.uiFont = ["md", "lg", "xl"].includes(raw?.uiFont) ? raw.uiFont : "md";
   merged.nativeShell = raw?.nativeShell !== false;

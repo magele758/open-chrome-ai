@@ -113,7 +113,9 @@ def health_payload():
     return {
         'ok': True,
         'service': SERVICE,
-        'version': 3,
+        'version': 4,
+        'audioAnalysis': True,
+        'audioAnalysisVersion': 2,
         'port': PORT,
         'bins': bins,
         'ready': all(bins.values()),
@@ -300,6 +302,22 @@ def extract(job, url, media_url):
             shutil.rmtree(job['dir'], ignore_errors=True)
 
 
+ANALYSIS_LOCK = threading.Lock()
+
+def analyze_job(job):
+    try:
+        with ANALYSIS_LOCK:
+            if job['cancel'].is_set():
+                return
+            output = Path(job['dir']) / 'analysis.json'
+            run(job, [sys.executable, str(Path(__file__).with_name('audio_analysis.py')), job['dir'], str(output)])
+            job['analysis'] = json.loads(output.read_text(encoding='utf-8'))
+            job['analysisStatus'] = 'ready'
+    except Exception:
+        job['analysisStatus'] = 'error'
+        job['analysisError'] = '声音分析未完成。请安装 tools/requirements-audio.txt，并确认 HF_TOKEN 可访问 pyannote/speaker-diarization-community-1。'
+
+
 def cancel(job):
     with LOCK:
         job['cancel'].set()
@@ -354,6 +372,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed() or self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
             return self.reply(403, {'error': 'Origin or content type denied'})
+        pieces = self.path.strip('/').split('/')
+        if len(pieces) == 3 and pieces[0] == 'jobs' and pieces[2] == 'analysis':
+            with LOCK:
+                job = JOBS.get(pieces[1])
+                if not job or job['status'] != 'ready':
+                    return self.reply(409, {'error': '音轨尚未准备好'})
+                if not job.get('analysisStatus'):
+                    job['analysisStatus'] = 'running'
+                    threading.Thread(target=analyze_job, args=(job,), daemon=True).start()
+                return self.reply(202, {'status': job['analysisStatus']})
         if self.path != '/jobs':
             return self.reply(404, {})
         try:
@@ -385,12 +413,17 @@ class Handler(BaseHTTPRequestHandler):
         if not job:
             return self.reply(404, {})
         job['created'] = time.time()
+        if len(pieces) == 3 and pieces[2] == 'analysis':
+            return self.reply(200, {'status': job.get('analysisStatus', 'missing'), 'error': job.get('analysisError'), 'result': job.get('analysis')})
         if len(pieces) == 2:
             return self.reply(200, {k: job[k] for k in ('id', 'status', 'error', 'duration', 'parts') if k in job})
-        if len(pieces) == 4 and pieces[2] == 'audio' and pieces[3].isdigit() and job['status'] == 'ready':
+        if len(pieces) == 4 and pieces[2] in ('audio', 'background') and pieces[3].isdigit() and job['status'] == 'ready':
             index = int(pieces[3])
             if index < len(job.get('parts', [])):
-                path = Path(job['dir']) / f'part-{index:05d}.wav'
+                prefix = 'background' if pieces[2] == 'background' else 'part'
+                path = Path(job['dir']) / f'{prefix}-{index:05d}.wav'
+                if not path.is_file():
+                    return self.reply(404, {'error': '音轨尚未生成'})
                 return self.reply(200, path.read_bytes(), 'audio/wav')
         self.reply(404, {})
 

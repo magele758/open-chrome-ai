@@ -255,7 +255,12 @@ export function plVideo(cmd, arg) {
     const live = tapLive(tap, el);
     let rebound = false;
     if (live && tap.speaker) {
-      tap.speaker.gain.value = 0;
+      if (o.fadeSeconds && tap.speaker.gain.linearRampToValueAtTime) {
+        const now = tap.ctx.currentTime;
+        tap.speaker.gain.cancelScheduledValues(now);
+        tap.speaker.gain.setValueAtTime(tap.speaker.gain.value, now);
+        tap.speaker.gain.linearRampToValueAtTime(0, now + Math.min(.2, o.fadeSeconds));
+      } else tap.speaker.gain.value = 0;
     } else if (live && tap.fallback && tap.el) {
       tap.el.muted = true;
       tap.el.volume = 0;
@@ -274,7 +279,14 @@ export function plVideo(cmd, arg) {
   if (cmd === "restore") {
     globalThis.__plSiMute = false;
     const tap = globalThis.__plAudioTap;
-    if (tap?.speaker) tap.speaker.gain.value = 1;
+    if (tap?.speaker) {
+      if (o.fadeSeconds && tap.speaker.gain.linearRampToValueAtTime) {
+        const now = tap.ctx.currentTime;
+        tap.speaker.gain.cancelScheduledValues(now);
+        tap.speaker.gain.setValueAtTime(tap.speaker.gain.value, now);
+        tap.speaker.gain.linearRampToValueAtTime(1, now + Math.min(.2, o.fadeSeconds));
+      } else tap.speaker.gain.value = 1;
+    }
     if (tap?.el) {
       tap.el.muted = Boolean(tap.prevMuted);
       if (Number.isFinite(Number(tap.prevVolume))) tap.el.volume = tap.prevVolume;

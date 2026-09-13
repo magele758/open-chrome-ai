@@ -5,7 +5,7 @@
  */
 
 import { injectVideo } from "../lib/chrome.js";
-import { runInterpret } from "../lib/interpret.js";
+import { runPlannedInterpret as runInterpret } from "../lib/planned-interpret.js";
 import { abortRecording, discardCapture } from "../lib/tab-audio.js";
 
 export const InterpretState = {
@@ -212,7 +212,7 @@ export class InterpretController {
       await injectVideo(tab.id, "pick", { fresh: true });
       const st = await injectVideo(tab.id, "state");
       startAt = Number(st?.currentTime) || 0;
-      openingHold = Boolean(st?.ok && !st.ended);
+      openingHold = Boolean(st?.ok && !st.ended && !st.paused);
       const held = await injectVideo(tab.id, "control", { action: "pause", system: true });
       const verified = await injectVideo(tab.id, "state");
       if (!held?.ok || !verified?.paused) {
@@ -245,9 +245,12 @@ export class InterpretController {
         capture: task.currentCapture,
         signal: abort.signal,
         wantOriginalAudio: () => task.abortController === abort && task.originalAudioOn,
+        onEditable: edit => { task.editLine = edit; },
         onEvent: (ev) => {
           if (task.abortController !== abort) return;
           if (ev.type === "line") {
+            task.details.lineId = ev.id;
+            task.details.speaker = ev.speaker || '';
             task.details.src = ev.src || "";
             task.details.zh = ev.zh || "";
             task.details.mode = ev.mode || task.details.mode;
@@ -305,6 +308,12 @@ export class InterpretController {
       this.notify({ type: "idle", tabId: tab.id }, tab.id);
       this.tasks.delete(tab.id);
     }
+  }
+
+  async editCurrentLine(tabId, text) {
+    const task = this.tasks.get(tabId || this.currentTabId);
+    if (!task?.editLine || !task.details.lineId) throw new Error('当前没有可修改的配音句段');
+    await task.editLine(task.details.lineId, text);
   }
 
   async stop(tabId) {

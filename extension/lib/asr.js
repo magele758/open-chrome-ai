@@ -95,6 +95,8 @@ export function segmentsFromTranscription(json) {
           start: Number(s?.start) || 0,
           end: Number.isFinite(end) ? end : undefined,
           text: String(s?.text || "").replace(/\s+/g, " ").trim(),
+          ...(s?.speaker != null ? { speaker: String(s.speaker) } : {}),
+          ...(Array.isArray(s?.words) ? { words: s.words.map(w => ({ word: String(w.word || ''), start: Number(w.start), end: Number(w.end) })) } : {}),
         };
       })
       .filter((s) => s.text);
