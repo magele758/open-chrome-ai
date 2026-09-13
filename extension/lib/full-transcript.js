@@ -105,7 +105,7 @@ export async function acquireFullTranscript({ url, mediaUrl, asr, signal, onProg
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, mediaUrl }),
   });
   try {
-    onProgress?.({ status: 'extracting', hint: '正在获取完整音轨' });
+    onProgress?.({ status: 'extracting', hint: '正在获取完整音轨与字幕' });
     let response;
     try {
       response = await createJob();
@@ -135,12 +135,29 @@ export async function acquireFullTranscript({ url, mediaUrl, asr, signal, onProg
         lastStatus = job.status;
       }
       if (job.status === 'error') throw new Error(job.error || '完整音轨提取失败');
+
+      if (Array.isArray(job.subtitles) && job.subtitles.length > 0) {
+        onProgress?.({ status: 'extracting', hint: '检测到视频字幕，正在使用字幕优先生成文稿（免 ASR）…' });
+        const subtitleCues = job.subtitles.map((c, n) => ({
+          start: Math.max(0, Number(c.start) || 0),
+          end: Math.max(Number(c.start) || 0, Number(c.end) || 0),
+          text: String(c.src || c.text || '').replace(/\s+/g, ' ').trim(),
+        })).filter((c) => c.text);
+        const formatted = formatTranscript(subtitleCues);
+        if (formatted.status === 'ready') {
+          const duration = (Number(job.duration) > 0 ? Number(job.duration) : null)
+            || (subtitleCues.length ? Math.ceil(subtitleCues[subtitleCues.length - 1].end) : 0);
+          debugLog('transcript.subtitles-priority', { runId, jobId: id, cuesCount: formatted.cues.length, duration });
+          return { ...formatted, complete: true, duration, source: 'subtitles' };
+        }
+      }
+
       if (job.status === 'ready') break;
-      const hint = { extracting: '正在寻找完整音轨', downloading: '正在下载完整音轨', splitting: '正在准备音轨分段' }[job.status];
+      const hint = { extracting: '正在寻找完整音轨与字幕', downloading: '正在下载完整音轨', splitting: '正在准备音轨分段' }[job.status];
       onProgress?.({ status: 'extracting', hint });
       await wait(signal);
     }
-    if (!isAsrReady(asr)) throw new Error('已找到完整音轨，请在设置中配置 ASR 后重新提取。');
+    if (!isAsrReady(asr)) throw new Error('当前视频未检测到字幕，请在设置中配置语音识别（ASR）后重新提取。');
     if (!job.parts?.length || !(job.duration > 0)) throw new Error('没有取得完整音轨。');
     let covered = 0;
     for (const part of job.parts) {

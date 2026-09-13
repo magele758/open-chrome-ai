@@ -476,7 +476,7 @@ function renderContext() {
     bits.push(formatTime(video.duration));
     const src = state.pack?.captionsSource;
     if (state.pack?.captionsStatus === "ready") {
-      bits.push("已转写");
+      bits.push(src === "subtitles" ? "含完整字幕" : "已转写");
     } else {
       bits.push("尚未转写");
     }
@@ -495,7 +495,7 @@ function renderContext() {
     if (tr?.status === "extracting" || tr?.status === "uploading") bits.push(tr.hint || "正在识别完整音轨");
     if (tr?.status === "error" && tr.error) bits.push(tr.error);
     if (si?.status === "error" && si.error) bits.push(si.error);
-    if ((src === "asr-full" || src === "asr" || src === "asr-cache" || src === "interpret") && (!tr || tr.status === "done" || tr.status === "idle")) {
+    if ((src === "asr-full" || src === "asr" || src === "asr-cache" || src === "interpret" || src === "subtitles" || src === "subtitles-full") && (!tr || tr.status === "done" || tr.status === "idle")) {
       bits.push("可以直接问总结或章节");
     }
     const n = Number(state.pack?.videoCount) || (Array.isArray(state.pack?.videos) ? state.pack.videos.length : 0);
@@ -524,7 +524,7 @@ function renderTranscribeAction() {
   const recording = isTranscribing();
   const interpreting = interpretController.isRunning(state.tab?.id);
   const si = interpretController.getState(state.tab?.id);
-  const asrCaps = state.pack?.captionsSource === "asr-full" || state.pack?.captionsSource === "asr" || state.pack?.captionsSource === "asr-cache" || state.pack?.captionsSource === "interpret";
+  const asrCaps = ["asr-full", "asr", "asr-cache", "interpret", "subtitles", "subtitles-full"].includes(state.pack?.captionsSource);
   const capsReady = state.pack?.captionsStatus === "ready";
   const canShare = Boolean(state.share && state.tab);
   if (actions) actions.classList.toggle("hidden", !canShare && !recording && !interpreting);
@@ -3074,7 +3074,7 @@ async function startSummarizeVideo() {
     caps = extracted?.complete ? usableTranscript(extracted) : null;
   }
   if (!caps?.text) {
-    pushError(state.transcribe?.error || "没有可总结的完整音频文稿。请配置 ASR 并启动本机媒体服务。");
+    pushError(state.transcribe?.error || "没有可总结的完整文稿。请配置 ASR 并启动本机媒体服务，或确认视频包含字幕。");
     return;
   }
   const title = state.pack?.title || state.tab?.title;

@@ -49,8 +49,9 @@ export function packToContext(pack) {
     const cur = formatTime(v.currentTime);
     chunks.push(`【视频】标题：${pack.title}\n时长 ${dur}，当前 ${cur}\nURL：${pack.url}`);
     if (pack.captionsText) {
-      const via = pack.captionsSource === "asr" || pack.captionsSource === "asr-cache" ? "（语音转写，可能有错字）" : "";
-      chunks.push(`【音频文稿${pack.captionsComplete ? "（完整）" : "（完整性未知）"}】${via}\n${pack.captionsText.slice(0, 9000)}${pack.captionsText.length > 9000 ? "\n【此处仅为文稿开头，不能据此总结整个视频。用 get_captions 读取文稿，或使用侧栏一键总结阅读全文。】" : ""}`);
+      const isSub = pack.captionsSource === "subtitles" || pack.captionsSource === "subtitles-full";
+      const via = pack.captionsSource === "asr" || pack.captionsSource === "asr-cache" ? "（语音转写，可能有错字）" : isSub ? "（视频字幕）" : "";
+      chunks.push(`【${isSub ? "视频字幕文稿" : "音频文稿"}${pack.captionsComplete ? "（完整）" : "（完整性未知）"}】${via}\n${pack.captionsText.slice(0, 9000)}${pack.captionsText.length > 9000 ? "\n【此处仅为文稿开头，不能据此总结整个视频。用 get_captions 读取文稿，或使用侧栏一键总结阅读全文。】" : ""}`);
     } else {
       chunks.push("【音频文稿】无。不要编造台词或精确时间戳。没有音频文稿时应调用 transcribe_video，或请用户点侧栏「一键总结」。");
     }

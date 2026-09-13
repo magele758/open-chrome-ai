@@ -58,7 +58,7 @@ export async function getCachedTranscript(url) {
     status: "ready",
     text: String(hit.text),
     cues: Array.isArray(hit.cues) ? hit.cues : [],
-    source: "asr-cache",
+    source: hit.source || "asr-cache",
     complete: hit.complete === true,
     duration: hit.duration,
   };
@@ -76,6 +76,7 @@ export async function setCachedTranscript(url, payload) {
     complete: payload.complete === true,
     duration: payload.duration,
     cues: Array.isArray(payload.cues) ? payload.cues : [],
+    source: payload.source || "asr-cache",
     at: Date.now(),
   };
   const { [INDEX_KEY]: index } = await chrome.storage.local.get(INDEX_KEY);
@@ -103,7 +104,7 @@ export async function loadPageCaptions(tabId, pageUrl) {
 }
 
 export function isAudioTranscript(caps) {
-  return ["asr-full", "asr", "asr-cache", "interpret"].includes(caps?.source);
+  return ["asr-full", "asr", "asr-cache", "interpret", "subtitles", "subtitles-full"].includes(caps?.source);
 }
 
 export function usableTranscript(caps) {
@@ -139,7 +140,7 @@ export async function transcribeTab({ tabId, settings, force = false, onProgress
     const cached = await getCachedTranscript(tab.url);
     if (cached?.complete) return { ...cached, reused: true };
   }
-  onProgress?.({ status: "extracting", hint: "正在获取完整音轨" });
+  onProgress?.({ status: "extracting", hint: "正在获取完整字幕或音轨" });
   const media = await injectVideo(tabId, "media").catch(() => null);
   if (media?.live) throw new Error("直播尚未结束，暂时无法获取完整音轨。");
   const formatted = await acquireFullTranscript({

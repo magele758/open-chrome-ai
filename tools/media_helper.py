@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -310,9 +311,50 @@ def parse_json3_cues(data):
     return cues
 
 
+def parse_vtt_srt_cues(text):
+    cues = []
+    pattern = re.compile(r'(?:(\d{1,2}):)?(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(?:(\d{1,2}):)?(\d{2}):(\d{2})[.,](\d{3})')
+    blocks = re.split(r'\n\s*\n', text.strip())
+    for block in blocks:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        for idx, line in enumerate(lines):
+            m = pattern.search(line)
+            if m:
+                h1, m1, s1, ms1, h2, m2, s2, ms2 = m.groups()
+                start = (int(h1 or 0) * 3600 + int(m1) * 60 + int(s1)) + int(ms1) / 1000.0
+                end = (int(h2 or 0) * 3600 + int(m2) * 60 + int(s2)) + int(ms2) / 1000.0
+                content = ' '.join(lines[idx + 1:])
+                content = re.sub(r'<[^>]+>', '', content).strip()
+                if content and end > start:
+                    cues.append({
+                        'id': f'sub:{len(cues)}',
+                        'start': round(start, 3),
+                        'end': round(end, 3),
+                        'src': content,
+                        'speaker': 'spk:0',
+                        'overlap': False,
+                        'timingQuality': 'segment'
+                    })
+                break
+    return cues
+
+
+def pick_sub_track_list(sub_dict):
+    if not isinstance(sub_dict, dict):
+        return None
+    # Prefer Chinese variants, then English, then whatever is available
+    for key in ('zh-Hans', 'zh-CN', 'zh', 'zh-Hant', 'zh-TW', 'en', 'en-US', 'en-GB'):
+        if sub_dict.get(key):
+            return sub_dict[key]
+    for key, val in sub_dict.items():
+        if val and isinstance(val, list):
+            return val
+    return None
+
+
 def fetch_subtitles(job, target, info, root):
     try:
-        sub_tracks = info.get('subtitles', {}).get('en') or info.get('automatic_captions', {}).get('en')
+        sub_tracks = pick_sub_track_list(info.get('subtitles')) or pick_sub_track_list(info.get('automatic_captions'))
         if sub_tracks:
             for track in sub_tracks:
                 if track.get('ext') == 'json3' and track.get('url'):
@@ -323,12 +365,15 @@ def fetch_subtitles(job, target, info, root):
         base = downloader_args()
         sub_prefix = str(root / 'sub.%(ext)s')
         run(job, base + ['--skip-download', '--write-auto-subs', '--write-subs',
-                         '--sub-langs', 'en.*,en', '--sub-format', 'json3',
+                         '--sub-langs', 'zh.*,zh,en.*,en,all', '--sub-format', 'json3/vtt/srt/best',
                          '-o', sub_prefix, '--', target])
         candidates = list(root.glob('sub.*.json3'))
         if candidates:
             json_data = json.loads(candidates[0].read_text(encoding='utf-8'))
             return parse_json3_cues(json_data)
+        vtt_candidates = list(root.glob('sub.*.vtt')) + list(root.glob('sub.*.srt'))
+        if vtt_candidates:
+            return parse_vtt_srt_cues(vtt_candidates[0].read_text(encoding='utf-8', errors='replace'))
     except Exception:
         pass
     return []
@@ -376,6 +421,8 @@ def extract(job, url, media_url):
         if info.get('_type') in ('playlist', 'multi_video'):
             raise RuntimeError('请打开单个视频页面再提取完整文稿。')
         expected = float(info.get('duration') or 0)
+        if expected > 0:
+            job['duration'] = expected
         if job['cancel'].is_set():
             return
 

@@ -40,9 +40,9 @@ function harness() {
     },
   };
   const context = vm.createContext({
-    state, AbortController, usableTranscript, interpretController, estimateTokens,
-    document: { createElement: () => ({ classList: { toggle() {} }, append() {}, appendChild() {}, setAttribute() {} }) },
-    $: id => { if (!elements.has(id)) elements.set(id, { classList: { toggle() {} }, appendChild() {}, append() {} }); return elements.get(id); },
+    state, AbortController, usableTranscript, interpretController, estimateTokens, compactPlaying: false,
+    document: { createElement: () => ({ classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } }, append() {}, appendChild() {}, setAttribute() {} }) },
+    $: id => { if (!elements.has(id)) elements.set(id, { classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } }, appendChild() {}, append() {} }); return elements.get(id); },
     renderContext() {}, syncPackToLibrary: async () => ({}), abortRecording() {}, discardCapture: async () => {},
     renderSettingsForm() {}, setView() {}, needModelMessage: () => '', requireModel: () => ({}), isAsrReady: () => true,
     injectVideo: async () => ({ ok: true, paused: true, currentTime: 3 }),

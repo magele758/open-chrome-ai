@@ -82,9 +82,28 @@ const cacheKey = await asrItemKey('https://cache.test/v');
 assert.equal(store[cacheKey], undefined, 'asr body not in chrome.storage');
 assert.equal(idb.get(cacheKey)?.text, 'cached body');
 assert.equal((await getCachedTranscript('https://cache.test/v'))?.text, 'cached body');
-const oldKey = await asrItemKey('https://old.test/v');
-store[oldKey] = { text: 'old asr', cues: [], complete: true };
-assert.equal(await getCachedTranscript('https://old.test/v'), null);
-assert.equal(store[oldKey], undefined, 'old asr migrated off chrome.storage');
+const subCaps = usableTranscript({
+  status: 'ready',
+  text: '[0:00] Subtitle line 1\n[0:05] Subtitle line 2',
+  cues: [{ start: 0, text: 'Subtitle line 1' }, { start: 5, text: 'Subtitle line 2' }],
+  source: 'subtitles',
+  complete: true,
+});
+assert.notEqual(subCaps, null);
+assert.equal(subCaps.complete, true);
+assert.equal(isReusablePageTranscript(subCaps), true);
+assert.equal(subCaps.source, 'subtitles');
+await setCachedTranscript('https://sub.test/v', subCaps);
+const cachedSub = await getCachedTranscript('https://sub.test/v');
+assert.equal(cachedSub?.text, subCaps.text);
+assert.equal(cachedSub?.source, 'subtitles');
 
-console.log('ok audio cache, rejects subtitle sources and legacy cache');
+const subSummary = await summarizeTranscript({
+  text: subCaps.text,
+  title: 'subtitle fixture',
+  model: {},
+  complete: async () => '要点：字幕总结。\n\n00:00 开场',
+});
+assert.match(subSummary, /字幕总结/);
+
+console.log('ok audio & subtitle cache, rejects legacy cache and summarizes correctly');

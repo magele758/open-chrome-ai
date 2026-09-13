@@ -128,4 +128,53 @@ await assert.rejects(
 );
 assert.equal((await ensureMediaHelper({ fetchImpl: stillDown, startImpl: async () => {} })).ok, false);
 
-console.log('PASS full acquisition, silent segments, offsets, failure/cancel cleanup, reject subtitle-only, untruncated cache, whole-document summary, helper auto-start');
+// Subtitle-first priority test:
+{
+  let subDeleted = 0;
+  const subStatuses = [];
+  const subFetch = async (url, options = {}) => {
+    if (options.method === 'POST') return Response.json({ id });
+    if (options.method === 'DELETE') { subDeleted++; return Response.json({ ok: true }); }
+    return Response.json({
+      status: 'ready',
+      duration: 120,
+      subtitles: [
+        { id: 'sub:0', start: 0.5, end: 3.2, src: 'Hello from native subtitles' },
+        { id: 'sub:1', start: 3.5, end: 6.8, src: 'This is fast and skips ASR' },
+      ],
+      parts: [{ index: 0, start: 0, duration: 120 }],
+    });
+  };
+  const noAsr = { preset: 'none', baseUrl: '' };
+  const subResult = await acquireFullTranscript({
+    url: 'https://video.test/with-sub',
+    asr: noAsr,
+    fetchImpl: subFetch,
+    onProgress: p => subStatuses.push(p),
+  });
+  assert.equal(subResult.complete, true);
+  assert.equal(subResult.source, 'subtitles');
+  assert.equal(subResult.duration, 120);
+  assert.equal(subResult.cues.length, 2);
+  assert.match(subResult.text, /Hello from native subtitles/);
+  assert.match(subResult.text, /skips ASR/);
+  assert.equal(subDeleted, 1, 'subtitle job cleans up via DELETE');
+  assert(subStatuses.some(s => String(s.hint).includes('字幕优先')));
+
+  // Subtitle missing and ASR not configured throws helpful error
+  const noSubFetch = async (url, options = {}) => {
+    if (options.method === 'POST') return Response.json({ id });
+    if (options.method === 'DELETE') return Response.json({ ok: true });
+    return Response.json({
+      status: 'ready',
+      duration: 60,
+      parts: [{ index: 0, start: 0, duration: 60 }],
+    });
+  };
+  await assert.rejects(
+    acquireFullTranscript({ url: 'https://video.test/no-sub', asr: noAsr, fetchImpl: noSubFetch }),
+    /当前视频未检测到字幕，请在设置中配置语音识别（ASR）后重新提取。/,
+  );
+}
+
+console.log('PASS full acquisition, silent segments, offsets, failure/cancel cleanup, reject subtitle-only, untruncated cache, whole-document summary, helper auto-start, subtitle-first priority');
