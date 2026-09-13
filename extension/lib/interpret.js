@@ -1,3 +1,4 @@
+import { transcribeInterpretSlice } from "./interpret-asr.js";
 import { playFollowingVideo } from "./live-audio-playback.js";
 import { openInterpretSource } from "./downloaded-audio-source.js";
 import { debugId, debugLog } from "./debug-log.js";
@@ -8,9 +9,9 @@ import { debugId, debugLog } from "./debug-log.js";
 
 import { injectVideo, injectPageAudio, sleep } from "./chrome.js";
 import { recordPageSlice } from "./tab-audio.js";
-import { collapseRollingCues, filenameForMime, transcribeAudio } from "./asr.js";
+import { collapseRollingCues } from "./asr.js";
 import { completeChat } from "./openai.js";
-import { checkSpeechText, hasRunawayRepetition, isWeakSpeechText, isWhisperHallucination } from "./speech-quality.js";
+import { checkSpeechText, isWeakSpeechText, isWhisperHallucination } from "./speech-quality.js";
 import { isAsrReady, isModelReady, isTtsReady, resolveModel } from "./storage.js";
 import { assessVoiceQuality, isQuietBlob, recordSlice } from "./tab-audio-record.js";
 import { createInterpretPipeline } from "./interpret-pipeline.js";
@@ -634,14 +635,9 @@ export async function runInterpret(opts) {
         if (!ownRef && item.blob) ownRef = await voiceRefFromBlob(item.blob);
         s.throwIfAborted();
         if (ownRef) rememberSlice(ownRef, { start: item.start, end: item.end });
-        const segments = await withInterpretDeadline(requestSignal => transcribeAudio(asr, item.blob, {
-          filename: filenameForMime(item.mime), signal: requestSignal, allowEmpty: true, trace,
-        }), s);
+        const segments = await transcribeInterpretSlice(asr, item, { signal: s, trace });
         const src = stripTimeline(joinSegmentText(segments));
         const sliceSeconds = Number(item.end) - Number(item.start);
-        if (hasRunawayRepetition(src)) {
-          throw new Error("语音识别出现异常重复，已跳过本段，继续听下一段。");
-        }
         const isHallucination = isWhisperHallucination(src, { sliceSeconds, segments });
         if (!src || isWeakSpeechText(src, sliceSeconds) || isHallucination || signal.aborted || s.aborted) {
           debugLog("interpret.skipped", {
@@ -708,7 +704,7 @@ export async function runInterpret(opts) {
         handleSeek(st, { audioChunk: true });
         noteUserOverride(st);
         if (item?.trace?.generation !== pipeline.generation) return;
-        await resumeSystemHoldIfAllowed();
+        if (!item?.dubbed || !item?.blob || typeof Audio === "undefined") await resumeSystemHoldIfAllowed();
       }
       if (!item?.dubbed || !item?.blob || typeof Audio === "undefined") {
         const action = await waitForLineClock({
@@ -735,7 +731,9 @@ export async function runInterpret(opts) {
           : (openingReady >= 4 ? 2.5 : DISPLAY_LATE_GRACE_SECONDS);
         if (isTooLateForDub(progressTime(live), item, lateGrace)) {
           debugLog("playback.delayed", { ...item.trace, videoTime: progressTime(live) });
-          if (!userPaused && !systemHold) await holdForSystem("sync-dub");
+          if (!userPaused) await holdForSystem("sync-dub");
+        } else if (independent) {
+          await resumeSystemHoldIfAllowed();
         }
         await playFollowingVideo({
           blob: item.blob, start: item.start, end: item.end, signal,
@@ -744,6 +742,10 @@ export async function runInterpret(opts) {
             const st = await injectVideo(tabId, "state");
             handleSeek(st, { audioChunk: true });
             noteUserOverride(st);
+            // Longer translations finish in full while the picture waits at their end.
+            if (independent && !userPaused && !systemHold && Number(st.currentTime) >= item.end) {
+              await holdForSystem("sync-dub");
+            }
             return { ...st, userPaused, systemHold: Boolean(systemHold) };
           },
           align: (state, audio) => ({
@@ -792,7 +794,8 @@ export async function runInterpret(opts) {
     if (playingLine?.start === lastPresented.start) return;
     if (lineDisplayAction(t, lastPresented, { expire: true }) !== "skip") return;
     lastPresented = null;
-    emit({ type: "status", mode, clearLine: true, message: "同传进行中，正在对轴…" });
+    emit({ type: "status", mode, clearLine: true,
+      message: systemHold ? "画面已暂停，正在等待下一段配音…" : "同传进行中…" });
   }
   const HOLD_OPENING = "opening";
   const HOLD_BACKLOG = "backlog";
@@ -833,15 +836,25 @@ export async function runInterpret(opts) {
     if (!silenced || st?.silenced === false) await ensureSilence();
   }
 
-  async function holdForSystem(reason) {
-    const paused = await injectVideo(tabId, "control", { action: "pause", system: true });
-    const verified = await injectVideo(tabId, "state");
-    if (!paused?.ok || !verified?.ok || !verified.paused) {
-      throw new Error(reason === HOLD_BACKLOG
-        ? "同传处理积压，无法暂停播放器；请暂停视频后重试。"
-        : "无法暂停播放器，同传已停止。");
-    }
-    systemHold = reason;
+  let transport = Promise.resolve();
+  function updateTransport(operation) {
+    const next = transport.then(operation);
+    transport = next.catch(() => {});
+    return next;
+  }
+
+  function holdForSystem(reason, needed = () => true) {
+    return updateTransport(async () => {
+      if (signal.aborted || userPaused || !needed()) return;
+      const paused = await injectVideo(tabId, "control", { action: "pause", system: true });
+      const verified = await injectVideo(tabId, "state");
+      if (!paused?.ok || !verified?.ok || !verified.paused) {
+        throw new Error(reason === HOLD_BACKLOG
+          ? "同传处理积压，无法暂停播放器；请暂停视频后重试。"
+          : "无法暂停播放器，同传已停止。");
+      }
+      systemHold = reason;
+    });
   }
 
   function noteUserOverride(st) {
@@ -853,11 +866,16 @@ export async function runInterpret(opts) {
     }
   }
 
-  async function resumeSystemHoldIfAllowed() {
-    if (userPaused || !systemHold || signal.aborted) return;
-    if (capture?.pageAudio || pageTapStarted) await injectPageAudio(tabId, "take");
-    await playTab(tabId, false);
-    systemHold = "";
+  function resumeSystemHoldIfAllowed() {
+    return updateTransport(async () => {
+      const live = await injectVideo(tabId, "state");
+      noteUserOverride(live);
+      if (userPaused || !systemHold || signal.aborted) return;
+      if (capture?.pageAudio || pageTapStarted) await injectPageAudio(tabId, "take");
+      const played = await playTab(tabId, false);
+      if (!played?.ok || played.paused) throw new Error("播放器未能恢复播放，请点击视频播放后重试。");
+      systemHold = "";
+    });
   }
 
   function progressTime(st) {
@@ -908,11 +926,6 @@ export async function runInterpret(opts) {
       if (err?.name === "AbortError") throw err;
       return null;
     }
-  }
-
-  async function rememberVoice(blob, range) {
-    const ref = await voiceRefFromBlob(blob);
-    return rememberSlice(ref, range);
   }
 
   async function captureOpeningSlice(cursor) {
@@ -990,6 +1003,7 @@ export async function runInterpret(opts) {
   }
 
   let clockAlive = false;
+  let clockError = null;
   let monitorClock = Promise.resolve();
 
   try {
@@ -1027,6 +1041,16 @@ export async function runInterpret(opts) {
           if (live?.ok) {
             handleSeek(live, { audioChunk: true });
             noteUserOverride(live);
+            if (independent && pipeline.buffering && pipeline.pending > 0 && !userPaused && (!systemHold || !live.paused)) {
+              try {
+                await holdForSystem(HOLD_BACKLOG, () => pipeline.buffering && pipeline.pending > 0);
+              } catch (error) {
+                clockError = error;
+                controller.abort();
+                break;
+              }
+              if (systemHold) status(`画面已暂停，正在缓冲 ${openingReady} 段配音…`);
+            }
             maybeClearStale(progressTime(live));
           }
         } catch { /* tab may have closed */ }
@@ -1058,10 +1082,6 @@ export async function runInterpret(opts) {
         handleSeek(st, { audioChunk: true });
         noteUserOverride(st);
         await applySpeaker(st);
-        if (pipeline.buffering && pipeline.pending > 0 && !userPaused && !systemHold) {
-          await holdForSystem(HOLD_BACKLOG);
-          status(`画面已暂停，正在缓冲 ${openingReady} 段配音…`);
-        }
         // The producer reads downloaded audio without advancing the video.
         if (sourceCursor >= source.duration) break;
         const maxLookaheadSec = Math.max(80, openingReady * CHUNK_SECONDS * 3);
@@ -1134,9 +1154,10 @@ export async function runInterpret(opts) {
       // Yield even when a custom capture source resolves immediately.
       await sleep(0);
     }
-    clockAlive = false;
+    // Keep the transport monitor alive while the last ASR/TTS jobs drain.
     // Finish the final text segments on natural end; explicit stop cancels them.
     await pipeline.finish();
+    if (clockError) throw clockError;
 
     let fullAudio = null;
     let archive = null;

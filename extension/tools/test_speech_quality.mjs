@@ -6,7 +6,7 @@ const example = '社会,我们只能有两个研究的研究仅仅仅仅仅仅�
 for (const text of [example, '这就是原因。'.repeat(6), 'Thank you for watching. '.repeat(4), 'study '.repeat(8)]) {
   assert.equal(hasRunawayRepetition(text), true, text);
 }
-for (const text of ['仅仅是两个研究。', '非常非常重要', '不，不，不是这样。', '研究的研究方法需要改进。', 'very very important', 'The study studies how people study.', '哈哈哈哈', '', '1234567890']) {
+for (const text of ['仅仅是两个研究。', '非常非常重要', '不，不，不是这样。', '研究的研究方法需要改进。', 'very very important', 'This matters. This matters. This matters.', 'The study studies how people study.', '哈哈哈哈', '', '1234567890']) {
   assert.equal(hasRunawayRepetition(text), false, text);
 }
 

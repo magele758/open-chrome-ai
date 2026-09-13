@@ -9,7 +9,7 @@ export function hasRunawayRepetition(text) {
     const unit = [...match[1]].length;
     const length = [...match[0]].length;
     const repeats = length / unit;
-    if (unit === 1 ? repeats >= 5 : unit <= 3 ? repeats >= 4 && length >= 8 : repeats >= 3 && length >= 12) return true;
+    if (unit === 1 ? repeats >= 5 : unit <= 3 ? repeats >= 4 && length >= 8 : repeats >= 4 && length >= 24) return true;
   }
   return false;
 }

@@ -161,3 +161,22 @@ assert(out[0].text === "hello" && out[1].start === 1.5, "transcribeAudio segment
 console.log("PASS asr");
 
 assert(!("interpretUseCaptions" in normalizeSettings({ interpretUseCaptions: true })), "legacy caption switch removed");
+
+const forms = [];
+globalThis.fetch = async (_url, opts) => {
+  forms.push(opts.body);
+  return forms.length === 1
+    ? new Response('unsupported response_format', { status: 400 })
+    : Response.json({ text: 'hello' });
+};
+await transcribeAudio({ baseUrl: 'https://asr.test/v1', model: 'w', language: 'en' }, wav);
+assert(forms.length === 2, 'unsupported verbose format falls back once');
+assert(forms.every(form => form.get('language') === 'en'), 'language survives format fallback');
+assert(forms[1].get('response_format') === 'json', 'fallback uses json');
+let failedRequests = 0;
+globalThis.fetch = async () => { failedRequests++; return new Response('unauthorized', { status: 401 }); };
+try {
+  await transcribeAudio({ baseUrl: 'https://asr.test/v1', model: 'w' }, wav);
+  throw new Error('expected auth failure');
+} catch (error) { assert(/^401/.test(error.message), 'surface auth error'); }
+assert(failedRequests === 1, 'auth errors must not trigger format negotiation');

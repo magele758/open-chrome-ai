@@ -253,14 +253,17 @@ async function transcribeAudioRequest(model, blob, { filename, signal, allowEmpt
       model,
       blob,
       name,
-      { response_format: "verbose_json" },
+      { response_format: "verbose_json", language: asrLanguageValue(model) },
       signal,
     );
     const segs = segmentsFromTranscription(json);
     if (segs.length || allowEmpty) return segs;
   } catch (err) {
     if (err?.name === "AbortError") throw err;
-    const json = await postTranscription(model, blob, name, { response_format: "json" }, signal);
+    // Format negotiation only: retrying network/auth/server failures here doubles
+    // latency and hides them from the caller's bounded recovery policy.
+    if (!/^(?:400|415|422)\b/.test(err?.message || '')) throw err;
+    const json = await postTranscription(model, blob, name, { response_format: "json", language: asrLanguageValue(model) }, signal);
     const segs = segmentsFromTranscription(json);
     if (segs.length || allowEmpty) return segs;
     throw err;

@@ -315,7 +315,7 @@ function mockRecordSlice() {
 
 console.log('ok audio-only interpret: TTS reference, opening buffer, user pause, no new page');
 
-// A rejected ASR segment must never reach display/TTS, or stall the next segment.
+// Retry a looping ASR result before dropping the original slice.
 {
   const player = { currentTime: 0, duration: 30, paused: false, ended: false, advance: 0 };
   installChrome(player);
@@ -334,12 +334,12 @@ console.log('ok audio-only interpret: TTS reference, opening buffer, user pause,
       if (event.type === 'line') player.ended = true;
     },
   });
-  assert(events.some(e => e.type === 'warn' && /语音识别出现异常重复/.test(e.message)));
+  assert(!events.some(e => e.type === 'warn' && /语音识别出现异常重复/.test(e.message)), 'successful ASR retry should not report a dropped slice');
   assert(result.lines.length > 0, 'continues after rejected segment');
   assert(result.lines.every(line => !line.src.includes('仅')));
   assert(dubbed.length > 0 && dubbed.every(text => !text.includes('仅')));
 }
-console.log('PASS bad ASR skipped before display/TTS; subsequent speech still completes');
+console.log('PASS bad ASR recovered before display/TTS; subsequent speech still completes');
 
 function mockAsrAndTranslate(text = 'Hello from the speaker now.') {
   return async (_url, options = {}) => {
@@ -576,3 +576,49 @@ console.log('PASS seek revision clears the line and realigns');
   console.log('PASS custom bufferSegments=5 buffers 5 complete dubs before starting playback');
 }
 
+
+// Downloaded EOF must not disable buffering/transport control while TTS is pending.
+{
+  const player = { currentTime: 0, duration: 15, paused: false, advance: 0, userPaused: false };
+  installChrome(player);
+  globalThis.fetch = async () => Response.json({ segments: [{ start: 0, end: 5, text: '这是完整的一句话。' }] });
+  const audios = [], nextDub = gate(), abort = new AbortController();
+  const OriginalAudio = globalThis.Audio;
+  globalThis.Audio = class {
+    constructor() { this.paused = true; this.readyState = 4; this.duration = 8; this.currentTime = 0; audios.push(this); }
+    async play() { this.paused = false; }
+    pause() { this.paused = true; }
+    removeAttribute() {}
+    load() {}
+  };
+  let dubs = 0, slices = 0;
+  const running = runInterpret({ tabId: 1, signal: abort.signal, bufferSegments: 1,
+    settings: { text: textSettings, asr: { baseUrl: 'https://asr.test/v1', model: 'w' }, tts: { baseUrl: 'https://tts.test' } },
+    openSource: async () => ({ duration: 15, close: async () => {}, slice: async start => {
+      slices++; return { blob: loudWav(), mime: 'audio/wav', start, end: start + 5, seconds: 5 };
+    } }),
+    synthesizeTts: async () => { if (++dubs === 2) await nextDub.promise; return { blob: loudWav() }; },
+  });
+  try {
+    await waitUntil(() => slices === 3 && audios[0] && !audios[0].paused);
+    player.currentTime = 5;
+    await waitUntil(() => player.paused);
+    assert(!audios[0].paused, 'long translation continues while picture waits at sentence boundary');
+    audios[0].onended();
+    await waitUntil(() => dubs === 2);
+    await waitMs(350);
+    assert(player.paused, 'EOF must keep monitoring and pause picture during TTS starvation');
+    player.userPaused = true;
+    nextDub.resolve();
+    await waitUntil(() => audios.length === 2);
+    await waitMs(150);
+    assert(player.paused && audios[1].paused, 'refill must respect user pause');
+    player.userPaused = false;
+    // A user resumes the actual player too.
+    player.paused = false;
+    await waitUntil(() => !audios[1].paused);
+  } finally {
+    abort.abort(); nextDub.resolve(); await running; globalThis.Audio = OriginalAudio;
+  }
+  console.log('PASS EOF starvation, long dub picture hold, refill and user pause');
+}

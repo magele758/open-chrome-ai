@@ -1973,9 +1973,9 @@ function ttsFields(tts) {
     </label>
     <label class="field">同传缓冲深度
       <select data-k="tts.bufferSegments">
-        <option value="3" ${Number(tts.bufferSegments) === 3 ? "selected" : ""}>3 段（快速起播 · 约 15 秒）</option>
-        <option value="5" ${(!tts.bufferSegments || Number(tts.bufferSegments) === 5) ? "selected" : ""}>5 段（推荐流畅 · 约 25 秒防中断）</option>
-        <option value="8" ${Number(tts.bufferSegments) === 8 ? "selected" : ""}>8 段（深度缓冲 · 约 40 秒抗抖动）</option>
+        <option value="3" ${Number(tts.bufferSegments) === 3 ? "selected" : ""}>3 段（较快起播）</option>
+        <option value="5" ${(!tts.bufferSegments || Number(tts.bufferSegments) === 5) ? "selected" : ""}>5 段（均衡缓冲）</option>
+        <option value="8" ${Number(tts.bufferSegments) === 8 ? "selected" : ""}>8 段（更多缓冲）</option>
       </select>
     </label>
     <div class="tts-ref">
