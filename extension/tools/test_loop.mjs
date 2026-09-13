@@ -57,3 +57,42 @@ if (plain.reason !== "stop" || plain.text !== "直出" || deltas.join("") !== "�
 }
 
 console.log("PASS", out.reason, events);
+
+// A tool-hungry model must spend the last allowed call answering with the
+// previous tool result; it must never execute a new batch on that last call.
+const assert = (await import('node:assert/strict')).default;
+let executions = 0, modelCalls = 0;
+const boundaryEvents = [];
+const boundary = createAgentLoop({
+  maxTurns: 3, systemPrompt: 'Summarize the page.',
+  tools: [{ name: 'extract_page', execute: async () => { executions++; return `ARTICLE_EVIDENCE_${executions}`; } }],
+  model: { async runTurn({ messages, tools }) {
+    modelCalls++;
+    if (modelCalls < 3) return { content: 'Looking for more.', toolCalls: [{ id: `b${modelCalls}`, name: 'extract_page', arguments: '{}' }] };
+    assert.equal(tools.length, 0);
+    assert.ok(messages.every(m => m.role !== 'tool' && !m.tool_calls));
+    assert.ok(messages.some(m => String(m.content).includes('ARTICLE_EVIDENCE_2')));
+    assert.match(messages.at(-1).content, /最后一轮/);
+    return { content: 'Summary from the available evidence.', usage: { promptTokens: 10, completionTokens: 5 } };
+  } },
+});
+const bounded = await boundary.run('Summarize', { onEvent: e => boundaryEvents.push(e) });
+assert.equal(modelCalls, 3);
+assert.equal(executions, 2);
+assert.equal(bounded.reason, 'max_turns');
+assert.equal(bounded.text, 'Summary from the available evidence.');
+assert.equal(bounded.metrics.totalTokens, 15);
+assert.equal(bounded.history.at(-1).content, bounded.text);
+assert.equal(boundaryEvents.at(-1).done, true);
+for (const broken of [{ content: '', toolCalls: [] }, { content: 'I will keep searching.', toolCalls: [{ name: 'extract_page', arguments: '{}' }] }]) {
+  const forced = await createAgentLoop({ maxTurns: 1, systemPrompt: 'test', tools: [{ name: 'extract_page', execute: () => { throw new Error('must not run'); } }], model: { runTurn: async () => broken } }).run('summarize');
+  assert.match(forced.text, /尚未得到可交付的完整回答/);
+  assert.equal(forced.history.at(-1).tool_calls, undefined);
+  assert.equal(forced.traceSteps.some(s => s.type === 'tool_exec'), false);
+}
+const abort = new AbortController();
+abort.abort();
+const stopped = await boundary.run('stop', { signal: abort.signal });
+assert.equal(stopped.reason, 'abort');
+assert.equal(modelCalls, 3);
+console.log('PASS bounded final answer, malformed final output, and abort');

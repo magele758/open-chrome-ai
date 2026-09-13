@@ -2547,9 +2547,12 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     tools = createAgentTools({
       getTabId: () => state.tab?.id,
       getWindowId: () => state.tab?.windowId,
-      refreshPack: async () => {
-        await refreshTab();
-        return state.pack;
+      refreshPack: async (tabId) => {
+        // Always re-extract the task's page. refreshTab can return a stale
+        // pack during transcription, or switch targets when the user browses.
+        const pack = await loadTabPack(tabId);
+        if (state.tab?.id === tabId) state.pack = { ...state.pack, ...pack };
+        return pack;
       },
       capture: captureTab,
       setImage: (url) => {

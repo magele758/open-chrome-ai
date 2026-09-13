@@ -57,7 +57,7 @@ function obj(properties, required = []) {
 }
 
 function tabIdProp() {
-  return { type: "integer", description: "标签 id；省略则用当前侧栏绑定的标签" };
+  return { type: "integer", minimum: 1, description: "真实标签 id（来自 list_tabs）；省略则用本次任务绑定的标签，不要填 0" };
 }
 
 function formatPack(pack) {
@@ -65,8 +65,8 @@ function formatPack(pack) {
     return "未能抽取到正文。页面可能未加载完、需要登录，或是受限页。";
   }
   const kind =
-    pack.kind === "x" ? "类型：X 帖子" : pack.kind === "pdf" ? "类型：PDF" : "类型：网页";
-  const limit = pack.kind === "pdf" ? Math.min(PDF_MAX_CHARS, 12000) : 9000;
+    pack.kind === "x" ? (pack.article ? "类型：X 长文章" : "类型：X 帖子") : pack.kind === "pdf" ? "类型：PDF" : "类型：网页";
+  const limit = pack.article ? 60000 : pack.kind === "pdf" ? Math.min(PDF_MAX_CHARS, 12000) : 9000;
   const head = [
     kind,
     pack.title ? `标题：${pack.title}` : "",
@@ -74,6 +74,7 @@ function formatPack(pack) {
     pack.pdfUrl && pack.pdfUrl !== pack.url ? `PDF：${pack.pdfUrl}` : "",
     pack.pdfPages ? `页数：${pack.pdfPages}` : "",
     pack.pdfTruncated ? "正文已截断" : "",
+    pack.textTruncated ? "正文超过提取上限，仅包含部分内容，不可声称已阅读全文。" : "",
     pack.selection ? `选区：${pack.selection}` : "",
   ].filter(Boolean);
   const body = (pack.text || "").slice(0, limit);
@@ -132,7 +133,7 @@ export function createAgentTools(ctx) {
         if (!tabId) return "没有可操作的标签。";
         const current = ctx.getTabId?.();
         if (!args?.tabId || tabId === current) {
-          const pack = await ctx.refreshPack();
+          const pack = await ctx.refreshPack(tabId);
           return formatPack(pack);
         }
         const tab = await chrome.tabs.get(tabId);

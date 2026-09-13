@@ -113,7 +113,30 @@ export async function extractPage() {
   }
 
   async function extractX() {
-    await waitFor(() => document.querySelector('article[data-testid="tweet"]'), 2500);
+    // X Articles use a rich-text article, not tweetText. They can be open on
+    // /status/ URLs too, with ordinary tweet replies elsewhere in the DOM.
+    const articleBody = () => [...document.querySelectorAll(
+      '[data-testid="twitterArticleRichTextView"], [data-testid="twitterArticleReadView"], article',
+    )].find(el => visible(el) && !el.closest('[data-testid="placementTracking"]') && (
+      el.matches('[data-testid="twitterArticleRichTextView"]') ||
+      el.querySelector('.longform-header-two, .longform-header-one, [data-testid="twitterArticleRichTextView"]')
+    ) && clean(el.innerText).length > 80);
+    await waitFor(() => articleBody() || document.querySelector('article[data-testid="tweet"]'), 2500);
+    const longform = articleBody();
+    if (longform) {
+      const body = longform.querySelector('[data-testid="twitterArticleRichTextView"]') || longform;
+      const copy = body.cloneNode(true);
+      copy.querySelectorAll('script, style, nav, button, [role="button"], [data-testid="tweet"], [data-testid="placementTracking"]').forEach(el => el.remove());
+      // textContent on a clone works even when the original is off-screen;
+      // insert boundaries because rich-text paragraphs are often divs.
+      copy.querySelectorAll('p, div, h1, h2, h3, h4, li, blockquote, pre, br').forEach(el => el.append('\n'));
+      const text = clean(copy.textContent);
+      return {
+        text: text.slice(0, 60000), kind: 'x', article: true,
+        textTruncated: text.length > 60000, textLength: text.length,
+        quotes: [], videoIsPrimary: false,
+      };
+    }
     const articles = [...document.querySelectorAll('article[data-testid="tweet"]')].filter(
       (el) => !el.closest('[data-testid="placementTracking"]') && visible(el),
     );
@@ -128,7 +151,8 @@ export async function extractPage() {
     }
 
     if (!main) {
-      const fallback = metaFallback();
+      const metadata = metaFallback();
+      const fallback = /^(X|Twitter)$/i.test(metadata) ? '' : metadata;
       const login = Boolean(document.querySelector('a[href="/login"], [data-testid="loginButton"]'));
       return {
         text:
@@ -330,7 +354,7 @@ export async function extractPage() {
       hostname,
     );
   const largePlayer = Boolean(videoMeta && (videoMeta.width >= 240 || videoMeta.height >= 180));
-  const videoIsPrimary = Boolean(extracted.videoIsPrimary) || (hostPrimaryVideo && Boolean(videoMeta)) || largePlayer;
+  const videoIsPrimary = !extracted.article && (Boolean(extracted.videoIsPrimary) || (hostPrimaryVideo && Boolean(videoMeta)) || largePlayer);
   const pdfHints = findPdfHints();
 
   return {
@@ -346,6 +370,9 @@ export async function extractPage() {
     videoIndex: videoMeta ? videoMeta.i : -1,
     videoIsPrimary,
     kind: extracted.kind || "generic",
+    article: Boolean(extracted.article),
+    textTruncated: Boolean(extracted.textTruncated),
+    textLength: extracted.textLength || extracted.text?.length || 0,
     ...pdfHints,
   };
 }

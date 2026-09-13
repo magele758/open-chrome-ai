@@ -470,6 +470,8 @@ docs/               调研、PRD、交互、技术方案
 
 ```bash
 node extension/tools/test_loop.mjs
+npm install --prefix .tmp/x-article-tests --no-audit --no-fund jsdom
+node extension/tools/test_x_article.mjs
 node extension/tools/test_tools.mjs
 node extension/tools/test_sessions.mjs
 node extension/tools/test_context.mjs
