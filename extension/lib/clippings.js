@@ -155,8 +155,26 @@ export function getLocalDateString(timestamp = Date.now()) {
 }
 
 /**
+ * Replaces date tokens in folder template (e.g. YYYY, MM, M月, {YYYY}, {M}).
+ */
+export function formatFolderWithDate(folder, timestamp = Date.now()) {
+  if (!folder || typeof folder !== "string") return "";
+  const d = new Date(timestamp);
+  const year = String(d.getFullYear());
+  const month2 = String(d.getMonth() + 1).padStart(2, "0");
+  const month1 = String(d.getMonth() + 1);
+  const day2 = String(d.getDate()).padStart(2, "0");
+  return folder
+    .replace(/\{YYYY\}|YYYY/g, year)
+    .replace(/\{YY\}|YY/g, year.slice(2))
+    .replace(/\{MM\}|MM/g, month2)
+    .replace(/\{M\}|M月/g, `${month1}月`)
+    .replace(/\{DD\}|DD/g, day2);
+}
+
+/**
  * Computes the relative path for a daily note in the Obsidian vault.
- * e.g. Daily/2026-09-14.md
+ * e.g. Daily/2026-09-14.md or 日记/2026.9月/2026-09-14.md
  */
 export function dailyNoteRelPath(folder = "Daily", timestamp = Date.now(), libraryRoot = "") {
   let clean = String(folder ?? "").trim();
@@ -166,6 +184,8 @@ export function dailyNoteRelPath(folder = "Daily", timestamp = Date.now(), libra
       clean = clean.slice(normLib.length);
     }
   }
+  clean = clean.replace(/^[\\/]+|[\\/]+$/g, "");
+  clean = formatFolderWithDate(clean, timestamp);
   clean = clean.replace(/^[\\/]+|[\\/]+$/g, "");
   const day = getLocalDateString(timestamp);
   return clean ? `${clean}/${day}.md` : `${day}.md`;

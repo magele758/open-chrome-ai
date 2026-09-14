@@ -26,6 +26,9 @@ assert.equal(dayStr, "2026-09-14", "getLocalDateString formats YYYY-MM-DD");
 assert.equal(dailyNoteRelPath("Daily", fixedDate.getTime()), "Daily/2026-09-14.md");
 assert.equal(dailyNoteRelPath("/日记/工作/", fixedDate.getTime()), "日记/工作/2026-09-14.md");
 assert.equal(dailyNoteRelPath("/Users/penglei/Notes/Daily", fixedDate.getTime(), "/Users/penglei/Notes"), "Daily/2026-09-14.md");
+assert.equal(dailyNoteRelPath("日记/2026.9月", fixedDate.getTime()), "日记/2026.9月/2026-09-14.md");
+assert.equal(dailyNoteRelPath("日记/YYYY.M月", fixedDate.getTime()), "日记/2026.9月/2026-09-14.md");
+assert.equal(dailyNoteRelPath("日记/{YYYY}.{MM}月", fixedDate.getTime()), "日记/2026.09月/2026-09-14.md");
 assert.equal(dailyNoteRelPath("", fixedDate.getTime()), "2026-09-14.md");
 assert.equal(dailyNoteRelPath(null, fixedDate.getTime()), "2026-09-14.md");
 
