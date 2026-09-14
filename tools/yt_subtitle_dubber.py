@@ -406,13 +406,13 @@ def calculate_duration_factor(zh_text, target_duration_s, max_available_s=None, 
     # Ensure overall tempo stays within natural human limits [0.75x, 1.35x]
     effective_target_s = max(natural_est_s * 0.75, min(natural_est_s * 1.35, effective_target_s))
 
-    # Target duration factor for Index-TTS (clamped to 0.70x - 1.35x)
+    # Target duration factor for Index-TTS (clamped to 0.90x - 1.15x for natural human tone)
     raw_factor = effective_target_s / natural_est_s
-    clamped_factor = round(max(0.70, min(1.35, raw_factor)), 2)
+    clamped_factor = round(max(0.90, min(1.15, raw_factor)), 2)
 
-    # Rate percentage for Edge-TTS
+    # Rate percentage for Edge-TTS: strictly keep within natural human conversational cadence (-8% to +15%)
     rate_val = round(((natural_est_s / max(0.5, effective_target_s)) - 1.0) * 100)
-    rate_val = max(-22, min(25, rate_val))
+    rate_val = max(-8, min(15, rate_val))
     rate_str = f"{rate_val:+d}%"
 
     if return_effective:
@@ -613,9 +613,10 @@ async def synthesize_flow_block(block, voice, output_wav, tts_engine="edge", clo
     target_fill_s = video_dur_s * 0.88
     speed_ratio = compact_dur_s / max(0.5, target_fill_s)
 
-    # In-flight micro-adjust between 0.88x and 1.15x to smoothly hug the video timeline
-    calibrated_tempo = min(1.15, max(0.88, speed_ratio))
-    filter_arg = f"atempo={calibrated_tempo:.3f}" if abs(calibrated_tempo - 1.0) > 0.02 else "anull"
+    # In-flight micro-adjust strictly within [0.96x, 1.05x] to preserve 100% natural human cadence;
+    # NEVER artificially drag out or slow down speech into slow motion!
+    calibrated_tempo = min(1.05, max(0.96, speed_ratio))
+    filter_arg = f"atempo={calibrated_tempo:.3f}" if abs(calibrated_tempo - 1.0) > 0.03 else "anull"
 
     run_cmd([
         "ffmpeg", "-y", "-i", temp_compact,
