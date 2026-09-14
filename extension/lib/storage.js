@@ -78,6 +78,7 @@ export function defaultSettings() {
     hitlMode: "balanced",
     hitlTimeoutSeconds: 30,
     skillsEnabled: false,
+    dailyNotesFolder: "Daily",
     shortcuts: [],
   };
 }
@@ -85,6 +86,9 @@ export function defaultSettings() {
 export function normalizeSettings(raw) {
   const base = defaultSettings();
   const merged = { ...base, ...(raw || {}) };
+  merged.dailyNotesFolder = typeof raw?.dailyNotesFolder === "string"
+    ? raw.dailyNotesFolder.trim().replace(/^\/+|\/+$/g, "")
+    : (base.dailyNotesFolder || "Daily");
   merged.text = { ...base.text, ...(raw?.text || {}) };
   merged.text.summaryInputTokens = normalizeSummaryInputTokens(merged.text.summaryInputTokens);
   merged.multimodal = { ...base.multimodal, ...(raw?.multimodal || {}) };

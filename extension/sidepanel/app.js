@@ -28,6 +28,7 @@ import {
   videoIdentity,
 } from "../lib/library.js";
 import {
+  dailyNoteRelPath,
   executeClipping,
   getClippingsForUrl,
   deleteClippingRecord,
@@ -1527,6 +1528,11 @@ function openClipModal(msg) {
   if (tagsInput) tagsInput.value = "";
   if (preview) preview.textContent = msg.text || "";
 
+  const dailyFolder = state.settings?.dailyNotesFolder ?? "Daily";
+  const dailyRel = dailyNoteRelPath(dailyFolder);
+  const dailyPreview = $("clip-daily-path-preview");
+  if (dailyPreview) dailyPreview.textContent = dailyRel;
+
   modal.classList.remove("hidden");
   setTimeout(() => noteInput?.focus(), 60);
 }
@@ -1547,7 +1553,9 @@ async function submitClipModal() {
   const note = $("clip-input-note")?.value?.trim() || "";
   const tags = $("clip-input-tags")?.value?.trim() || "";
   const saveObsidian = $("clip-check-obsidian")?.checked ?? true;
+  const saveDaily = $("clip-check-daily")?.checked ?? true;
   const saveBookmark = $("clip-check-bookmark")?.checked ?? true;
+  const dailyFolder = state.settings?.dailyNotesFolder ?? "Daily";
 
   const confirmBtn = $("btn-clip-confirm");
   if (confirmBtn) {
@@ -1556,7 +1564,7 @@ async function submitClipModal() {
   }
 
   try {
-    if (saveObsidian) {
+    if (saveObsidian || saveDaily) {
       await ensureLibraryForWrite();
     }
     const res = await executeClipping({
@@ -1566,6 +1574,8 @@ async function submitClipModal() {
       content: msg.text || "",
       tags,
       saveObsidian,
+      saveDaily,
+      dailyFolder,
       saveBookmark,
     });
 
@@ -1579,6 +1589,15 @@ async function submitClipModal() {
         notices.push(`Obsidian 写入失败：${res.obsidianError}`);
       }
     }
+    if (saveDaily) {
+      if (res.clipping.dailySkipped) {
+        notices.push("今日日记已存在此采摘（已自动去重）");
+      } else if (res.clipping.dailyPath) {
+        notices.push(`已追加至今日日记 ${res.clipping.dailyPath}`);
+      } else if (res.dailyError) {
+        notices.push(`日记追加失败：${res.dailyError}`);
+      }
+    }
     if (saveBookmark) {
       if (res.clipping.bookmarkId) {
         notices.push("已加入「PageLens 智库」书签");
@@ -1587,7 +1606,7 @@ async function submitClipModal() {
       }
     }
     if (!notices.length) notices.push("已记录剪藏");
-    flashStatus(notices.join(" · "), !res.obsidianError);
+    flashStatus(notices.join(" · "), !res.obsidianError && !res.dailyError);
 
     if (state.tab?.url) {
       checkSmartRecall(state.tab.url).catch(() => {});
@@ -1794,6 +1813,7 @@ function renderSettingsForm() {
   if ($("native-shell")) $("native-shell").checked = state.settings.nativeShell !== false;
   if ($("hitl-mode")) $("hitl-mode").value = state.settings.hitlMode || "balanced";
   if ($("skills-enabled")) $("skills-enabled").checked = skillsOn();
+  if ($("daily-notes-folder")) $("daily-notes-folder").value = state.settings.dailyNotesFolder ?? "Daily";
   syncSkillFolderControls();
   renderLibraryStatus();
   renderSkillFolderStatus();
@@ -3723,6 +3743,9 @@ function wire() {
     renderModelLine();
   });
   on("btn-save", "click", async () => {
+    if ($("daily-notes-folder")) {
+      state.settings.dailyNotesFolder = $("daily-notes-folder").value.trim();
+    }
     const pathErrors = await applyFolderPathsFromInputs();
     state.settings = await saveSettings(state.settings);
     applyUiFont(state.settings.uiFont);

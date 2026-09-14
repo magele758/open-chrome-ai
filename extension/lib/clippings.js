@@ -6,7 +6,7 @@
  * 3. Local storage index for URL-based smart recall & browsing
  */
 
-import { writeLibraryText } from "./library.js";
+import { readLibraryText, writeLibraryText } from "./library.js";
 
 export const CLIPPINGS_STORAGE_KEY = "pagelens_clippings";
 export const BOOKMARK_FOLDER_NAME = "PageLens 智库";
@@ -144,6 +144,125 @@ export async function writeClippingCard(clipping, { request = false } = {}) {
 }
 
 /**
+ * Returns local YYYY-MM-DD string.
+ */
+export function getLocalDateString(timestamp = Date.now()) {
+  const d = new Date(timestamp);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Computes the relative path for a daily note in the Obsidian vault.
+ * e.g. Daily/2026-09-14.md
+ */
+export function dailyNoteRelPath(folder = "Daily", timestamp = Date.now()) {
+  const clean = String(folder ?? "").trim().replace(/^\/+|\/+$/g, "");
+  const day = getLocalDateString(timestamp);
+  return clean ? `${clean}/${day}.md` : `${day}.md`;
+}
+
+/**
+ * Checks if a clipping is already present in existing daily note text.
+ */
+export function isClippingInDailyNote(existingText, clipping) {
+  if (!existingText || typeof existingText !== "string" || !clipping) return false;
+  const rawUrl = clipping.url ? String(clipping.url).trim() : "";
+  if (rawUrl) {
+    if (existingText.includes(rawUrl)) return true;
+    const norm = normalizeClippingUrl(rawUrl);
+    if (norm && existingText.includes(norm)) return true;
+    if (existingText.includes(`](${rawUrl})`)) return true;
+  }
+  if (clipping.id && existingText.includes(clipping.id)) {
+    return true;
+  }
+  if (clipping.title) {
+    const cleanTitle = String(clipping.title).trim();
+    if (cleanTitle) {
+      if (rawUrl && existingText.includes(`[${cleanTitle}](${rawUrl})`)) return true;
+      if (!rawUrl && (existingText.includes(`### 📌 ${cleanTitle}`) || existingText.includes(cleanTitle))) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Formats a clipping into an Obsidian daily note digest entry.
+ */
+export function formatDailyNoteEntry(clipping) {
+  const now = new Date(clipping.createdAt || Date.now());
+  const timeStr = [
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join(":");
+
+  const tags = Array.isArray(clipping.tags)
+    ? clipping.tags.filter(Boolean).map((t) => String(t).trim().replace(/^#/, ""))
+    : String(clipping.tags || "")
+        .split(/[,，\s]+/)
+        .map((t) => t.trim().replace(/^#/, ""))
+        .filter(Boolean);
+
+  const lines = [];
+  const linkText = clipping.url
+    ? `[${clipping.title || "未命名采摘"}](${clipping.url})`
+    : (clipping.title || "未命名采摘");
+  lines.push(`### 📌 ${linkText}`);
+  lines.push(`- ⏱️ **采摘时间**：${timeStr}`);
+  if (clipping.id) {
+    lines.push(`<!-- clipping_id: ${clipping.id} -->`);
+  }
+  if (tags.length) {
+    lines.push(`- 🏷️ **标签**：${tags.map((t) => `#${t}`).join(" ")}`);
+  }
+  if (clipping.note && clipping.note.trim()) {
+    lines.push(`> 💡 **我的思考**：${clipping.note.trim()}`);
+  }
+  if (clipping.content && clipping.content.trim()) {
+    lines.push("", clipping.content.trim());
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Appends clipping to today's daily journal note in Obsidian.
+ * If file does not exist, creates it. If exists, appends with deduplication.
+ */
+export async function appendClippingToDailyNote(clipping, { folder = "Daily", request = false } = {}) {
+  const relPath = dailyNoteRelPath(folder, clipping.createdAt);
+  const entryText = formatDailyNoteEntry(clipping);
+
+  let existing = null;
+  try {
+    const res = await readLibraryText(relPath, { request });
+    if (res?.ok) existing = res.text || "";
+  } catch {
+    existing = null;
+  }
+
+  // Deduplication check
+  if (existing !== null && isClippingInDailyNote(existing, clipping)) {
+    return { ok: true, path: relPath, skipped: true, reason: "duplicate" };
+  }
+
+  let finalContent = "";
+  if (existing === null) {
+    const day = getLocalDateString(clipping.createdAt);
+    finalContent = `# ${day}\n\n## 📌 内容采摘\n\n${entryText}\n`;
+  } else {
+    const trimmed = existing.trimEnd();
+    finalContent = `${trimmed}\n\n${entryText}\n`;
+  }
+
+  const written = await writeLibraryText(relPath, finalContent, { request });
+  return { ...written, path: relPath, skipped: false, created: existing === null };
+}
+
+/**
  * Finds the default bookmark root folder ID (usually '1' for bookmark bar).
  */
 async function defaultBookmarkParentId(parentId) {
@@ -265,6 +384,8 @@ export async function executeClipping({
   content = "",
   tags = [],
   saveObsidian = true,
+  saveDaily = false,
+  dailyFolder = "Daily",
   saveBookmark = true,
   createdAt = Date.now(),
 }) {
@@ -277,10 +398,13 @@ export async function executeClipping({
     tags: Array.isArray(tags) ? tags : String(tags || "").split(/[,，\s]+/).filter(Boolean),
     createdAt,
     obsidianPath: null,
+    dailyPath: null,
+    dailySkipped: false,
     bookmarkId: null,
   };
 
   let obsidianError = null;
+  let dailyError = null;
   let bookmarkError = null;
 
   if (saveObsidian) {
@@ -290,6 +414,17 @@ export async function executeClipping({
     } catch (err) {
       console.error("[pagelens] Obsidian card write failed:", err);
       obsidianError = err;
+    }
+  }
+
+  if (saveDaily) {
+    try {
+      const dRes = await appendClippingToDailyNote(clipping, { folder: dailyFolder, request: true });
+      clipping.dailyPath = dRes.path;
+      clipping.dailySkipped = dRes.skipped === true;
+    } catch (err) {
+      console.error("[pagelens] Obsidian daily note append failed:", err);
+      dailyError = err;
     }
   }
 
@@ -307,9 +442,10 @@ export async function executeClipping({
   await saveClippingRecord(clipping);
 
   return {
-    ok: !obsidianError,
+    ok: !obsidianError && !dailyError,
     clipping,
     obsidianError: obsidianError?.message || null,
+    dailyError: dailyError?.message || null,
     bookmarkError: bookmarkError?.message || null,
   };
 }

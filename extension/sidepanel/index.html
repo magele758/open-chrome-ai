@@ -125,6 +125,10 @@
                 写入 Obsidian 独立卡片 (<code>PageLens/clippings/</code>)
               </label>
               <label class="check">
+                <input type="checkbox" id="clip-check-daily" checked />
+                加入今日日记内容采摘 (<code id="clip-daily-path-preview">Daily/2026-09-14.md</code>)
+              </label>
+              <label class="check">
                 <input type="checkbox" id="clip-check-bookmark" checked />
                 同步到 Chrome 书签 (<code>PageLens 智库</code> 文件夹)
               </label>
@@ -225,6 +229,9 @@
           <input id="library-path" type="text" spellcheck="false" placeholder="/Users/…/Notes 或 ~/Obsidian" />
           <button class="secondary" type="button" id="btn-library-path">使用路径</button>
         </div>
+        <label class="field" style="margin-top:8px">日记目录（用于内容采摘追加，相对于文稿目录）
+          <input id="daily-notes-folder" type="text" spellcheck="false" placeholder="例如 Daily 或 日记，留空表示保存在根目录" />
+        </label>
       </div>
 
       <div class="block" id="block-skill-folder">
