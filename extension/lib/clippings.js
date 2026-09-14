@@ -158,8 +158,15 @@ export function getLocalDateString(timestamp = Date.now()) {
  * Computes the relative path for a daily note in the Obsidian vault.
  * e.g. Daily/2026-09-14.md
  */
-export function dailyNoteRelPath(folder = "Daily", timestamp = Date.now()) {
-  const clean = String(folder ?? "").trim().replace(/^\/+|\/+$/g, "");
+export function dailyNoteRelPath(folder = "Daily", timestamp = Date.now(), libraryRoot = "") {
+  let clean = String(folder ?? "").trim();
+  if (libraryRoot) {
+    const normLib = String(libraryRoot).replace(/[\\/]+$/, "");
+    if (clean.startsWith(normLib)) {
+      clean = clean.slice(normLib.length);
+    }
+  }
+  clean = clean.replace(/^[\\/]+|[\\/]+$/g, "");
   const day = getLocalDateString(timestamp);
   return clean ? `${clean}/${day}.md` : `${day}.md`;
 }
@@ -232,8 +239,8 @@ export function formatDailyNoteEntry(clipping) {
  * Appends clipping to today's daily journal note in Obsidian.
  * If file does not exist, creates it. If exists, appends with deduplication.
  */
-export async function appendClippingToDailyNote(clipping, { folder = "Daily", request = false } = {}) {
-  const relPath = dailyNoteRelPath(folder, clipping.createdAt);
+export async function appendClippingToDailyNote(clipping, { folder = "Daily", libraryRoot = "", request = false } = {}) {
+  const relPath = dailyNoteRelPath(folder, clipping.createdAt, libraryRoot);
   const entryText = formatDailyNoteEntry(clipping);
 
   let existing = null;
@@ -386,6 +393,7 @@ export async function executeClipping({
   saveObsidian = true,
   saveDaily = false,
   dailyFolder = "Daily",
+  libraryRoot = "",
   saveBookmark = true,
   createdAt = Date.now(),
 }) {
@@ -419,7 +427,7 @@ export async function executeClipping({
 
   if (saveDaily) {
     try {
-      const dRes = await appendClippingToDailyNote(clipping, { folder: dailyFolder, request: true });
+      const dRes = await appendClippingToDailyNote(clipping, { folder: dailyFolder, libraryRoot, request: true });
       clipping.dailyPath = dRes.path;
       clipping.dailySkipped = dRes.skipped === true;
     } catch (err) {

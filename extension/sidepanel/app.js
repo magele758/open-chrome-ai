@@ -1529,7 +1529,7 @@ function openClipModal(msg) {
   if (preview) preview.textContent = msg.text || "";
 
   const dailyFolder = state.settings?.dailyNotesFolder ?? "Daily";
-  const dailyRel = dailyNoteRelPath(dailyFolder);
+  const dailyRel = dailyNoteRelPath(dailyFolder, Date.now(), state.library?.path);
   const dailyPreview = $("clip-daily-path-preview");
   if (dailyPreview) dailyPreview.textContent = dailyRel;
 
@@ -1576,6 +1576,7 @@ async function submitClipModal() {
       saveObsidian,
       saveDaily,
       dailyFolder,
+      libraryRoot: state.library?.path || "",
       saveBookmark,
     });
 
