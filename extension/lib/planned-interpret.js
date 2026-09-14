@@ -10,6 +10,8 @@ import { validateAnalysis, recognitionWindows, translationBatches, validateDubTr
 import { dubKey, readDubCache, writeDubCache, pruneDubCache } from './dub-cache.js';
 import { composeCompactDubTrack, composeFullDubTrack, saveFullMediaArchive } from './audio-composer.js';
 import { videoIdentity } from './library.js';
+import { prepareSpeakerReference } from './interpret-reference.js';
+import { stripSubtitleDirections } from './subtitle-text.js';
 
 const modelIdentity = model => ({ baseUrl: model?.baseUrl, model: model?.model, language: model?.language, preset: model?.preset });
 const parseJson = text => parseTolerantJson(text);
@@ -20,9 +22,9 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
   const analysis = await source.analyze();
   const spans = validateAnalysis(analysis, source.duration);
   const sourceKey = analysis.fingerprint || await dubKey({ analysis, url: source.url });
-  const subtitles = source.subtitles?.map((c, n) => ({ ...c, ...subtitleSpeaker(c, spans, n) }));
-  const useSubtitles = subtitles?.length && !subtitles.some(c => c.crossSpeaker);
-  const recognitionKey = await dubKey({ sourceKey, spans, subtitles, analysisVersion: analysis.version, asr: modelIdentity(settings.asr), version: 4 });
+  const subtitles = source.subtitles?.map((c, n) => ({ ...c, src: stripSubtitleDirections(c.src || c.text), ...subtitleSpeaker(c, spans, n) })).filter(c => c.src);
+  const useSubtitles = Boolean(source.subtitles?.length) && !subtitles.some(c => c.crossSpeaker);
+  const recognitionKey = await dubKey({ sourceKey, spans, subtitles, analysisVersion: analysis.version, asr: modelIdentity(settings.asr), version: 5 });
   let cues = await cacheGet(recognitionKey);
   if (!cues) {
     const windows = recognitionWindows(spans);
@@ -63,7 +65,7 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
             const span = window.end - window.start;
             const start = window.start + Math.max(0, Math.min(span, Number(s.start) || 0));
             const end = window.start + Math.max(0, Math.min(span, Number.isFinite(s.end) ? s.end : Number(segments[n + 1]?.start) || span));
-            return { id: `${i}:${n}`, start, end: Math.max(start, end), src: stripTimeline(s.text),
+            return { id: `${i}:${n}`, start, end: Math.max(start, end), src: stripTimeline(stripSubtitleDirections(s.text)),
               speaker: window.speaker || (s.speaker ? `asr:${i}:${s.speaker}` : `unassigned:${i}:${n}`), overlap: window.overlap, timingQuality: Number.isFinite(s.end) ? 'segment' : 'estimated' };
           }).filter(c => c.src && c.end > c.start);
         }
@@ -107,6 +109,7 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
         '1. 口播化表达：遵循中文口语习惯，短句为主，生动地道，彻底去除生硬的字对字欧化翻译腔。\n' +
         '2. 节奏与字数自适应：中文正常发音速度约为每秒 3.5 到 4 字。请参考每句原声的时长，将中文译文字数控制在合理区间内，确保后续配音节奏契合画面，不赶不拖。\n' +
         '3. 忠实严谨：保留原意、逻辑、数字与事实，不做主观摘要或添油加醋。\n' +
+        '只输出实际对白，不要添加或朗读“（微笑）”“（叹气）”等舞台动作提示。\n' +
         '4. 格式约束：上下文仅供理解，不得重复翻译。每条原文id必须按顺序恰好出现一次，单独输出一条中文，ids数组只能含该条的一个id，禁止跨句合并。' +
         '译文若需引用请使用中文书名号《》或中文双引号“”，切勿在字符串中包含未转义的半角双引号。' +
         '返回JSON {"lines":[{"ids":["原文id"],"zh":"中文口播稿"}]}，只翻译current中的内容。';
@@ -121,7 +124,9 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
           const response = await ask(system, { context, before, current, after, correction: lastError?.message });
           lastResponse = response;
           try {
-            const result = validateDubTranslation(parseJson(response), current);
+            const parsed = parseJson(response);
+            if (Array.isArray(parsed?.lines)) parsed.lines = parsed.lines.map(l => ({ ...l, zh: typeof l.zh === 'string' ? stripSubtitleDirections(l.zh) : l.zh }));
+            const result = validateDubTranslation(parsed, current);
             await cacheSet(groupKey, result);
             return result;
           } catch (error) { signal.throwIfAborted(); lastError = error; }
@@ -145,7 +150,7 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
             start: current[0].start,
             end: current[0].end,
             src: current[0].src,
-            zh: String(salvagedZh).trim().slice(0, 500) || current[0].src,
+            zh: stripSubtitleDirections(salvagedZh).slice(0, 500) || current[0].src,
             speaker: current[0].speaker,
             overlap: current[0].overlap
           }];
@@ -272,8 +277,7 @@ export async function runPlannedInterpret(opts) {
     const configuredBlob = configuredRef?.buffer ? new Blob([configuredRef.buffer], { type: configuredRef.type || 'audio/wav' }) : undefined;
     const refKeys = new Map();
     for (const [person, span] of progressive ? [] : voiceCandidates(plan.spans)) {
-      const sample = await source.slice(span.start, Math.min(7, span.end - span.start));
-      const ref = await (opts.voiceRef || voiceRefFromBlob)(sample.blob);
+      const ref = await prepareSpeakerReference({ line: { ...span, speaker: person }, spans: plan.spans, source, voiceRef: opts.voiceRef || voiceRefFromBlob });
       if (ref) references.set(person, ref);
     }
     for (const [person, blob] of references) refKeys.set(person, await dubKey([...new Uint8Array(await blob.arrayBuffer())]));
@@ -358,18 +362,9 @@ export async function runPlannedInterpret(opts) {
         pending.delete(line.id);
         const i = lines.indexOf(line);
         if (!ttsOn) { ready.set(line.id, { ...line, slotEnd: line.end }); continue; }
-        if (line.speaker && !references.has(line.speaker)) {
-          const span = voiceCandidates(plan.spans).get(line.speaker);
-          if (span) {
-            const sample = await source.slice(span.start, Math.min(7, span.end - span.start));
-            const ref = await (opts.voiceRef || voiceRefFromBlob)(sample.blob);
-            if (ref) { references.set(line.speaker, ref); refKeys.set(line.speaker, await dubKey([...new Uint8Array(await ref.arrayBuffer())])); }
-          }
-        }
         let referenceBlob = references.get(line.speaker);
-        if (!referenceBlob && !line.overlap) {
-          const sample = await source.slice(line.start, Math.min(7, line.end - line.start));
-          referenceBlob = sample && await (opts.voiceRef || voiceRefFromBlob)(sample.blob);
+        if (!referenceBlob) {
+          referenceBlob = await prepareSpeakerReference({ line, spans: plan.spans, source, voiceRef: opts.voiceRef || voiceRefFromBlob });
           // Provider speaker IDs are scoped to the recognition window; unknown cues stay separate.
           if (referenceBlob && line.speaker && !line.speaker.startsWith('unassigned:')) references.set(line.speaker, referenceBlob);
         }

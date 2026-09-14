@@ -18,6 +18,15 @@ class SubtitleMetadataTests(unittest.TestCase):
         self.assertEqual(len(cues), 2)
         self.assertTrue(all(c['speaker'] is None for c in cues))
 
+    def test_directions_are_not_dialogue(self):
+        for text in ('[laughter]', '(sighs)', '（微笑）', '【叹气】', '♪ [music] ♪'):
+            self.assertEqual(helper.strip_subtitle_directions(text), '')
+        self.assertEqual(helper.strip_subtitle_directions('Hello [laughter] again.'), 'Hello again.')
+        self.assertEqual(helper.strip_subtitle_directions('她叹气说（真的很难）。'), '她叹气说（真的很难）。')
+        self.assertEqual(helper.strip_subtitle_directions('(not because of music)'), '(not because of music)')
+        cues = helper.parse_vtt_srt_cues('00:00:00.000 --> 00:00:02.000\n[laughter]\n\n00:00:02.000 --> 00:00:04.000\nHello (sighs) again.\n')
+        self.assertEqual([c['src'] for c in cues], ['Hello again.'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -232,6 +232,21 @@ TRAILING_CONNECTORS = {
 }
 
 
+SUBTITLE_DIRECTION = re.compile(
+    r'^(?:(?:soft(?:ly)?|loud(?:ly)?|audience|everyone|all|man|woman|轻轻|轻声|观众)\s*)?'
+    r'(?:laugh(?:s|ing|ter)?|chuckl(?:e|es|ing)|giggl(?:e|es|ing)|smil(?:e|es|ing)|sigh(?:s|ing)?|'
+    r'gasp(?:s|ing)?|cough(?:s|ing)?|clears? throat|breath(?:ing|s)?|applause|clapping|music|silence|'
+    r'laughter and applause|微笑|叹气|叹息|笑声|笑|轻笑|大笑|苦笑|掌声|鼓掌|音乐|背景音乐|喘气|呼吸|咳嗽|清嗓|沉默|静音)[.!。！…]*$', re.I)
+
+
+def strip_subtitle_directions(text):
+    def replace(match):
+        label = next(g for g in match.groups() if g is not None).strip()
+        return ' ' if SUBTITLE_DIRECTION.fullmatch(label) else match.group(0)
+    text = re.sub(r'\[([^\[\]]*)\]|\(([^()]*)\)|（([^（）]*)）|【([^【】]*)】', replace, str(text or ''))
+    return re.sub(r'[ \t]{2,}', ' ', text).strip(' \t\r\n>♪♫')
+
+
 def parse_json3_cues(data):
     words = []
     for ev in data.get('events', []):
@@ -256,8 +271,8 @@ def parse_json3_cues(data):
     words.sort(key=lambda x: x['start_ms'])
 
     import re
-    bracket_re = re.compile(r'^[\[\(].*?[\]\)]$')
-    clean_words = [w for w in words if not bracket_re.match(w['text'].strip())]
+    clean_words = [{**w, 'text': strip_subtitle_directions(w['text'])} for w in words]
+    clean_words = [w for w in clean_words if w['text']]
 
     def join_words(w_list):
         res = ''
@@ -278,7 +293,7 @@ def parse_json3_cues(data):
         if not curr_words:
             curr_start = w['start_ms']
         curr_words.append(w['text'])
-        clean_text = join_words(curr_words)
+        clean_text = strip_subtitle_directions(join_words(curr_words))
 
         next_gap = 0
         if i + 1 < len(clean_words):
@@ -324,7 +339,7 @@ def parse_vtt_srt_cues(text):
                 start = (int(h1 or 0) * 3600 + int(m1) * 60 + int(s1)) + int(ms1) / 1000.0
                 end = (int(h2 or 0) * 3600 + int(m2) * 60 + int(s2)) + int(ms2) / 1000.0
                 content = ' '.join(lines[idx + 1:])
-                content = re.sub(r'<[^>]+>', '', content).strip()
+                content = strip_subtitle_directions(re.sub(r'<[^>]+>', '', content))
                 if content and end > start:
                     cues.append({
                         'id': f'sub:{len(cues)}',
