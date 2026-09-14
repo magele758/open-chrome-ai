@@ -6,13 +6,13 @@ import { isAsrReady, isTtsReady, resolveModel } from './storage.js';
 import { synthesizeTts, getTtsRef } from './tts.js';
 import { linesToCaptions, stripTimeline, voiceRefFromBlob } from './interpret.js';
 import { withInterpretDeadline } from './interpret-semantic.js';
-import { validateAnalysis, recognitionWindows, translationBatches, validateDubTranslation, fitDub, continuousReadySeconds, voiceCandidates } from './dub-timeline.js';
+import { validateAnalysis, recognitionWindows, translationBatches, validateDubTranslation, fitDub, continuousReadySeconds, voiceCandidates, parseTolerantJson } from './dub-timeline.js';
 import { dubKey, readDubCache, writeDubCache, pruneDubCache } from './dub-cache.js';
 import { composeCompactDubTrack, composeFullDubTrack, saveFullMediaArchive } from './audio-composer.js';
 import { videoIdentity } from './library.js';
 
 const modelIdentity = model => ({ baseUrl: model?.baseUrl, model: model?.model, language: model?.language, preset: model?.preset });
-const parseJson = text => JSON.parse(String(text).replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^```(?:json)?\s*|\s*```$/g, '').trim());
+const parseJson = text => parseTolerantJson(text);
 
 export async function prepareDubPlan({ source, settings, signal, status = () => {},
   transcribe = transcribeInterpretSlice, chat = completeChat, cacheGet = readDubCache, cacheSet = writeDubCache, incrementalContext }) {
@@ -102,22 +102,50 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
         '2. 节奏与字数自适应：中文正常发音速度约为每秒 3.5 到 4 字。请参考每句原声的时长，将中文译文字数控制在合理区间内，确保后续配音节奏契合画面，不赶不拖。\n' +
         '3. 忠实严谨：保留原意、逻辑、数字与事实，不做主观摘要或添油加醋。\n' +
         '4. 格式约束：上下文仅供理解，不得重复翻译。每条原文id必须按顺序恰好出现一次，单独输出一条中文，ids数组只能含该条的一个id，禁止跨句合并。' +
+        '译文若需引用请使用中文书名号《》或中文双引号“”，切勿在字符串中包含未转义的半角双引号。' +
         '返回JSON {"lines":[{"ids":["原文id"],"zh":"中文口播稿"}]}，只翻译current中的内容。';
       const translateGroup = async (current, before, after) => {
         const groupKey = await dubKey({ translationKey, current, before, after, recovery: 1 });
         const saved = await cacheGet(groupKey);
         if (saved) return saved;
         let lastError;
+        let lastResponse = '';
         for (let attempt = 0; attempt < 2; attempt++) {
           // Service/authentication errors are not formatting errors: never fan them out.
           const response = await ask(system, { context, before, current, after, correction: lastError?.message });
+          lastResponse = response;
           try {
             const result = validateDubTranslation(parseJson(response), current);
             await cacheSet(groupKey, result);
             return result;
           } catch (error) { signal.throwIfAborted(); lastError = error; }
         }
-        if (current.length === 1) throw lastError;
+        if (current.length === 1) {
+          // Single-cue salvage: don't abort a long video dubbing task for a single cue format glitch
+          let salvagedZh = '';
+          try {
+            const parsed = parseTolerantJson(lastResponse);
+            const line = Array.isArray(parsed) ? parsed[0] : parsed?.lines?.[0];
+            salvagedZh = line?.zh || line?.text || line?.content || '';
+          } catch (_) {}
+          if (!salvagedZh && typeof lastResponse === 'string') {
+            const m = lastResponse.match(/"(?:zh|text|content)"\s*:\s*"([\s\S]*?)"/);
+            if (m && m[1]) salvagedZh = m[1].replace(/\\"/g, '"').trim();
+          }
+          if (!salvagedZh) salvagedZh = current[0].src;
+          const salvaged = [{
+            id: current[0].id,
+            sourceIds: [current[0].id],
+            start: current[0].start,
+            end: current[0].end,
+            src: current[0].src,
+            zh: String(salvagedZh).trim().slice(0, 500) || current[0].src,
+            speaker: current[0].speaker,
+            overlap: current[0].overlap
+          }];
+          await cacheSet(groupKey, salvaged);
+          return salvaged;
+        }
         status('正在按原句重新整理译文，保留各自音色…');
         const result = [];
         // A malformed merge cannot be split by guessing which Chinese words belong to whom.

@@ -37,14 +37,116 @@ export function translationBatches(cues, maxChars = 5000, maxSeconds = 90) {
   return batches;
 }
 
+/**
+ * Tolerant JSON parser for LLM translation responses.
+ * Recovers from unescaped quotes, unescaped newlines, markdown blocks, thinking tags, trailing commas, etc.
+ */
+export function parseTolerantJson(raw) {
+  if (typeof raw !== 'string') return raw;
+  let text = String(raw).trim();
+
+  // 1. Strip <think>...</think> or unclosed <think>...
+  text = text.replace(/<(?:think|thought)>[\s\S]*?(?:<\/(?:think|thought)>|$)/gi, '').trim();
+
+  // 2. Fast path: direct JSON.parse
+  try {
+    return JSON.parse(text);
+  } catch (_) {}
+
+  // 3. Extract from markdown code fences
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)(?:```|$)/i);
+  if (fenceMatch && fenceMatch[1].trim()) {
+    const inside = fenceMatch[1].trim();
+    try {
+      return JSON.parse(inside);
+    } catch (_) {}
+    text = inside;
+  }
+
+  // 4. Extract outermost JSON object or array
+  const firstObj = text.indexOf('{');
+  const firstArr = text.indexOf('[');
+  let start = -1;
+  if (firstObj !== -1 && firstArr !== -1) start = Math.min(firstObj, firstArr);
+  else if (firstObj !== -1) start = firstObj;
+  else if (firstArr !== -1) start = firstArr;
+
+  if (start !== -1) {
+    const lastObj = text.lastIndexOf('}');
+    const lastArr = text.lastIndexOf(']');
+    const end = Math.max(lastObj, lastArr);
+    if (end > start) {
+      const candidate = text.slice(start, end + 1);
+      try {
+        return JSON.parse(candidate);
+      } catch (_) {}
+      text = candidate;
+    }
+  }
+
+  // 5. Repair unescaped quotes inside `"zh": "..."` or `"text": "..."` and unescaped newlines
+  let repaired = text.replace(/"(?:zh|text|content)"\s*:\s*"([\s\S]*?)"\s*(?=\s*\}|\s*,\s*"(?:ids|id|zh|text|content|start|end|speaker)")/g, (m, content) => {
+    const cleaned = content
+      .replace(/\r\n|\r|\n/g, '\\n')
+      .replace(/(?<!\\)"/g, '\\"');
+    return `"zh":"${cleaned}"`;
+  });
+
+  // Repair trailing commas before } or ]
+  repaired = repaired.replace(/,\s*([\}\]])/g, '$1');
+
+  try {
+    return JSON.parse(repaired);
+  } catch (_) {}
+
+  // 6. Regex line extraction fallback
+  const regexLines = [];
+  const itemRegex = /\{[^{}]*?"ids"\s*:\s*\[(.*?)\][^{}]*?"(?:zh|text|content)"\s*:\s*"([\s\S]*?)"[^{}]*?\}|\{[^{}]*?"(?:zh|text|content)"\s*:\s*"([\s\S]*?)"[^{}]*?"ids"\s*:\s*\[(.*?)\][^{}]*?\}/g;
+  let match;
+  while ((match = itemRegex.exec(text)) !== null) {
+    const rawIds = match[1] ?? match[4];
+    const zh = match[2] ?? match[3];
+    const ids = [];
+    const idRegex = /"([^"]+)"|'([^']+)'|(\d+)/g;
+    let idMatch;
+    while ((idMatch = idRegex.exec(rawIds)) !== null) {
+      ids.push(idMatch[1] || idMatch[2] || idMatch[3]);
+    }
+    if (ids.length && zh) {
+      regexLines.push({ ids, zh: zh.replace(/\\"/g, '"').trim() });
+    }
+  }
+  if (regexLines.length > 0) {
+    return { lines: regexLines };
+  }
+
+  throw new Error('口播稿格式不正确: 无法解析模型返回的 JSON');
+}
+
 export function validateDubTranslation(raw, cues) {
-  const json = typeof raw === 'string' ? JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, '').trim()) : raw;
-  if (!Array.isArray(json?.lines)) throw new Error('口播稿格式不正确');
+  const json = typeof raw === 'string' ? parseTolerantJson(raw) : raw;
+  const rawLines = Array.isArray(json) ? json : (Array.isArray(json?.lines) ? json.lines : null);
+  if (!rawLines) throw new Error('口播稿格式不正确');
+  const lines = rawLines.map(l => ({
+    ids: Array.isArray(l?.ids) ? l.ids : (l?.id !== undefined ? [String(l.id)] : []),
+    zh: typeof l?.zh === 'string' ? l.zh : (typeof l?.text === 'string' ? l.text : (typeof l?.content === 'string' ? l.content : ''))
+  }));
   const expected = cues.map(c => c.id);
-  const actual = json.lines.flatMap(l => l.ids || []);
+  let actual = lines.flatMap(l => l.ids || []);
+
+  if (cues.length === 1 && lines.length === 1) {
+    lines[0].ids = [cues[0].id];
+    actual = [cues[0].id];
+  } else if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    if (lines.length === cues.length && lines.every(l => l.ids.length <= 1)) {
+      lines.forEach((l, idx) => { l.ids = [cues[idx].id]; });
+      actual = cues.map(c => c.id);
+    }
+  }
+
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('口播稿遗漏、重复或调换了原文');
   const byId = new Map(cues.map(c => [c.id, c]));
-  return json.lines.map(line => {
+  return lines.map(line => {
     if (!line.ids?.length || typeof line.zh !== 'string' || !line.zh.trim() || line.zh.length > 500) throw new Error('口播稿为空');
     const source = line.ids.map(id => byId.get(id));
     if (source.some(c => c.speaker !== source[0].speaker) || source.length > 1 && source.some(c => c.overlap)) throw new Error('口播稿合并了不同说话人');

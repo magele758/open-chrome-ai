@@ -445,6 +445,21 @@ function syncSkillFolderControls() {
   syncComposerHints();
 }
 
+function formatStatusError(err) {
+  if (!err) return "";
+  const msg = typeof err === "string" ? err : (err.message || String(err));
+  if (/JSON|position \d+|column \d+|SyntaxError/i.test(msg)) {
+    return "口播稿格式异常";
+  }
+  if (/fetch|network|timeout|Failed to fetch|Load failed/i.test(msg)) {
+    return "网络连接异常";
+  }
+  if (/quota|rate limit|429/i.test(msg)) {
+    return "模型配额不足或请求受限";
+  }
+  return msg;
+}
+
 function renderContext() {
   const tab = state.tab;
   if (!tab || !state.share) {
@@ -493,8 +508,8 @@ function renderContext() {
       if (tr.hint) bits.push(tr.hint);
     }
     if (tr?.status === "extracting" || tr?.status === "uploading") bits.push(tr.hint || "正在识别完整音轨");
-    if (tr?.status === "error" && tr.error) bits.push(tr.error);
-    if (si?.status === "error" && si.error) bits.push(si.error);
+    if (tr?.status === "error" && tr.error) bits.push(formatStatusError(tr.error));
+    if (si?.status === "error" && si.error) bits.push(formatStatusError(si.error));
     if ((src === "asr-full" || src === "asr" || src === "asr-cache" || src === "interpret" || src === "subtitles" || src === "subtitles-full") && (!tr || tr.status === "done" || tr.status === "idle")) {
       bits.push("可以直接问总结或章节");
     }
