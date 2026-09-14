@@ -151,7 +151,16 @@
           </div>
         </div>
       </div>
-      <div class="msgs" id="msgs"></div>
+      <div class="messages-area">
+        <div class="msgs" id="msgs" tabindex="0" aria-label="会话消息"></div>
+        <button type="button" class="messages-bottom hidden" id="btn-messages-bottom" aria-controls="msgs" title="回到底部" aria-label="回到底部">
+          <svg class="messages-bottom-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M8 2.5v10M3.5 8.5L8 13l4.5-4.5"/>
+          </svg>
+          <span class="messages-bottom-text">回到底部</span>
+          <span class="messages-bottom-dot hidden" id="messages-bottom-dot" aria-hidden="true"></span>
+        </button>
+      </div>
       <div class="composer">
         <div class="attach hidden" id="attach-row">
           <img id="attach-thumb" alt="附件" />

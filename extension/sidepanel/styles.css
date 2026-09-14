@@ -276,10 +276,77 @@ button { cursor: pointer; }
 .si-zh { font-size: 14px; font-weight: 600; line-height: 1.4; }
 .si-src { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.35; }
 
+.messages-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
 .msgs {
   flex: 1;
-  overflow: auto;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-anchor: none;
   padding: 14px 14px 8px;
+}
+.messages-bottom {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%) translateY(0);
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.15s, box-shadow 0.15s;
+}
+.messages-bottom:hover {
+  background: #fffaf6;
+  border-color: #d0b49a;
+  color: var(--accent);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.12);
+}
+.messages-bottom:active {
+  transform: translateX(-50%) translateY(1px);
+}
+.messages-bottom.hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(10px);
+}
+.messages-bottom-icon {
+  flex-shrink: 0;
+}
+.messages-bottom-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  display: inline-block;
+  animation: pulse-dot 1.5s infinite;
+}
+.messages-bottom-dot.hidden {
+  display: none;
+}
+@keyframes pulse-dot {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(196, 92, 38, 0.7); }
+  70% { transform: scale(1.15); box-shadow: 0 0 0 5px rgba(196, 92, 38, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(196, 92, 38, 0); }
 }
 .empty { color: var(--muted); font-size: 1em; line-height: 1.55; padding: 4px 2px 12px; }
 .big-actions { display: grid; gap: 8px; }
@@ -386,6 +453,7 @@ button { cursor: pointer; }
   opacity: 0.8;
 }
 .msg.bot .thinking-content {
+  overflow-anchor: none;
   padding: 8px 11px 9px;
   border-top: 1px dashed var(--line);
   color: #57534e;

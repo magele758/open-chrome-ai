@@ -13,6 +13,9 @@ import { abortRecording, beginCapture, beginTabCapture, discardCapture, recordFr
 import { injectVideo } from "../lib/chrome.js";
 import { runInterpret } from "../lib/interpret.js";
 import { InterpretController } from "./interpret-controller.js";
+import { createMessageScroll } from "./message-scroll.js";
+let messageScroll;
+const thinkingScrolls = new WeakMap();
 import { loadFullMediaArchive, cleanExpiredMediaArchives } from "../lib/audio-composer.js";
 import {
   libraryStatus,
@@ -869,6 +872,7 @@ function downloadMessageTrace(msg) {
 function renderMessages() {
   const root = $("msgs");
   if (!root) return;
+  const scrollTop = messageScroll?.beforeRender();
   root.innerHTML = "";
   if (!state.messages.length) {
     const empty = document.createElement("div");
@@ -895,6 +899,8 @@ function renderMessages() {
       });
       root.appendChild(actions);
     }
+    messageScroll?.reset();
+    messageScroll?.afterRender();
     return;
   }
   for (const msg of state.messages) {
@@ -943,7 +949,7 @@ function renderMessages() {
     }
     root.appendChild(wrap);
   }
-  root.scrollTop = root.scrollHeight;
+  messageScroll?.afterRender(scrollTop);
 }
 
 function createThinkingBox(thinking, { isStreaming = false } = {}) {
@@ -977,20 +983,24 @@ function createThinkingBox(thinking, { isStreaming = false } = {}) {
     if (!details.open) {
       delete details.dataset.autoOpen;
     }
+    if (messageScroll?.isFollowing()) {
+      messageScroll.scrollToBottom({ smooth: false });
+    }
   });
 
   details.appendChild(summary);
   details.appendChild(content);
+  thinkingScrolls.set(details, createMessageScroll(content));
   return details;
 }
 
 function updateThinkingBox(details, thinking, { isStreaming = false } = {}) {
   const content = details.querySelector(".thinking-content");
   if (content && content.textContent !== thinking) {
+    const scroll = thinkingScrolls.get(details);
+    const top = scroll?.beforeRender();
     content.textContent = thinking;
-    if (isStreaming && details.open) {
-      content.scrollTop = content.scrollHeight;
-    }
+    scroll?.afterRender(top);
   }
 
   const label = details.querySelector(".thinking-label");
@@ -1067,6 +1077,7 @@ function bindAnswerActions(root) {
 }
 
 function pushError(text) {
+  messageScroll?.reset();
   state.messages.push({ role: "bot", text, error: true });
   renderMessages();
 }
@@ -1077,6 +1088,7 @@ function setView(view) {
   $("view-settings")?.classList.toggle("hidden", view !== "settings");
   $("view-history")?.classList.toggle("hidden", view !== "history");
   if (view !== "chat") hideSlashMenu();
+  if (view === "chat") messageScroll?.updateButton();
 }
 
 function currentPageMeta() {
@@ -1129,6 +1141,7 @@ async function persistSessionNow() {
 
 function applySession(session) {
   if (!session) return;
+  messageScroll?.reset();
   state.sessionId = session.id;
   state.sessionCreatedAt = session.createdAt;
   state.sessionPages = session.pages || [];
@@ -1279,6 +1292,7 @@ async function startNewSession() {
   abortRecording();
   await clearActiveId();
   renderAttach();
+  messageScroll?.reset();
   renderMessages();
   setView("chat");
 }
@@ -2661,8 +2675,7 @@ function paintBot(botMsg) {
     if (existing) existing.remove();
     wrap.appendChild(createMessageFooter(botMsg));
   }
-  const root = $("msgs");
-  if (root) root.scrollTop = root.scrollHeight;
+  messageScroll?.onContentGrow();
 }
 
 function lastUserAskedForSkill() {
@@ -3029,6 +3042,7 @@ async function sendPrompt(userText, options = {}) {
   }
 
   const image = options.image || state.image;
+  messageScroll?.reset();
   state.messages.push({ role: "user", text: text || userText, image: image || null });
   const botMsg = { role: "bot", text: "…", trace: [], thinking: "" };
   state.messages.push(botMsg);
@@ -3247,6 +3261,7 @@ async function startSummarizeVideo() {
   const abort = new AbortController();
   state.busy = true;
   state.abort = abort;
+  if (typeof messageScroll !== "undefined") messageScroll?.reset();
   state.messages.push({ role: "user", text: "总结整个视频的完整文稿，列出要点和带时间戳的章节。" });
   const botMsg = { role: "bot", text: "正在阅读完整文稿…", trace: [] };
   state.messages.push(botMsg);
@@ -3442,6 +3457,7 @@ function bindComposer() {
 }
 
 function wire() {
+  messageScroll ||= createMessageScroll($("msgs"), $("btn-messages-bottom"));
   $("btn-debug-export")?.addEventListener("click", () => downloadText(`pagelens-debug-${Date.now()}.json`, exportDebugLog(), "application/json"));
   bindComposer();
   try {
