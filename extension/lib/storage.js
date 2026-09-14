@@ -57,9 +57,16 @@ function emptyTts() {
   };
 }
 
+export const SUMMARY_INPUT_TOKENS = 200000;
+
+export function normalizeSummaryInputTokens(value) {
+  const tokens = Number(value);
+  return Number.isFinite(tokens) && tokens > 0 ? Math.min(2000000, Math.max(1000, Math.round(tokens))) : SUMMARY_INPUT_TOKENS;
+}
+
 export function defaultSettings() {
   return {
-    text: emptyModel(),
+    text: { ...emptyModel(), summaryInputTokens: SUMMARY_INPUT_TOKENS },
     multimodal: emptyModel(),
     asr: emptyAsr(),
     tts: emptyTts(),
@@ -79,6 +86,7 @@ export function normalizeSettings(raw) {
   const base = defaultSettings();
   const merged = { ...base, ...(raw || {}) };
   merged.text = { ...base.text, ...(raw?.text || {}) };
+  merged.text.summaryInputTokens = normalizeSummaryInputTokens(merged.text.summaryInputTokens);
   merged.multimodal = { ...base.multimodal, ...(raw?.multimodal || {}) };
   merged.asr = { ...base.asr, ...(raw?.asr || {}) };
   merged.tts = { ...base.tts, ...(raw?.tts || {}) };

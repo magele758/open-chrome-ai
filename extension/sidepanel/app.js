@@ -1753,6 +1753,10 @@ function fieldBlock(prefix, model, hints = {}) {
     <label class="field">api_key
       <input data-k="${prefix}.apiKey" type="password" value="${escapeAttr(model.apiKey)}" placeholder="${escapeAttr(hints.key || "sk-…")}" autocomplete="off" />
     </label>
+    ${prefix === 'text' ? `<label class="field">视频总结：单次正文上限（token）
+      <input data-k="text.summaryInputTokens" type="number" min="1000" max="2000000" step="1000" value="${Number(model.summaryInputTokens) || 200000}" />
+      <small>默认 200,000；超过才分段。按中英文估算，不含提示词和输出。</small>
+    </label>` : ''}
     <div class="row-btns">
       <button class="secondary" type="button" data-test="${prefix}">测试连接</button>
       <span class="status" data-test-status="${prefix}"></span>
@@ -2464,6 +2468,7 @@ function writeField(el) {
   const [group, key] = el.dataset.k.split(".");
   if (!state.settings[group]) state.settings[group] = {};
   if (key === "durationFactor") state.settings[group][key] = Number(el.value) || 1;
+  else if (key === "summaryInputTokens") state.settings[group][key] = Number(el.value) || 200000;
   else if (key === "bufferSegments" || key === "bufferSeconds") state.settings[group][key] = Number(el.value) || 5;
   else state.settings[group][key] = el.value;
   if (key === "preset") {

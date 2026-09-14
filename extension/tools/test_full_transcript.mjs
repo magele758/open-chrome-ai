@@ -78,7 +78,7 @@ const droppedKey = await asrItemKey('https://video.test/v0');
 assert.equal(await getCachedTranscript('https://video.test/v0'), null);
 assert.equal(idb.has(droppedKey), false, 'evicted asr item dropped from idb');
 assert.equal((await getCachedTranscript('https://video.test/v24'))?.text, 't24');
-const text = Array.from({ length: 7 }, (_, i) => `[${i}:00] MARKER_${i} ${'words '.repeat(1700)}\n`).join('');
+const text = Array.from({ length: 7 }, (_, i) => `[${i}:00] MARKER_${i} ${'words '.repeat(25000)}\n`).join('');
 assert.equal(splitTranscript(text).join(''), text, 'chunking loses no characters');
 const seen = [];
 const summary = await summarizeTranscript({ text, model: {}, complete: async (_model, { messages, maxTokens }) => {
