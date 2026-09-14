@@ -2322,7 +2322,7 @@ function ttsFields(tts) {
         <option value="buffered" ${tts.preparationMode === 'buffered' ? 'selected' : ''}>全文翻译后，边准备配音边播放</option>
       </select>
     </label>
-    <label class="field">连续配音预缓存（秒，边准备边播时使用）
+    <label class="field">连续配音预缓存（秒，快速模式中途缓冲时也使用）
       <input data-k="tts.bufferSeconds" type="number" min="5" max="120" step="5" value="${Number(tts.bufferSeconds) || 30}" />
     </label>
     <div class="tts-ref">

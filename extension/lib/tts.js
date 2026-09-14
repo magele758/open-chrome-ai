@@ -285,7 +285,7 @@ function unwrapFile(data) {
   return cur;
 }
 
-async function waitGradioCall(origin, apiName, eventId, signal) {
+export async function waitGradioCall(origin, apiName, eventId, signal) {
   const response = await fetch(`${origin}/gradio_api/call/${apiName.replace(/^\//, "")}/${eventId}`, { signal });
   if (!response.ok) throw new Error(`获取配音结果失败：${await readError(response)}`);
   if (!response.body) {
@@ -295,32 +295,33 @@ async function waitGradioCall(origin, apiName, eventId, signal) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let last = null;
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split("\n\n");
-    buffer = chunks.pop() || "";
-    for (const block of chunks) {
-      const ev = parseSseBlock(block);
-      if (!ev.data) continue;
-      if (ev.event === "error") {
-        let detail = ev.data;
-        try { detail = JSON.parse(detail); } catch { /* plain text error */ }
-        throw new Error(`配音生成失败：${String(detail || "服务未返回错误详情").slice(0, 400)}`);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      const chunks = buffer.split(/\r?\n\r?\n/);
+      buffer = chunks.pop() || "";
+      if (done && buffer.trim()) { chunks.push(buffer); buffer = ''; }
+      for (const block of chunks) {
+        const ev = parseSseBlock(block);
+        if (!ev.data) continue;
+        if (ev.event === "error") {
+          let detail = ev.data;
+          try { detail = JSON.parse(detail); } catch { /* plain text error */ }
+          throw new Error(`配音生成失败：${String(detail || "服务未返回错误详情").slice(0, 400)}`);
+        }
+        if (ev.event !== "complete") continue;
+        try { return JSON.parse(ev.data); }
+        catch { throw new Error('配音结果连接中断：完成事件不完整。'); }
       }
-      if (ev.data === "[DONE]") continue;
-      try {
-        last = JSON.parse(ev.data);
-      } catch {
-        last = ev.data;
-      }
-      if (ev.event === "complete") return last;
+      if (done) break;
     }
+    throw new Error('配音结果连接中断：未收到完成事件。');
+  } finally {
+    // A complete event may arrive before the server closes the long-lived stream.
+    try { await reader.cancel(); } catch { /* transport already closed */ }
+    reader.releaseLock();
   }
-  if (last == null) throw new Error("配音服务没有返回音频。");
-  return last;
 }
 
 export async function testTts(tts, { signal } = {}) {
@@ -387,6 +388,9 @@ export async function synthesizeTts(tts, text, { signal, lang, durationFactor, r
     result = await callOnce(promptFile);
   } catch (err) {
     if (err?.name === "AbortError") throw err;
+    // Re-upload only for an expired reference/queue file. Network recovery is
+    // bounded by the caller; auth and server errors cannot repair a reference.
+    if (!/\b404\b|file.*(?:not found|does not exist)|参考.*(?:失效|不存在)/i.test(err?.message || '')) throw err;
     if (!temporary) promptCache = { origin: "", key: "", file: null };
     const uploaded = await gradioUpload(origin, blob, filename, signal);
     promptFile = asFileData(uploaded, filename, ref.type);

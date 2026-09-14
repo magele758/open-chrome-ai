@@ -12,11 +12,12 @@ import { composeCompactDubTrack, composeFullDubTrack, saveFullMediaArchive } fro
 import { videoIdentity } from './library.js';
 import { prepareSpeakerReference } from './interpret-reference.js';
 import { stripSubtitleDirections } from './subtitle-text.js';
+import { retryInterpretRequest } from './interpret-retry.js';
 
 const modelIdentity = model => ({ baseUrl: model?.baseUrl, model: model?.model, language: model?.language, preset: model?.preset });
 const parseJson = text => parseTolerantJson(text);
 
-export async function prepareDubPlan({ source, settings, signal, status = () => {},
+export async function prepareDubPlan({ source, settings, signal, status = () => {}, recoveryStatus = status,
   transcribe = transcribeInterpretSlice, chat = completeChat, cacheGet = readDubCache, cacheSet = writeDubCache, incrementalContext }) {
   status('正在分析说话人、停顿与音乐，画面保持暂停…');
   const analysis = await source.analyze();
@@ -79,10 +80,10 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
   const cached = await cacheGet(translationKey);
   if (cached) return { ...cached, spans, sourceKey, background: analysis.background };
   if (!cues.length) return { lines: [], cues, context: '', spans, sourceKey, background: analysis.background };
-  const ask = (system, input, maxTokens = 5000) => withInterpretDeadline(s => chat(model, {
+  const ask = (system, input, maxTokens = 5000) => retryInterpretRequest(s => chat(model, {
     messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(input) }],
     signal: s, temperature: .1, maxTokens, rejectTruncated: true,
-  }), signal, 90000);
+  }), { signal, onRetry: ({ attempt, attempts }) => recoveryStatus(`翻译连接暂时中断，正在重试当前段 ${attempt}/${attempts - 1}，已完成内容保留…`) });
   const batches = translationBatches(cues);
   status('正在阅读全文并统一人物、术语与指代…');
   let summaries = [];
@@ -323,7 +324,7 @@ export async function runPlannedInterpret(opts) {
           subtitles: partSubtitles ? partSubtitles.map(c => ({ ...c, start: Math.max(0, c.start - start), end: Math.min(end - start, c.end - start) })) : null,
           analyze: async () => ({ duration: end - start, fingerprint, spans }),
           slice: (offset, seconds) => source.slice(start + offset, seconds),
-        }, settings, signal, status: () => {}, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat, incrementalContext: context });
+        }, settings, signal, status: () => {}, recoveryStatus: status, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat, incrementalContext: context });
         signal.throwIfAborted();
         if (windowRevision !== analysisRevision) continue;
         for (const original of part.lines) {
@@ -373,14 +374,10 @@ export async function runPlannedInterpret(opts) {
         let prepared = await cacheGet(key);
         if (!prepared) {
           status(`正在准备中文配音 ${ready.size + 1}/${lines.length}…`);
-          let output, error;
-          for (let attempt = 0; attempt < 2; attempt++) {
-            try {
-              output = await withInterpretDeadline(s => (opts.synthesizeTts || synthesizeTts)(settings.tts, line.zh, { signal: s, referenceBlob, lang: settings.tts.lang || 'ZH' }), signal, 90000);
-              break;
-            } catch (e) { signal.throwIfAborted(); error = e; }
-          }
-          if (!output?.blob) throw error || new Error('配音生成失败');
+          const output = await retryInterpretRequest(s => (opts.synthesizeTts || synthesizeTts)(settings.tts, line.zh, { signal: s, referenceBlob, lang: settings.tts.lang || 'ZH' }), {
+            signal, onRetry: ({ attempt, attempts }) => status(`配音连接暂时中断，正在重试当前句 ${attempt}/${attempts - 1}，已完成内容保留…`),
+          });
+          if (!output?.blob) throw new Error('配音生成失败');
           const seconds = await (opts.audioDuration || audioDuration)(output.blob);
           if (!(seconds > 0) || !Number.isFinite(seconds)) throw new Error('配音时长无效');
           prepared = { ...fitDub(line, seconds, progressive ? line.end : (lines[i + 1]?.start ?? source.duration)), blob: output.blob };
@@ -391,12 +388,13 @@ export async function runPlannedInterpret(opts) {
       }
     })().catch(error => { productionError = error; });
     let buffering = true;
+    let refill = false;
     while (!signal.aborted) {
       if (productionError) throw productionError;
       const state = await read();
       playhead = state.currentTime;
       if (revision !== undefined && state.seekRevision !== revision) {
-        clearAudio(); completed.clear(); buffering = true;
+        clearAudio(); completed.clear(); buffering = true; refill = false;
         status('已跳转，正在读取对应位置的配音缓存…');
       }
       revision = state.seekRevision;
@@ -406,20 +404,31 @@ export async function runPlannedInterpret(opts) {
       const knownEnd = progressive ? coveredUntil(playhead) : source.duration;
       const rate = Math.max(.25, Number(state.playbackRate) || 1);
       const ahead = Math.min(continuousReadySeconds(lines, ready, playhead, source.duration), Math.max(0, knownEnd - playhead)) / rate;
-      if (progressive && knownEnd <= playhead && playhead < source.duration && !active) buffering = true;
+      if (progressive && knownEnd <= playhead && playhead < source.duration && !active) {
+        if (!buffering) refill = true;
+        buffering = true;
+      }
       if (buffering) {
-        const enough = full ? ready.size === lines.length : ahead >= Math.min(progressive ? 3 : target, (source.duration - playhead) / rate);
+        const bufferTarget = progressive && !refill ? 3 : target;
+        const enough = full ? ready.size === lines.length : ahead >= Math.min(bufferTarget, (source.duration - playhead) / rate);
         if (!enough) {
           await hold();
-          status(full ? `画面已暂停，等待完整配音 ${ready.size}/${lines.length}…` : `画面已暂停，连续配音缓冲 ${Math.floor(ahead)}/${progressive ? 3 : target} 秒…`);
+          status(full ? `画面已暂停，等待完整配音 ${ready.size}/${lines.length}…` : `画面已暂停，连续配音缓冲 ${Math.floor(ahead)}/${bufferTarget} 秒…`);
           await sleep(100); continue;
         }
         buffering = false;
       }
       const next = currentIndex < 0 ? null : lines[currentIndex];
       if (!active && next && playhead >= next.start - .04) {
-        const item = ready.get(next.id);
-        if (!item) { buffering = true; await hold(); continue; }
+        let item = ready.get(next.id);
+        if (!item) { buffering = true; refill = true; await hold(); continue; }
+        // Refit even cached audio against the currently known next turn. Never
+        // borrow unprocessed time; later windows may contain another speaker.
+        if (ttsOn && item.audioSeconds > 0) {
+          const nextStart = lines[currentIndex + 1]?.start ?? knownEnd;
+          item = { ...item, ...fitDub(next, item.audioSeconds, Math.min(nextStart, knownEnd)) };
+          ready.set(next.id, item);
+        }
         if (!ttsOn) {
           completed.add(item.id);
           shown = item.id; emit({ type: 'line', ...item });

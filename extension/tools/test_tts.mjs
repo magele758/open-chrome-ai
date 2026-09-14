@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { synthesizeTts } from '../lib/tts.js';
+import { synthesizeTts, waitGradioCall } from '../lib/tts.js';
 
 // Exercise the complete client exchange, including the Gradio 5.45 queue rule.
 // A successful POST alone does not mean GET /call/{event_id} can read its queue.
@@ -75,3 +75,44 @@ failDownload = false;
 failQueue = true;
 await assert.rejects(synthesizeTts({ baseUrl }, '队列测试'), /配音生成失败：404: Not Found/);
 console.log('ok tts: Gradio event queue, audio download, reference reuse, stage errors');
+
+const routedFetch = globalThis.fetch;
+for (const status of [401, 503]) {
+  let submissions = 0;
+  const previousUploads = uploads;
+  globalThis.fetch = async (url, options) => {
+    if (new URL(url).pathname === '/gradio_api/call/gen_single') {
+      submissions++;
+      return new Response('service error', { status });
+    }
+    return routedFetch(url, options);
+  };
+  await assert.rejects(synthesizeTts({ baseUrl }, '服务故障'), new RegExp(String(status)));
+  assert.equal(submissions, 1, 'provider failures do not trigger nested submission retries');
+  assert.equal(uploads, previousUploads, 'provider failures do not invalidate a saved voice reference');
+}
+
+// Real HTTP chunks need not line up with SSE boundaries or UTF-8 characters.
+const file = [{ url: '/中文.wav' }];
+for (const separator of ['\n', '\r\n']) {
+  let cancelled = false;
+  const text = `event: heartbeat${separator}data: null${separator}${separator}event: complete${separator}data: ${JSON.stringify(file)}`;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      for (const byte of new TextEncoder().encode(text)) controller.enqueue(new Uint8Array([byte]));
+      controller.close();
+    },
+  }));
+  assert.deepEqual(await waitGradioCall(baseUrl, 'gen_single', 'e'), file, 'EOF flushes a complete final event without a blank line');
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new TextEncoder().encode(text + separator + separator)); },
+    cancel() { cancelled = true; },
+  }));
+  assert.deepEqual(await waitGradioCall(baseUrl, 'gen_single', 'e'), file);
+  assert(cancelled, 'completed SSE releases an otherwise open connection');
+}
+for (const text of ['event: heartbeat\ndata: null\n\n', 'event: generating\ndata: ["partial.wav"]\n\n', 'event: complete\ndata: [{"url":"cut']) {
+  globalThis.fetch = async () => new Response(text);
+  await assert.rejects(waitGradioCall(baseUrl, 'gen_single', 'e'), /连接中断/);
+}
+console.log('PASS TTS stream: CRLF, split UTF-8, final event, early disconnect and connection release');
