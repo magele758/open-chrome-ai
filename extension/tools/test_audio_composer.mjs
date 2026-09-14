@@ -12,6 +12,7 @@ import {
   saveFullMediaArchive,
   loadFullMediaArchive,
   cleanExpiredMediaArchives,
+  deleteMediaArchive,
   ARCHIVE_TTL_DAYS,
 } from "../lib/audio-composer.js";
 import { idbSet } from "../lib/idb-kv.js";
@@ -110,4 +111,42 @@ const expiredLoad = await loadFullMediaArchive("expired-video");
 assert.equal(expiredLoad, null, "Expired archive cannot be loaded");
 console.log("PASS: 7-Day TTL archive storage & automatic cleanup");
 
+console.log("--- 4. Testing Stale / Corrupted Blob Handling & Upgrade ---");
+// Simulate a legacy archive containing a corrupted/stale blob (arrayBuffer fails)
+const deadBlob = {
+  size: 1000,
+  arrayBuffer: async () => { throw new Error("net::ERR_FILE_NOT_FOUND"); },
+};
+await idbSet("pl.media.archive.corrupt-video", {
+  videoId: "corrupt-video",
+  expireAt: now + 3600 * 1000,
+  compactAudioBlob: deadBlob,
+  hasCompactAudio: true,
+});
+
+const corruptLoad = await loadFullMediaArchive("corrupt-video");
+assert.equal(corruptLoad, null, "Corrupt archive with dead blob is safely purged and returns null");
+
+// Simulate a legacy archive with readable blob that gets upgraded
+const validLegacyBlob = new Blob([new Uint8Array(200)], { type: "audio/wav" });
+await idbSet("pl.media.archive.legacy-video", {
+  videoId: "legacy-video",
+  expireAt: now + 3600 * 1000,
+  compactAudioBlob: validLegacyBlob,
+  hasCompactAudio: true,
+});
+const legacyLoad = await loadFullMediaArchive("legacy-video");
+assert.ok(legacyLoad, "Legacy archive is upgraded");
+assert.ok(legacyLoad.compactAudioBlob instanceof Blob, "Constructed fresh in-memory Blob");
+assert.ok(legacyLoad.compactAudioBuffer instanceof ArrayBuffer, "Upgraded to store ArrayBuffer");
+console.log("PASS: Stale / Corrupted blob purge and legacy archive upgrade");
+
+console.log("--- 5. Testing Delete Media Archive ---");
+await saveFullMediaArchive({ videoId: "to-delete", title: "del", duration: 10, compactAudioBlob: validLegacyBlob });
+assert.ok(await loadFullMediaArchive("to-delete"), "Archive exists before deletion");
+await deleteMediaArchive("to-delete");
+assert.equal(await loadFullMediaArchive("to-delete"), null, "Archive is deleted after deleteMediaArchive");
+console.log("PASS: Delete media archive");
+
 console.log("ALL AUDIO COMPOSER TESTS PASSED!");
+

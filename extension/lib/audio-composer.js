@@ -306,6 +306,15 @@ export async function saveFullMediaArchive({
   const now = Date.now();
   const expireAt = calculateExpireAt(now);
 
+  let audioBuffer = null;
+  let compactAudioBuffer = null;
+  if (audioBlob) {
+    try { audioBuffer = await audioBlob.arrayBuffer(); } catch {}
+  }
+  if (compactAudioBlob) {
+    try { compactAudioBuffer = await compactAudioBlob.arrayBuffer(); } catch {}
+  }
+
   const archiveRecord = {
     videoId,
     processingVersion,
@@ -318,15 +327,19 @@ export async function saveFullMediaArchive({
     lines: Array.isArray(lines) ? lines : [],
     cues: Array.isArray(cues) ? cues : [],
     compactCues: Array.isArray(compactCues) ? compactCues : [],
-    audioBlob: audioBlob || null,
-    compactAudioBlob: compactAudioBlob || null,
-    hasAudio: Boolean(audioBlob && audioBlob.size > 100),
-    hasCompactAudio: Boolean(compactAudioBlob && compactAudioBlob.size > 100),
+    audioBuffer,
+    compactAudioBuffer,
+    hasAudio: Boolean(audioBuffer && audioBuffer.byteLength > 100),
+    hasCompactAudio: Boolean(compactAudioBuffer && compactAudioBuffer.byteLength > 100),
   };
 
   const key = ARCHIVE_PREFIX + videoId;
   await idbSet(key, archiveRecord);
-  return archiveRecord;
+  return {
+    ...archiveRecord,
+    audioBlob: audioBuffer ? new Blob([audioBuffer], { type: 'audio/wav' }) : null,
+    compactAudioBlob: compactAudioBuffer ? new Blob([compactAudioBuffer], { type: 'audio/wav' }) : null,
+  };
 }
 
 /**
@@ -343,13 +356,75 @@ export async function loadFullMediaArchive(videoId) {
     return null;
   }
 
+  let audioBlob = null;
+  let compactAudioBlob = null;
+  let audioBuffer = item.audioBuffer || null;
+  let compactAudioBuffer = item.compactAudioBuffer || null;
+
+  try {
+    if (!audioBuffer && item.audioBlob) {
+      try {
+        const buf = await item.audioBlob.arrayBuffer();
+        if (buf && buf.byteLength > 100) {
+          audioBuffer = buf;
+        }
+      } catch {
+        console.warn('[audio-composer] Stale audioBlob in archive, dropped');
+      }
+    }
+
+    if (!compactAudioBuffer && item.compactAudioBlob) {
+      try {
+        const buf = await item.compactAudioBlob.arrayBuffer();
+        if (buf && buf.byteLength > 100) {
+          compactAudioBuffer = buf;
+        }
+      } catch {
+        console.warn('[audio-composer] Stale compactAudioBlob in archive, dropped');
+      }
+    }
+
+    if (audioBuffer && audioBuffer.byteLength > 100) {
+      audioBlob = new Blob([audioBuffer], { type: 'audio/wav' });
+    }
+    if (compactAudioBuffer && compactAudioBuffer.byteLength > 100) {
+      compactAudioBlob = new Blob([compactAudioBuffer], { type: 'audio/wav' });
+    }
+
+    // Purge corrupted/empty archive entries
+    if (!audioBlob && !compactAudioBlob && (item.hasAudio || item.hasCompactAudio)) {
+      console.warn('[audio-composer] All archive audio blobs are unreadable/missing, purging key:', key);
+      await idbDel(key);
+      return null;
+    }
+
+    // Upgrade legacy stored record in IDB
+    if ((!item.audioBuffer && audioBuffer) || (!item.compactAudioBuffer && compactAudioBuffer)) {
+      await idbSet(key, {
+        ...item,
+        audioBlob: undefined,
+        compactAudioBlob: undefined,
+        audioBuffer,
+        compactAudioBuffer,
+      });
+    }
+  } catch (err) {
+    console.warn('[audio-composer] Failed to process archive blobs:', err);
+    await idbDel(key);
+    return null;
+  }
+
   const remainingMs = item.expireAt - Date.now();
   const remainingDays = Math.max(0, Math.ceil(remainingMs / (24 * 3600 * 1000)));
 
   return {
     ...item,
-    hasAudio: Boolean(item.audioBlob && item.audioBlob.size > 100),
-    hasCompactAudio: Boolean(item.compactAudioBlob && item.compactAudioBlob.size > 100),
+    audioBuffer,
+    compactAudioBuffer,
+    audioBlob,
+    compactAudioBlob,
+    hasAudio: Boolean(audioBlob && audioBlob.size > 100),
+    hasCompactAudio: Boolean(compactAudioBlob && compactAudioBlob.size > 100),
     remainingDays,
     isValid: true,
   };
@@ -373,4 +448,13 @@ export async function cleanExpiredMediaArchives() {
     }
   }
   return deleted;
+}
+
+/**
+ * Deletes media archive for a specific video.
+ */
+export async function deleteMediaArchive(videoId) {
+  if (!videoId) return;
+  const key = ARCHIVE_PREFIX + videoId;
+  await idbDel(key);
 }

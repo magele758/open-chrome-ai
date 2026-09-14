@@ -1,3 +1,5 @@
+export { StreamingAudioPlayer } from './streaming-audio-player.js';
+
 /** Follow the live player's transport without seeking within speech (which skips words).
  * Capturing the visible video is necessarily delayed; this controls additional drift.
  */
@@ -71,9 +73,10 @@ export async function playFollowingVideo({ blob, start, end, signal, readState, 
     if (audio) {
       audio.pause();
       audio.onended = audio.onerror = null;
-      audio.removeAttribute?.('src');
-      audio.load?.();
+      audio.src = '';
     }
-    URL.revokeObjectURL(url);
+    if (url) {
+      setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 2000);
+    }
   }
 }

@@ -25,6 +25,8 @@ export class InterpretTask {
     this.abortController = null;
     this.currentCapture = null;
     this.originalAudioOn = false;
+    this.streamPlayer = null;
+    this.streamStats = null;
     this.details = {
       mode: "audio",
       message: "",
@@ -48,6 +50,7 @@ export class InterpretTask {
           ? "error"
           : "idle",
       originalAudioOn: this.originalAudioOn,
+      streamStats: this.streamStats || (this.streamPlayer ? this.streamPlayer.getStats() : null),
       ...this.details,
     };
   }
@@ -58,7 +61,8 @@ export class InterpretTask {
 }
 
 export class InterpretController {
-  constructor() {
+  constructor({ audioOnly = false } = {}) {
+    this.audioOnly = audioOnly;
     this.tasks = new Map();
     this.currentTabId = null;
     this.listeners = new Set();
@@ -73,11 +77,21 @@ export class InterpretController {
       error: "",
     };
 
+    this.audioPlayheadProvider = null;
+    this.audioScheduledTimeProvider = null;
+    this.isAudioActiveProvider = null;
+
     if (typeof chrome !== "undefined" && chrome.tabs?.onRemoved) {
       chrome.tabs.onRemoved.addListener((removedTabId) => {
         this.handleTabRemoved(removedTabId).catch(() => {});
       });
     }
+  }
+
+  setAudioProviders({ getPlayhead, getScheduledTime, isActive } = {}) {
+    this.audioPlayheadProvider = getPlayhead || null;
+    this.audioScheduledTimeProvider = getScheduledTime || null;
+    this.isAudioActiveProvider = isActive || null;
   }
 
   async handleTabRemoved(tabId) {
@@ -195,6 +209,9 @@ export class InterpretController {
       task.title = tab.title || task.title;
     }
 
+    const abort = new AbortController();
+    task.abortController = abort;
+    task.settled = new Promise(resolve => { task.resolveSettled = resolve; });
     task.fsmState = InterpretState.PREPARING;
     task.details = {
       mode: "audio",
@@ -210,25 +227,28 @@ export class InterpretController {
     let openingHold = false;
     try {
       await injectVideo(tab.id, "pick", { fresh: true });
+      abort.signal.throwIfAborted();
       const st = await injectVideo(tab.id, "state");
       startAt = Number(st?.currentTime) || 0;
       openingHold = Boolean(st?.ok && !st.ended && !st.paused);
       const held = await injectVideo(tab.id, "control", { action: "pause", system: true });
       const verified = await injectVideo(tab.id, "state");
+      abort.signal.throwIfAborted();
       if (!held?.ok || !verified?.paused) {
         throw new Error("播放器未能暂停，未开始同传。请重试。");
       }
     } catch (err) {
+      task.resolveSettled?.();
+      if (abort.signal.aborted) return;
       task.fsmState = InterpretState.ERROR;
       task.details.error = err.message || String(err);
       this.notify({ type: "error", error: task.details.error, tabId: tab.id }, tab.id);
       return;
     }
 
-    const abort = new AbortController();
-    task.abortController = abort;
     task.currentCapture = null;
     task.originalAudioOn = false;
+    task.streamPlayer = null;
     task.fsmState = InterpretState.RUNNING;
     task.details.message = "同传已开始…";
     this.notify({ type: "started", tabId: tab.id }, tab.id);
@@ -240,9 +260,14 @@ export class InterpretController {
         title: tab.title,
         settings,
         bufferSegments: Number(settings?.tts?.bufferSegments) || 5,
-        startAt,
+        startAt: this.audioOnly ? 0 : startAt,
         openingHold,
         capture: task.currentCapture,
+        streamPlayback: false,
+        audioOnly: this.audioOnly,
+        getAudioPlayhead: () => (this.audioPlayheadProvider ? this.audioPlayheadProvider(tab.id) : 0),
+        getAudioScheduledTime: () => (this.audioScheduledTimeProvider ? this.audioScheduledTimeProvider(tab.id) : 0),
+        isAudioActive: () => (this.isAudioActiveProvider ? this.isAudioActiveProvider(tab.id) : false),
         signal: abort.signal,
         wantOriginalAudio: () => task.abortController === abort && task.originalAudioOn,
         onEditable: edit => { task.editLine = edit; },
@@ -265,9 +290,16 @@ export class InterpretController {
               task.details.zh = "";
             }
             this.notify({ type: "status", status: ev, tabId: tab.id }, tab.id);
+          } else if (ev.type === "stream_stats") {
+            task.streamStats = ev.stats;
+            this.notify({ type: "stream_stats", stats: ev.stats, tabId: tab.id }, tab.id);
           } else if (ev.type === "warn") {
             task.details.hint = ev.message || "";
             this.notify({ type: "warn", message: ev.message, tabId: tab.id }, tab.id);
+          } else if (ev.type === "dub_segment") {
+            this.notify({ type: "dub_segment", segment: ev.segment, tabId: tab.id }, tab.id);
+          } else if (ev.type === "dub_complete") {
+            this.notify({ type: "dub_complete", totalLines: ev.totalLines, duration: ev.duration, tabId: tab.id }, tab.id);
           } else if (ev.type === "archive_saved") {
             this.notify({ type: "archive_saved", archive: ev.archive, tabId: tab.id }, tab.id);
           }
@@ -295,6 +327,10 @@ export class InterpretController {
         this.notify({ type: "error", error: task.details.error, tabId: tab.id }, tab.id);
       }
     } finally {
+      if (task.streamPlayer) {
+        try { task.streamPlayer.stop(); } catch {}
+        task.streamPlayer = null;
+      }
       if (task.abortController === abort) {
         task.originalAudioOn = true;
         task.abortController = null;
@@ -308,7 +344,37 @@ export class InterpretController {
         task.fsmState = InterpretState.IDLE;
       }
       this.notify({ type: "idle", tabId: tab.id }, tab.id);
-      this.tasks.delete(tab.id);
+      if (this.tasks.get(tab.id) === task) this.tasks.delete(tab.id);
+      task.resolveSettled?.();
+    }
+  }
+
+  getStreamPlayer(tabId) {
+    const task = this.getTask(tabId);
+    if (task?.streamPlayer) return task.streamPlayer;
+    for (const t of this.tasks.values()) {
+      if (t.streamPlayer) return t.streamPlayer;
+    }
+    return null;
+  }
+
+  async toggleStreamPlayback(tabId) {
+    const player = this.getStreamPlayer(tabId);
+    if (!player) return false;
+    if (player.state === 'playing' && !player.userPaused) {
+      await player.pause();
+    } else {
+      await player.play();
+    }
+    this.notify({ type: "stream_toggled", state: player.state, tabId: tabId || this.currentTabId }, tabId);
+    return player.state;
+  }
+
+  setStreamRate(rate, tabId) {
+    const player = this.getStreamPlayer(tabId);
+    if (player) {
+      player.setPlaybackRate(rate);
+      this.notify({ type: "stream_rate", rate: player.playbackRate, tabId: tabId || this.currentTabId }, tabId);
     }
   }
 
@@ -334,9 +400,12 @@ export class InterpretController {
       if (cap) {
         await discardCapture(cap).catch(() => {});
       }
-      this.tasks.delete(targetId);
+      await task.settled;
+      if (this.tasks.get(targetId) === task) this.tasks.delete(targetId);
       return;
     }
+
+    if (targetId) return;
 
     let stoppedCount = 0;
     // Stop all tasks if no specific tab given
