@@ -54,6 +54,8 @@ function emptyTts() {
     bufferSegments: 5,
     preparationMode: "progressive",
     bufferSeconds: 30,
+    playbackMode: "sync",
+    gapMs: 0,
   };
 }
 
@@ -103,6 +105,9 @@ export function normalizeSettings(raw) {
   if (!merged.tts.preparationVersion) merged.tts.preparationMode = 'progressive';
   merged.tts.preparationVersion = 1;
   merged.tts.bufferSeconds = Math.max(5, Math.min(120, Number(merged.tts.bufferSeconds) || 30));
+  merged.tts.playbackMode = ['stream', 'sync'].includes(merged.tts.playbackMode) ? merged.tts.playbackMode : 'sync';
+  const gap = Number(merged.tts.gapMs);
+  merged.tts.gapMs = Number.isFinite(gap) && gap >= 0 ? Math.min(2000, gap) : 0;
   if (!["ZH", "EN", "JA", "AR", "ES"].includes(merged.tts.lang)) merged.tts.lang = "ZH";
   merged.uiFont = ["md", "lg", "xl"].includes(raw?.uiFont) ? raw.uiFont : "md";
   merged.nativeShell = raw?.nativeShell !== false;

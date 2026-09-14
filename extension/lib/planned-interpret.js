@@ -3,6 +3,7 @@ import { openInterpretSource } from './downloaded-audio-source.js';
 import { transcribeInterpretSlice } from './interpret-asr.js';
 import { completeChat } from './openai.js';
 import { isAsrReady, isTtsReady, resolveModel } from './storage.js';
+import { StreamingAudioPlayer } from './streaming-audio-player.js';
 import { synthesizeTts, getTtsRef } from './tts.js';
 import { linesToCaptions, stripTimeline, voiceRefFromBlob } from './interpret.js';
 import { withInterpretDeadline } from './interpret-semantic.js';
@@ -195,22 +196,63 @@ export async function runPlannedInterpret(opts) {
   const emit = event => { if (!signal.aborted) { try { opts.onEvent?.({ mode: 'audio', ...event }); } catch { /* UI callback */ } } };
   const status = message => emit({ type: 'status', message, hint: message });
   const cacheGet = opts.cacheGet || readDubCache, cacheSet = opts.cacheSet || writeDubCache;
+  const isStreamMode = Boolean(opts.streamPlayback || opts.streamMode);
+  const audioOnly = opts.audioOnly === true;
   let source, held = false, muted = false, active = null, activeUrl = null;
   let background = null, backgroundUrl = null, backgroundStart = 0;
   let production = Promise.resolve(), planning = Promise.resolve(), productionError, watching = false;
   const completed = new Set(), ready = new Map();
   let revision, currentIndex = 0, shown = null;
   let playhead = Number(opts.startAt) || 0;
+  const streamPlayer = isStreamMode ? (opts.streamPlayer || new StreamingAudioPlayer({
+    gapMs: Number(settings?.tts?.gapMs) || 0,
+    playbackRate: Number(settings?.tts?.playbackRate) || 1.0,
+    volume: Number.isFinite(Number(opts.volume)) ? Math.max(0, Math.min(1, Number(opts.volume))) : 1.0,
+    audioDuration: opts.audioDuration || audioDuration,
+    AudioContextClass: opts.AudioContextClass,
+    createAudioElement: opts.createAudioElement || (opts.createAudio ? (() => opts.createAudio()) : undefined),
+    signal,
+    onItemStart: (item) => {
+      shown = item.id;
+      completed.add(item.id);
+      emit({ type: 'line', ...item, blob: undefined });
+    },
+    onBuffering: (isBuffering) => {
+      emit({
+        type: 'status',
+        message: isBuffering ? '等待后续译文缓冲…' : '正在流畅播报…',
+        hint: isBuffering ? '正在后台合成下一句' : '',
+        isBuffering,
+      });
+    },
+    onQueueUpdate: (stats) => {
+      emit({ type: 'stream_stats', stats });
+    },
+  })) : null;
+  if (streamPlayer) opts.onStreamPlayer?.(streamPlayer);
   let plan, preparing = true, preparationMonitor = Promise.resolve();
+  let emittedDubComplete = false;
   const ttsOn = isTtsReady(settings.tts);
   const read = async () => { const s = await video('state'); if (!s?.ok) throw new Error('播放器已关闭'); return s; };
   const hold = async () => {
+    if (isStreamMode) {
+      try {
+        const state = await read();
+        if (!state.paused) await video('control', { action: 'pause', system: true });
+      } catch {}
+      held = true;
+      return;
+    }
     const state = await read();
     if (!state.paused) await video('control', { action: 'pause', system: true });
     if (!(await read()).paused) throw new Error('无法暂停画面，已停止配音。');
     held = true;
   };
   const resume = async () => {
+    if (isStreamMode) {
+      held = false;
+      return;
+    }
     const s = await read();
     if (!held || s.userPaused || signal.aborted) return;
     const result = await video('control', { action: 'play', system: true });
@@ -224,27 +266,47 @@ export async function runPlannedInterpret(opts) {
     muted = !original;
   };
   const clearBackground = () => {
-    if (background) { background.pause(); background.removeAttribute?.('src'); background.load?.(); background = null; }
-    if (backgroundUrl) URL.revokeObjectURL(backgroundUrl);
-    backgroundUrl = null;
+    if (background) {
+      background.pause();
+      background.onended = background.onerror = null;
+      background.src = '';
+      background = null;
+    }
+    if (backgroundUrl) {
+      const u = backgroundUrl;
+      setTimeout(() => { try { URL.revokeObjectURL(u); } catch {} }, 2000);
+      backgroundUrl = null;
+    }
   };
   const clearAudio = (includeBackground = true) => {
     if (includeBackground) clearBackground();
-    if (active) { active.pause(); active.onended = active.onerror = null; active.removeAttribute?.('src'); active.load?.(); active = null; }
-    if (activeUrl) URL.revokeObjectURL(activeUrl);
-    activeUrl = null;
+    if (active) {
+      active.pause();
+      active.onended = active.onerror = null;
+      active.src = '';
+      active = null;
+    }
+    if (activeUrl) {
+      const u = activeUrl;
+      setTimeout(() => { try { URL.revokeObjectURL(u); } catch {} }, 2000);
+      activeUrl = null;
+    }
   };
   try {
     signal.throwIfAborted();
     await video('pick', { fresh: true });
-    await video('watch', { initiallyPlaying: Boolean(opts.openingHold) }); watching = true;
-    await hold();
-    preparationMonitor = (async () => {
-      while (preparing && !signal.aborted) {
-        if (!(await read()).paused) await hold();
-        await sleep(100);
-      }
-    })().catch(error => { productionError = error; controller.abort(); });
+    if (!audioOnly) {
+      await video('watch', { initiallyPlaying: Boolean(opts.openingHold) }); watching = true;
+    }
+    if (!isStreamMode && !audioOnly) {
+      await hold();
+      preparationMonitor = (async () => {
+        while (preparing && !signal.aborted) {
+          if (!(await read()).paused) await hold();
+          await sleep(100);
+        }
+      })().catch(error => { productionError = error; controller.abort(); });
+    }
     const media = await video('media');
     source = await (opts.openSource || openInterpretSource)({ url: opts.sourceUrl, mediaUrl: /^https?:/.test(media?.src || '') ? media.src : undefined, signal, onProgress: p => status(p.hint) });
     if (media?.duration > 0 && Math.abs(source.duration - media.duration) > 3) throw new Error('音轨与播放器时长不一致');
@@ -258,8 +320,8 @@ export async function runPlannedInterpret(opts) {
       for (const range of coverage) if (range.start <= end + .001 && range.end > end) end = range.end;
       return end;
     };
-    plan = progressive ? { lines: [], cues: [], spans: [], sourceKey: await dubKey({ url: opts.sourceUrl, duration: source.duration }), background: false }
-      : await prepareDubPlan({ source, settings, signal, status, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat });
+    plan = opts.plan || (progressive ? { lines: [], cues: [], spans: [], sourceKey: await dubKey({ url: opts.sourceUrl ? videoIdentity(opts.sourceUrl) : 'unknown', duration: Math.round(Number(source.duration) || 0) }), background: false }
+      : await prepareDubPlan({ source, settings, signal, status, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat }));
     let analysisRevision = 0;
     let refreshSpeakers = () => {};
     if (progressive) {
@@ -270,16 +332,25 @@ export async function runPlannedInterpret(opts) {
         plan.background = analysis.background;
         analysisRevision++;
         refreshSpeakers();
-      }).catch(error => { if (!signal.aborted) status(`后台声音分析暂不可用，继续分段翻译：${error.message}`); });
+      }).catch(error => {
+        if (!signal.aborted) {
+          console.warn('[planned-interpret] Background voice analysis unavailable, fallback to progressive translation:', error.message);
+          status(`继续分段翻译与配音…`);
+        }
+      });
     }
     signal.throwIfAborted();
     const references = new Map();
     const configuredRef = await (opts.getTtsRef || getTtsRef)();
     const configuredBlob = configuredRef?.buffer ? new Blob([configuredRef.buffer], { type: configuredRef.type || 'audio/wav' }) : undefined;
     const refKeys = new Map();
+    let lastValidReference = null;
     for (const [person, span] of progressive ? [] : voiceCandidates(plan.spans)) {
       const ref = await prepareSpeakerReference({ line: { ...span, speaker: person }, spans: plan.spans, source, voiceRef: opts.voiceRef || voiceRefFromBlob });
-      if (ref) references.set(person, ref);
+      if (ref) {
+        references.set(person, ref);
+        if (!lastValidReference) lastValidReference = ref;
+      }
     }
     for (const [person, blob] of references) refKeys.set(person, await dubKey([...new Uint8Array(await blob.arrayBuffer())]));
     const configuredKey = configuredBlob ? await dubKey([...new Uint8Array(await configuredBlob.arrayBuffer())]) : 'none';
@@ -306,8 +377,24 @@ export async function runPlannedInterpret(opts) {
     if (progressive) planning = (async () => {
       while (!signal.aborted) {
         const windowRevision = analysisRevision;
-        const start = coveredUntil(playhead);
-        if (start >= source.duration || start - playhead >= Math.max(24, (Number(settings.tts?.bufferSeconds) || 30) * 4)) { await sleep(100); continue; }
+        const audioPlayhead = Number(opts.getAudioPlayhead?.()) || 0;
+        const currentPlayhead = Math.max(
+          isStreamMode && streamPlayer ? streamPlayer.getCurrentSourceTime() : playhead,
+          audioPlayhead
+        );
+        const scheduledAudioTime = Math.max(
+          streamPlayer ? streamPlayer.getScheduledSourceTime() : 0,
+          Number(opts.getAudioScheduledTime?.()) || 0
+        );
+        const isAudioActive = isStreamMode || Boolean(opts.isAudioActive?.());
+        const continuousEnd = coveredUntil(0);
+        const start = (currentPlayhead > continuousEnd + 15) ? coveredUntil(currentPlayhead) : continuousEnd;
+        const bufferLimit = Math.max(120, (Number(settings.tts?.bufferSeconds) || 30) * 4);
+        const bufferedAhead = scheduledAudioTime - currentPlayhead;
+        if (start >= source.duration || (start - currentPlayhead >= bufferLimit && (!isAudioActive || bufferedAhead >= 30))) {
+          await sleep(100);
+          continue;
+        }
         // Small first window; subsequent windows retain paragraph context without a whole-file barrier.
         const desiredEnd = Math.min(source.duration, start + (coverage.length ? 24 : 12), ...coverage.filter(r => r.start > start).map(r => r.start));
         const end = hasSubtitles ? subtitleWindowEnd(source.subtitles, start, desiredEnd, source.duration) : desiredEnd;
@@ -356,10 +443,22 @@ export async function runPlannedInterpret(opts) {
     // One worker preserves voice-service capacity, while playback is independent.
     production = (async () => {
       while (!signal.aborted) {
-        if (!pending.size) { await sleep(100); continue; }
+        const audioPlayhead = Number(opts.getAudioPlayhead?.()) || 0;
+        const currentPlayhead = Math.max(
+          isStreamMode && streamPlayer ? streamPlayer.getCurrentSourceTime() : playhead,
+          audioPlayhead
+        );
+        if (!pending.size) {
+          if (!emittedDubComplete && lines.length > 0 && (progressive ? coveredUntil(0) >= source.duration : true)) {
+            emittedDubComplete = true;
+            emit({ type: 'dub_complete', totalLines: lines.length, duration: source.duration });
+          }
+          await sleep(100);
+          continue;
+        }
         // Seek changes priority, never discards completed work.
         const candidates = lines.filter(l => pending.has(l.id));
-        const line = candidates.find(l => l.end > playhead) ?? candidates[0];
+        const line = candidates.find(l => l.end > currentPlayhead) ?? candidates[0];
         pending.delete(line.id);
         const i = lines.indexOf(line);
         if (!ttsOn) { ready.set(line.id, { ...line, slotEnd: line.end }); continue; }
@@ -369,9 +468,66 @@ export async function runPlannedInterpret(opts) {
           // Provider speaker IDs are scoped to the recognition window; unknown cues stay separate.
           if (referenceBlob && line.speaker && !line.speaker.startsWith('unassigned:')) references.set(line.speaker, referenceBlob);
         }
+        if (referenceBlob) {
+          lastValidReference = referenceBlob;
+        } else if (!line.speaker || line.speaker.startsWith('unassigned:')) {
+          if (!lastValidReference) {
+            const candList = lines.length ? lines : (source.subtitles || []);
+            const longerCues = candList.filter(c => (c.end - c.start) >= 3.0);
+            for (const cand of (longerCues.length ? longerCues : candList)) {
+              const candRef = await prepareSpeakerReference({ line: cand, spans: plan.spans, source, voiceRef: opts.voiceRef || voiceRefFromBlob });
+              if (candRef) {
+                lastValidReference = candRef;
+                break;
+              }
+            }
+          }
+          referenceBlob = lastValidReference;
+        }
         referenceBlob ||= configuredBlob;
-        const key = await dubKey({ source: plan.sourceKey, line, tts: { ...modelIdentity(settings.tts), lang: settings.tts.lang, durationFactor: settings.tts.durationFactor }, reference: referenceBlob ? await dubKey([...new Uint8Array(await referenceBlob.arrayBuffer())]) : configuredKey, background: Boolean(plan.background), version: 2 });
+        const refKey = referenceBlob ? await dubKey([...new Uint8Array(await referenceBlob.arrayBuffer())]) : configuredKey;
+        const key = await dubKey({ source: plan.sourceKey, line, tts: { ...modelIdentity(settings.tts), lang: settings.tts.lang, durationFactor: settings.tts.durationFactor }, reference: refKey, background: Boolean(plan.background), version: 2 });
         let prepared = await cacheGet(key);
+        if (prepared?.blob) {
+          try {
+            await prepared.blob.slice(0, 16).arrayBuffer();
+          } catch {
+            console.warn('[planned-interpret] Cached dub blob is unreadable, will re-synthesize');
+            prepared = null;
+          }
+        }
+
+        // Global content-based TTS audio cache (reuse across different runs, seeks, or line timestamps)
+        const ttsContentKey = await dubKey({
+          zh: String(line.zh || '').trim(),
+          tts: { ...modelIdentity(settings.tts), lang: settings.tts.lang || 'ZH', durationFactor: settings.tts.durationFactor || 1 },
+          reference: refKey,
+          version: 'tts-content-v1',
+        });
+
+        if (!prepared) {
+          const cachedContent = await cacheGet(ttsContentKey);
+          if (cachedContent?.blob) {
+            try {
+              await cachedContent.blob.slice(0, 16).arrayBuffer();
+              const seconds = cachedContent.audioSeconds || (await (opts.audioDuration || audioDuration)(cachedContent.blob));
+              if (seconds > 0) {
+                prepared = {
+                  ...fitDub(line, seconds, progressive ? line.end : (lines[i + 1]?.start ?? source.duration)),
+                  blob: cachedContent.blob,
+                  audioSeconds: seconds,
+                };
+                if (plan.background) {
+                  prepared.backgroundBlob = (await source.slice(line.start, prepared.slotEnd - line.start, 'background')).blob;
+                }
+                await cacheSet(key, prepared);
+              }
+            } catch {
+              prepared = null;
+            }
+          }
+        }
+
         if (!prepared) {
           status(`正在准备中文配音 ${ready.size + 1}/${lines.length}…`);
           const output = await retryInterpretRequest(s => (opts.synthesizeTts || synthesizeTts)(settings.tts, line.zh, { signal: s, referenceBlob, lang: settings.tts.lang || 'ZH' }), {
@@ -380,13 +536,76 @@ export async function runPlannedInterpret(opts) {
           if (!output?.blob) throw new Error('配音生成失败');
           const seconds = await (opts.audioDuration || audioDuration)(output.blob);
           if (!(seconds > 0) || !Number.isFinite(seconds)) throw new Error('配音时长无效');
-          prepared = { ...fitDub(line, seconds, progressive ? line.end : (lines[i + 1]?.start ?? source.duration)), blob: output.blob };
+          prepared = { ...fitDub(line, seconds, progressive ? line.end : (lines[i + 1]?.start ?? source.duration)), blob: output.blob, audioSeconds: seconds };
           if (plan.background) prepared.backgroundBlob = (await source.slice(line.start, prepared.slotEnd - line.start, 'background')).blob;
           await cacheSet(key, prepared);
+          await cacheSet(ttsContentKey, { blob: output.blob, audioSeconds: seconds, zh: line.zh });
         }
-        if (lines.includes(line)) ready.set(line.id, prepared);
+        if (lines.includes(line)) {
+          ready.set(line.id, prepared);
+          emit({
+            type: 'dub_segment',
+            segment: {
+              id: line.id,
+              zh: line.zh,
+              src: line.src,
+              speaker: line.speaker,
+              start: line.start,
+              end: prepared.slotEnd || line.end,
+              blob: prepared.blob,
+              duration: prepared.audioSeconds || 0,
+            },
+          });
+          if (isStreamMode && streamPlayer && ttsOn) {
+            void streamPlayer.enqueue({
+              id: line.id,
+              zh: line.zh,
+              src: line.src,
+              speaker: line.speaker,
+              start: line.start,
+              end: prepared.slotEnd || line.end,
+              blob: prepared.blob,
+              duration: prepared.audioSeconds || 0,
+            });
+          }
+        }
       }
     })().catch(error => { productionError = error; });
+    if (audioOnly) {
+      // Generation follows the audio playhead, never the paused video's clock.
+      while (!signal.aborted) {
+        if (productionError) throw productionError;
+        playhead = Number(opts.getAudioPlayhead?.()) || 0;
+        if (pending.size === 0 && ready.size >= lines.length &&
+            (!progressive || coveredUntil(0) >= source.duration)) {
+          emit({ type: 'dub_complete', totalLines: lines.length, duration: source.duration });
+          break;
+        }
+        await sleep(60);
+      }
+    } else if (isStreamMode && streamPlayer) {
+      status('正在流式播报中文译音（已开启无间隔连续播放）…');
+      await speaker(Boolean(opts.wantOriginalAudio?.()) || !ttsOn).catch(() => {});
+
+      while (!signal.aborted) {
+        if (productionError) throw productionError;
+        const streamSourceTime = streamPlayer.getCurrentSourceTime();
+        playhead = streamSourceTime;
+
+        await speaker(Boolean(opts.wantOriginalAudio?.()) || !ttsOn).catch(() => {});
+
+        const allProduced = pending.size === 0 && ready.size >= lines.length && (progressive ? coveredUntil(playhead) >= source.duration : true);
+        if (allProduced && !streamPlayer.streamClosed) {
+          streamPlayer.closeStream();
+        }
+
+        if (allProduced && streamPlayer.state === 'idle' && streamPlayer.queue.length === 0 && streamPlayer.scheduledItems.length === 0) {
+          break;
+        }
+
+        await sleep(60);
+      }
+    } else {
     let buffering = true;
     let refill = false;
     while (!signal.aborted) {
@@ -408,12 +627,15 @@ export async function runPlannedInterpret(opts) {
         if (!buffering) refill = true;
         buffering = true;
       }
+      const isPureAudio = false; // Video sync never changes mode based on another player.
       if (buffering) {
         const bufferTarget = progressive && !refill ? 3 : target;
         const enough = full ? ready.size === lines.length : ahead >= Math.min(bufferTarget, (source.duration - playhead) / rate);
         if (!enough) {
-          await hold();
-          status(full ? `画面已暂停，等待完整配音 ${ready.size}/${lines.length}…` : `画面已暂停，连续配音缓冲 ${Math.floor(ahead)}/${bufferTarget} 秒…`);
+          if (!isPureAudio) {
+            await hold();
+            status(full ? `画面已暂停，等待完整配音 ${ready.size}/${lines.length}…` : `画面已暂停，连续配音缓冲 ${Math.floor(ahead)}/${bufferTarget} 秒…`);
+          }
           await sleep(100); continue;
         }
         buffering = false;
@@ -421,7 +643,7 @@ export async function runPlannedInterpret(opts) {
       const next = currentIndex < 0 ? null : lines[currentIndex];
       if (!active && next && playhead >= next.start - .04) {
         let item = ready.get(next.id);
-        if (!item) { buffering = true; refill = true; await hold(); continue; }
+        if (!item) { buffering = true; refill = true; if (!isPureAudio) await hold(); continue; }
         // Refit even cached audio against the currently known next turn. Never
         // borrow unprocessed time; later windows may contain another speaker.
         if (ttsOn && item.audioSeconds > 0) {
@@ -432,6 +654,10 @@ export async function runPlannedInterpret(opts) {
         if (!ttsOn) {
           completed.add(item.id);
           shown = item.id; emit({ type: 'line', ...item });
+        } else if (isPureAudio) {
+          // In pure audio mode, StreamingAudioPlayer handles dub playback.
+          // Do not play active audio through the video element loop.
+          shown = item.id;
         } else {
           clearBackground();
           if (item.backgroundBlob) {
@@ -452,11 +678,13 @@ export async function runPlannedInterpret(opts) {
         }
       }
       const speechNow = lines.some(l => l.start <= playhead && l.end > playhead);
-      if (shown && !active && !speechNow) {
+      if (shown && !active && !speechNow && !isPureAudio) {
         shown = null;
         emit({ type: 'status', clearLine: true, message: '原声间奏 / 停顿', hint: '' });
       }
-      await speaker(Boolean(opts.wantOriginalAudio?.()) || !ttsOn || (!active && !speechNow));
+      if (!isPureAudio) {
+        await speaker(Boolean(opts.wantOriginalAudio?.()) || !ttsOn || (!active && !speechNow));
+      }
       const voice = active;
       if (state.userPaused || state.readyState < 3 && !held && !state.ended) {
         active?.pause();
@@ -472,7 +700,9 @@ export async function runPlannedInterpret(opts) {
           } catch (error) { if (active === voice || signal.aborted) throw error; }
         }
       } else {
-        await resume();
+        if (!isPureAudio) {
+          await resume();
+        }
       }
       const accompaniment = background;
       if (accompaniment) {
@@ -492,25 +722,27 @@ export async function runPlannedInterpret(opts) {
           }
         }
       }
-      await sleep(50);
+      await sleep(state?.userPaused ? 200 : 50);
+    }
     }
     signal.throwIfAborted();
-    return { mode: 'audio', lines, captions: linesToCaptions(lines), prepared: ready.size };
+    return { mode: 'audio', lines, captions: linesToCaptions(lines), prepared: ready.size, streamPlayer };
   } finally {
     controller.abort(); preparing = false; clearAudio();
+    streamPlayer?.stop();
     await preparationMonitor;
     await Promise.all([production, planning]);
     if (watching) {
       const state = await read().catch(() => null);
       if (muted) await video('restore').catch(() => {});
-      if (held && state && !state.userPaused && !state.ended) await video('control', { action: 'play', system: true }).catch(() => {});
+      if (!audioOnly && !isStreamMode && held && state && !state.userPaused && !state.ended) await video('control', { action: 'play', system: true }).catch(() => {});
       await video('unwatch').catch(() => {});
     }
     await source?.close();
     opts.signal?.removeEventListener('abort', stop);
     try {
       const dubbedSegments = [];
-      for (const line of lines || []) {
+      for (const line of plan?.lines || []) {
         const item = ready.get(line.id);
         if (item?.blob) {
           dubbedSegments.push({
@@ -525,7 +757,7 @@ export async function runPlannedInterpret(opts) {
         }
       }
       const videoId = opts.sourceUrl ? videoIdentity(opts.sourceUrl) : null;
-      if (videoId && dubbedSegments.length > 0) {
+      if (!opts.signal?.aborted && videoId && dubbedSegments.length > 0) {
         const compactAudio = await composeCompactDubTrack(dubbedSegments, { sampleRate: 24000, gapMs: 250 });
         const fullAudio = await composeFullDubTrack(dubbedSegments, { totalDuration: source?.duration || 0 });
         const archive = await saveFullMediaArchive({
@@ -534,14 +766,14 @@ export async function runPlannedInterpret(opts) {
           url: opts.sourceUrl,
           duration: source?.duration || 0,
           compactDuration: compactAudio.duration,
-          lines,
-          cues: linesToCaptions(lines).cues,
+          lines: plan.lines,
+          cues: linesToCaptions(plan.lines).cues,
           compactCues: compactAudio.cues,
           audioBlob: fullAudio,
           compactAudioBlob: compactAudio.blob,
           processingVersion: 'planned-v1',
         });
-        emit({ type: 'archive_saved', archive });
+        if (!opts.signal?.aborted) opts.onEvent?.({ type: 'archive_saved', mode: 'audio', archive });
       }
     } catch {
       // Ignore archive compose error on shutdown

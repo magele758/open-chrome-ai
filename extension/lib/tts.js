@@ -344,7 +344,7 @@ export async function synthesizeTts(tts, text, { signal, lang, durationFactor, r
   if (line.length > 500) throw new Error("一次最多朗读 500 字，请分段。");
   // Per-segment references are ephemeral: never replace the user's saved voice
   // or reuse the global upload cache (equal-sized clips can contain other voices).
-  const temporary = referenceBlob !== undefined;
+  const temporary = referenceBlob != null;
   const ref = temporary ? { name: "segment-ref.wav", type: referenceBlob?.type } : await getTtsRef();
   const blob = temporary ? referenceBlob : refToBlob(ref);
   if (!blob) throw new Error("还没有参考音色。到设置上传一段 3–10 秒的 wav。");
