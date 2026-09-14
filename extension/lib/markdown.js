@@ -232,6 +232,20 @@ export function bindMarkdownLinks(root) {
 export function decorateInlines(root, { baseUrl } = {}) {
   autolinkText(root);
   decorateLinks(root, { baseUrl });
+  // Models often format a video index as `0:44`. Only standalone inline
+  // timestamps become seek controls; code blocks and existing links stay intact.
+  for (const code of root.querySelectorAll('code')) {
+    const timestamp = code.textContent.trim();
+    if (!/^\d{1,3}:[0-5]\d(?::[0-5]\d)?$/.test(timestamp)) continue;
+    if (code.closest('pre, a, button, svg, textarea, .mermaid-wrap, .mermaid-src')) continue;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'ts';
+    button.dataset.t = timestamp;
+    button.textContent = timestamp;
+    button.title = `跳转到 ${timestamp}`;
+    code.replaceWith(button);
+  }
   const skip = new Set(["PRE", "CODE", "A", "BUTTON", "SVG", "TEXTAREA"]);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
@@ -263,6 +277,7 @@ export function decorateInlines(root, { baseUrl } = {}) {
         btn.className = "ts";
         btn.dataset.t = part;
         btn.textContent = part;
+        btn.title = `跳转到 ${part}`;
         frag.appendChild(btn);
       } else if (/^〔\d+〕$/.test(part)) {
         const span = document.createElement("span");
