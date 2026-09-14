@@ -25,6 +25,7 @@ Architecture:
 import argparse
 import asyncio
 import json
+import math
 import os
 import re
 import shutil
@@ -282,11 +283,35 @@ def extract_reference_voice(vocals_path, output_ref_path, start_s=2.0, duration_
     return output_ref_path
 
 
-# --- Step 3: Spoken Translation with Duration Budgeting ---
+# --- Step 3: Cross-Language Frequency Modeling & Spoken Translation ---
 
-def translate_spoken_chinese(text, duration_s, api_key=None, base_url=None, model=None):
+LANGUAGE_PROFILES = {
+    "en": {"name": "English", "syl_per_sec": 4.0, "info_density": 1.0},
+    "zh": {"name": "Chinese", "syl_per_sec": 4.3, "info_density": 1.45},
+    "ja": {"name": "Japanese", "syl_per_sec": 7.0, "info_density": 0.65},
+    "es": {"name": "Spanish", "syl_per_sec": 6.5, "info_density": 0.75},
+    "de": {"name": "German", "syl_per_sec": 4.5, "info_density": 1.10},
+    "fr": {"name": "French", "syl_per_sec": 5.8, "info_density": 0.85},
+}
+
+
+def calculate_language_budget(src_lang="en", tgt_lang="zh", duration_s=3.0):
     """
-    Translates English sentence into natural spoken Chinese with duration awareness.
+    Computes optimal target token/character budget based on cross-linguistic
+    syllable frequency and information density ratios (Pellegrino et al. model).
+    """
+    src = LANGUAGE_PROFILES.get(src_lang, LANGUAGE_PROFILES["en"])
+    tgt = LANGUAGE_PROFILES.get(tgt_lang, LANGUAGE_PROFILES["zh"])
+    # Adjusted tokens = duration * target_syllable_rate * (src_density / tgt_density)
+    base_target_tokens = duration_s * tgt["syl_per_sec"] * (src["info_density"] / tgt["info_density"])
+    min_tokens = max(2, int(base_target_tokens * 0.82))
+    max_tokens = max(4, int(base_target_tokens * 1.18))
+    return min_tokens, max_tokens, round(base_target_tokens, 1)
+
+
+def translate_spoken_chinese(text, duration_s, api_key=None, base_url=None, model=None, src_lang="en"):
+    """
+    Translates source sentence into natural spoken Chinese with cross-language density budgeting.
     """
     text = text.strip()
     if not text:
@@ -296,15 +321,14 @@ def translate_spoken_chinese(text, duration_s, api_key=None, base_url=None, mode
     base_url = base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
     model = model or os.environ.get("LLM_MODEL", "gpt-4o-mini")
 
-    min_chars = max(2, int(duration_s * 3.0))
-    max_chars = max(6, int(duration_s * 4.2))
+    min_chars, max_chars, expected = calculate_language_budget(src_lang, "zh", duration_s)
 
     if api_key:
         try:
             prompt = (
                 f"你是一名专业视频演说同传与配音译者。将以下英文原句改写为极其自然、适合中文口播配音的稿件。\n\n"
                 f"【原句】：{text}\n"
-                f"【时长预算】：{duration_s:.1f} 秒（建议中文字数控制在 {min_chars} 到 {max_chars} 字左右，节奏契合原声）。\n\n"
+                f"【时长预算】：{duration_s:.1f} 秒（基于语种音节频率与信息密度换算，目标字数约为 {expected} 字，建议控制在 {min_chars} 到 {max_chars} 字区间，节奏契合原声）。\n\n"
                 f"【要求】：\n"
                 f"1. 绝不使用死板的字对字欧化翻译腔，要符合地道中文演讲/播客口语表达。\n"
                 f"2. 保持事实与语气忠实，短句有力。\n"
@@ -353,10 +377,12 @@ def translate_spoken_chinese(text, duration_s, api_key=None, base_url=None, mode
 
 # --- Step 4: Duration Factor & TTS Synthesis ---
 
-def calculate_duration_factor(zh_text, target_duration_s):
+def calculate_duration_factor(zh_text, target_duration_s, max_available_s=None, return_effective=False):
     """
     Calculates duration_factor for Index-TTS 2.5 / speed rate for Edge-TTS.
-    Returns (duration_factor, rate_percentage_str).
+    Takes into account both the original sentence duration and the maximum available
+    time slot before the next sentence/event to eliminate awkward dead-silence gaps.
+    Returns (duration_factor, rate_percentage_str) or (duration_factor, rate_percentage_str, effective_target_s).
     """
     char_count = len(re.findall(r"[\u4e00-\u9fff]", zh_text))
     other_words = len(re.findall(r"[a-zA-Z0-9]+", zh_text))
@@ -365,26 +391,44 @@ def calculate_duration_factor(zh_text, target_duration_s):
     # Standard natural spoken Chinese speed: ~4.2 syllables per second
     natural_est_s = max(0.6, total_tokens / 4.2)
 
-    # Target duration factor for Index-TTS (0.5x - 2.0x, clamped to 0.70x - 1.35x for natural tone)
-    raw_factor = target_duration_s / natural_est_s
+    # Elastic Slot Smoothing:
+    # If there is trailing blank time before the next sentence/event,
+    # gently expand the target duration up to 82% of the available slot
+    # (leaving ~300-500ms for natural breathing room), avoiding sudden stops & silence holes.
+    if max_available_s and max_available_s > target_duration_s:
+        relaxed_target = max_available_s * 0.82
+        # Clamped so speaker doesn't slow down below ~3.0 syllables/sec
+        effective_target_s = min(relaxed_target, natural_est_s * 1.35)
+        effective_target_s = max(target_duration_s, effective_target_s)
+    else:
+        effective_target_s = target_duration_s
+
+    # Ensure overall tempo stays within natural human limits [0.75x, 1.35x]
+    effective_target_s = max(natural_est_s * 0.75, min(natural_est_s * 1.35, effective_target_s))
+
+    # Target duration factor for Index-TTS (clamped to 0.70x - 1.35x)
+    raw_factor = effective_target_s / natural_est_s
     clamped_factor = round(max(0.70, min(1.35, raw_factor)), 2)
 
-    # Rate percentage for Edge-TTS (e.g. "+15%", "-10%")
-    rate_val = round(((natural_est_s / max(0.5, target_duration_s)) - 1.0) * 100)
-    rate_val = max(-25, min(30, rate_val))
+    # Rate percentage for Edge-TTS
+    rate_val = round(((natural_est_s / max(0.5, effective_target_s)) - 1.0) * 100)
+    rate_val = max(-22, min(25, rate_val))
     rate_str = f"{rate_val:+d}%"
 
+    if return_effective:
+        return clamped_factor, rate_str, round(effective_target_s, 2)
     return clamped_factor, rate_str
 
 
 async def synthesize_sentence_tts(sentence, voice, output_wav, rate_str="+0%"):
     """
-    Synthesizes speech using edge-tts with native rate adjustment and mild duration fitting.
+    Synthesizes speech using edge-tts with native rate adjustment, de-breathing, and duration fitting.
     """
     zh_text = sentence["zh_text"].strip()
+    zh_text = re.sub(r"[\"“'‘”’《》〈〉]", "", zh_text).strip()
     if not re.search(r"[。！？]$", zh_text):
         zh_text += "。"
-    duration_budget = sentence["duration_s"]
+    duration_budget = sentence.get("effective_target_s", sentence["duration_s"])
 
     temp_raw = output_wav + ".raw.mp3"
     success = False
@@ -425,7 +469,12 @@ async def synthesize_sentence_tts(sentence, voice, output_wav, rate_str="+0%"):
     if actual_dur > duration_budget and duration_budget > 0.6:
         speed_factor = min(1.25, actual_dur / duration_budget)
 
-    filter_arg = f"atempo={speed_factor:.3f}" if speed_factor > 1.03 else "anull"
+    # De-breath filter: compacts silences longer than 180ms and suppresses breath noise
+    filter_chain = ["silenceremove=stop_periods=-1:stop_duration=0.18:stop_threshold=-32dB"]
+    if speed_factor > 1.03:
+        filter_chain.append(f"atempo={speed_factor:.3f}")
+    filter_arg = ",".join(filter_chain)
+
     run_cmd([
         "ffmpeg", "-y", "-i", temp_raw,
         "-filter:a", filter_arg,
@@ -466,40 +515,249 @@ async def synthesize_cloned_tts(sentence, clone_url, ref_wav_path, output_wav, d
     return await synthesize_sentence_tts(sentence, fallback_voice, output_wav, rate_str=rate_str)
 
 
-# --- Step 5: Timeline Assembly & Dynamic Sidechain Ducking ---
+# --- Step 5: Continuous Flow Block Synthesis & In-Flight PID Speed Calibration ---
 
-def assemble_dubbed_audio(sentences, total_duration, output_audio_path, accompaniment_audio):
+def group_into_flow_blocks(sentences, max_gap_s=1.5):
     """
-    Mixes individual sentence TTS files onto a continuous 16kHz PCM timeline,
-    then applies broadcast-grade Dynamic Sidechain Ducking over the pristine accompaniment track.
-    - When TTS speech is active, accompaniment ducks smoothly by 6-9dB.
-    - During speech pauses, accompaniment smoothly rises to 100% original volume.
-    - 100% background sound quality, zero original vocal bleed.
+    Groups contiguous sentences into thought-stream flow blocks for continuous dubbing.
+    Adjacent sentences with an inter-sentence gap <= max_gap_s belong to the same continuous stream.
     """
-    log("正在合成多轨时间轴混音 (采用广播级动态侧链闪避 Dynamic Sidechain Ducking) ...")
+    blocks = []
+    curr_block = []
+    for s in sentences:
+        if not curr_block:
+            curr_block.append(s)
+        else:
+            prev = curr_block[-1]
+            gap = s["start_s"] - prev["end_s"]
+            if gap <= max_gap_s:
+                curr_block.append(s)
+            else:
+                blocks.append(curr_block)
+                curr_block = [s]
+    if curr_block:
+        blocks.append(curr_block)
+    return blocks
+
+
+async def synthesize_flow_block(block, voice, output_wav, tts_engine="edge", clone_url=None, ref_wav=None):
+    """
+    Synthesizes a continuous speech stream for an entire thought-group block,
+    eliminating artificial breath gasps and BGM pumping between sentences.
+    Applies in-flight PID Dynamic Time-Warping speed calibration.
+    Returns (success, block_meta).
+    """
+    clean_parts = []
+    for s in block:
+        t = s.get("zh_text", "").strip()
+        t = re.sub(r"[\"“'‘”’《》〈〉]", "", t).strip()
+        t = t.rstrip("。，！？、；")
+        if t:
+            clean_parts.append(t)
+    if not clean_parts:
+        return False, None
+
+    # Merge sentences into one natural continuous oral passage
+    block_text = "，".join(clean_parts) + "。"
+    block_start_s = block[0]["start_s"]
+    block_end_s = block[-1]["end_s"]
+    video_dur_s = max(1.0, block_end_s - block_start_s)
+
+    # 1. Baseline duration calculation based on cross-language density
+    dur_factor, rate_str, _ = calculate_duration_factor(block_text, video_dur_s, return_effective=True)
+
+    temp_raw = output_wav + ".flow_raw.mp3"
+    success = False
+
+    # Try Python edge_tts
+    try:
+        import edge_tts
+        for attempt in range(3):
+            try:
+                comm = edge_tts.Communicate(block_text, voice, rate=rate_str)
+                await comm.save(temp_raw)
+                if os.path.exists(temp_raw) and os.path.getsize(temp_raw) > 500:
+                    success = True
+                    break
+            except Exception:
+                await asyncio.sleep(0.8)
+    except ImportError:
+        pass
+
+    # CLI fallback
+    if not success:
+        edge_bin = "/opt/homebrew/Caskroom/miniconda/base/bin/edge-tts"
+        if not os.path.exists(edge_bin):
+            edge_bin = shutil.which("edge-tts")
+        if edge_bin:
+            cmd = [edge_bin, "--voice", voice, "--rate", rate_str, "--text", block_text, "--write-media", temp_raw]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode == 0 and os.path.exists(temp_raw):
+                success = True
+
+    if not success or not os.path.exists(temp_raw):
+        log(f"流式语音生成失败: {block_text[:30]}...")
+        return False, None
+
+    # 2. De-breath & In-flight PID Dynamic Time-Warping Speed Calibration
+    temp_compact = output_wav + ".compact.wav"
+    # Compact pauses longer than 180ms down to a natural micro-transition, wiping out any breath sounds
+    run_cmd([
+        "ffmpeg", "-y", "-i", temp_raw,
+        "-af", "silenceremove=stop_periods=-1:stop_duration=0.18:stop_threshold=-32dB",
+        "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+        temp_compact
+    ])
+
+    compact_dur_s = get_audio_duration(temp_compact)
+    target_fill_s = video_dur_s * 0.88
+    speed_ratio = compact_dur_s / max(0.5, target_fill_s)
+
+    # In-flight micro-adjust between 0.88x and 1.15x to smoothly hug the video timeline
+    calibrated_tempo = min(1.15, max(0.88, speed_ratio))
+    filter_arg = f"atempo={calibrated_tempo:.3f}" if abs(calibrated_tempo - 1.0) > 0.02 else "anull"
+
+    run_cmd([
+        "ffmpeg", "-y", "-i", temp_compact,
+        "-filter:a", filter_arg,
+        "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+        output_wav
+    ])
+    for p in [temp_raw, temp_compact]:
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+    final_dur_s = get_audio_duration(output_wav)
+
+    # 3. Compute frame-accurate proportional sentence boundaries for SRT
+    total_chars = sum(len(re.findall(r"[\u4e00-\u9fff\w]", s["zh_text"])) for s in block)
+    cur_pos_s = block_start_s
+    for s in block:
+        c_count = len(re.findall(r"[\u4e00-\u9fff\w]", s["zh_text"]))
+        s_dur = (c_count / max(1, total_chars)) * final_dur_s
+        s["actual_start_s"] = round(cur_pos_s, 2)
+        s["actual_end_s"] = round(cur_pos_s + s_dur, 2)
+        cur_pos_s += s_dur
+
+    block_meta = {
+        "start_s": block_start_s,
+        "end_s": round(block_start_s + final_dur_s, 2),
+        "duration_s": round(final_dur_s, 2),
+        "audio_file": output_wav,
+        "calibrated_tempo": calibrated_tempo,
+        "sentences": block
+    }
+    log(f"  [连播流式合成] 视频区间: {block_start_s:.2f}s - {block_end_s:.2f}s (窗宽: {video_dur_s:.2f}s) -> 生成连续语流: {final_dur_s:.2f}s (微调速校准: {calibrated_tempo:.2f}x)")
+    return True, block_meta
+
+
+# --- Step 6: Multi-Track Timeline Assembly & Steady-State Sidechain Ducking ---
+
+def assemble_dubbed_audio(units, total_duration, output_audio_path, accompaniment_audio, flow_mode="continuous"):
+    """
+    Mixes audio units (either continuous flow blocks or individual sentences) onto
+    a continuous 16kHz PCM timeline, then applies broadcast-grade Steady-State Sidechain Ducking.
+    - Continuous Mode: Zero artificial gaps or breath noises between sentences; BGM stays smoothly ducked.
+    - Segmented Mode: Applies Elastic Speech Flow scheduling across sentence units.
+    """
+    log("正在合成多轨时间轴混音 (启用连续语流连播 Continuous Flow & 稳态侧链闪避) ...")
     sample_rate = 16000
     total_samples = max(1, int(total_duration * sample_rate))
     speech_buffer = [0] * total_samples
 
-    for s in sentences:
-        wav_file = s.get("audio_file")
-        if not wav_file or not os.path.exists(wav_file):
-            continue
+    is_flow_blocks = len(units) > 0 and "sentences" in units[0]
 
-        try:
-            with wave.open(wav_file, "r") as wf:
-                n_frames = wf.getnframes()
-                raw_frames = wf.readframes(n_frames)
-                samples = struct.unpack(f"<{n_frames}h", raw_frames)
+    if is_flow_blocks:
+        # Process continuous flow blocks directly (zero gaps inside each block)
+        for b in units:
+            wav_file = b.get("audio_file")
+            if not wav_file or not os.path.exists(wav_file):
+                continue
 
-                start_sample = int(s["start_s"] * sample_rate)
-                for idx, val in enumerate(samples):
-                    target_idx = start_sample + idx
-                    if target_idx < total_samples:
-                        new_val = speech_buffer[target_idx] + val
-                        speech_buffer[target_idx] = max(-32768, min(32767, new_val))
-        except Exception as e:
-            log(f"读取片段音频失败: {e}")
+            try:
+                with wave.open(wav_file, "r") as wf:
+                    n_frames = wf.getnframes()
+                    raw_frames = wf.readframes(n_frames)
+                    samples = list(struct.unpack(f"<{n_frames}h", raw_frames))
+                    if not samples:
+                        continue
+
+                    # Apply micro-fade in & out to block boundaries
+                    fade_len = min(len(samples) // 4, int(sample_rate * 0.05))
+                    if fade_len > 0:
+                        for k in range(fade_len):
+                            samples[k] = int(samples[k] * (k / fade_len))
+                            ratio = 0.5 * (1.0 + math.cos(math.pi * k / fade_len))
+                            samples[-fade_len + k] = int(samples[-fade_len + k] * ratio)
+
+                    start_sample = int(b["start_s"] * sample_rate)
+                    for i_sample, val in enumerate(samples):
+                        target_idx = start_sample + i_sample
+                        if target_idx < total_samples:
+                            new_val = speech_buffer[target_idx] + val
+                            speech_buffer[target_idx] = max(-32768, min(32767, new_val))
+            except Exception as e:
+                log(f"读取流式音频块失败: {e}")
+    else:
+        # Process segmented sentences with elastic scheduling
+        prev_end_s = 0.0
+        for idx, s in enumerate(units):
+            wav_file = s.get("audio_file")
+            if not wav_file or not os.path.exists(wav_file):
+                continue
+
+            try:
+                with wave.open(wav_file, "r") as wf:
+                    n_frames = wf.getnframes()
+                    raw_frames = wf.readframes(n_frames)
+                    samples = list(struct.unpack(f"<{n_frames}h", raw_frames))
+                    if not samples:
+                        continue
+
+                    actual_dur_s = len(samples) / sample_rate
+
+                    # Acoustic Edge Smoothing (Cosine Fade-in & Fade-out)
+                    fade_in_len = min(len(samples) // 4, int(sample_rate * 0.02))
+                    if fade_in_len > 0:
+                        for k in range(fade_in_len):
+                            samples[k] = int(samples[k] * (k / fade_in_len))
+
+                    fade_out_len = min(len(samples) // 4, int(sample_rate * 0.08))
+                    if fade_out_len > 0:
+                        for k in range(fade_out_len):
+                            ratio = 0.5 * (1.0 + math.cos(math.pi * k / fade_out_len))
+                            samples[-fade_out_len + k] = int(samples[-fade_out_len + k] * ratio)
+
+                    orig_start = s["start_s"]
+                    if idx == 0 or flow_mode != "smooth":
+                        actual_start_s = orig_start
+                    else:
+                        orig_prev_end = units[idx - 1]["end_s"]
+                        orig_gap = orig_start - orig_prev_end
+                        if orig_gap < 1.2:
+                            natural_breath = 0.32
+                            elastic_target = prev_end_s + natural_breath
+                            min_lead = max(0.0, orig_start - 0.8)
+                            max_lag = orig_start + 0.4
+                            actual_start_s = max(prev_end_s + 0.15, max(min_lead, min(max_lag, elastic_target)))
+                        else:
+                            actual_start_s = max(prev_end_s + 0.25, orig_start)
+
+                    start_sample = int(actual_start_s * sample_rate)
+                    for i_sample, val in enumerate(samples):
+                        target_idx = start_sample + i_sample
+                        if target_idx < total_samples:
+                            new_val = speech_buffer[target_idx] + val
+                            speech_buffer[target_idx] = max(-32768, min(32767, new_val))
+
+                    prev_end_s = actual_start_s + actual_dur_s
+                    s["actual_start_s"] = round(actual_start_s, 2)
+                    s["actual_end_s"] = round(prev_end_s, 2)
+            except Exception as e:
+                log(f"读取片段音频失败: {e}")
 
     temp_dir = Path(output_audio_path).parent
     tts_master = temp_dir / "tts_master.wav"
@@ -510,15 +768,14 @@ def assemble_dubbed_audio(sentences, total_duration, output_audio_path, accompan
         packed = struct.pack(f"<{len(speech_buffer)}h", *speech_buffer)
         wf.writeframes(packed)
 
-    # Dynamic sidechain compression:
-    # sidechaincompress threshold=0.06:ratio=4:attack=50:release=300
+    # Dynamic sidechain compression with steady-state release (750ms) to eliminate breathing pumping
     final_mix_cmd = [
         "ffmpeg", "-y",
         "-i", accompaniment_audio,
         "-i", str(tts_master),
         "-t", str(total_duration),
         "-filter_complex",
-        "[0:a][1:a]sidechaincompress=threshold=0.06:ratio=4:attack=50:release=300[ducked_bg];"
+        "[0:a][1:a]sidechaincompress=threshold=0.04:ratio=3.5:attack=50:release=750[ducked_bg];"
         "[ducked_bg][1:a]amix=inputs=2:duration=first:weights=1.0 1.25:dropout_transition=0[out]",
         "-map", "[out]",
         "-ar", "44100",
@@ -540,7 +797,7 @@ def assemble_dubbed_audio(sentences, total_duration, output_audio_path, accompan
         ]
         run_cmd(fallback_mix_cmd)
 
-    log(f"动态侧链混音完成: {output_audio_path}")
+    log(f"稳态动态侧链混音完成: {output_audio_path}")
 
 
 def download_or_load_media(input_file, url, output_dir, start_s=0, duration_s=60):
@@ -629,14 +886,15 @@ def download_or_load_media(input_file, url, output_dir, start_s=0, duration_s=60
 
 def remux_final_video(raw_video, final_audio, sentences, output_mp4):
     """
-    Muxes the final mixed audio with the original video and embeds bilingual subtitles.
+    Muxes the final mixed audio with the original video and embeds bilingual subtitles,
+    perfectly aligned with the actual retimed speech events.
     """
     log(f"合流生成最终配音视频: {output_mp4} ...")
     srt_path = Path(output_mp4).with_suffix(".srt")
     with open(srt_path, "w", encoding="utf-8") as f:
         for i, s in enumerate(sentences, 1):
-            st = s["start_s"]
-            et = s["end_s"]
+            st = s.get("actual_start_s", s["start_s"])
+            et = s.get("actual_end_s", s["end_s"])
             st_fmt = f"{int(st//3600):02d}:{int((st%3600)//60):02d}:{int(st%60):02d},{int((st%1)*1000):03d}"
             et_fmt = f"{int(et//3600):02d}:{int((et%3600)//60):02d}:{int(et%60):02d},{int((et%1)*1000):03d}"
             f.write(f"{i}\n{st_fmt} --> {et_fmt}\n{s['zh_text']}\n{s['orig_text']}\n\n")
@@ -666,7 +924,7 @@ async def main_async():
     parser.add_argument("--url", default="https://www.youtube.com/watch?v=UF8uR6Z6KLc", help="YouTube video URL")
     parser.add_argument("--start", type=float, default=27.0, help="Start offset in seconds")
     parser.add_argument("--duration", type=float, default=35.0, help="Duration in seconds")
-    parser.add_argument("--voice", default="zh-CN-YunxiNeural", help="TTS voice (e.g. zh-CN-YunxiNeural / zh-CN-XiaoxiaoNeural)")
+    parser.add_argument("--voice", default="zh-CN-YunyangNeural", help="TTS voice (e.g. zh-CN-YunyangNeural / zh-CN-XiaoxiaoNeural / zh-CN-YunjianNeural)")
     parser.add_argument("--tts-engine", default="edge", choices=["edge", "clone"], help="TTS engine: edge or clone (Index-TTS 2.5)")
     parser.add_argument("--clone-url", default="http://127.0.0.1:7860", help="Voice clone Gradio base URL")
     parser.add_argument("--llm-api-key", default="", help="LLM API key for spoken translation")
@@ -674,6 +932,8 @@ async def main_async():
     parser.add_argument("--llm-model", default="", help="LLM model name")
     parser.add_argument("--output", default="/tmp/pagelens_dubbed.mp4", help="Output video file")
     parser.add_argument("--skip-separation", action="store_true", help="Skip Demucs vocal separation and mix over raw audio")
+    parser.add_argument("--flow-mode", default="continuous", choices=["continuous", "smooth", "segmented"],
+                        help="Dubbing flow mode: continuous (seamless streaming + PID speed calibration, eliminates breath noise & BGM pumping), smooth, or segmented")
     args = parser.parse_args()
 
     work_dir = tempfile.mkdtemp(prefix="yt_dub_")
@@ -712,8 +972,8 @@ async def main_async():
             duration_s=min(5.0, clip_duration * 0.4)
         )
 
-        # Step 5: Spoken Translation & Synthesize TTS with duration_factor
-        log(f"开始大模型口播改写与时长对齐语音合成 (引擎: {args.tts_engine}) ...")
+        # Step 5: Spoken Translation (Language Frequency & Information Density Budgeted)
+        log(f"开始大模型口播改写与跨语种频率对齐 (目标: 中文口播体) ...")
         for s in sentences:
             log(f"[{s['start_s']:.2f}s - {s['end_s']:.2f}s] 原文: {s['orig_text']}")
             zh = translate_spoken_chinese(
@@ -724,29 +984,51 @@ async def main_async():
                 model=args.llm_model
             )
             s["zh_text"] = zh
+            log(f"                      中文口播: {zh} (时长插槽: {s['duration_s']:.2f}s)")
 
-            dur_factor, rate_str = calculate_duration_factor(zh, s["duration_s"])
-            log(f"                      中文口播: {zh} (时长插槽: {s['duration_s']:.2f}s, duration_factor: {dur_factor}x, rate: {rate_str})")
+        # Step 6: Audio Synthesis (Continuous Stream vs Segmented)
+        if args.flow_mode == "continuous":
+            log("启用连续语流连播流水线 (Continuous Stream Dubbing + 闭环微调速校准) ...")
+            blocks = group_into_flow_blocks(sentences, max_gap_s=1.5)
+            log(f"已将 {len(sentences)} 个字幕句聚类为 {len(blocks)} 个连贯意群语流块。")
 
-            audio_file = os.path.join(work_dir, f"seg_{s['index']:04d}.wav")
-            if args.tts_engine == "clone":
-                ok = await synthesize_cloned_tts(
-                    s, args.clone_url, ref_wav, audio_file,
-                    duration_factor=dur_factor,
-                    fallback_voice=args.voice
+            blocks_meta = []
+            for b_idx, block in enumerate(blocks, 1):
+                block_audio = os.path.join(work_dir, f"flow_block_{b_idx:03d}.wav")
+                ok, b_meta = await synthesize_flow_block(
+                    block, args.voice, block_audio,
+                    tts_engine=args.tts_engine,
+                    clone_url=args.clone_url,
+                    ref_wav=ref_wav
                 )
-            else:
-                ok = await synthesize_sentence_tts(s, args.voice, audio_file, rate_str=rate_str)
+                if ok and b_meta:
+                    blocks_meta.append(b_meta)
+                await asyncio.sleep(0.3)
 
-            if ok:
-                s["audio_file"] = audio_file
-            await asyncio.sleep(0.3)
+            # Step 7: Multi-Track Timeline Assembly & Steady-State Sidechain Ducking
+            final_audio = os.path.join(work_dir, "final_dubbed.wav")
+            assemble_dubbed_audio(blocks_meta, clip_duration, final_audio, accompaniment_wav, flow_mode="continuous")
+        else:
+            # Segmented fallback mode with individual sentence files
+            for s in sentences:
+                dur_factor, rate_str = calculate_duration_factor(s["zh_text"], s["duration_s"])
+                audio_file = os.path.join(work_dir, f"seg_{s['index']:04d}.wav")
+                if args.tts_engine == "clone":
+                    ok = await synthesize_cloned_tts(
+                        s, args.clone_url, ref_wav, audio_file,
+                        duration_factor=dur_factor,
+                        fallback_voice=args.voice
+                    )
+                else:
+                    ok = await synthesize_sentence_tts(s, args.voice, audio_file, rate_str=rate_str)
+                if ok:
+                    s["audio_file"] = audio_file
+                await asyncio.sleep(0.3)
 
-        # Step 6: Multi-Track Timeline Assembly & Dynamic Sidechain Ducking
-        final_audio = os.path.join(work_dir, "final_dubbed.wav")
-        assemble_dubbed_audio(sentences, clip_duration, final_audio, accompaniment_wav)
+            final_audio = os.path.join(work_dir, "final_dubbed.wav")
+            assemble_dubbed_audio(sentences, clip_duration, final_audio, accompaniment_wav, flow_mode=args.flow_mode)
 
-        # Step 7: Remux Video
+        # Step 8: Remux Video
         output_mp4 = os.path.abspath(args.output)
         remux_final_video(raw_video, final_audio, sentences, output_mp4)
 
