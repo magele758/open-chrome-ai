@@ -358,10 +358,19 @@ def parse_vtt_srt_cues(text):
 def pick_sub_track_list(sub_dict):
     if not isinstance(sub_dict, dict):
         return None
-    # Prefer Chinese variants, then English, then whatever is available
+    # 1. Exact match preferred Chinese variants and English
     for key in ('zh-Hans', 'zh-CN', 'zh', 'zh-Hant', 'zh-TW', 'en', 'en-US', 'en-GB'):
         if sub_dict.get(key):
             return sub_dict[key]
+    # 2. Prefix match Chinese variants (e.g. zh-*)
+    for key, val in sub_dict.items():
+        if key.startswith('zh') and val and isinstance(val, list):
+            return val
+    # 3. Prefix match English variants (e.g. en-* such as en-j3PyPqV-e1s)
+    for key, val in sub_dict.items():
+        if key.startswith('en') and val and isinstance(val, list):
+            return val
+    # 4. Any available language
     for key, val in sub_dict.items():
         if val and isinstance(val, list):
             return val
@@ -382,7 +391,7 @@ def fetch_subtitles(job, target, info, root):
             return []
         try:
             req = urllib.request.Request(track['url'], headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=5) as response:
+            with urllib.request.urlopen(req, timeout=15) as response:
                 body = response.read().decode('utf-8')
             cues = parse_json3_cues(json.loads(body)) if track['ext'] == 'json3' else parse_vtt_srt_cues(body)
             if cues:
@@ -392,7 +401,7 @@ def fetch_subtitles(job, target, info, root):
     if job['cancel'].is_set() or not language:
         return []
     try:
-        base = downloader_args()
+        base = [arg for arg in downloader_args() if arg not in ('--no-write-subs', '--no-write-auto-subs')]
         run(job, base + ['--skip-download', '--write-auto-subs', '--write-subs',
                          '--sub-langs', '^' + re.escape(language) + '$', '--sub-format', 'json3/vtt/srt/best',
                          '-o', str(root / 'sub.%(ext)s'), '--', target])
@@ -432,6 +441,17 @@ def extract(job, url, media_url):
                     and meta.get('part_seconds') == PART_SECONDS
                     and all((target_cache_dir / f"part-{p['index']:05d}.wav").is_file() for p in cached_parts)
                 ):
+                    # Self-heal stale empty subtitle cache if subtitles can be fetched
+                    if not cached_subtitles:
+                        try:
+                            info = json.loads(run(job, downloader_args() + ['--skip-download', '--dump-single-json', '--', target]))
+                            healed_subs = fetch_subtitles(job, target, info, root)
+                            if healed_subs:
+                                cached_subtitles = healed_subs
+                                meta['subtitles'] = healed_subs
+                                meta_file.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+                        except Exception:
+                            pass
                     for p in cached_parts:
                         src_part = target_cache_dir / f"part-{p['index']:05d}.wav"
                         dst_part = root / f"part-{p['index']:05d}.wav"

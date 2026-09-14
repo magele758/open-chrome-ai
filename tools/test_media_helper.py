@@ -151,6 +151,20 @@ class TranscriptTest(unittest.TestCase):
             self.assertEqual(run.call_count, 2)
             self.assertIn('download reached', job['error'])
 
+    def test_pick_sub_track_list_prefix_matching(self):
+        # Test YouTube custom suffix keys like en-j3PyPqV-e1s
+        sub_dict = {'en-j3PyPqV-e1s': [{'ext': 'json3', 'url': 'https://fixture.test/custom_en'}]}
+        tracks = helper.pick_sub_track_list(sub_dict)
+        self.assertIsNotNone(tracks)
+        self.assertEqual(tracks[0]['url'], 'https://fixture.test/custom_en')
+
+        # Test Chinese preference over English prefix
+        mixed_dict = {
+            'en-j3PyPqV-e1s': [{'ext': 'json3', 'url': 'https://fixture.test/en'}],
+            'zh-Hans': [{'ext': 'vtt', 'url': 'https://fixture.test/zh'}]
+        }
+        self.assertEqual(helper.pick_sub_track_list(mixed_dict)[0]['url'], 'https://fixture.test/zh')
+
 
 if __name__ == '__main__':
     unittest.main()
