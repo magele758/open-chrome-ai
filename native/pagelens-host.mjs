@@ -323,6 +323,15 @@ export function handleFs(req) {
       fs.writeFileSync(abs, body, "utf8");
       return { ok: true, op: "fs", action, path: parts.join("/"), bytes: body.length };
     }
+    if (action === "deleteFile") {
+      const rel = String(req.rel || "").trim();
+      const parts = splitRelParts(rel);
+      const abs = safeJoinRoot(req.root, rel);
+      if (fs.existsSync(abs)) {
+        fs.unlinkSync(abs);
+      }
+      return { ok: true, op: "fs", action, path: parts.join("/") };
+    }
     if (action === "scanSkills") {
       const abs = resolveAbs(req.path);
       if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {

@@ -6,7 +6,7 @@
  * 3. Local storage index for URL-based smart recall & browsing
  */
 
-import { readLibraryText, writeLibraryText } from "./library.js";
+import { readLibraryText, writeLibraryText, deleteLibraryFile } from "./library.js";
 
 export const CLIPPINGS_STORAGE_KEY = "pagelens_clippings";
 export const BOOKMARK_FOLDER_NAME = "PageLens 智库";
@@ -395,6 +395,43 @@ export async function deleteClippingRecord(id) {
   const list = await listAllClippings();
   const next = list.filter((item) => item.id !== id);
   await chrome.storage.local.set({ [CLIPPINGS_STORAGE_KEY]: next });
+}
+
+/**
+ * Deletes a clipping completely:
+ * 1. Removes record from chrome.storage.local index
+ * 2. Removes corresponding Chrome bookmark if bookmarkId is set
+ * 3. Removes individual Obsidian card file if obsidianPath is set
+ */
+export async function deleteClippingFull(clipping) {
+  if (!clipping) return { ok: false };
+  const id = typeof clipping === "string" ? clipping : clipping.id;
+  if (!id) return { ok: false };
+
+  // 1. Delete from local storage index
+  await deleteClippingRecord(id);
+
+  // 2. Delete Chrome bookmark if present
+  const bookmarkId = clipping.bookmarkId;
+  if (bookmarkId && typeof chrome !== "undefined" && chrome.bookmarks?.remove) {
+    try {
+      await chrome.bookmarks.remove(bookmarkId);
+    } catch {
+      /* ignore if already removed or not found */
+    }
+  }
+
+  // 3. Delete Obsidian card file if present
+  const cardPath = clipping.obsidianPath;
+  if (cardPath) {
+    try {
+      await deleteLibraryFile(cardPath);
+    } catch {
+      /* ignore if file does not exist or library not connected */
+    }
+  }
+
+  return { ok: true, id };
 }
 
 /**

@@ -464,6 +464,23 @@ export async function readLibraryText(rel, { request = false } = {}) {
   return { ok: true, path: parts.join("/"), text: body, bytes: body.length };
 }
 
+export async function deleteLibraryFile(rel, { request = false } = {}) {
+  const root = requireLibraryRoot(await getLibraryRoot({ request }));
+  const parts = splitRelPath(rel);
+  const name = parts[parts.length - 1];
+  if (root.mode === "path") {
+    const res = await nativeFs({ action: "deleteFile", root: root.path, rel: parts.join("/") });
+    if (!res.ok) throw new Error(res.error || "删除文稿失败。");
+    return { ok: true, path: parts.join("/") };
+  }
+  const dir = await walkDir(root.handle, parts.slice(0, -1), false);
+  if (dir && typeof dir.removeEntry === "function") {
+    await dir.removeEntry(name, { recursive: false });
+    return { ok: true, path: parts.join("/") };
+  }
+  return { ok: false, error: "无法删除文稿" };
+}
+
 export async function listLibrary(rel = "", { request = false } = {}) {
   const root = requireLibraryRoot(await getLibraryRoot({ request }));
   const parts = String(rel || "").trim() ? splitRelPath(rel) : [];

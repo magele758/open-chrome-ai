@@ -12,6 +12,11 @@ chrome.runtime.onInstalled.addListener(() => {
       title: "用 PageLens 问选区",
       contexts: ["selection"],
     });
+    chrome.contextMenus.create({
+      id: "pagelens-clip",
+      title: "剪藏到 PageLens 智库",
+      contexts: ["page", "selection"],
+    });
   });
 });
 
@@ -29,13 +34,28 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (info.menuItemId !== "pagelens-ask-selection" || !tab?.id) return;
-  const text = (info.selectionText || "").trim();
-  if (!text) return;
-  await chrome.storage.session.set({
-    pendingSelection: text,
-    pendingTabId: tab.id,
-  });
+  if (!tab?.id) return;
+  if (info.menuItemId === "pagelens-clip") {
+    const text = (info.selectionText || "").trim();
+    await chrome.storage.session.set({
+      pendingClip: {
+        text,
+        title: tab.title || "",
+        url: tab.url || "",
+      },
+      pendingTabId: tab.id,
+    });
+  } else if (info.menuItemId === "pagelens-ask-selection") {
+    const text = (info.selectionText || "").trim();
+    if (!text) return;
+    await chrome.storage.session.set({
+      pendingSelection: text,
+      pendingTabId: tab.id,
+    });
+  } else {
+    return;
+  }
+
   try {
     await chrome.sidePanel.open({ tabId: tab.id });
   } catch {

@@ -5,6 +5,10 @@ import {
   clippingToObsidianMarkdown,
   formatBookmarkTitle,
   yamlScalar,
+  saveClippingRecord,
+  listAllClippings,
+  deleteClippingRecord,
+  deleteClippingFull,
 } from "../lib/clippings.js";
 
 function assert(cond, msg) {
@@ -73,5 +77,38 @@ assert(
   "format bookmark with long note"
 );
 assert(formatBookmarkTitle("文章标题", "") === "文章标题", "format bookmark with empty note");
+
+// 6. Test deleteClippingFull and deleteClippingRecord
+const mockStorage = {};
+const deletedBookmarks = [];
+globalThis.chrome = {
+  storage: {
+    local: {
+      get: async (key) => ({ [key]: mockStorage[key] || [] }),
+      set: async (obj) => Object.assign(mockStorage, obj),
+    },
+  },
+  bookmarks: {
+    remove: async (id) => deletedBookmarks.push(id),
+  },
+};
+
+const testClip = {
+  id: "del-test-1",
+  title: "待删除测试",
+  url: "https://example.com/del",
+  bookmarkId: "bm-999",
+  createdAt: Date.now(),
+};
+
+await saveClippingRecord(testClip);
+let all = await listAllClippings();
+assert(all.length === 1 && all[0].id === "del-test-1", "saved clipping record");
+
+const delRes = await deleteClippingFull(testClip);
+assert(delRes.ok === true, "deleteClippingFull ok");
+all = await listAllClippings();
+assert(all.length === 0, "record removed from storage");
+assert(deletedBookmarks.includes("bm-999"), "bookmark removed");
 
 console.log("PASS test_clippings");
