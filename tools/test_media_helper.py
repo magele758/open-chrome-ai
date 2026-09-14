@@ -113,5 +113,44 @@ class MediaTest(unittest.TestCase):
                 helper.CACHE_MAX_AGE_SECONDS = 7 * 86400
 
 
+class TranscriptTest(unittest.TestCase):
+    def test_subtitles_stop_before_audio_download(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as cache:
+            job = {'dir': root, 'purpose': 'transcript', 'cancel': threading.Event()}
+            cues = [{'start': 0, 'end': 5, 'src': 'Complete subtitles'}]
+            with patch.object(helper, 'CACHE_DIR', Path(cache)), patch.object(helper, 'downloader_args', return_value=['yt-dlp']), patch.object(helper, 'fetch_subtitles', return_value=cues), patch.object(helper, 'run', return_value=json.dumps({'duration': 5}).encode()) as run:
+                helper.extract(job, 'https://fixture.test/subtitles', None)
+            self.assertEqual(job['status'], 'ready')
+            self.assertEqual(job['subtitles'], cues)
+            self.assertEqual(job['parts'], [])
+            self.assertEqual(run.call_count, 1, 'only metadata extraction, no download or ffmpeg')
+
+    def test_direct_failure_retries_only_selected_language(self):
+        with tempfile.TemporaryDirectory() as root:
+            job = {'cancel': threading.Event()}
+            info = {'subtitles': {'en': [{'ext': 'json3', 'url': 'https://fixture.test/en'}], 'fr': [{'ext': 'vtt', 'url': 'https://fixture.test/fr'}]}}
+            def download(_job, args):
+                self.assertEqual(args[args.index('--sub-langs') + 1], '^en$')
+                Path(root, 'sub.en.vtt').write_text('WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nComplete subtitles\n')
+                return b''
+            with patch.object(helper.urllib.request, 'urlopen', side_effect=TimeoutError()), patch.object(helper, 'downloader_args', return_value=['yt-dlp']), patch.object(helper, 'run', side_effect=download) as run:
+                cues = helper.fetch_subtitles(job, 'https://fixture.test/video', info, Path(root))
+            self.assertTrue(cues)
+            self.assertEqual(run.call_count, 1)
+
+    def test_no_tracks_avoids_repeated_metadata_lookup(self):
+        with patch.object(helper, 'run') as run:
+            self.assertEqual(helper.fetch_subtitles({'cancel': threading.Event()}, 'https://fixture.test', {}, Path('/unused')), [])
+            run.assert_not_called()
+
+    def test_audio_mode_still_downloads_for_dubbing(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as cache:
+            job = {'dir': root, 'cancel': threading.Event()}
+            with patch.object(helper, 'CACHE_DIR', Path(cache)), patch.object(helper, 'downloader_args', return_value=['yt-dlp']), patch.object(helper, 'fetch_subtitles', return_value=[{'src': 'subtitle'}]), patch.object(helper, 'run', side_effect=[json.dumps({'duration': 5}).encode(), RuntimeError('download reached')]) as run:
+                helper.extract(job, 'https://fixture.test/dub', None)
+            self.assertEqual(run.call_count, 2)
+            self.assertIn('download reached', job['error'])
+
+
 if __name__ == '__main__':
     unittest.main()

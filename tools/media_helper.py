@@ -123,7 +123,8 @@ def health_payload():
     return {
         'ok': True,
         'service': SERVICE,
-        'version': 4,
+        'version': 5,
+        'transcriptOnly': True,
         'audioAnalysis': True,
         'audioAnalysisVersion': 2,
         'port': PORT,
@@ -368,27 +369,41 @@ def pick_sub_track_list(sub_dict):
 
 
 def fetch_subtitles(job, target, info, root):
+    tracks = pick_sub_track_list(info.get('subtitles')) or pick_sub_track_list(info.get('automatic_captions'))
+    if not tracks:
+        return []
+    # One selected language; a failed direct URL must still reach the fallback.
+    language = next((key for group in ('subtitles', 'automatic_captions')
+                     for key, value in (info.get(group) or {}).items() if value is tracks), None)
+    supported = [t for t in tracks if t.get('ext') in ('json3', 'vtt', 'srt') and t.get('url')]
+    supported.sort(key=lambda t: ('json3', 'vtt', 'srt').index(t['ext']))
+    for track in supported[:3]:
+        if job['cancel'].is_set():
+            return []
+        try:
+            req = urllib.request.Request(track['url'], headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                body = response.read().decode('utf-8')
+            cues = parse_json3_cues(json.loads(body)) if track['ext'] == 'json3' else parse_vtt_srt_cues(body)
+            if cues:
+                return cues
+        except Exception:
+            continue
+    if job['cancel'].is_set() or not language:
+        return []
     try:
-        sub_tracks = pick_sub_track_list(info.get('subtitles')) or pick_sub_track_list(info.get('automatic_captions'))
-        if sub_tracks:
-            for track in sub_tracks:
-                if track.get('ext') == 'json3' and track.get('url'):
-                    req = urllib.request.Request(track['url'], headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=5) as r:
-                        json_data = json.loads(r.read().decode('utf-8'))
-                        return parse_json3_cues(json_data)
         base = downloader_args()
-        sub_prefix = str(root / 'sub.%(ext)s')
         run(job, base + ['--skip-download', '--write-auto-subs', '--write-subs',
-                         '--sub-langs', 'zh.*,zh,en.*,en,all', '--sub-format', 'json3/vtt/srt/best',
-                         '-o', sub_prefix, '--', target])
-        candidates = list(root.glob('sub.*.json3'))
-        if candidates:
-            json_data = json.loads(candidates[0].read_text(encoding='utf-8'))
-            return parse_json3_cues(json_data)
-        vtt_candidates = list(root.glob('sub.*.vtt')) + list(root.glob('sub.*.srt'))
-        if vtt_candidates:
-            return parse_vtt_srt_cues(vtt_candidates[0].read_text(encoding='utf-8', errors='replace'))
+                         '--sub-langs', '^' + re.escape(language) + '$', '--sub-format', 'json3/vtt/srt/best',
+                         '-o', str(root / 'sub.%(ext)s'), '--', target])
+        for candidate in list(root.glob('sub.*.json3')) + list(root.glob('sub.*.vtt')) + list(root.glob('sub.*.srt')):
+            try:
+                body = candidate.read_text(encoding='utf-8', errors='replace')
+                cues = parse_json3_cues(json.loads(body)) if candidate.suffix == '.json3' else parse_vtt_srt_cues(body)
+                if cues:
+                    return cues
+            except Exception:
+                continue
     except Exception:
         pass
     return []
@@ -408,6 +423,9 @@ def extract(job, url, media_url):
                 cached_parts = meta.get('parts', [])
                 cached_duration = float(meta.get('duration', 0))
                 cached_subtitles = meta.get('subtitles')
+                if job.get('purpose') == 'transcript' and cached_subtitles and cached_duration > 0:
+                    job.update(status='ready', duration=cached_duration, subtitles=cached_subtitles, parts=[])
+                    return
                 if (
                     cached_duration > 0
                     and cached_parts
@@ -446,6 +464,9 @@ def extract(job, url, media_url):
         if subtitles:
             job['subtitles'] = subtitles
             log_event({'event': 'media.subtitles-ready', 'target': target, 'count': len(subtitles)})
+            if job.get('purpose') == 'transcript':
+                job.update(status='ready', parts=[])
+                return
         job['status'] = 'downloading'
         run(job, base + ['-f', 'bestaudio/best', '--no-part', '-o', str(root / 'source.%(ext)s'), '--', target])
         files = list(root.glob('source.*'))
@@ -581,11 +602,14 @@ class Handler(BaseHTTPRequestHandler):
             for value in (data['url'], data.get('mediaUrl') or data['url']):
                 if urlparse(value).scheme not in ('http', 'https'):
                     raise ValueError('Only HTTP media URLs are accepted')
+            purpose = data.get('purpose', 'audio')
+            if purpose not in ('audio', 'transcript'):
+                raise ValueError('Invalid purpose')
             with LOCK:
                 if sum(j['status'] not in ('ready', 'error') for j in JOBS.values()) >= 2:
                     return self.reply(429, {'error': '已有提取任务，请稍后重试。'})
                 key = uuid.uuid4().hex
-                job = {'id': key, 'status': 'extracting', 'dir': tempfile.mkdtemp(prefix='pagelens-media-'), 'created': time.time(), 'cancel': threading.Event(), 'process': None}
+                job = {'id': key, 'purpose': purpose, 'status': 'extracting', 'dir': tempfile.mkdtemp(prefix='pagelens-media-'), 'created': time.time(), 'cancel': threading.Event(), 'process': None}
                 JOBS[key] = job
             threading.Thread(target=extract, args=(job, data['url'], data.get('mediaUrl')), daemon=True).start()
             self.reply(202, {'id': key})

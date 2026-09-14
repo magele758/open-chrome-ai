@@ -83,7 +83,7 @@ assert.equal(splitTranscript(text).join(''), text, 'chunking loses no characters
 const seen = [];
 const summary = await summarizeTranscript({ text, model: {}, complete: async (_model, { messages, maxTokens }) => {
   const input = messages.at(-1).content;
-  if (input.includes('提取本段要点')) {
+  if (input.includes('只输出笔记正文')) {
     assert.ok(maxTokens >= 8000, 'note budget must outrun thinking tokens');
     seen.push(input);
     return input.match(/MARKER_\d/g)?.join(' ') || 'continuation';
@@ -133,7 +133,10 @@ assert.equal((await ensureMediaHelper({ fetchImpl: stillDown, startImpl: async (
   let subDeleted = 0;
   const subStatuses = [];
   const subFetch = async (url, options = {}) => {
-    if (options.method === 'POST') return Response.json({ id });
+    if (options.method === 'POST') {
+      assert.equal(JSON.parse(options.body).purpose, 'transcript');
+      return Response.json({ id });
+    }
     if (options.method === 'DELETE') { subDeleted++; return Response.json({ ok: true }); }
     return Response.json({
       status: 'ready',
@@ -142,7 +145,7 @@ assert.equal((await ensureMediaHelper({ fetchImpl: stillDown, startImpl: async (
         { id: 'sub:0', start: 0.5, end: 3.2, src: 'Hello from native subtitles' },
         { id: 'sub:1', start: 3.5, end: 6.8, src: 'This is fast and skips ASR' },
       ],
-      parts: [{ index: 0, start: 0, duration: 120 }],
+      parts: [],
     });
   };
   const noAsr = { preset: 'none', baseUrl: '' };

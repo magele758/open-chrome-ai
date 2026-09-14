@@ -102,10 +102,10 @@ export async function acquireFullTranscript({ url, mediaUrl, asr, signal, onProg
     return response;
   };
   const createJob = async () => request('/jobs', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, mediaUrl }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, mediaUrl, purpose: 'transcript' }),
   });
   try {
-    onProgress?.({ status: 'extracting', hint: '正在获取完整音轨与字幕' });
+    onProgress?.({ status: 'extracting', hint: '正在优先获取完整字幕；无字幕时才提取音轨' });
     let response;
     try {
       response = await createJob();
@@ -153,7 +153,7 @@ export async function acquireFullTranscript({ url, mediaUrl, asr, signal, onProg
       }
 
       if (job.status === 'ready') break;
-      const hint = { extracting: '正在寻找完整音轨与字幕', downloading: '正在下载完整音轨', splitting: '正在准备音轨分段' }[job.status];
+      const hint = { extracting: '正在获取完整字幕', downloading: '未取得可用字幕，正在下载音轨以识别文稿', splitting: '未取得可用字幕，正在准备音轨识别' }[job.status];
       onProgress?.({ status: 'extracting', hint });
       await wait(signal);
     }

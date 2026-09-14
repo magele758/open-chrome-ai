@@ -3203,7 +3203,7 @@ async function startTranscribe({ force = false } = {}) {
   const tab = { ...state.tab };
   const abort = new AbortController();
   state.workAbort = abort;
-  state.transcribe = { status: "extracting", hint: "正在获取完整音轨" };
+  state.transcribe = { status: "extracting", hint: "正在优先获取完整字幕" };
   renderContext();
   try {
     const caps = await transcribeTab({
@@ -3262,7 +3262,7 @@ async function startSummarizeVideo() {
   state.busy = true;
   state.abort = abort;
   if (typeof messageScroll !== "undefined") messageScroll?.reset();
-  state.messages.push({ role: "user", text: "总结整个视频的完整文稿，列出要点和带时间戳的章节。" });
+  state.messages.push({ role: "user", text: "总结视频内容，重点解释核心观点、论据和结论，时间轴仅作为文末补充。" });
   const botMsg = { role: "bot", text: "正在阅读完整文稿…", trace: [] };
   state.messages.push(botMsg);
   $("btn-send").textContent = "■";
@@ -3270,10 +3270,12 @@ async function startSummarizeVideo() {
   renderMessages();
   renderContext();
   const sumStart = Date.now();
+  let summaryText = "";
   try {
     botMsg.text = await summarizeTranscript({
       text: caps.text, title, model, language: state.settings.answerLanguage, signal: abort.signal,
       onProgress: hint => { botMsg.text = hint; paintBot(botMsg); },
+      onDelta: delta => { summaryText += delta; botMsg.text = summaryText; paintBot(botMsg); },
     });
     const durMs = Math.max(1, Date.now() - sumStart);
     const inTok = estimateTokens(caps.text + " " + (title || ""));
@@ -3292,7 +3294,7 @@ async function startSummarizeVideo() {
       model: model?.model || "unknown",
       durationMs: durMs,
       metrics: botMsg.metrics,
-      userPrompt: "总结整个视频的完整文稿，列出要点和带时间戳的章节。",
+      userPrompt: "总结视频内容，重点解释核心观点、论据和结论，时间轴仅作为文末补充。",
       botResponse: botMsg.text,
       trace: [{ name: "总结文稿", ok: true }],
       steps: [{ type: "summarize_transcript", durationMs: durMs, timestamp: Date.now() }],
@@ -3315,7 +3317,7 @@ async function startSummarizeVideo() {
       model: model?.model || "unknown",
       durationMs: durMs,
       metrics: botMsg.metrics,
-      userPrompt: "总结整个视频的完整文稿，列出要点和带时间戳的章节。",
+      userPrompt: "总结视频内容，重点解释核心观点、论据和结论，时间轴仅作为文末补充。",
       botResponse: botMsg.text,
       trace: [{ name: "总结文稿", ok: false }],
       steps: [],

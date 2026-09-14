@@ -288,10 +288,11 @@ export async function streamChat(model, input, onDelta) {
   const response = await postChat(model, chatBody(model, {
     messages: input.messages,
     temperature: input.temperature ?? 0.3,
+    maxTokens: input.maxTokens,
     stream: true,
   }), input.signal);
 
-  if (!response.body) {
+  if (!response.body || /application\/json/i.test(response.headers.get('content-type') || '')) {
     const json = await response.json();
     const content = messageText(json);
     if (content) onDelta(content);
