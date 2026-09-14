@@ -303,7 +303,7 @@ def parse_json3_cues(data):
                 'start': start_s,
                 'end': end_s,
                 'src': clean_text,
-                'speaker': 'spk:0',
+                'speaker': None,
                 'overlap': False,
                 'timingQuality': 'segment'
             })
@@ -331,7 +331,7 @@ def parse_vtt_srt_cues(text):
                         'start': round(start, 3),
                         'end': round(end, 3),
                         'src': content,
-                        'speaker': 'spk:0',
+                        'speaker': None,
                         'overlap': False,
                         'timingQuality': 'segment'
                     })

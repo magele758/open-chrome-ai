@@ -27,6 +27,27 @@ export function recognitionWindows(spans, maxSeconds = 30) {
   return out;
 }
 
+// Older subtitle caches labeled every speaker spk:0. Only acoustic analysis
+// can establish a shared voice identity; otherwise keep references per cue.
+export function subtitleSpeaker(cue, spans, index) {
+  const speech = spans.filter(s => s.end > cue.start && s.start < cue.end && !['silence', 'music'].includes(s.kind));
+  const people = new Set(speech.map(s => s.speaker).filter(Boolean));
+  const overlap = speech.some(s => s.overlap);
+  const known = speech.length && speech.every(s => s.speaker) && people.size === 1 && !overlap;
+  return { speaker: known ? [...people][0] : `unassigned:subtitle:${index}`, overlap, crossSpeaker: people.size > 1 };
+}
+
+// Keep each subtitle whole at preparation boundaries, rather than translating
+// the same text once on each side of the boundary.
+export function subtitleWindowEnd(cues, start, desiredEnd, duration) {
+  let end = Math.min(desiredEnd, duration);
+  for (;;) {
+    const extended = cues.reduce((last, c) => c.end > start && c.start < end ? Math.max(last, Math.min(duration, c.end)) : last, end);
+    if (extended <= end) return end;
+    end = extended;
+  }
+}
+
 export function translationBatches(cues, maxChars = 5000, maxSeconds = 90) {
   const batches = [];
   for (const cue of cues) {

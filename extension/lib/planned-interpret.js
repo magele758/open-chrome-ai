@@ -6,7 +6,7 @@ import { isAsrReady, isTtsReady, resolveModel } from './storage.js';
 import { synthesizeTts, getTtsRef } from './tts.js';
 import { linesToCaptions, stripTimeline, voiceRefFromBlob } from './interpret.js';
 import { withInterpretDeadline } from './interpret-semantic.js';
-import { validateAnalysis, recognitionWindows, translationBatches, validateDubTranslation, fitDub, continuousReadySeconds, voiceCandidates, parseTolerantJson } from './dub-timeline.js';
+import { validateAnalysis, recognitionWindows, translationBatches, validateDubTranslation, fitDub, continuousReadySeconds, voiceCandidates, parseTolerantJson, subtitleSpeaker, subtitleWindowEnd } from './dub-timeline.js';
 import { dubKey, readDubCache, writeDubCache, pruneDubCache } from './dub-cache.js';
 import { composeCompactDubTrack, composeFullDubTrack, saveFullMediaArchive } from './audio-composer.js';
 import { videoIdentity } from './library.js';
@@ -20,22 +20,28 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
   const analysis = await source.analyze();
   const spans = validateAnalysis(analysis, source.duration);
   const sourceKey = analysis.fingerprint || await dubKey({ analysis, url: source.url });
-  const recognitionKey = await dubKey({ sourceKey, spans, analysisVersion: analysis.version, asr: modelIdentity(settings.asr), version: 3 });
+  const subtitles = source.subtitles?.map((c, n) => ({ ...c, ...subtitleSpeaker(c, spans, n) }));
+  const useSubtitles = subtitles?.length && !subtitles.some(c => c.crossSpeaker);
+  const recognitionKey = await dubKey({ sourceKey, spans, subtitles, analysisVersion: analysis.version, asr: modelIdentity(settings.asr), version: 4 });
   let cues = await cacheGet(recognitionKey);
   if (!cues) {
     const windows = recognitionWindows(spans);
-    if (source.subtitles?.length) {
-      cues = source.subtitles.map((c, n) => ({
+    if (useSubtitles) {
+      cues = subtitles.map((c, n) => ({
         id: c.id || `sub:${n}`,
         start: Math.max(0, Number(c.start) || 0),
         end: Math.max(Number(c.start) || 0, Math.min(source.duration, Number(c.end) || 0)),
         src: stripTimeline(c.src || c.text || ''),
-        speaker: c.speaker || 'spk:0',
-        overlap: false,
+        speaker: c.speaker,
+        overlap: c.overlap,
         timingQuality: 'segment'
       })).filter(c => c.src && c.end > c.start);
       await cacheSet(recognitionKey, cues);
     } else {
+      if (subtitles?.length) {
+        if (!isAsrReady(settings.asr)) throw new Error('字幕跨越了不同说话人，需要配置 ASR 后按原声分句，才能保留各自音色。');
+        status('字幕跨越说话人，正在按原声重新分句以保留各自音色…');
+      }
       const results = new Array(windows.length);
       let next = 0;
       await Promise.all(Array.from({ length: Math.min(2, windows.length) }, async () => {
@@ -279,7 +285,7 @@ export async function runPlannedInterpret(opts) {
     const pending = new Set(lines.map(l => l.id));
     refreshSpeakers = () => {
       // Preserve the current utterance; regenerate future windows using actual speaker boundaries.
-      const cutoff = Math.max(playhead, active?.dubItem.end || 0);
+      const cutoff = Math.max(playhead, active?.dubItem.end || 0, ...lines.filter(l => completed.has(l.id)).map(l => l.end));
       for (let i = lines.length - 1; i >= 0; i--) {
         const line = lines[i];
         if (line.end > cutoff && !completed.has(line.id) && active?.dubItem.id !== line.id) {
@@ -298,7 +304,8 @@ export async function runPlannedInterpret(opts) {
         const start = coveredUntil(playhead);
         if (start >= source.duration || start - playhead >= Math.max(24, (Number(settings.tts?.bufferSeconds) || 30) * 4)) { await sleep(100); continue; }
         // Small first window; subsequent windows retain paragraph context without a whole-file barrier.
-        const end = Math.min(source.duration, start + (coverage.length ? 24 : 12), ...coverage.filter(r => r.start > start).map(r => r.start));
+        const desiredEnd = Math.min(source.duration, start + (coverage.length ? 24 : 12), ...coverage.filter(r => r.start > start).map(r => r.start));
+        const end = hasSubtitles ? subtitleWindowEnd(source.subtitles, start, desiredEnd, source.duration) : desiredEnd;
         const slice = await source.slice(start, end - start);
         if (!slice) throw new Error('原音轨切片缺失');
         const fingerprint = await dubKey([...new Uint8Array(await slice.blob.arrayBuffer())]);
