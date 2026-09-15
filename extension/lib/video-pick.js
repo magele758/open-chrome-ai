@@ -269,6 +269,16 @@ export function plVideo(cmd, arg) {
       attachSilence(el);
       rebound = Boolean(tap && !live);
     }
+    const currentTap = globalThis.__plAudioTap;
+    if (currentTap?.fallback && !currentTap.guard) {
+      currentTap.guard = () => {
+        if (!globalThis.__plSiMute || globalThis.__plAudioTap !== currentTap) return;
+        if (!currentTap.el.muted) currentTap.el.muted = true;
+        if (currentTap.el.volume !== 0) currentTap.el.volume = 0;
+      };
+      currentTap.el.addEventListener('volumechange', currentTap.guard);
+      currentTap.el.addEventListener('play', currentTap.guard);
+    }
     return {
       ok: true,
       via: globalThis.__plAudioTap?.fallback ? "element-mute" : "webaudio",
@@ -286,6 +296,11 @@ export function plVideo(cmd, arg) {
         tap.speaker.gain.setValueAtTime(tap.speaker.gain.value, now);
         tap.speaker.gain.linearRampToValueAtTime(1, now + Math.min(.2, o.fadeSeconds));
       } else tap.speaker.gain.value = 1;
+    }
+    if (tap?.guard) {
+      tap.el.removeEventListener('volumechange', tap.guard);
+      tap.el.removeEventListener('play', tap.guard);
+      delete tap.guard;
     }
     if (tap?.el) {
       tap.el.muted = Boolean(tap.prevMuted);

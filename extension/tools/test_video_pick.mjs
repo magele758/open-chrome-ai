@@ -108,6 +108,19 @@ assert(cleanTranslation("<think>plan</think>\n你好世界", "x") === "你好世
   assert(plVideo("state").silenced === true, "new element is silenced");
   delete globalThis.__plAudioTap;
   delete globalThis.__plSiMute;
+  const listeners = new Map();
+  second.addEventListener = (name, fn) => listeners.set(name, fn);
+  second.removeEventListener = name => listeners.delete(name);
+  globalThis.AudioContext = class { constructor() { throw Error('already attached'); } };
+  assert(plVideo('silence').via === 'element-mute', 'fallback mute');
+  second.muted = false; second.volume = 1;
+  listeners.get('volumechange')();
+  assert(second.muted && second.volume === 0, 'host volume changes cannot reopen original');
+  plVideo('restore');
+  assert(!listeners.size, 'restore releases the mute guard');
+  assert(!second.muted && second.volume === 1, 'restore recovers original settings');
+  delete globalThis.__plAudioTap;
+  delete globalThis.__plSiMute;
 }
 
 {

@@ -7,7 +7,7 @@ import { debugLog } from './debug-log.js';
 // Keep the original slice until recognition succeeds. A shorter decoding window
 // can recover a looping model without guessing which repeated words were spoken.
 export async function transcribeInterpretSlice(model, item, { signal, trace,
-  transcribe = transcribeAudio } = {}) {
+  transcribe = transcribeAudio, onUnrecognized } = {}) {
   signal?.throwIfAborted();
   let pcm;
   try { pcm = readPcmWav(await item.blob.arrayBuffer()); } catch { /* encoded tab capture */ }
@@ -30,30 +30,50 @@ export async function transcribeInterpretSlice(model, item, { signal, trace,
   }), signal);
   const validate = segments => {
     if (hasRunawayRepetition(segments.map(s => s.text || '').join(' '))) {
-      throw new Error('语音识别出现异常重复，重试后仍无法确认本段内容。');
+      const error = new Error('语音识别出现异常重复，重试后仍无法确认本段内容。');
+      error.code = 'ASR_REPETITION';
+      throw error;
     }
     return segments;
   };
-  try {
-    return validate(await request(item.blob));
-  } catch (error) {
-    signal?.throwIfAborted();
-    if (error?.name === 'AbortError') throw error;
-    // Authentication/configuration failures cannot be repaired by resubmitting.
-    if (/\b(?:400|401|403|404|413|415|422)\b/.test(error?.message || '')) throw error;
-    debugLog('asr.retry', { ...trace, reason: error.message });
-    if (!/异常重复/.test(error.message) || !pcm || pcm.length < 32000 * 2) return validate(await request(item.blob));
-    const middle = Math.floor(pcm.length / 4) * 2;
-    const segments = [];
-    for (const [from, to] of [[0, middle], [middle, pcm.length]]) {
+  const recognize = async (blob, from = 0, depth = 0) => {
+    try {
+      const result = validate(await request(blob));
       signal?.throwIfAborted();
-      const result = validate(await request(pcmWav([pcm.subarray(from, to)])));
-      const duration = (to - from) / 32000;
-      for (const s of result) segments.push({ ...s,
-        start: from / 32000 + Math.max(0, Math.min(duration, Number(s.start) || 0)),
-        end: from / 32000 + (Number.isFinite(s.end) ? Math.max(0, Math.min(duration, s.end)) : duration),
-      });
+      return result;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error?.name === 'AbortError') throw error;
+      if (/\b(?:400|401|403|404|413|415|422)\b/.test(error?.message || '')) throw error;
+      debugLog('asr.retry', { ...trace, reason: error.message, depth });
+      const bytes = pcm ? readPcmWav(await blob.arrayBuffer()) : null;
+      if (error.code === 'ASR_REPETITION' && bytes?.length >= 128000 && depth < 2) {
+        const middle = Math.floor(bytes.length / 4) * 2;
+        const segments = [];
+        for (const [lo, hi] of [[0, middle], [middle, bytes.length]]) {
+          signal?.throwIfAborted();
+          const result = await recognize(pcmWav([bytes.subarray(lo, hi)]), from + lo / 32000, depth + 1);
+          const duration = (hi - lo) / 32000;
+          for (const s of result) segments.push({ ...s,
+            start: lo / 32000 + Math.max(0, Math.min(duration, Number(s.start) || 0)),
+            end: lo / 32000 + (Number.isFinite(s.end) ? Math.max(0, Math.min(duration, s.end)) : duration),
+          });
+        }
+        return segments;
+      }
+      try {
+        // Split windows already are retries; only retry the original request.
+        if (depth > 0) throw error;
+        const result = validate(await request(blob));
+        signal?.throwIfAborted();
+        return result;
+      } catch (lastError) {
+        signal?.throwIfAborted();
+        if (lastError.code !== 'ASR_REPETITION' || !onUnrecognized) throw lastError;
+        onUnrecognized({ start: from, end: from + (bytes ? bytes.length / 32000 : Number(item.seconds) || 0) });
+        return [];
+      }
     }
-    return validate(segments);
-  }
+  };
+  return recognize(item.blob);
 }

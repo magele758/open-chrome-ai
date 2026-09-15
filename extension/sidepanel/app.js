@@ -3601,6 +3601,16 @@ async function pickTargetTab() {
 
 async function refreshTab() {
   const prevId = state.tab?.id;
+  // Keep playback and its controls attached to their source while the user browses.
+  // A closed or navigated source still goes through the normal cleanup below.
+  if (prevId && (interpretController.isRunning(prevId) || compactController.isRunning(prevId) ||
+      compactSessionOpen || state.dubPlaying)) {
+    const source = await chrome.tabs.get(prevId).catch(() => null);
+    if (source && source.url === state.tab.url) {
+      renderContext();
+      return;
+    }
+  }
   const tab = await pickTargetTab();
   const recording = isTranscribing();
   const interpreting = interpretController.isRunning(tab?.id);

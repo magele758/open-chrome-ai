@@ -32,6 +32,7 @@ for(const mode of ['full','buffered']){
   await until(()=>dubCalls===(mode==='full'?2:4));
   if(mode==='full'){assert(state.paused,'full mode cannot start before all speech audio is ready');release();}
   await until(()=>!state.paused);
+  assert(!commands.includes('restore'), 'muted original stays off through the opening music gap');
   state.currentTime=2;await until(()=>audios.length===1&&!audios[0].paused);
   state.userPaused=true;state.paused=true;await until(()=>audios[0].paused);
   state.userPaused=false;state.paused=false;await until(()=>!audios[0].paused);
@@ -222,3 +223,27 @@ for (const race of ['ended-during-resume', 'error-during-background-read']) {
   console.log('PASS subtitle-first: native subtitles skip ASR and generate dub plan directly');
 }
 
+
+// An undecodable window must not cancel later speech or poison recognition cache.
+{
+ const saved = new Map();
+ let requests = 0;
+ const warnings = [];
+ const options = { source, settings, signal: new AbortController().signal, chat,
+  cacheGet: async key => saved.get(key), cacheSet: async (key, value) => saved.set(key, value),
+  recoveryStatus: message => warnings.push(message),
+  transcribe: async (_model, slice, { onUnrecognized }) => {
+   requests++;
+   if (slice.start === 2) { onUnrecognized({ start: 0, end: slice.seconds }); return []; }
+   return [{ start: 0, end: slice.seconds, text: 'No.' }];
+  },
+ };
+ const partial = await prepareDubPlan(options);
+ assert.equal(partial.incompleteRecognition, true);
+ assert.equal(partial.lines.length, 1);
+ assert.equal(partial.lines[0].start, 7);
+ assert(warnings[0].includes('2.0–6.0'));
+ await prepareDubPlan(options);
+ assert.equal(requests, 3, 'retry missing window and reuse successful window');
+ console.log('PASS partial ASR continues with later speech and preserves retryable gaps');
+}

@@ -37,3 +37,29 @@ assert.deepEqual(await transcribeInterpretSlice({}, { blob: pcmWav([new Uint8Arr
   transcribe: async () => { silentRequests++; return []; },
 }), []);
 assert.equal(silentRequests, 0, 'digital silence must not trigger model hallucinations');
+
+// Recover the good half even when one short span remains undecodable.
+const missed = [];
+let recoveryCalls = 0;
+const partial = await transcribeInterpretSlice({}, item, {
+  onUnrecognized: range => missed.push(range),
+  transcribe: async () => {
+    recoveryCalls++;
+    return [{ start: 0, text: recoveryCalls < 3 ? 'study '.repeat(20) : 'Recovered ending.' }];
+  },
+});
+assert.equal(recoveryCalls, 3);
+assert.deepEqual(missed, [{ start: 0, end: 2.5 }]);
+assert.deepEqual(partial, [{ start: 2.5, end: 5, text: 'Recovered ending.' }]);
+const longBlob = pcmWav([new Uint8Array(320000).fill(20)]);
+let recursiveCalls = 0;
+const recovered = await transcribeInterpretSlice({}, { blob: longBlob }, {
+  transcribe: async (_model, audio) => {
+    recursiveCalls++;
+    const pcm = readPcmWav(await audio.arrayBuffer());
+    return [{ start: 0, text: pcm.length > 80000 ? 'study '.repeat(20) : 'Recovered speech.' }];
+  },
+});
+assert.equal(recursiveCalls, 7);
+assert.deepEqual(recovered.map(s => [s.start, s.end]), [[0, 2.5], [2.5, 5], [5, 7.5], [7.5, 10]]);
+console.log('PASS bounded recursive recovery and isolated unrecoverable spans');

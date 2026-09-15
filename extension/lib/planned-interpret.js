@@ -19,7 +19,7 @@ const modelIdentity = model => ({ baseUrl: model?.baseUrl, model: model?.model, 
 const parseJson = text => parseTolerantJson(text);
 
 export async function prepareDubPlan({ source, settings, signal, status = () => {}, recoveryStatus = status,
-  transcribe = transcribeInterpretSlice, chat = completeChat, cacheGet = readDubCache, cacheSet = writeDubCache, incrementalContext }) {
+  transcribe = transcribeInterpretSlice, chat = completeChat, cacheGet = readDubCache, cacheSet = writeDubCache, incrementalContext, sourceOffset = 0 }) {
   status('正在分析说话人、停顿与音乐，画面保持暂停…');
   const analysis = await source.analyze();
   const spans = validateAnalysis(analysis, source.duration);
@@ -27,6 +27,7 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
   const subtitles = source.subtitles?.map((c, n) => ({ ...c, src: stripSubtitleDirections(c.src || c.text), ...subtitleSpeaker(c, spans, n) })).filter(c => c.src);
   const useSubtitles = Boolean(source.subtitles?.length) && !subtitles.some(c => c.crossSpeaker);
   const recognitionKey = await dubKey({ sourceKey, spans, subtitles, analysisVersion: analysis.version, asr: modelIdentity(settings.asr), version: 5 });
+  let incompleteRecognition = false;
   let cues = await cacheGet(recognitionKey);
   if (!cues) {
     const windows = recognitionWindows(spans);
@@ -40,7 +41,7 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
         overlap: c.overlap,
         timingQuality: 'segment'
       })).filter(c => c.src && c.end > c.start);
-      await cacheSet(recognitionKey, cues);
+      if (!incompleteRecognition) await cacheSet(recognitionKey, cues);
     } else {
       if (subtitles?.length) {
         if (!isAsrReady(settings.asr)) throw new Error('字幕跨越了不同说话人，需要配置 ASR 后按原声分句，才能保留各自音色。');
@@ -58,10 +59,14 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
           if (!segments) {
             const slice = await source.slice(window.start, window.end - window.start);
             if (!slice) throw new Error('原音轨切片缺失');
-            segments = await transcribe(settings.asr, slice, { signal });
+            let missed = false;
+            segments = await transcribe(settings.asr, slice, { signal, onUnrecognized: range => {
+              missed = incompleteRecognition = true;
+              recoveryStatus(`无法确认 ${(sourceOffset + window.start + range.start).toFixed(1)}–${(sourceOffset + window.start + range.end).toFixed(1)} 秒的人声，已跳过并继续处理后续内容。`);
+            } });
             signal.throwIfAborted();
-            if (!segments.length && window.kind === 'speech') throw new Error(`检测到人声但未识别到文字：${window.start.toFixed(1)}–${window.end.toFixed(1)} 秒。请重试，已完成内容会保留。`);
-            await cacheSet(key, segments);
+            if (!missed && !segments.length && window.kind === 'speech') throw new Error(`检测到人声但未识别到文字：${window.start.toFixed(1)}–${window.end.toFixed(1)} 秒。请重试，已完成内容会保留。`);
+            if (!missed) await cacheSet(key, segments);
           }
           results[i] = segments.map((s, n) => {
             const span = window.end - window.start;
@@ -73,15 +78,15 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
         }
       }));
       cues = results.flat();
-      await cacheSet(recognitionKey, cues);
+      if (!incompleteRecognition) await cacheSet(recognitionKey, cues);
     }
   }
   const model = resolveModel(settings, 'text');
   const translationKey = await dubKey({ recognitionKey, cues, model: modelIdentity(model), incrementalContext, version: 2 });
   const cached = await cacheGet(translationKey);
   if (cached) status('已复用缓存的中文口播稿…');
-  if (cached) return { ...cached, spans, sourceKey, background: analysis.background };
-  if (!cues.length) return { lines: [], cues, context: '', spans, sourceKey, background: analysis.background };
+  if (cached) return { ...cached, incompleteRecognition, spans, sourceKey, background: analysis.background };
+  if (!cues.length) return { lines: [], cues, context: '', incompleteRecognition, spans, sourceKey, background: analysis.background };
   const ask = (system, input, maxTokens = 5000) => retryInterpretRequest(s => chat(model, {
     messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(input) }],
     signal: s, temperature: .1, maxTokens, rejectTruncated: true,
@@ -177,7 +182,7 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
   }
   const result = { lines, cues, context };
   await cacheSet(translationKey, result);
-  return { ...result, spans, sourceKey, background: analysis.background };
+  return { ...result, incompleteRecognition, spans, sourceKey, background: analysis.background };
 }
 
 export async function audioDuration(blob) {
@@ -263,7 +268,11 @@ export async function runPlannedInterpret(opts) {
     held = false;
   };
   const speaker = async original => {
-    if (muted === !original) return;
+    if (muted === !original) {
+      // The panel or host player may have changed the actual gate since last tick.
+      const actual = await read();
+      if (actual.silenced === undefined || actual.silenced === !original) return;
+    }
     const result = await video(original ? 'restore' : 'silence', { fadeSeconds: .08 });
     if (!result?.ok) throw new Error('无法切换原声');
     muted = !original;
@@ -419,9 +428,10 @@ export async function runPlannedInterpret(opts) {
           subtitles: partSubtitles ? partSubtitles.map(c => ({ ...c, start: Math.max(0, c.start - start), end: Math.min(end - start, c.end - start) })) : null,
           analyze: async () => ({ duration: end - start, fingerprint, spans }),
           slice: (offset, seconds) => source.slice(start + offset, seconds),
-        }, settings, signal, status: () => {}, recoveryStatus: status, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat, incrementalContext: context });
+        }, settings, signal, status: () => {}, recoveryStatus: status, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat, incrementalContext: context, sourceOffset: start });
         signal.throwIfAborted();
         if (windowRevision !== analysisRevision) continue;
+        plan.incompleteRecognition ||= part.incompleteRecognition;
         for (const original of part.lines) {
           const line = { ...original, speaker: /^(asr|unassigned):/.test(original.speaker || '') ? `${original.speaker}:${fingerprint}:${start}` : original.speaker, id: `${start}:${fingerprint}:${original.id}`, start: original.start + start, end: original.end + start };
           if (typeof edits[line.id] === 'string') line.zh = edits[line.id];
@@ -452,7 +462,7 @@ export async function runPlannedInterpret(opts) {
     const saveCompletedPlan = async () => {
       if (fullyPrepared) return;
       fullyPrepared = true;
-      await cacheSet(savedPlanKey, plan);
+      if (!plan.incompleteRecognition) await cacheSet(savedPlanKey, plan);
     };
     // One worker preserves voice-service capacity, while playback is independent.
     production = (async () => {
@@ -706,10 +716,10 @@ export async function runPlannedInterpret(opts) {
       const speechNow = lines.some(l => l.start <= playhead && l.end > playhead);
       if (shown && !active && !speechNow && !isPureAudio) {
         shown = null;
-        emit({ type: 'status', clearLine: true, message: '原声间奏 / 停顿', hint: '' });
+        emit({ type: 'status', clearLine: true, message: '间奏 / 停顿', hint: '' });
       }
       if (!isPureAudio) {
-        await speaker(Boolean(opts.wantOriginalAudio?.()) || !ttsOn || (!active && !speechNow));
+        await speaker(Boolean(opts.wantOriginalAudio?.()) || !ttsOn);
       }
       const voice = active;
       if (state.userPaused || state.readyState < 3 && !held && !state.ended) {
@@ -752,6 +762,7 @@ export async function runPlannedInterpret(opts) {
     }
     }
     signal.throwIfAborted();
+    if (plan.incompleteRecognition) emit({ type: 'warn', message: '部分人声重试后仍无法确认，已跳过；可重试补全，已完成分段会复用，当前结果未标记为完整音频。' });
     return { mode: 'audio', lines, captions: linesToCaptions(lines), prepared: ready.size, streamPlayer };
   } finally {
     controller.abort(); preparing = false; clearAudio();
@@ -783,7 +794,7 @@ export async function runPlannedInterpret(opts) {
         }
       }
       const videoId = opts.sourceUrl ? videoIdentity(opts.sourceUrl) : null;
-      if (!opts.signal?.aborted && fullyPrepared && videoId && dubbedSegments.length > 0 && dubbedSegments.length === plan.lines.length) {
+      if (!opts.signal?.aborted && fullyPrepared && !plan.incompleteRecognition && videoId && dubbedSegments.length > 0 && dubbedSegments.length === plan.lines.length) {
         opts.onEvent?.({ type: 'status', message: '整段配音已生成，正在拼接并保存完整音频…' });
         const compactAudio = await composeCompactDubTrack(dubbedSegments, { sampleRate: 24000, gapMs: 250 });
         const fullAudio = await composeFullDubTrack(dubbedSegments, { totalDuration: source?.duration || 0 });

@@ -39,8 +39,12 @@ function harness() {
       }
     },
   };
+  const compactController = { stop: async () => {}, isRunning: () => false };
   const context = vm.createContext({
-    state, AbortController, usableTranscript, interpretController, estimateTokens, compactPlaying: false,
+    state, AbortController, usableTranscript, interpretController, compactController, estimateTokens,
+    compactPlaying: false, compactSegments: [], compactStreamPlayer: null, compactPlayerAudio: null,
+    compactPendingAutoplay: false, compactFullGenerating: false,
+    stopCompactPlayback() {}, getSharedAudioContext() {}, needAsrSettings() {}, toggleOriginalAudio() {},
     document: { createElement: () => ({ classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } }, append() {}, appendChild() {}, setAttribute() {} }) },
     $: id => { if (!elements.has(id)) elements.set(id, { classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } }, appendChild() {}, append() {} }); return elements.get(id); },
     renderContext() {}, syncPackToLibrary: async () => ({}), abortRecording() {}, discardCapture: async () => {},
