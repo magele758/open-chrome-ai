@@ -1,6 +1,7 @@
 /**
  * Conversation history.
- * Index / active id stay in chrome.storage.local; session bodies live in IndexedDB
+ * Index / last-touch active id stay in chrome.storage.local; each window also
+ * has `pl.sessions.active.win.<id>`. Session bodies live in IndexedDB
  * (pagelens-data). Legacy pl.sessions.item.* in chrome.storage is migrated on read.
  */
 
@@ -8,6 +9,7 @@ import { idbDel, idbGet, idbGetAll, idbSet, idbSetAll } from "./idb-kv.js";
 
 export const INDEX_KEY = "pl.sessions.index";
 export const ACTIVE_KEY = "pl.sessions.active";
+export const ACTIVE_WINDOW_PREFIX = "pl.sessions.active.win.";
 export const ITEM_PREFIX = "pl.sessions.item.";
 export const MAX_SESSIONS = 200;
 export const RUN_STALE_MS = 24 * 3600 * 1000;
@@ -17,6 +19,16 @@ const MAX_TOOL_CONTENT = 12000;
 
 export function itemKey(id) {
   return ITEM_PREFIX + id;
+}
+
+export function windowKey(windowId) {
+  const n = Number(windowId);
+  return Number.isInteger(n) && n >= 0 ? String(n) : "";
+}
+
+export function activeWindowStorageKey(windowId) {
+  const key = windowKey(windowId);
+  return key ? ACTIVE_WINDOW_PREFIX + key : "";
 }
 
 export function pageHost(url) {
@@ -364,7 +376,34 @@ export async function loadSession(id) {
   return raw ? normalizeSession(raw) : null;
 }
 
-export async function loadActiveSession() {
+async function hasWindowActiveBinding() {
+  const all = await localGet(null);
+  return Object.entries(all || {}).some(([k, v]) => k.startsWith(ACTIVE_WINDOW_PREFIX) && typeof v === "string" && v);
+}
+
+export async function getActiveId(windowId) {
+  const storeKey = activeWindowStorageKey(windowId);
+  if (storeKey) {
+    const data = await localGet(storeKey);
+    return typeof data[storeKey] === "string" ? data[storeKey] : "";
+  }
+  const data = await localGet(ACTIVE_KEY);
+  return typeof data[ACTIVE_KEY] === "string" ? data[ACTIVE_KEY] : "";
+}
+
+export async function loadActiveSession(windowId) {
+  const storeKey = activeWindowStorageKey(windowId);
+  if (storeKey) {
+    const data = await localGet([storeKey, ACTIVE_KEY]);
+    const own = data[storeKey];
+    if (typeof own === "string" && own) return loadSession(own);
+    const legacy = typeof data[ACTIVE_KEY] === "string" ? data[ACTIVE_KEY] : "";
+    if (legacy && !(await hasWindowActiveBinding())) {
+      await localSet({ [storeKey]: legacy });
+      return loadSession(legacy);
+    }
+    return null;
+  }
   const data = await localGet(ACTIVE_KEY);
   return loadSession(data[ACTIVE_KEY]);
 }
@@ -391,7 +430,7 @@ export async function loadAllSessions() {
     .map(normalizeSession);
 }
 
-export async function saveSession(raw) {
+export async function saveSession(raw, options = {}) {
   const session = normalizeSession(raw);
   session.updatedAt = Date.now();
   session.title = sessionTitle(session);
@@ -402,10 +441,13 @@ export async function saveSession(raw) {
   const keep = new Set(next.map((s) => s.id));
   const drop = index.filter((s) => !keep.has(s.id)).map((s) => itemKey(s.id));
 
-  await localSet({
+  const patch = {
     [INDEX_KEY]: next,
     [ACTIVE_KEY]: session.id,
-  });
+  };
+  const storeKey = activeWindowStorageKey(options.windowId);
+  if (storeKey) patch[storeKey] = session.id;
+  await localSet(patch);
   await writeSessionItem(session.id, session);
   await dropSessionItems(drop);
   return session;
@@ -413,14 +455,22 @@ export async function saveSession(raw) {
 
 export async function deleteSession(id) {
   const index = (await listSessions()).filter((s) => s.id !== id);
-  const data = await localGet(ACTIVE_KEY);
+  const all = await localGet(null);
   const patch = { [INDEX_KEY]: index };
-  if (data[ACTIVE_KEY] === id) patch[ACTIVE_KEY] = "";
+  if (all[ACTIVE_KEY] === id) patch[ACTIVE_KEY] = "";
+  for (const [k, v] of Object.entries(all || {})) {
+    if (k.startsWith(ACTIVE_WINDOW_PREFIX) && v === id) patch[k] = "";
+  }
   await localSet(patch);
   await dropSessionItems([itemKey(id)]);
   return index;
 }
 
-export async function clearActiveId() {
+export async function clearActiveId(windowId) {
+  const storeKey = activeWindowStorageKey(windowId);
+  if (storeKey) {
+    await localRemove(storeKey);
+    return;
+  }
   await localSet({ [ACTIVE_KEY]: "" });
 }

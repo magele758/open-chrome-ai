@@ -8,9 +8,28 @@
 
 import { CHAR_BUDGET, cloneHistory, packForModel, repairMessages } from "./context.js";
 import { interceptToolOutput } from "./tool-guardian.js";
+import {
+  BLOCKED_SHELL_STREAK,
+  DIR_BROWSE_LIMIT,
+  REPEAT_TOOL_LIMIT,
+  countCompletedToolRuns,
+  countDirectoryBrowseRuns,
+  isDirectoryBrowseCommand,
+  shellPolicyBlock,
+} from "./shell-policy.js";
+import { debugLog } from "../debug-log.js";
 
-const MAX_TURNS = 12;
+export const MAX_TURNS = 12;
 const TOOL_RESULT_CHARS = 12000;
+
+/** `0` / negative / `Infinity` means no turn cap. Omitted or invalid falls back to `MAX_TURNS`. */
+export function resolveMaxTurns(raw) {
+  if (raw == null || raw === "") return MAX_TURNS;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return n === Infinity ? Infinity : MAX_TURNS;
+  if (n <= 0) return Infinity;
+  return Math.floor(n);
+}
 
 export function createAgentLoop(host) {
   return {
@@ -24,8 +43,9 @@ async function runLoop(host, userText, options) {
   const signal = options.signal;
   const onEvent = options.onEvent || (() => {});
   const budget = host.charBudget || CHAR_BUDGET;
-  const maxTurns = host.maxTurns || MAX_TURNS;
+  const maxTurns = resolveMaxTurns(host.maxTurns);
   const sessionId = options.sessionId || host.sessionId || "default";
+  const gate = { forceAnswer: false, blockedShell: 0 };
 
   let history = cloneHistory(options.history || []);
   if (!options.resume) {
@@ -64,9 +84,10 @@ async function runLoop(host, userText, options) {
   checkpoint();
 
   if (repaired.pending.length) {
-    const aborted = await appendToolResults(host, repaired.pending, history, signal, onEvent, checkpoint, sessionId, traceSteps);
+    const aborted = await appendToolResults(host, repaired.pending, history, signal, onEvent, checkpoint, sessionId, traceSteps, gate);
     if (aborted) {
       onEvent({ type: "abort" });
+      debugLog("agent.end", { reason: "abort", turnsUsed, sessionId });
       return { reason: "abort", text: lastText, history, turnsUsed, metrics: buildMetrics("abort"), traceSteps };
     }
   }
@@ -74,9 +95,11 @@ async function runLoop(host, userText, options) {
   while (turnsUsed < maxTurns) {
     if (signal?.aborted) {
       onEvent({ type: "abort" });
+      debugLog("agent.end", { reason: "abort", turnsUsed, sessionId });
       return { reason: "abort", text: lastText, history, turnsUsed, metrics: buildMetrics("abort"), traceSteps };
     }
     onEvent({ type: "turn_prepared", turn: turnsUsed });
+    debugLog("agent.turn", { turn: turnsUsed, maxTurns: Number.isFinite(maxTurns) ? maxTurns : 0, sessionId });
     traceSteps.push({ type: "turn_start", turn: turnsUsed, timestamp: Date.now() });
 
     const packedHist = packForModel(history, { budget, sessionId });
@@ -94,7 +117,7 @@ async function runLoop(host, userText, options) {
         timestamp: Date.now(),
       });
     }
-    const finalTurn = turnsUsed === maxTurns - 1;
+    const finalTurn = gate.forceAnswer || (Number.isFinite(maxTurns) && turnsUsed === maxTurns - 1);
     // Reserve the last call for a user-facing answer, never another tool batch.
     // Plain messages avoid providers rejecting historical tools without schemas.
     const packed = [{ role: "system", content: host.systemPrompt }, ...packedHist.messages];
@@ -174,9 +197,18 @@ async function runLoop(host, userText, options) {
       content: result.content || "",
       reasoning: result.reasoning || "",
     });
+    debugLog("agent.model", {
+      turn: turnsUsed,
+      finishReason,
+      contentLen: (result.content || "").length,
+      reasoningLen: (result.reasoning || "").length,
+      tools: (result.toolCalls || []).map((c) => c.name).filter(Boolean),
+    });
 
     if (finalTurn && (result.toolCalls?.length || !result.content?.trim())) {
-      result.content = '本次读取已达到轮次上限，尚未得到可交付的完整回答。请重试；已完成的读取和失败原因可在 Trace 中查看。';
+      result.content = gate.forceAnswer
+        ? "已停止继续扫目录或重复同一条命令。请基于已有读取结果作答；细节可在 Trace 中查看。"
+        : "本次读取已达到轮次上限，尚未得到可交付的完整回答。请重试；已完成的读取和失败原因可在 Trace 中查看。";
       lastText = result.content;
     }
     const calls = (finalTurn ? [] : result.toolCalls || [])
@@ -202,19 +234,22 @@ async function runLoop(host, userText, options) {
     if (!calls.length) {
       const reason = finalTurn ? 'max_turns' : 'stop';
       onEvent({ type: "ended", reason });
+      debugLog("agent.end", { reason, turnsUsed, sessionId });
       checkpoint({ done: true });
       return { reason, text: result.content || lastText, reasoning: result.reasoning || "", history, turnsUsed, metrics: buildMetrics(reason), traceSteps };
     }
 
     checkpoint();
-    const aborted = await appendToolResults(host, calls, history, signal, onEvent, checkpoint, sessionId, traceSteps);
+    const aborted = await appendToolResults(host, calls, history, signal, onEvent, checkpoint, sessionId, traceSteps, gate);
     if (aborted) {
       onEvent({ type: "abort" });
+      debugLog("agent.end", { reason: "abort", turnsUsed, sessionId });
       return { reason: "abort", text: lastText, reasoning: result?.reasoning || "", history, turnsUsed, metrics: buildMetrics("abort"), traceSteps };
     }
   }
 
   onEvent({ type: "ended", reason: "max_turns" });
+  debugLog("agent.end", { reason: "max_turns", turnsUsed, sessionId });
   checkpoint({ done: true });
   return { reason: "max_turns", text: lastText, reasoning: "", history, turnsUsed, metrics: buildMetrics("max_turns"), traceSteps };
 }
@@ -227,10 +262,10 @@ function withoutToolCalls(messages) {
   });
 }
 
-async function appendToolResults(host, calls, history, signal, onEvent, checkpoint, sessionId = "default", traceSteps = []) {
+async function appendToolResults(host, calls, history, signal, onEvent, checkpoint, sessionId = "default", traceSteps = [], gate = null) {
   for (const call of calls) {
     if (signal?.aborted) return true;
-    const drained = await runToolList(host, [call], signal, onEvent, sessionId, traceSteps);
+    const drained = await runToolList(host, [call], signal, onEvent, sessionId, traceSteps, history, gate);
     history.push(...drained.results);
     checkpoint();
     if (drained.aborted) return true;
@@ -238,7 +273,7 @@ async function appendToolResults(host, calls, history, signal, onEvent, checkpoi
   return false;
 }
 
-async function runToolList(host, calls, signal, onEvent, sessionId = "default", traceSteps = []) {
+async function runToolList(host, calls, signal, onEvent, sessionId = "default", traceSteps = [], history = [], gate = null) {
   const results = [];
   const allHostTools = host.allTools || host.tools || [];
   for (const call of calls) {
@@ -270,6 +305,11 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
             });
             onEvent({ type: "tools_intercepted", name: call.name, reason: content });
             onEvent({ type: "tools_done", name: call.name, ok, content: content.slice(0, 1500) });
+            debugLog("agent.tool", { name: call.name, ok, blocked: true, args, preview: String(content).slice(0, 300) });
+            if (gate && call.name === "run_shell") {
+              gate.blockedShell += 1;
+              if (gate.blockedShell >= BLOCKED_SHELL_STREAK) gate.forceAnswer = true;
+            }
             traceSteps.push({
               type: "tool_intercepted",
               name: call.name,
@@ -281,7 +321,32 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
             continue;
           }
         }
-        content = await tool.execute(args, { signal });
+        const prior = countCompletedToolRuns(history, call.name, call.arguments);
+        const command = String(args?.command || "");
+        const policy = call.name === "run_shell" ? shellPolicyBlock(command) : "";
+        const dirUsed = call.name === "run_shell" && isDirectoryBrowseCommand(command)
+          ? countDirectoryBrowseRuns(history)
+          : 0;
+        if (prior >= REPEAT_TOOL_LIMIT) {
+          ok = false;
+          content = `已拦截重复工具调用：${call.name} 同样参数已执行 ${prior} 次。请基于已有结果作答，不要再打开目录或重复同一条命令。`;
+        } else if (policy) {
+          ok = false;
+          content = policy;
+        } else if (dirUsed >= DIR_BROWSE_LIMIT) {
+          ok = false;
+          content = `已拦截：本轮列目录已 ${dirUsed} 次。不要再 ls/find/open，请根据已有结果直接回答。`;
+        } else {
+          content = await tool.execute(args, { signal });
+        }
+        if (gate && call.name === "run_shell") {
+          if (!ok || (typeof content === "string" && content.startsWith("已拦截"))) {
+            gate.blockedShell += 1;
+            if (gate.blockedShell >= BLOCKED_SHELL_STREAK) gate.forceAnswer = true;
+          } else {
+            gate.blockedShell = 0;
+          }
+        }
         if (content != null && typeof content !== "string") {
           content = JSON.stringify(content);
         }
@@ -319,6 +384,14 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
     });
     content = String(content ?? "").slice(0, TOOL_RESULT_CHARS);
     onEvent({ type: "tools_done", name: call.name, ok, content: content.slice(0, 1500) });
+    debugLog("agent.tool", {
+      name: call.name,
+      ok,
+      durationMs,
+      args,
+      preview: String(content ?? "").slice(0, 300),
+      blocked: !ok && /拦截/.test(String(content || "")),
+    });
     results.push({
       role: "tool",
       tool_call_id: call.id,

@@ -11,6 +11,11 @@ import {
   saveSession,
   listSessions,
   loadSession,
+  loadActiveSession,
+  getActiveId,
+  clearActiveId,
+  ACTIVE_KEY,
+  ACTIVE_WINDOW_PREFIX,
   normalizeRun,
   loadAllSessions,
   deleteSession,
@@ -231,5 +236,39 @@ assert((await listSessions()).length === 200, "cap 200");
 assert((await loadSession("evict0")) === null, "oldest session gone");
 assert(!idb.has(itemKey("evict0")), "oldest idb dropped");
 assert((await loadSession("evict200"))?.messages[0].text === "淘汰 200", "newest kept");
+
+await saveSession({
+  id: "win-a",
+  messages: [{ role: "user", text: "窗口A" }, { role: "bot", text: "a" }],
+}, { windowId: 11 });
+await saveSession({
+  id: "win-b",
+  messages: [{ role: "user", text: "窗口B" }, { role: "bot", text: "b" }],
+}, { windowId: 22 });
+assert((await getActiveId(11)) === "win-a", "window A active");
+assert((await getActiveId(22)) === "win-b", "window B active");
+assert((await loadActiveSession(11))?.id === "win-a", "load A");
+assert((await loadActiveSession(22))?.id === "win-b", "load B");
+assert(bag[ACTIVE_WINDOW_PREFIX + "11"] === "win-a", "A stored per window");
+assert(bag[ACTIVE_WINDOW_PREFIX + "22"] === "win-b", "B stored per window");
+
+await clearActiveId(11);
+assert((await getActiveId(11)) === "", "clear A only");
+assert((await getActiveId(22)) === "win-b", "B untouched");
+
+bag[ACTIVE_KEY] = "legacy-s";
+await saveSession({
+  id: "legacy-s",
+  messages: [{ role: "user", text: "旧active" }, { role: "bot", text: "ok" }],
+});
+delete bag[ACTIVE_WINDOW_PREFIX + "11"];
+delete bag[ACTIVE_WINDOW_PREFIX + "22"];
+delete bag[ACTIVE_WINDOW_PREFIX + "33"];
+const claimed = await loadActiveSession(33);
+assert(claimed?.id === "legacy-s", "first window claims leftover active");
+assert((await loadActiveSession(44)) === null, "second window starts empty");
+
+await deleteSession("legacy-s");
+assert((await getActiveId(33)) === "", "delete clears window pointer");
 
 console.log("PASS sessions");

@@ -1,4 +1,5 @@
 import { modelsUrl, parseRemoteModelList } from "./text-providers.js";
+import { debugLog } from "./debug-log.js";
 
 function trimSlash(url) {
   return String(url || "").trim().replace(/\/+$/, "");
@@ -368,6 +369,11 @@ export async function streamChat(model, input, onDelta) {
  * @returns {{ content: string, toolCalls: Array<{id,name,arguments}>, finishReason: string }}
  */
 export async function streamTurn(model, input, onTextDelta) {
+  debugLog("model.turn", {
+    model: String(model?.model || ""),
+    tools: input.tools?.length || 0,
+    messages: input.messages?.length || 0,
+  });
   const url = chatCompletionsUrl(model.baseUrl);
   const body = {
     model: model.model.trim(),
@@ -400,6 +406,7 @@ export async function streamTurn(model, input, onTextDelta) {
       });
       if (!response.ok) throw new Error(await readError(response));
     } else {
+      debugLog("model.error", { errorMessage: errText });
       throw new Error(errText);
     }
   }
@@ -459,6 +466,12 @@ export async function streamTurn(model, input, onTextDelta) {
     if (!turnUsage.totalTokens) {
       turnUsage.totalTokens = turnUsage.promptTokens + turnUsage.completionTokens;
     }
+    debugLog("model.done", {
+      finishReason: finishReason || (toolCalls.length ? "tool_calls" : "stop"),
+      contentLen: content.length,
+      reasoningLen: reasoning.length,
+      tools: toolCalls.map((c) => c.name).filter(Boolean),
+    });
     return { content, reasoning, toolCalls, finishReason, usage: turnUsage };
   };
 

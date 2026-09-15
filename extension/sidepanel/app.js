@@ -1,5 +1,6 @@
-import { debugLog, exportDebugLog, DEBUG_BUILD } from "../lib/debug-log.js";
-debugLog("panel.loaded", { build: DEBUG_BUILD, source: "audio-only" });
+import { debugLog, exportDebugLogFresh, DEBUG_BUILD, hydrateDebugLog } from "../lib/debug-log.js";
+hydrateDebugLog();
+debugLog("panel.loaded", { build: DEBUG_BUILD, source: "sidepanel" });
 import { defaultSettings, loadSettings, saveSettings, applyOptionalLocalSettings, resolveModel, isModelReady, isAsrReady, isTtsReady, isSkillsEnabled, presetsFor } from "../lib/storage.js";
 import { streamTurn, testConnection, listRemoteModels, multimodalUserContent, estimateTokens } from "../lib/openai.js";
 import {
@@ -120,6 +121,7 @@ const state = {
   skillsMetaLoading: false,
   skillsMetaError: "",
   sessionId: null,
+  windowId: null,
   sessionCreatedAt: null,
   sessionPages: [],
   histQuery: "",
@@ -2096,6 +2098,37 @@ function persistSession() {
   return persistChain;
 }
 
+function ensureSessionId() {
+  if (!state.sessionId) {
+    state.sessionId = crypto.randomUUID();
+    state.sessionCreatedAt = state.sessionCreatedAt || Date.now();
+  }
+  return state.sessionId;
+}
+
+async function resolveWindowId() {
+  if (Number.isInteger(state.windowId) && state.windowId >= 0) return state.windowId;
+  if (Number.isInteger(state.tab?.windowId) && state.tab.windowId >= 0) {
+    state.windowId = state.tab.windowId;
+    return state.windowId;
+  }
+  try {
+    const win = await chrome.windows?.getCurrent?.();
+    if (Number.isInteger(win?.id) && win.id >= 0) {
+      state.windowId = win.id;
+      return state.windowId;
+    }
+  } catch { /* ignore */ }
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (Number.isInteger(tab?.windowId) && tab.windowId >= 0) {
+      state.windowId = tab.windowId;
+      return state.windowId;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
 async function settleBusy() {
   if (!state.busy) return;
   state.stopIntent = "user";
@@ -2108,10 +2141,7 @@ async function settleBusy() {
 
 async function persistSessionNow() {
   if (!state.messages.some((m) => m.role === "user" && String(m.text || "").trim())) return;
-  if (!state.sessionId) {
-    state.sessionId = crypto.randomUUID();
-    state.sessionCreatedAt = Date.now();
-  }
+  ensureSessionId();
   const page = currentPageMeta();
   if (page) state.sessionPages = mergePage(state.sessionPages, page);
   const saved = await saveSession({
@@ -2121,7 +2151,7 @@ async function persistSessionNow() {
     messages: state.messages,
     run: state.run,
     taskGroupId: state.taskGroupId,
-  });
+  }, { windowId: await resolveWindowId() });
   state.sessionPages = saved.pages;
 }
 
@@ -2276,7 +2306,7 @@ async function startNewSession() {
   state.recordAbort?.abort();
   state.workAbort?.abort();
   abortRecording();
-  await clearActiveId();
+  await clearActiveId(await resolveWindowId());
   state.chatRef = null;
   if ($("input")) $("input").value = "";
   renderAttach();
@@ -2392,7 +2422,7 @@ async function openHistoryItem(id) {
     return;
   }
   applySession(session);
-  await saveSession(session);
+  await saveSession(session, { windowId: await resolveWindowId() });
   setView("chat");
 }
 
@@ -4429,6 +4459,7 @@ async function refreshTab() {
 
   const revision = ++state.pageRevision;
   state.tab = tab || null;
+  if (Number.isInteger(tab?.windowId) && tab.windowId >= 0) state.windowId = tab.windowId;
   if (keepMedia) {
     state.interpret = interpretController.getState(state.mediaTab.id);
     state.originalAudioOn = interpretController.getTask?.(state.mediaTab.id)?.originalAudioOn ?? state.originalAudioOn;
@@ -4771,7 +4802,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     });
 
     loop = createAgentLoop({
-      maxTurns: 12,
+      maxTurns: 0,
       allTools: tools,
       systemPrompt: [systemPrompt(state.settings, { useSkills }), useSkills ? skillCatalogText(skills) : ""].filter(Boolean).join("\n\n"),
       get tools() {
@@ -4794,6 +4825,9 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           sessionOverride,
         });
         if (!req.needsConfirmation) {
+          if (tool.name === "run_shell") {
+            debugLog("hitl.skip", { tool: tool.name, command: args?.command || "", hitlMode });
+          }
           return { allow: true };
         }
 
@@ -4811,10 +4845,12 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           if (audit.verdict === "SAFE") {
             const shortCmd = args?.command ? ` (${String(args.command).slice(0, 24)})` : "";
             showTransientAuditNotice(`🛡️ AI 审查已放行: ${tool.name}${shortCmd}`);
+            debugLog("hitl.audit", { tool: tool.name, command: args?.command || "", verdict: "SAFE", reason: audit.reason });
             return { allow: true, reason: audit.reason, audited: true };
           }
 
           req.reason = `⚠️ AI 审查预警 [${audit.risk.toUpperCase()}]：${audit.reason}，请人工核查！`;
+          debugLog("hitl.audit", { tool: tool.name, command: args?.command || "", verdict: audit.verdict, risk: audit.risk, reason: audit.reason });
         }
 
         return new Promise((resolve) => {
@@ -4824,7 +4860,15 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             reason: req.reason,
             signal,
             timeoutSeconds: state.settings.hitlTimeoutSeconds || 30,
-            onDecision: resolve,
+            onDecision: (decision) => {
+              debugLog("hitl.decision", {
+                tool: tool.name,
+                command: args?.command || "",
+                allow: Boolean(decision?.allow),
+                reason: decision?.reason || req.reason || "",
+              });
+              resolve(decision);
+            },
           });
         });
       },
@@ -4843,16 +4887,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             messages: msgs,
             tools: turnTools,
             signal,
-            onReasoningDelta: (delta) => {
-              if (!botMsg.thinking) botMsg.thinking = "";
-              botMsg.thinking += delta;
-              try {
-                paintBot(botMsg);
-              } catch (err) {
-                console.warn("[pagelens] paintBot", err);
-              }
-              onReasoningDelta?.(delta);
-            },
+            onReasoningDelta,
           }, onTextDelta);
         },
       },
@@ -4886,6 +4921,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     } catch (err) {
       console.error("[pagelens] renderMessages", err);
     }
+    ensureSessionId();
     persistSession();
     result = await loop.run(userText, {
       sessionId: state.sessionId,
@@ -5029,6 +5065,12 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     renderMessages();
     await persistSession();
     console.info("[pagelens] executeLoop done", failed ? "fail" : result?.reason || "ok");
+    debugLog("agent.loop", {
+      reason: failed ? "fail" : result?.reason || "ok",
+      turns: result?.turnsUsed,
+      sessionId: state.sessionId,
+      windowId: state.windowId,
+    });
   }
 }
 
@@ -5051,6 +5093,12 @@ function withTimeout(promise, ms, label) {
 async function sendPrompt(userText, options = {}) {
   const text = String(userText || "").trim();
   console.info("[pagelens] sendPrompt", text.slice(0, 80) || "(empty)");
+  debugLog("prompt.send", {
+    chars: text.length,
+    preview: text.slice(0, 80),
+    sessionId: state.sessionId,
+    windowId: state.windowId,
+  });
   if (!text && !options.image && !state.image) {
     console.warn("[pagelens] sendPrompt empty");
     return;
@@ -5549,7 +5597,10 @@ function bindComposer() {
 
 function wire() {
   messageScroll ||= createMessageScroll($("msgs"), $("btn-messages-bottom"));
-  $("btn-debug-export")?.addEventListener("click", () => downloadText(`pagelens-debug-${Date.now()}.json`, exportDebugLog(), "application/json"));
+  $("btn-debug-export")?.addEventListener("click", async () => {
+    const json = await exportDebugLogFresh();
+    downloadText(`pagelens-debug-${Date.now()}.json`, json, "application/json");
+  });
   bindComposer();
   try {
   on("btn-settings", "click", () => {
@@ -6031,7 +6082,13 @@ async function boot() {
   refreshLibraryStatus().catch((err) => console.warn("[pagelens] library", err));
   refreshNativeHost({ silent: true }).catch(() => {});
   try {
-    const active = await loadActiveSession();
+    await resolveWindowId();
+    const active = await loadActiveSession(state.windowId);
+    debugLog("session.boot", {
+      windowId: state.windowId,
+      sessionId: active?.id || null,
+      restored: Boolean(active?.messages?.length),
+    });
     if (active?.messages?.length) {
       applySession(active);
       renderMessages();

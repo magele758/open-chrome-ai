@@ -5,12 +5,21 @@ import {
   isToolPrivileged,
   checkHitlRequirement,
 } from "../lib/agent/tools.js";
+import {
+  isDirectoryBrowseCommand,
+  isGuiLaunchCommand,
+  isUnboundedFsWalk,
+  shellPolicyBlock,
+} from "../lib/agent/shell-policy.js";
 
 // 1. Test shell whitelist
 assert(isShellCommandWhitelisted("git status") === true, "git status is whitelisted");
 assert(isShellCommandWhitelisted("git log -n 5") === true, "git log is whitelisted");
 assert(isShellCommandWhitelisted("git diff HEAD~1") === true, "git diff is whitelisted");
 assert(isShellCommandWhitelisted("ls -la /tmp") === true, "ls is whitelisted");
+assert(isShellCommandWhitelisted("ls -R /") === false, "recursive ls is not whitelisted");
+assert(isShellCommandWhitelisted("find /") === false, "unbounded find is not whitelisted");
+assert(isShellCommandWhitelisted("find . -maxdepth 1 -type d") === true, "shallow find is whitelisted");
 assert(isShellCommandWhitelisted("pwd") === true, "pwd is whitelisted");
 assert(isShellCommandWhitelisted("cat README.md") === true, "cat is whitelisted");
 assert(isShellCommandWhitelisted("which node") === true, "which is whitelisted");
@@ -22,6 +31,20 @@ assert(isShellCommandWhitelisted("git status && echo pwned") === false, "chainin
 assert(isShellCommandWhitelisted("echo 'hack' > /etc/passwd") === false, "redirection is blocked");
 assert(isShellCommandWhitelisted("$(cat secret)") === false, "subshell is blocked");
 assert(isShellCommandWhitelisted("") === false, "empty is blocked");
+
+assert(isGuiLaunchCommand("open /tmp") === true, "open dir");
+assert(isGuiLaunchCommand("/usr/bin/open -W ~/Downloads") === true, "open -W");
+assert(isGuiLaunchCommand("cd /tmp && open .") === true, "open after cd");
+assert(isGuiLaunchCommand("bash -c 'open /tmp'") === true, "open in bash -c");
+assert(isGuiLaunchCommand("open -- /tmp") === true, "open -- path");
+assert(isGuiLaunchCommand("echo open") === false, "echo open is not a launcher");
+assert(isUnboundedFsWalk("find /") === true, "find /");
+assert(isUnboundedFsWalk("bash -c 'ls -R ~'") === true, "wrapped ls -R");
+assert(isUnboundedFsWalk("du /") === true, "du /");
+assert(isUnboundedFsWalk("find . -maxdepth 2") === false, "shallow find ok");
+assert(isDirectoryBrowseCommand("ls /opt") === true, "ls is browse");
+assert(shellPolicyBlock("open /tmp").startsWith("已拦截"), "policy blocks open");
+assert(shellPolicyBlock("echo hi") === "", "echo allowed by policy");
 
 // 2. Test privileged tool checks
 assert(isToolPrivileged("run_shell") === true, "run_shell is privileged");

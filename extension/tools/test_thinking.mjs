@@ -146,4 +146,57 @@ import { createAgentLoop } from '../lib/agent/loop.js';
   }
 }
 
+// 4. Sidepanel host must pass reasoning through once (no append-then-forward).
+{
+  const sseResponse = (chunks) => new Response(
+    new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+        controller.close();
+      },
+    }),
+    { headers: { "Content-Type": "text/event-stream" } },
+  );
+
+  const model = { baseUrl: "https://mock.test/v1", model: "mock", apiKey: "mock" };
+  const originalFetch = globalThis.fetch;
+
+  try {
+    globalThis.fetch = async () => sseResponse([
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "先看标题" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "再看导航" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "结论" }, finish_reason: "stop" }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ]);
+
+    const botMsg = { thinking: "" };
+    const loop = createAgentLoop({
+      systemPrompt: "test",
+      tools: [],
+      model: {
+        async runTurn({ messages, tools, signal, onTextDelta, onReasoningDelta }) {
+          return streamTurn(model, {
+            messages,
+            tools,
+            signal,
+            onReasoningDelta,
+          }, onTextDelta);
+        },
+      },
+    });
+
+    await loop.run("请分析", {
+      onReasoningDelta: (delta) => {
+        if (!botMsg.thinking) botMsg.thinking = "";
+        botMsg.thinking += delta;
+      },
+    });
+
+    assert.equal(botMsg.thinking, "先看标题再看导航");
+    console.log("PASS sidepanel reasoning host pass-through");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 console.log("ALL THINKING TESTS PASSED!");

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { debugLog, debugId, exportDebugLog } from '../lib/debug-log.js';
+import { debugLog, debugId, exportDebugLog, DEBUG_LIMIT } from '../lib/debug-log.js';
 const original = console.info;
 const printed = [];
 console.info = (...args) => printed.push(args);
@@ -14,11 +14,13 @@ try {
   assert(saved.includes('优优独播剧场'), 'keep diagnostic ASR text');
   assert.equal(printed[0][0], '[PageLens debug]');
   assert.equal(JSON.parse(printed[0][1]).event, 'test');
-  for (let i = 0; i < 620; i++) debugLog('bounded', { i, text: 'x'.repeat(5000) });
+  for (let i = 0; i < DEBUG_LIMIT + 20; i++) debugLog('translation.raw', { i, text: 'x'.repeat(5000) });
+  debugLog('agent.tool', { name: 'run_shell', command: 'ls /tmp' });
   const log = JSON.parse(exportDebugLog());
-  assert.equal(log.entries.length, 600);
-  assert.equal(log.entries[0].i, 20);
-  assert(log.entries[0].text.length < 4050);
+  assert.equal(log.entries.length, DEBUG_LIMIT);
+  assert.ok(log.counts, 'export includes event counts');
+  assert.ok(log.entries.some((e) => e.event === 'agent.tool'), 'prefer keeping agent events over media flood');
+  assert(log.entries.find((e) => e.event === 'translation.raw').text.length < 4050);
   console.info = () => { throw new Error('broken console'); };
   assert.doesNotThrow(() => debugLog('still-safe'));
 } finally { console.info = original; }

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - 下载的字幕和转写稿改为写入 `~/.cache/pagelens-docs`，不再自动落到 Obsidian 文稿文件夹。
 - 文本模型改为多服务商：可新增多个 OpenAI 兼容 Provider、扫描/手填模型、勾选可选模型，并在对话底部切换。
+- `run_shell` 拦访达 / 递归扫盘：整串匹配（含 `bash -c`、`/usr/bin/open`），换目录 `ls` 满 8 次或连续拦截 3 次后强制收束。
 
 ### Added
 - **一键剪藏至 Obsidian 独立卡片与 Chrome 书签联动 (Clippings & Footprint Recall)**:

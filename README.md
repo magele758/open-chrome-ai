@@ -559,10 +559,10 @@ node extension/tools/test_video_pick.mjs
 
 点播配音的缓冲、声音分析、缓存和回归测试见 [点播中文配音 v2](docs/planned-interpret.md)。重复识别保留原音频重试；仍无法确认时报告失败，保留已经完成的处理结果，不把失败段算成可播放缓存。
 
-### 视频调试日志
+### 调试日志
 
-重新加载扩展并重新打开侧栏后，点击顶部「日志」可下载本次侧栏的 JSON 日志；也可右键侧栏空白处选择「检查」，在 Console 中筛选 `[PageLens debug]`。日志默认启用，仅在本次页面内存中保留最近 600 条，关闭或刷新侧栏会清空；长文本最多保留 4000 字符，数组最多 30 项。
+点击顶部「日志」下载 JSON。同一 Chrome 会话内会写入 `chrome.storage.session`，刷新侧栏不会丢；最多保留 1200 条，同传类事件优先被挤掉，对话 / `run_shell` / HITL 优先留下。也可右键侧栏「检查」，Console 筛选 `[PageLens debug]`。
 
-复现问题后、刷新页面前导出。用 `runId` 和 `chunk` 对齐同一音频片段：`audio.chunk` 是时间位置、格式和大小，`asr.result` 是识别原文，`translation.raw` 是模型返回的译文，`translation.bypass` 表示中文原文直接显示，`interpret.line` 是实际展示内容，`interpret.chunk-error` 是跳过原因。`tts.request/ready/error` 记录配音处理；`transcript.*` 区分完整音轨提取与缓存。`panel.loaded` 的 build 可确认是否加载了日志版本。
+`build` 为 `agent-debug-v1` 才是补全后的版本。看 `counts` 先确认记了哪些事件：`prompt.send`、`agent.turn`、`agent.model`、`agent.tool`、`agent.shell`、`agent.end`、`hitl.*`、`model.*`、`session.boot`。同传仍用 `runId` / `chunk` 对齐 `audio.chunk`、`asr.result`、`translation.*`、`interpret.line`。
 
-日志含识别文字和译文，不保存音频、密钥或请求头，也不会自动上传。
+日志含识别文字、命令摘要和工具预览，不保存音频、密钥或请求头，也不会自动上传。

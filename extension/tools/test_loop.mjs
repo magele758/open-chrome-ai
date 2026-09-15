@@ -1,4 +1,4 @@
-import { createAgentLoop } from "../lib/agent/loop.js";
+import { createAgentLoop, resolveMaxTurns, MAX_TURNS } from "../lib/agent/loop.js";
 
 const events = [];
 const loop = createAgentLoop({
@@ -96,3 +96,94 @@ const stopped = await boundary.run('stop', { signal: abort.signal });
 assert.equal(stopped.reason, 'abort');
 assert.equal(modelCalls, 3);
 console.log('PASS bounded final answer, malformed final output, and abort');
+
+assert.equal(resolveMaxTurns(), MAX_TURNS);
+assert.equal(resolveMaxTurns(12), 12);
+assert.equal(resolveMaxTurns(0), Infinity);
+assert.equal(resolveMaxTurns(-1), Infinity);
+assert.equal(resolveMaxTurns(Infinity), Infinity);
+
+let uncappedCalls = 0;
+const uncapped = createAgentLoop({
+  maxTurns: 0,
+  systemPrompt: "test",
+  tools: [{ name: "extract_page", execute: async () => "OK" }],
+  model: {
+    async runTurn({ tools }) {
+      uncappedCalls += 1;
+      if (uncappedCalls < 15) {
+        assert.ok(tools.length, "unlimited must keep tools open");
+        return { content: "", toolCalls: [{ id: `u${uncappedCalls}`, name: "extract_page", arguments: "{}" }] };
+      }
+      return { content: "done after 15", toolCalls: [] };
+    },
+  },
+});
+const free = await uncapped.run("go");
+assert.equal(free.reason, "stop");
+assert.equal(free.text, "done after 15");
+assert.equal(uncappedCalls, 15);
+assert.doesNotMatch(free.text, /轮次上限/);
+console.log("PASS unlimited turns keep tools open");
+
+let repeatExec = 0;
+let repeatTurns = 0;
+const repeater = createAgentLoop({
+  maxTurns: 0,
+  systemPrompt: "test",
+  tools: [{ name: "extract_page", execute: async () => { repeatExec += 1; return "PAGE"; } }],
+  model: {
+    async runTurn() {
+      repeatTurns += 1;
+      if (repeatTurns >= 4) return { content: "done", toolCalls: [] };
+      return { content: "", toolCalls: [{ id: `r${repeatTurns}`, name: "extract_page", arguments: "{}" }] };
+    },
+  },
+});
+const repeated = await repeater.run("again");
+assert.equal(repeatExec, 2, "third identical call must not execute");
+assert.equal(repeated.history.filter((m) => m.role === "tool" && /重复/.test(m.content || "")).length, 1);
+console.log("PASS repeat tool-call circuit breaker");
+
+let openTurns = 0;
+let sawForcedClose = false;
+const opener = createAgentLoop({
+  maxTurns: 0,
+  systemPrompt: "test",
+  tools: [{ name: "run_shell", execute: async () => { throw new Error("open must not run"); } }],
+  model: {
+    async runTurn({ tools }) {
+      openTurns += 1;
+      if (openTurns >= 4) {
+        assert.equal(tools.length, 0, "blocked shell streak must close tools");
+        sawForcedClose = true;
+        return { content: "ok I will stop", toolCalls: [] };
+      }
+      return { content: "", toolCalls: [{ id: `o${openTurns}`, name: "run_shell", arguments: JSON.stringify({ command: `open /tmp/dir${openTurns}` }) }] };
+    },
+  },
+});
+const opened = await opener.run("看一下目录");
+assert.equal(sawForcedClose, true);
+assert.ok(opened.history.filter((m) => m.role === "tool" && /已拦截/.test(m.content || "")).length >= 3);
+console.log("PASS blocked open streak forces answer");
+
+let lsExec = 0;
+let lsTurns = 0;
+const walker = createAgentLoop({
+  maxTurns: 0,
+  systemPrompt: "test",
+  tools: [{ name: "run_shell", execute: async () => { lsExec += 1; return "ok"; } }],
+  model: {
+    async runTurn({ tools }) {
+      lsTurns += 1;
+      assert.ok(lsTurns < 20, "dir browse must not spin forever");
+      if (!tools.length) return { content: "enough", toolCalls: [] };
+      return { content: "", toolCalls: [{ id: `l${lsTurns}`, name: "run_shell", arguments: JSON.stringify({ command: `ls /tmp/p${lsTurns}` }) }] };
+    },
+  },
+});
+const walked = await walker.run("列目录");
+assert.equal(lsExec, 8, "ninth distinct ls must not execute");
+assert.ok(walked.history.some((m) => /列目录已/.test(m.content || "")));
+console.log("PASS directory browse budget");

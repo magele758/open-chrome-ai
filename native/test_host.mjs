@@ -31,6 +31,9 @@ assert(empty.ok === false && /不能为空/.test(empty.error), "empty command");
 const rel = await execCommand({ command: "echo x", cwd: "tmp" });
 assert(rel.ok === false && /绝对路径/.test(rel.error), "cwd relative");
 
+const blockedOpen = await execCommand({ command: "open /tmp" });
+assert(blockedOpen.ok === false && /已拦截/.test(blockedOpen.error), "block open");
+
 const echo = await execCommand({ command: "echo pagelens-host-ok", cwd: os.tmpdir() });
 assert(echo.ok && echo.code === 0 && /pagelens-host-ok/.test(echo.stdout), "echo: " + echo.stdout);
 assert(echo.cwd === path.resolve(os.tmpdir()), "cwd resolved");

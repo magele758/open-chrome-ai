@@ -9,6 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { shellPolicyBlock } from "../extension/lib/agent/shell-policy.js";
 import {
   expandUserPath,
   fileExt,
@@ -85,6 +86,8 @@ export function execCommand({ command, cwd, timeoutMs } = {}) {
   const cmd = String(command || "").trim();
   if (!cmd) return Promise.resolve({ ok: false, error: "command 不能为空。" });
   if (cmd.length > MAX_COMMAND) return Promise.resolve({ ok: false, error: "command 过长。" });
+  const blocked = shellPolicyBlock(cmd);
+  if (blocked) return Promise.resolve({ ok: false, error: blocked });
 
   let workdir;
   try {
