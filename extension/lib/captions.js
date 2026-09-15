@@ -3,6 +3,7 @@ import { injectVideo, restrictedUrl } from "./chrome.js";
 import { loadSettings } from "./storage.js";
 import { acquireFullTranscript } from "./full-transcript.js";
 import { readVideoDocFromLibrary, syncPackToLibrary, videoIdentity } from "./library.js";
+import { interpretSourceUrls } from "./media-url.js";
 import { idbDel, idbGet, idbSet } from "./idb-kv.js";
 
 export { videoIdentity };
@@ -144,8 +145,7 @@ export async function transcribeTab({ tabId, settings, force = false, onProgress
   const media = await injectVideo(tabId, "media").catch(() => null);
   if (media?.live) throw new Error("直播尚未结束，暂时无法获取完整音轨。");
   const formatted = await acquireFullTranscript({
-    url: tab.url,
-    mediaUrl: !/youtube\.com|youtu\.be|bilibili\.com/i.test(tab.url) && /^https?:/.test(media?.src || '') ? media.src : undefined,
+    ...interpretSourceUrls({ pageUrl: tab.url, mediaSrc: media?.src, audioSrc: media?.audioSrc }),
     asr: settings?.asr || (await loadSettings()).asr,
     signal, onProgress,
   });

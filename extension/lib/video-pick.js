@@ -316,8 +316,26 @@ export function plVideo(cmd, arg) {
     return { ok: true, currentTime: el.currentTime, duration: el.duration, index: idx, count: all.length };
   }
   if (cmd === "media") {
+    const src = el.currentSrc || el.src || "";
+    const seen = [src];
+    for (const node of document.querySelectorAll("video, audio, source")) {
+      const href = node.currentSrc || node.src;
+      if (href) seen.push(href);
+    }
+    try {
+      for (const entry of performance.getEntriesByType("resource")) {
+        if (entry.name) seen.push(entry.name);
+      }
+    } catch {
+      /* ignore */
+    }
+    const audioSrc = seen.find((href) =>
+      /video\.twimg\.com\/.*\/(?:aud|audio)\//i.test(href) ||
+      /video\.twimg\.com\/.*\/vid\/mp4a\//i.test(href)
+    ) || "";
     return {
-      src: el.currentSrc || el.src || "",
+      src,
+      audioSrc,
       duration: Number.isFinite(el.duration) ? el.duration : null,
       live: el.duration === Infinity,
     };

@@ -91,7 +91,10 @@ class MediaTest(unittest.TestCase):
                 job1 = {'dir': out1, 'cancel': threading.Event(), 'process': None}
                 helper.extract(job1, target_url, None)
                 self.assertEqual(job1['status'], 'ready')
-                self.assertTrue(any(Path(cache_dir).iterdir()), 'Cache should be populated')
+                cached = [p for p in Path(cache_dir).iterdir() if p.is_dir()]
+                self.assertEqual(len(cached), 1)
+                self.assertRegex(cached[0].name, r'^127-test_video-p2-[0-9a-f]{8}$')
+                self.assertEqual((cached[0] / 'source.txt').read_text(encoding='utf-8').strip(), target_url)
 
                 # Second extract should hit cache even if server is shut down!
                 server.shutdown()
@@ -164,6 +167,38 @@ class TranscriptTest(unittest.TestCase):
             'zh-Hans': [{'ext': 'vtt', 'url': 'https://fixture.test/zh'}]
         }
         self.assertEqual(helper.pick_sub_track_list(mixed_dict)[0]['url'], 'https://fixture.test/zh')
+
+    def test_cache_entry_name_is_readable(self):
+        self.assertEqual(helper.cache_label('https://www.youtube.com/watch?v=abcdefghijk'), 'youtube-abcdefghijk')
+        self.assertEqual(helper.cache_label('https://youtu.be/abcdefghijk'), 'youtube-abcdefghijk')
+        self.assertEqual(helper.cache_label('https://x.com/someone/status/1234567890123456789'), 'x-1234567890123456789')
+        self.assertEqual(
+            helper.cache_label('https://video.twimg.com/amplify_video/1234567890123456789/vid/avc1/1924x1080/clip.mp4'),
+            'x-1234567890123456789',
+        )
+        self.assertEqual(helper.cache_label('https://www.bilibili.com/video/BV1xx411c7mD'), 'bilibili-BV1xx411c7mD')
+        self.assertEqual(helper.cache_label('https://www.youtube.com/shorts/abcdefghijk'), 'youtube-abcdefghijk')
+        orig = helper.PART_SECONDS
+        helper.PART_SECONDS = 300
+        try:
+            name = helper.cache_entry_name('https://www.youtube.com/watch?v=abcdefghijk')
+            self.assertRegex(name, r'^youtube-abcdefghijk-p300-[0-9a-f]{8}$')
+        finally:
+            helper.PART_SECONDS = orig
+
+    def test_twitter_prefers_direct_twimg_file(self):
+        video_only = 'https://video.twimg.com/amplify_video/1234567890123456789/vid/avc1/1924x1080/clip.mp4?tag=29'
+        tweet = 'https://x.com/someone/status/1234567890123456789'
+        status = 'https://x.com/i/status/1234567890123456789'
+        self.assertTrue(helper.is_twimg_url(video_only))
+        self.assertEqual(helper.resolve_download_target(tweet, video_only), video_only)
+        self.assertEqual(helper.resolve_download_target(video_only, video_only), video_only)
+        self.assertEqual(helper.download_targets(tweet, video_only)[0], video_only)
+        self.assertIn(status, helper.download_targets(tweet, video_only))
+        self.assertEqual(
+            helper.resolve_download_target('https://www.youtube.com/watch?v=abcdefghijk', 'https://rr1.googlevideo.com/videoplayback'),
+            'https://www.youtube.com/watch?v=abcdefghijk',
+        )
 
 
 if __name__ == '__main__':

@@ -11,6 +11,7 @@ import { validateAnalysis, recognitionWindows, translationBatches, validateDubTr
 import { dubKey, readDubCache, writeDubCache, pruneDubCache, createVideoDubCache } from './dub-cache.js';
 import { composeCompactDubTrack, composeFullDubTrack, saveFullMediaArchive } from './audio-composer.js';
 import { videoIdentity } from './library.js';
+import { interpretSourceUrls } from './media-url.js';
 import { prepareSpeakerReference } from './interpret-reference.js';
 import { stripSubtitleDirections } from './subtitle-text.js';
 import { retryInterpretRequest } from './interpret-retry.js';
@@ -320,7 +321,7 @@ export async function runPlannedInterpret(opts) {
       })().catch(error => { productionError = error; controller.abort(); });
     }
     const media = await video('media');
-    source = await (opts.openSource || openInterpretSource)({ url: opts.sourceUrl, mediaUrl: /^https?:/.test(media?.src || '') ? media.src : undefined, signal, onProgress: p => status(p.hint) });
+    source = await (opts.openSource || openInterpretSource)({ ...interpretSourceUrls({ pageUrl: opts.sourceUrl, mediaSrc: media?.src, audioSrc: media?.audioSrc }), signal, onProgress: p => status(p.hint) });
     if (media?.duration > 0 && Math.abs(source.duration - media.duration) > 3) throw new Error('音轨与播放器时长不一致');
     const hasSubtitles = Boolean(source.subtitles?.length);
     if (!hasSubtitles && !isAsrReady(settings.asr)) throw new Error('当前视频未检测到字幕，请先配置语音识别（ASR）。');

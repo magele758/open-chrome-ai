@@ -6,3 +6,6 @@ extension/apply-local.html
 .cursor/
 __pycache__/
 *.pyc
+
+# 私人使用方案 / 待办，不入库
+TODO.private.md

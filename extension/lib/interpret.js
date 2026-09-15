@@ -19,6 +19,7 @@ import { createSemanticBuffer, withInterpretDeadline, unfinishedSpeech, validate
 import { createInterpretContext } from "./interpret-context.js";
 import { blobToWav, synthesizeTts } from "./tts.js";
 import { videoIdentity } from "./library.js";
+import { interpretSourceUrls } from "./media-url.js";
 import { composeFullDubTrack, saveFullMediaArchive } from "./audio-composer.js";
 
 export const CHUNK_SECONDS = 5;
@@ -1061,7 +1062,7 @@ export async function runInterpret(opts) {
       if (!systemHold) await holdForSystem(HOLD_OPENING);
       const media = await injectVideo(tabId, "media");
       source = await (opts.openSource || openInterpretSource)({
-        url: opts.sourceUrl, mediaUrl: /^https?:/.test(media?.src || '') ? media.src : undefined,
+        ...interpretSourceUrls({ pageUrl: opts.sourceUrl, mediaSrc: media?.src, audioSrc: media?.audioSrc }),
         signal, onProgress: p => status(p.hint || "正在准备独立音轨…"),
       });
       if (media?.duration > 0 && Math.abs(source.duration - media.duration) > 3) {

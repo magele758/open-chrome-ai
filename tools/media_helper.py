@@ -18,7 +18,7 @@ import uuid
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 JOBS = {}
 LOCK = threading.RLock()
@@ -28,7 +28,9 @@ SERVICE = 'pagelens-media'
 CONDA_ENV = 'pagelens-media'
 PORT = DEFAULT_PORT
 CACHE_DIR = Path.home() / '.cache' / SERVICE
+CACHE_RESERVED_NAMES = {'analysis'}
 CACHE_MAX_AGE_SECONDS = 7 * 86400
+CACHE_LABEL_RE = re.compile(r'[^a-zA-Z0-9._-]+')
 
 
 def log_event(data):
@@ -199,31 +201,80 @@ def downloader_args():
     return args
 
 
+def expire_cache_item(item, now):
+    if not item.is_dir() or item.name in CACHE_RESERVED_NAMES:
+        return
+    meta_file = item / 'meta.json'
+    if meta_file.is_file():
+        try:
+            meta = json.loads(meta_file.read_text(encoding='utf-8'))
+            cached_at = meta.get('cached_at', 0)
+            if now - cached_at > CACHE_MAX_AGE_SECONDS:
+                shutil.rmtree(item, ignore_errors=True)
+        except Exception:
+            shutil.rmtree(item, ignore_errors=True)
+        return
+    try:
+        if now - item.stat().st_mtime > 3600:
+            shutil.rmtree(item, ignore_errors=True)
+    except Exception:
+        pass
+
+
 def clean_cache():
     if not CACHE_DIR.is_dir():
         return
     now = time.time()
     try:
         for item in CACHE_DIR.iterdir():
-            if not item.is_dir():
-                continue
-            meta_file = item / 'meta.json'
-            if meta_file.is_file():
-                try:
-                    meta = json.loads(meta_file.read_text(encoding='utf-8'))
-                    cached_at = meta.get('cached_at', 0)
-                    if now - cached_at > CACHE_MAX_AGE_SECONDS:
-                        shutil.rmtree(item, ignore_errors=True)
-                except Exception:
-                    shutil.rmtree(item, ignore_errors=True)
-            else:
-                try:
-                    if now - item.stat().st_mtime > 3600:
-                        shutil.rmtree(item, ignore_errors=True)
-                except Exception:
-                    pass
+            expire_cache_item(item, now)
     except Exception:
         pass
+
+
+def safe_cache_token(text, max_len=48):
+    token = CACHE_LABEL_RE.sub('-', str(text or '')).strip('-._')
+    token = re.sub(r'-{2,}', '-', token)
+    return (token[:max_len] or 'media').strip('-._')
+
+
+def cache_label(target):
+    parsed = urlparse(target or '')
+    host = (parsed.hostname or '').removeprefix('www.').lower()
+    path = parsed.path or ''
+    query = parse_qs(parsed.query)
+
+    if host in ('youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'):
+        vid = path.strip('/').split('/')[0] if host == 'youtu.be' else (query.get('v') or [''])[0]
+        if not vid:
+            match = re.search(r'/(?:shorts|live|embed|v)/([^/?#]+)', path)
+            vid = match.group(1) if match else ''
+        if vid:
+            return f'youtube-{safe_cache_token(vid, 20)}'
+
+    if host in ('x.com', 'twitter.com') or host.endswith('twimg.com'):
+        match = re.search(r'/status/(\d+)', twitter_status_url(target) or target)
+        if match:
+            return f'x-{match.group(1)}'
+
+    if host == 'bilibili.com' or host.endswith('.bilibili.com'):
+        match = re.search(r'/video/(BV[\w]+|av\d+)', path, re.I)
+        if match:
+            return f'bilibili-{safe_cache_token(match.group(1), 20)}'
+
+    slug = path.rstrip('/').rsplit('/', 1)[-1] or 'page'
+    slug = slug.rsplit('.', 1)[0]
+    host_short = host.split('.')[0] if host else 'media'
+    return safe_cache_token(f'{host_short}-{slug}', 48)
+
+
+def cache_entry_name(target):
+    digest = hashlib.sha256(f'{target}_{PART_SECONDS}'.encode('utf-8')).hexdigest()[:8]
+    return f'{cache_label(target)}-p{PART_SECONDS}-{digest}'
+
+
+def cache_entry_dir(target):
+    return CACHE_DIR / cache_entry_name(target)
 
 
 TRAILING_CONNECTORS = {
@@ -418,68 +469,169 @@ def fetch_subtitles(job, target, info, root):
     return []
 
 
+TWIMG_VIDEO_ONLY = re.compile(r'video\.twimg\.com/.*/vid/(?:avc1|hev1|hvc1|vp9|av01)/', re.I)
+TWIMG_STATUS_ID = re.compile(r'video\.twimg\.com/(?:amplify_video|ext_tw_video|tweet_video)/(\d+)', re.I)
+PAGE_ONLY_HOSTS = {
+    'youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be',
+    'bilibili.com',
+}
+
+
+def is_twimg_video_only(url):
+    return bool(TWIMG_VIDEO_ONLY.search(url or ''))
+
+
+def is_twimg_url(url):
+    host = (urlparse(url or '').hostname or '').lower()
+    return host == 'video.twimg.com' or host.endswith('.twimg.com')
+
+
+def twitter_status_url(url):
+    parsed = urlparse(url or '')
+    host = (parsed.hostname or '').removeprefix('www.')
+    if host in ('x.com', 'twitter.com'):
+        match = re.search(r'/status/(\d+)', parsed.path or '')
+        if match:
+            return f'https://x.com/i/status/{match.group(1)}'
+    match = TWIMG_STATUS_ID.search(url or '')
+    return f'https://x.com/i/status/{match.group(1)}' if match else ''
+
+
+def download_targets(url, media_url):
+    page = url or ''
+    media = media_url or ''
+    host = (urlparse(page or media).hostname or '').removeprefix('www.')
+    if host.endswith('.bilibili.com'):
+        host = 'bilibili.com'
+    if host in PAGE_ONLY_HOSTS and page:
+        return [page]
+    ordered = []
+
+    def add(item):
+        if item and item not in ordered:
+            ordered.append(item)
+
+    if is_twimg_url(media):
+        add(media)
+    if is_twimg_url(page):
+        add(page)
+    add(media)
+    add(page)
+    add(twitter_status_url(page) or twitter_status_url(media))
+    return ordered
+
+
+def resolve_download_target(url, media_url):
+    targets = download_targets(url, media_url)
+    return targets[0] if targets else (media_url or url or '')
+
+
+def has_audio_stream(job, path):
+    data = json.loads(run(job, [
+        executable('ffprobe'), '-v', 'error', '-select_streams', 'a',
+        '-show_entries', 'stream=index', '-of', 'json', str(path),
+    ]))
+    return bool(data.get('streams'))
+
+
+def apply_extract_cache(job, target, root):
+    target_cache_dir = cache_entry_dir(target)
+    meta_file = target_cache_dir / 'meta.json'
+    if not meta_file.is_file():
+        return False
+    try:
+        meta = json.loads(meta_file.read_text(encoding='utf-8'))
+        cached_parts = meta.get('parts', [])
+        cached_duration = float(meta.get('duration', 0))
+        cached_subtitles = meta.get('subtitles')
+        if job.get('purpose') == 'transcript' and cached_subtitles and cached_duration > 0:
+            job.update(status='ready', duration=cached_duration, subtitles=cached_subtitles, parts=[])
+            return True
+        if (
+            cached_duration > 0
+            and cached_parts
+            and meta.get('part_seconds') == PART_SECONDS
+            and all((target_cache_dir / f"part-{p['index']:05d}.wav").is_file() for p in cached_parts)
+        ):
+            if not cached_subtitles:
+                try:
+                    info = json.loads(run(job, downloader_args() + ['--skip-download', '--dump-single-json', '--', target]))
+                    healed_subs = fetch_subtitles(job, target, info, root)
+                    if healed_subs:
+                        cached_subtitles = healed_subs
+                        meta['subtitles'] = healed_subs
+                        meta_file.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+                except Exception:
+                    pass
+            for part in cached_parts:
+                src_part = target_cache_dir / f"part-{part['index']:05d}.wav"
+                dst_part = root / f"part-{part['index']:05d}.wav"
+                try:
+                    os.link(src_part, dst_part)
+                except OSError:
+                    shutil.copyfile(src_part, dst_part)
+            job.update(status='ready', duration=cached_duration, parts=cached_parts, subtitles=cached_subtitles)
+            log_event({'event': 'media.cache-hit', 'target': target, 'duration': cached_duration})
+            return True
+    except Exception:
+        shutil.rmtree(target_cache_dir, ignore_errors=True)
+    return False
+
+
+def probe_media(job, target):
+    info = json.loads(run(job, downloader_args() + ['--skip-download', '--dump-single-json', '--', target]))
+    if info.get('is_live') or info.get('live_status') in ('is_live', 'is_upcoming', 'post_live'):
+        raise RuntimeError('直播尚未形成完整媒体文件，暂时无法生成完整文稿。')
+    if info.get('_type') in ('playlist', 'multi_video'):
+        raise RuntimeError('请打开单个视频页面再提取完整文稿。')
+    return info
+
+
+def download_source_file(job, target, root):
+    for leftover in root.glob('source.*'):
+        leftover.unlink(missing_ok=True)
+    run(job, downloader_args() + ['-f', 'bestaudio/best', '--no-part', '-o', str(root / 'source.%(ext)s'), '--', target])
+    files = list(root.glob('source.*'))
+    if len(files) != 1:
+        raise RuntimeError('未找到完整音轨。')
+    return files[0]
+
+
 def extract(job, url, media_url):
     try:
-        target = media_url or url
+        candidates = download_targets(url, media_url)
+        if not candidates:
+            raise RuntimeError('未找到可下载的媒体地址。')
         root = Path(job['dir'])
-        target_hash = hashlib.sha256(f'{target}_{PART_SECONDS}'.encode('utf-8')).hexdigest()[:24]
-        target_cache_dir = CACHE_DIR / target_hash
-        meta_file = target_cache_dir / 'meta.json'
+        for cached_target in candidates:
+            if apply_extract_cache(job, cached_target, root):
+                return
 
-        if meta_file.is_file():
-            try:
-                meta = json.loads(meta_file.read_text(encoding='utf-8'))
-                cached_parts = meta.get('parts', [])
-                cached_duration = float(meta.get('duration', 0))
-                cached_subtitles = meta.get('subtitles')
-                if job.get('purpose') == 'transcript' and cached_subtitles and cached_duration > 0:
-                    job.update(status='ready', duration=cached_duration, subtitles=cached_subtitles, parts=[])
-                    return
-                if (
-                    cached_duration > 0
-                    and cached_parts
-                    and meta.get('part_seconds') == PART_SECONDS
-                    and all((target_cache_dir / f"part-{p['index']:05d}.wav").is_file() for p in cached_parts)
-                ):
-                    # Self-heal stale empty subtitle cache if subtitles can be fetched
-                    if not cached_subtitles:
-                        try:
-                            info = json.loads(run(job, downloader_args() + ['--skip-download', '--dump-single-json', '--', target]))
-                            healed_subs = fetch_subtitles(job, target, info, root)
-                            if healed_subs:
-                                cached_subtitles = healed_subs
-                                meta['subtitles'] = healed_subs
-                                meta_file.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
-                        except Exception:
-                            pass
-                    for p in cached_parts:
-                        src_part = target_cache_dir / f"part-{p['index']:05d}.wav"
-                        dst_part = root / f"part-{p['index']:05d}.wav"
-                        try:
-                            os.link(src_part, dst_part)
-                        except OSError:
-                            shutil.copyfile(src_part, dst_part)
-                    job.update(status='ready', duration=cached_duration, parts=cached_parts, subtitles=cached_subtitles)
-                    log_event({'event': 'media.cache-hit', 'target': target, 'duration': cached_duration})
-                    return
-            except Exception:
-                shutil.rmtree(target_cache_dir, ignore_errors=True)
-
-        base = downloader_args()
         job['status'] = 'extracting'
-        # A selected direct source avoids accidentally downloading another video on a multi-video page.
-        info = json.loads(run(job, base + ['--skip-download', '--dump-single-json', '--', target]))
-        if info.get('is_live') or info.get('live_status') in ('is_live', 'is_upcoming', 'post_live'):
-            raise RuntimeError('直播尚未形成完整媒体文件，暂时无法生成完整文稿。')
-        if info.get('_type') in ('playlist', 'multi_video'):
-            raise RuntimeError('请打开单个视频页面再提取完整文稿。')
+        info = None
+        target = None
+        last_error = None
+        for candidate in candidates:
+            if job['cancel'].is_set():
+                return
+            try:
+                info = probe_media(job, candidate)
+                target = candidate
+                break
+            except Exception as exc:
+                last_error = exc
+                if '直播' in str(exc) or '单个视频' in str(exc):
+                    raise
+                log_event({'event': 'media.target-fallback', 'stage': 'probe', 'reason': str(exc)})
+        if not target:
+            raise last_error or RuntimeError('媒体提取失败：链接已失效或格式不受支持。请更新 yt-dlp 后重试。')
+
         expected = float(info.get('duration') or 0)
         if expected > 0:
             job['duration'] = expected
         if job['cancel'].is_set():
             return
 
-        # Fast subtitle extraction
         subtitles = fetch_subtitles(job, target, info, root)
         if subtitles:
             job['subtitles'] = subtitles
@@ -488,10 +640,28 @@ def extract(job, url, media_url):
                 job.update(status='ready', parts=[])
                 return
         job['status'] = 'downloading'
-        run(job, base + ['-f', 'bestaudio/best', '--no-part', '-o', str(root / 'source.%(ext)s'), '--', target])
-        files = list(root.glob('source.*'))
-        if len(files) != 1:
-            raise RuntimeError('未找到完整音轨。')
+        source = None
+        download_error = None
+        for candidate in [target, *[item for item in candidates if item != target]]:
+            if job['cancel'].is_set():
+                return
+            try:
+                source = download_source_file(job, candidate, root)
+                if has_audio_stream(job, source):
+                    target = candidate
+                    break
+                source.unlink(missing_ok=True)
+                source = None
+                download_error = RuntimeError('这条视频没有可用人声音轨，无法截取音色参考。')
+            except Exception as exc:
+                download_error = exc
+                for leftover in root.glob('source.*'):
+                    leftover.unlink(missing_ok=True)
+                log_event({'event': 'media.target-fallback', 'stage': 'download', 'reason': str(exc)})
+                source = None
+        if source is None:
+            raise download_error or RuntimeError('未找到完整音轨。')
+        files = [source]
         actual = duration(job, files[0])
         if actual <= 0 or (expected and abs(actual - expected) > max(3, expected * .01)):
             raise RuntimeError('下载时长与完整视频不一致，已停止，未保存为完整文稿。')
@@ -508,18 +678,22 @@ def extract(job, url, media_url):
 
         # Save to persistent cache
         try:
+            target_cache_dir = cache_entry_dir(target)
             target_cache_dir.mkdir(parents=True, exist_ok=True)
             for path in root.glob('part-*.wav'):
                 shutil.copyfile(path, target_cache_dir / path.name)
             meta = {
                 'url': url,
                 'media_url': media_url,
+                'target': target,
+                'label': cache_label(target),
                 'duration': actual,
                 'parts': parts,
                 'part_seconds': PART_SECONDS,
                 'cached_at': time.time(),
                 'subtitles': subtitles,
             }
+            (target_cache_dir / 'source.txt').write_text(f'{target}\n', encoding='utf-8')
             (target_cache_dir / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
         except Exception:
             pass
