@@ -1,3 +1,5 @@
+import { modelsUrl, parseRemoteModelList } from "./text-providers.js";
+
 function trimSlash(url) {
   return String(url || "").trim().replace(/\/+$/, "");
 }
@@ -273,6 +275,39 @@ export async function testConnection(model) {
     return { ok: true, ms: Date.now() - started, preview: content.slice(0, 80) };
   } catch (err) {
     if (err?.name === "AbortError") throw new Error("连接超时（20s）");
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function listRemoteModels(model, { timeoutMs = 15000 } = {}) {
+  const url = modelsUrl(model.baseUrl);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = Date.now();
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: headersFor(model).Authorization,
+      },
+      signal: controller.signal,
+    });
+    const body = await response.text();
+    if (!response.ok) throw new Error(body.slice(0, 240) || `HTTP ${response.status}`);
+    let payload = {};
+    try {
+      payload = body ? JSON.parse(body) : {};
+    } catch {
+      throw new Error("模型列表不是 JSON");
+    }
+    const models = parseRemoteModelList(payload);
+    if (!models.length) throw new Error("模型列表为空");
+    return { ok: true, models, ms: Date.now() - started, endpoint: url };
+  } catch (err) {
+    if (err?.name === "AbortError") throw new Error("扫描超时");
     throw err;
   } finally {
     clearTimeout(timer);

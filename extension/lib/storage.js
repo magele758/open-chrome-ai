@@ -1,3 +1,5 @@
+import { hydrateTextCatalog } from "./text-providers.js";
+
 export const PRESETS = [
   { id: "custom", name: "自定义", baseUrl: "" },
   { id: "local-mock", name: "本地 Mock（开发）", baseUrl: "http://127.0.0.1:18787/v1" },
@@ -82,6 +84,8 @@ export function defaultSettings() {
     skillsEnabled: false,
     dailyNotesFolder: "Daily",
     shortcuts: [],
+    textProviders: [],
+    textRef: null,
   };
 }
 
@@ -92,6 +96,11 @@ export function normalizeSettings(raw) {
     ? raw.dailyNotesFolder.trim().replace(/^\/+|\/+$/g, "")
     : (base.dailyNotesFolder || "Daily");
   merged.text = { ...base.text, ...(raw?.text || {}) };
+  merged.text.summaryInputTokens = normalizeSummaryInputTokens(merged.text.summaryInputTokens);
+  const catalog = hydrateTextCatalog(raw || merged, merged.text);
+  merged.textProviders = catalog.textProviders;
+  merged.textRef = catalog.textRef;
+  merged.text = { ...merged.text, ...catalog.text };
   merged.text.summaryInputTokens = normalizeSummaryInputTokens(merged.text.summaryInputTokens);
   merged.multimodal = { ...base.multimodal, ...(raw?.multimodal || {}) };
   merged.asr = { ...base.asr, ...(raw?.asr || {}) };

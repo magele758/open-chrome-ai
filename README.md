@@ -262,7 +262,7 @@ Chrome 不允许扩展随便互调。你机器上目前接得上的只有：
 2. 打开「开发者模式」
 3. 「加载已解压的扩展程序」，选仓库里的 `extension/` 目录
 4. 点工具栏 PageLens，或快捷键 `Alt+L`
-5. 设置里填 `base_url` / `model_name` / `api_key`，点「测试连接」，保存
+5. 设置里可新增多个文本服务商（`base_url` / `api_key`），扫描或手填模型并勾选；对话底部切换当前模型。多模态、ASR、TTS 仍各自配置
 6. 可选：设置里「文稿文件夹」指定笔记目录（Obsidian 等）；字幕缓存在 `~/.cache/pagelens-docs`。「Skill 目录」另选本机 skill 根目录（只读）
 7. 可选：要让 skill 跑 CLI，再装本机 host（见上文「本机 Shell」）
 

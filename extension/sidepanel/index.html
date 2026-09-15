@@ -363,7 +363,10 @@
               </div>
             </div>
           </div>
-          <div class="model-line" id="model-line">未配置模型 · 先到设置填 base_url / model / key</div>
+          <div class="model-line" id="model-line">
+            <select id="text-model-pick" class="model-pick hidden" aria-label="文本模型"></select>
+            <span id="model-line-meta">未配置模型 · 先到设置添加服务商</span>
+          </div>
         </div>
       </section>
 
@@ -378,7 +381,8 @@
 
         <div class="block" id="block-text">
           <h3>文本模型</h3>
-          <p class="lead" style="margin-top:-4px">摘要、问答、文稿理解走这条。</p>
+          <p class="lead" style="margin-top:-4px">可添加多个 OpenAI 兼容服务商，扫描或手填模型，勾选后出现在对话底部列表。摘要、问答、文稿理解走当前选中的那条。</p>
+          <div id="text-providers"></div>
         </div>
 
         <div class="block" id="block-mm">
