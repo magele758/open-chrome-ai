@@ -1665,3 +1665,5 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 #cp-caption { padding: 8px 2px 0; font-size: 13px; line-height: 1.6; }
 #cp-src { opacity: .65; font-size: 12px; margin-top: 3px; }
 .cp-icon-btn:disabled, .cp-slider:disabled { opacity: .35; cursor: default; }
+
+#cp-generation-status { padding-top: 8px; font-size: 12px; line-height: 1.5; opacity: .75; }

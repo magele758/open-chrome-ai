@@ -57,10 +57,12 @@ delete globalThis.chrome;
 const app = fs.readFileSync(new URL('../sidepanel/app.js', import.meta.url), 'utf8');
 const els = new Map();
 const el = id => {
-  if (!els.has(id)) els.set(id, { dataset: {}, classList: { add() {}, remove() {} }, setAttribute() {}, textContent: '' });
+  if (!els.has(id)) els.set(id, { dataset: {}, classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, textContent: '' });
   return els.get(id);
 };
 let videoStarts = 0, audioStarts = 0, audioStops = 0;
+const startOptions = [];
+let savedArchive = null;
 class FakeAudio {
   constructor() { this.paused = true; this.currentTime = 0; this.duration = 100; }
   async play() { this.paused = false; }
@@ -71,15 +73,16 @@ const context = vm.createContext({
   $: el, state: { tab: { id: 1 }, settings: { asr: {}, tts: {} }, pack: {} },
   InterpretController: class { constructor() { this.running = false; }
     setAudioProviders() {} subscribe(fn) { this.listener = fn; } isRunning() { return this.running; }
-    async start() { this.running = true; audioStarts++; } async stop() { this.running = false; audioStops++; }
+    async start(options) { this.running = true; audioStarts++; startOptions.push(options); } async stop() { this.running = false; audioStops++; }
   },
   renderContext() {}, renderTranscribeAction() {}, formatTime: n => String(n), pushError: err => { throw Error(err); },
   getSharedAudioContext: () => null, injectVideo: async () => ({ ok: true }),
   isAsrReady: () => true, isTtsReady: () => true, requireModel: () => true,
   startInterpret: () => { videoStarts++; },
+  stopDubPlayback() {}, loadFullMediaArchive: async () => savedArchive, videoIdentity: () => "test-video",
 });
 const from = app.indexOf('const interpretController =');
-const to = app.indexOf('async function regenerateCurrentDubbing');
+const to = app.indexOf('function stopDubPlayback');
 vm.runInContext(app.slice(from, to), context);
 await vm.runInContext('toggleCompactPlayback()', context);
 assert.equal(audioStarts, 1);
@@ -118,3 +121,18 @@ assert.equal(player.activeAudio.currentTime, 2);
 assert.equal(player.getCurrentPlaybackTime(), 7);
 player.stop();
 console.log('PASS: precise seek preserves paused position and stream completion');
+
+vm.runInContext('stopCompactPlayback()', context);
+await vm.runInContext('generateFullCompactAudio()', context);
+assert.equal(startOptions.at(-1).generateFull, true);
+assert.equal(vm.runInContext('compactPlaying', context), false);
+assert.equal(vm.runInContext('compactPendingAutoplay', context), false);
+assert.equal(vm.runInContext('compactFullGenerating', context), true);
+await vm.runInContext('generateFullCompactAudio()', context);
+assert.equal(vm.runInContext('compactFullGenerating', context), false);
+savedArchive = { complete: true, compactAudioBlob: blob };
+const startsBefore = audioStarts;
+await vm.runInContext('generateFullCompactAudio()', context);
+assert.equal(audioStarts, startsBefore);
+assert.equal(el('cp-download-btn').disabled, false);
+console.log('PASS: full-generation button runs without autoplay, cancels and reuses a completed archive');

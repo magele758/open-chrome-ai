@@ -118,7 +118,7 @@ export async function writeDubCache(key, value) {
 }
 
 export async function pruneDubCache() {
-  for (const key of await idbListKeys()) if (String(key).startsWith(PREFIX)) await readDubCache(key);
+  for (const key of await idbListKeys()) if (String(key).startsWith(PREFIX) && !String(key).endsWith(':cleared')) await readDubCache(key);
 }
 
 export async function clearAllDubCache() {
@@ -129,3 +129,30 @@ export async function clearAllDubCache() {
   }
 }
 
+
+// Scope new entries to a video. Legacy shared entries remain readable until that
+// video's first explicit clear; clearing one video must not evict another's work.
+const videoPrefix = videoId => `${PREFIX}video:${encodeURIComponent(videoId)}:`;
+export async function createVideoDubCache(videoId) {
+  if (!videoId) return { get: readDubCache, set: writeDubCache };
+  const prefix = videoPrefix(videoId);
+  const cleared = await idbGet(prefix + 'cleared');
+  return {
+    async get(key) {
+      const own = await readDubCache(prefix + key);
+      if (own != null || cleared) return own;
+      const legacy = await readDubCache(key);
+      if (legacy != null) await writeDubCache(prefix + key, legacy);
+      return legacy;
+    },
+    set: (key, value) => writeDubCache(prefix + key, value),
+  };
+}
+
+export async function clearVideoDubCache(videoId) {
+  if (!videoId) return;
+  const prefix = videoPrefix(videoId);
+  const keys = (await idbListKeys()).filter(key => String(key).startsWith(prefix));
+  await idbDel(keys);
+  await idbSet(prefix + 'cleared', true);
+}

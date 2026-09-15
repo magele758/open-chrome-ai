@@ -17,7 +17,7 @@ import { createMessageScroll } from "./message-scroll.js";
 let messageScroll;
 const thinkingScrolls = new WeakMap();
 import { loadFullMediaArchive, cleanExpiredMediaArchives, deleteMediaArchive } from "../lib/audio-composer.js";
-import { clearAllDubCache } from "../lib/dub-cache.js";
+import { clearVideoDubCache } from "../lib/dub-cache.js";
 import { StreamingAudioPlayer, getSharedAudioContext } from "../lib/streaming-audio-player.js";
 import {
   libraryStatus,
@@ -174,12 +174,25 @@ compactController.setAudioProviders({
 interpretController.subscribe((event, taskState) => {
   if (taskState?.tabId !== state.tab?.id) return;
   state.interpret = taskState;
+  if (event?.type === "archive_saved") {
+    state.pack ||= {};
+    state.pack.archive = event.archive;
+  }
+  if (event?.type === "generation_progress") {
+    taskState.hint = `已复用 ${event.reused} 段 · 新生成 ${event.generated} 段`;
+  }
   if (taskState?.status === "running") state.originalAudioOn = taskState.originalAudioOn;
   renderContext();
 });
 
 compactController.subscribe((event, taskState) => {
   if (taskState?.tabId !== state.tab?.id || !compactSessionOpen) return;
+  if (event?.type === "status") compactGenerationMessage = event.status?.message || "";
+  if (event?.type === "generation_progress") {
+    compactGenerationMessage = `已就绪 ${event.ready}/${event.total} 段 · 已复用 ${event.reused} 段 · 新生成 ${event.generated} 段`;
+    if (event.covered < event.duration) compactGenerationMessage += ` · 已规划至 ${formatTime(event.covered)} / ${formatTime(event.duration)}`;
+  }
+  if (event?.type === "warn") compactGenerationMessage = event.message;
   if (event?.type === "dub_segment" && event.segment) {
     compactSegments.push(event.segment);
     if (compactStreamPlayer) {
@@ -201,6 +214,8 @@ compactController.subscribe((event, taskState) => {
   if (event?.type === "archive_saved" && event.archive) {
     state.pack = state.pack || {};
     state.pack.archive = event.archive;
+    compactFullGenerating = false;
+    compactGenerationMessage = "完整音频已保存，可播放或下载（缓存保留 7 天）";
     renderTranscribeAction();
     renderCompactPlayer();
     if (compactPendingAutoplay) {
@@ -215,6 +230,10 @@ compactController.subscribe((event, taskState) => {
   if (["stopped", "idle", "error"].includes(event?.type)) {
     if (event?.type === "error" || event?.type === "stopped") {
       compactPendingAutoplay = false;
+      if (compactFullGenerating && !state.pack?.archive?.complete && !compactGenerationMessage.includes("失败")) {
+        compactGenerationMessage = event?.type === "error" ? event.error : "尚未保存完整音频，请重试；已完成的分段缓存会复用。";
+      }
+      compactFullGenerating = false;
       compactGenerationComplete = event?.type === "stopped";
       compactStreamPlayer?.closeStream();
       if (event?.type === "error") pushError("纯享音频：" + event.error);
@@ -222,6 +241,7 @@ compactController.subscribe((event, taskState) => {
     renderCompactPlayer();
     renderTranscribeAction();
   }
+  renderCompactPlayer();
   renderContext();
 });
 
@@ -241,6 +261,8 @@ let compactSessionOpen = false;
 let compactGenerationComplete = false;
 let compactActionPending = false;
 let compactRevision = 0;
+let compactFullGenerating = false;
+let compactGenerationMessage = "";
 const COMPACT_RATES = [1.0, 1.25, 1.5, 2.0];
 
 function stopCompactAudioElement() {
@@ -266,6 +288,8 @@ function stopCompactAudioElement() {
 function stopCompactPlayback() {
   compactRevision++;
   compactSessionOpen = false;
+  compactFullGenerating = false;
+  compactGenerationMessage = "";
   if (!compactGenerationComplete) compactSegments = [];
   void compactController.stop(state.tab?.id);
   compactPendingAutoplay = false;
@@ -319,7 +343,14 @@ function renderCompactPlayer() {
   }
   if (slider) slider.disabled = getCompactDuration() <= 0;
   const download = $("cp-download-btn");
-  if (download) download.disabled = !(state.pack?.archive?.compactAudioBlob || state.pack?.archive?.audioBlob);
+  if (download) download.disabled = !(state.pack?.archive?.complete && state.pack?.archive?.compactAudioBlob);
+  const status = $("cp-generation-status");
+  if (status) status.textContent = compactGenerationMessage || (state.pack?.archive?.complete ? "已缓存完整音频 · 可直接播放或下载" : "边生成边听；需要完整文件可点「完整生成」");
+  const fullButton = $("btn-generate-full");
+  if (fullButton) {
+    fullButton.textContent = compactFullGenerating ? "取消完整生成" : state.pack?.archive?.complete ? "查看完整音频" : "完整生成";
+    fullButton.classList.toggle("busy", compactFullGenerating);
+  }
 
   if (compactPendingAutoplay) {
     bar.classList.remove("hidden");
@@ -679,8 +710,8 @@ function changeCompactRate() {
 function downloadCompactAudio() {
   const archive = state.pack?.archive;
   const audioBlob = archive?.compactAudioBlob || archive?.audioBlob;
-  if (!audioBlob) return;
-  const url = URL.createObjectURL(audioBlob);
+  if (!archive?.complete || !archive.compactAudioBlob) { pushError("请先完整生成音频，完成后即可下载。"); return; }
+  const url = URL.createObjectURL(archive.compactAudioBlob);
   const a = document.createElement("a");
   a.href = url;
   const title = (state.pack?.title || "中文配音").replace(/[\\/:*?"<>|]/g, "_").trim();
@@ -698,49 +729,67 @@ function closeCompactPlayer() {
   $("compact-player-bar")?.classList.add("hidden");
 }
 
-async function regenerateCurrentDubbing() {
-  if (interpretController.isRunning(state.tab?.id)) {
-    stopInterpret();
-  }
+async function clearCurrentDubbingCache() {
+  const tab = state.tab ? { ...state.tab } : null;
+  if (!tab?.id) return false;
   stopCompactPlayback();
   stopDubPlayback();
-
-  const videoId = videoIdentity(state.tab?.url);
-  if (videoId) {
-    try {
-      await deleteMediaArchive(videoId);
-    } catch (err) {
-      console.warn("[pagelens] delete archive error", err);
-    }
-  }
-  try {
-    await clearAllDubCache();
-  } catch (err) {
-    console.warn("[pagelens] clear dub cache error", err);
-  }
-
-  if (state.pack) {
-    state.pack.archive = null;
-    state.pack.captionsText = "";
-    state.pack.captionsCues = null;
-    state.pack.captionsStatus = "idle";
-    state.pack.captionsSource = null;
-  }
+  await Promise.all([interpretController.stop(tab.id), compactController.stop(tab.id)]);
+  const videoId = videoIdentity(tab.url);
+  if (!videoId) return false;
+  await clearVideoDubCache(videoId);
+  await deleteMediaArchive(videoId);
+  if (state.tab?.id !== tab.id || state.tab?.url !== tab.url) return false;
+  if (state.pack) state.pack.archive = null;
   compactSegments = [];
-  compactPlaying = false;
-  compactPendingAutoplay = false;
-
+  compactGenerationComplete = false;
+  compactGenerationMessage = "已清除当前视频的翻译与配音缓存，其他视频不受影响。";
   $("compact-player-bar")?.classList.remove("hidden");
   renderCompactPlayer();
   renderContext();
+  return true;
+}
 
-  appendBotMessage({
-    title: "已清除配音缓存",
-    text: "已清除该视频的历史配音与文稿缓存，开始重新提取字幕并生成高清中文配音…",
-  });
+async function regenerateCurrentDubbing() {
+  if (await clearCurrentDubbingCache()) await generateFullCompactAudio();
+}
 
-  await compactController.stop(state.tab?.id);
-  await toggleCompactPlayback();
+async function generateFullCompactAudio() {
+  if (compactFullGenerating) { stopCompactPlayback(); return; }
+  if (compactActionPending || !state.tab?.id) return;
+  compactActionPending = true;
+  const tab = { ...state.tab };
+  try {
+    stopCompactPlayback();
+    const revision = compactRevision;
+    stopDubPlayback();
+    await Promise.all([interpretController.stop(tab.id), compactController.stop(tab.id)]);
+    if (revision !== compactRevision || state.tab?.id !== tab.id || state.tab?.url !== tab.url) return;
+    const archive = await loadFullMediaArchive(videoIdentity(tab.url));
+    if (revision !== compactRevision) return;
+    compactSessionOpen = true;
+    $("compact-player-bar")?.classList.remove("hidden");
+    if (archive?.complete && archive.compactAudioBlob) {
+      state.pack ||= {};
+      state.pack.archive = archive;
+      compactGenerationMessage = "已复用完整音频，无需重新翻译或合成；可直接播放或下载。";
+      renderCompactPlayer();
+      return;
+    }
+    if (!requireModel("text")) { pushError(needModelMessage("text")); return; }
+    if (!isTtsReady(state.settings.tts)) { pushError("请先配置语音合成（TTS）"); return; }
+    compactSegments = [];
+    compactGenerationComplete = false;
+    compactFullGenerating = true;
+    compactGenerationMessage = "正在准备整段音频，不需要保持播放；请保持侧栏开启。";
+    renderCompactPlayer();
+    void compactController.start({ tab, settings: state.settings, generateFull: true }).catch(err => {
+      if (revision !== compactRevision) return;
+      compactFullGenerating = false;
+      compactGenerationMessage = "完整生成失败：" + err.message;
+      renderCompactPlayer();
+    });
+  } finally { compactActionPending = false; }
 }
 
 function stopDubPlayback() {
@@ -999,6 +1048,8 @@ function renderTranscribeAction() {
   }
   const videoCount = Number(state.pack?.videoCount) || (Array.isArray(state.pack?.videos) ? state.pack.videos.length : 0);
   const hasPlayer = Boolean(state.pack?.video) || videoCount > 0 || interpreting;
+  $("btn-generate-full")?.classList.toggle("hidden", !hasPlayer);
+  $("btn-clear-dub-cache")?.classList.toggle("hidden", !hasPlayer);
   if (siBtn) {
     siBtn.textContent = interpreting ? "停止同传" : "同声传译";
     siBtn.title = interpreting ? "停止同传" : "按声音识别并翻译，可与一键总结同时进行。";
@@ -3595,12 +3646,13 @@ async function refreshTab() {
           if (archive && (archive.hasAudio || archive.hasCompactAudio)) {
             state.pack = state.pack || {};
             state.pack.archive = archive;
+            renderCompactPlayer();
             if (!state.pack.captionsText && archive.lines?.length) {
               state.pack.captionsStatus = "ready";
               state.pack.captionsSource = "dub-archive";
               state.pack.captionsText = archive.lines.map((l) => l.zh).join("\n");
               state.pack.captionsCues = archive.cues;
-              state.pack.captionsComplete = true;
+              state.pack.captionsComplete = archive.complete === true;
             }
           }
         } catch (err) {
@@ -4582,6 +4634,8 @@ function wire() {
     toggleCompactPlayback();
   });
   $("cp-rate-btn")?.addEventListener("click", () => changeCompactRate());
+  $("btn-generate-full")?.addEventListener("click", () => generateFullCompactAudio().catch(err => pushError(err.message)));
+  $("btn-clear-dub-cache")?.addEventListener("click", () => clearCurrentDubbingCache().catch(err => pushError(err.message)));
   $("cp-regen-btn")?.addEventListener("click", () => regenerateCurrentDubbing());
   $("btn-regen-dub")?.addEventListener("click", () => regenerateCurrentDubbing());
   $("cp-download-btn")?.addEventListener("click", () => downloadCompactAudio());

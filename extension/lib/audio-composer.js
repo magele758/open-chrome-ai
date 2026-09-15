@@ -223,7 +223,22 @@ export async function composeCompactDubTrack(segments = [], opts = {}) {
   for (let i = 0; i < validSegments.length; i += 1) {
     const seg = validSegments[i];
     const ab = await seg.blob.arrayBuffer();
-    const pcm = extractPcmSamplesFromWav(ab);
+    let pcm = extractPcmSamplesFromWav(ab);
+    if (!pcm) {
+      const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
+      if (!AC) throw new Error(`第 ${i + 1} 段音频无法解码`);
+      const decoder = new AC();
+      try {
+        const audio = await decoder.decodeAudioData(ab.slice(0));
+        const samples = new Float32Array(audio.length);
+        for (let c = 0; c < audio.numberOfChannels; c++) {
+          const channel = audio.getChannelData(c);
+          for (let n = 0; n < samples.length; n++) samples[n] += channel[n] / audio.numberOfChannels;
+        }
+        pcm = { samples, sampleRate: audio.sampleRate };
+      } finally { await decoder.close(); }
+    }
+    if (!pcm.samples.length) throw new Error(`第 ${i + 1} 段音频为空`);
     if (pcm && pcm.samples.length > 0) {
       sampleRate = pcm.sampleRate || sampleRate;
       const segDuration = pcm.samples.length / pcm.sampleRate;
@@ -301,6 +316,7 @@ export async function saveFullMediaArchive({
   compactDuration = 0,
   compactCues = [],
   processingVersion = 'chunk-v0',
+  complete = false,
 } = {}) {
   if (!videoId) return null;
   const now = Date.now();
@@ -318,6 +334,7 @@ export async function saveFullMediaArchive({
   const archiveRecord = {
     videoId,
     processingVersion,
+    complete: complete === true,
     title: String(title || "视频同传").trim(),
     url: String(url || ""),
     duration: Number(duration) || 0,
@@ -334,7 +351,7 @@ export async function saveFullMediaArchive({
   };
 
   const key = ARCHIVE_PREFIX + videoId;
-  await idbSet(key, archiveRecord);
+  if (!await idbSet(key, archiveRecord)) throw new Error("音频保存失败，请检查浏览器存储空间后重试");
   return {
     ...archiveRecord,
     audioBlob: audioBuffer ? new Blob([audioBuffer], { type: 'audio/wav' }) : null,

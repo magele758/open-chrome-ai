@@ -192,7 +192,7 @@ export class InterpretController {
     return next;
   }
 
-  async start({ tab, settings, onCaptionsReady }) {
+  async start({ tab, settings, onCaptionsReady, generateFull = false }) {
     if (!tab?.id) throw new Error("没有可操作的标签页");
     if (this.isRunning(tab.id)) {
       await this.stop(tab.id);
@@ -265,6 +265,7 @@ export class InterpretController {
         capture: task.currentCapture,
         streamPlayback: false,
         audioOnly: this.audioOnly,
+        generateFull,
         getAudioPlayhead: () => (this.audioPlayheadProvider ? this.audioPlayheadProvider(tab.id) : 0),
         getAudioScheduledTime: () => (this.audioScheduledTimeProvider ? this.audioScheduledTimeProvider(tab.id) : 0),
         isAudioActive: () => (this.isAudioActiveProvider ? this.isAudioActiveProvider(tab.id) : false),
@@ -296,6 +297,8 @@ export class InterpretController {
           } else if (ev.type === "warn") {
             task.details.hint = ev.message || "";
             this.notify({ type: "warn", message: ev.message, tabId: tab.id }, tab.id);
+          } else if (ev.type === "generation_progress") {
+            this.notify({ ...ev, tabId: tab.id }, tab.id);
           } else if (ev.type === "dub_segment") {
             this.notify({ type: "dub_segment", segment: ev.segment, tabId: tab.id }, tab.id);
           } else if (ev.type === "dub_complete") {

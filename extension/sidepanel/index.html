@@ -56,6 +56,8 @@
           <button type="button" class="ctx-action" id="btn-clip-page" title="将当前网页及个人思考剪藏至知识库与书签">🔖 剪藏本页</button>
           <button type="button" class="ctx-action primary" id="btn-interpret" title="边看边出中文，按声音约 5 秒一切。">同声传译</button>
           <button type="button" class="ctx-action" id="btn-compact-player" title="只听拼接好的中文配音（无缝连续播放，像听播客一样）">🎧 纯享音频</button>
+          <button type="button" class="ctx-action" id="btn-generate-full" title="完整生成整段纯享音频，无需保持播放，完成后可下载 WAV">完整生成</button>
+          <button type="button" class="ctx-action" id="btn-clear-dub-cache" title="只清除当前视频的翻译、配音和完整音频缓存">清空本视频缓存</button>
           <button type="button" class="ctx-action hidden" id="btn-regen-dub" title="清除该视频的历史配音与文稿缓存，重新生成">🔄 重新配音</button>
           <button type="button" class="ctx-action hidden" id="btn-play-archive" title="画面时间轴同步配音（与视频进度对齐）">对齐配音</button>
           <button type="button" class="ctx-action hidden" id="btn-original-audio" title="开启或关闭原视频声音">关原声</button>
@@ -75,6 +77,7 @@
             <button type="button" class="cp-play-btn" id="cp-play-btn" title="播放 / 暂停">▶</button>
             <input type="range" class="cp-slider" id="cp-slider" aria-label="纯享音频进度" min="0" max="1000" value="0" step="1" />
           </div>
+          <div id="cp-generation-status" role="status"></div>
           <div id="cp-caption" class="hidden" aria-live="off"><div id="cp-zh"></div><div id="cp-src"></div></div>
         </div>
         <div class="ctx-bg-tasks hidden" id="ctx-bg-tasks"></div>
