@@ -7,66 +7,104 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <svg xmlns="http://www.w3.org/2000/svg" class="icon-sprite" aria-hidden="true">
+    <symbol id="i-pen" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-log" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-review" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8M8 11h6"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.6.9 1 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m7 4 12 8-12 8V4z"/></symbol>
+    <symbol id="i-lang" viewBox="0 0 24 24"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-12-5 12"/><path d="M14 18h6"/></symbol>
+    <symbol id="i-headphone" viewBox="0 0 24 24"><path d="M3 14v-3a9 9 0 0 1 18 0v3"/><path d="M21 16a2 2 0 0 1-2 2h-1v-8h1a2 2 0 0 1 2 2zM3 16a2 2 0 0 0 2 2h1v-8H5a2 2 0 0 0-2 2z"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></symbol>
+    <symbol id="i-mute" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m23 9-6 6M17 9l6 6"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M4.2 4.2l2.8 2.8M17 17l2.8 2.8M3 12h4M17 12h4M4.2 19.8 7 17M17 7l2.8-2.8"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></symbol>
+    <symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="m21.4 11.6-9.2 9.2a5 5 0 0 1-7-7l9.2-9.2a3.5 3.5 0 0 1 5 5L9.2 19.8a2 2 0 1 1-2.8-2.8l8.5-8.5"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></symbol>
+    <symbol id="i-quote" viewBox="0 0 24 24"><path d="M3 21c3 0 7-1 7-8V5H4v8h4"/><path d="M14 21c3 0 7-1 7-8V5h-6v8h4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></symbol>
+  </svg>
+
   <div id="app">
     <header class="header">
-      <div class="brand"><span class="mark"></span> PageLens <span class="hitl-badge hidden" id="hitl-badge" title="当前处于全自动模式">⚡️全自动</span></div>
-      <div class="icon-btns">
-        <button type="button" id="btn-new" title="新对话">新</button>
-        <button type="button" id="btn-history" title="对话历史">历</button>
-        <button type="button" id="btn-review" title="知识复盘（每日/每周/每月总结回顾）">盘</button>
-        <button type="button" id="btn-obsidian" title="把当前对话写入文稿文件夹（Obsidian 可直接打开）">入</button>
-        <button type="button" id="btn-debug-export" title="导出本次侧栏调试日志（含识别原文和译文）">日志</button>
-        <button type="button" id="btn-settings" title="设置">设</button>
+      <div class="brand">
+        <span class="mark"></span> PageLens
+        <span class="hitl-badge hidden" id="hitl-badge" title="当前处于全自动模式">⚡️全自动</span>
       </div>
+      <nav class="icon-btns" aria-label="全局功能">
+        <button type="button" id="btn-new" class="icon-btn" aria-label="新对话" data-tooltip="新对话">
+          <svg class="ico"><use href="#i-pen"/></svg>
+        </button>
+        <button type="button" id="btn-history" class="icon-btn" aria-label="历史会话" data-tooltip="历史会话">
+          <svg class="ico"><use href="#i-history"/></svg>
+        </button>
+        <button type="button" id="btn-debug-export" class="icon-btn" aria-label="运行日志" data-tooltip="运行日志">
+          <svg class="ico"><use href="#i-log"/></svg>
+        </button>
+        <button type="button" id="btn-review" class="icon-btn" aria-label="知识盘点" data-tooltip="知识盘点">
+          <svg class="ico"><use href="#i-review"/></svg>
+        </button>
+        <button type="button" id="btn-obsidian" class="icon-btn" aria-label="写入文稿文件夹" data-tooltip="写入文稿文件夹">
+          <svg class="ico"><use href="#i-book"/></svg>
+        </button>
+        <button type="button" id="btn-settings" class="icon-btn" aria-label="设置" data-tooltip="设置">
+          <svg class="ico"><use href="#i-gear"/></svg>
+        </button>
+      </nav>
     </header>
 
-    <section id="view-chat" class="view">
-      <div id="hitl-modal" class="hitl-modal hidden">
-        <div class="hitl-card">
-          <div class="hitl-header">
-            <span class="hitl-icon">⚠️</span>
-            <span class="hitl-title">特权操作需要授权</span>
-            <span class="hitl-timer" id="hitl-timer">30s</span>
-          </div>
-          <div class="hitl-body">
-            <div class="hitl-desc" id="hitl-desc"></div>
-            <pre class="hitl-cmd hidden" id="hitl-cmd"></pre>
-            <label class="check hitl-session-check" id="hitl-session-label">
-              <input type="checkbox" id="hitl-session-remember" />
-              信任本场对话（本会话免确认）
-            </label>
-          </div>
-          <div class="hitl-actions">
-            <button type="button" class="secondary" id="btn-hitl-reject">拒绝</button>
-            <button type="button" class="primary" id="btn-hitl-approve">允许执行</button>
-          </div>
+    <section id="media-zone" class="media-zone hidden" aria-label="音视频工具">
+      <div class="media-bar">
+        <button type="button" id="btn-media-toggle" class="icon-btn" aria-expanded="true" aria-controls="media-body" aria-label="收起音视频工具" data-tooltip="收起音视频工具">
+          <svg class="ico" id="media-toggle-ico"><use href="#i-chevron-up"/></svg>
+        </button>
+        <div class="media-bar-label">
+          <span class="media-kicker" id="media-heading">音视频工具</span>
+          <strong id="media-collapsed-title" class="media-collapsed-title hidden"></strong>
         </div>
+        <div class="media-status" id="media-status">
+          <span class="media-dot"></span>
+          <span id="media-status-label">就绪</span>
+        </div>
+        <button type="button" id="btn-media-mini-pause" class="media-mini-pause hidden" aria-label="暂停播放" data-tooltip="暂停播放">
+          <svg class="ico"><use href="#i-pause"/></svg>
+        </button>
       </div>
-      <div class="ctx">
-        <div class="ctx-label" id="ctx-label">当前标签</div>
-        <div class="card">
-          <div style="min-width:0">
-            <div class="t" id="ctx-title">尚未读取页面</div>
-            <div class="s" id="ctx-sub">打开任意网页后点总结或直接提问</div>
+
+      <div id="media-body" class="media-body">
+        <div class="media-title-row">
+          <strong id="media-active-title" class="media-active-title">尚未选择视频</strong>
+          <button type="button" id="btn-back-video" class="icon-btn" aria-label="返回此视频" data-tooltip="返回此视频">
+            <svg class="ico"><use href="#i-link"/></svg>
+          </button>
+        </div>
+
+        <div class="media-mode-row">
+          <div class="mode-seg" role="group" aria-label="播放模式">
+            <button type="button" class="ctx-action" id="btn-interpret" title="边看边出中文，按声音约 5 秒一切。">
+              <svg class="ico"><use href="#i-lang"/></svg>同声传译
+            </button>
+            <button type="button" class="ctx-action" id="btn-compact-player" title="只听拼接好的中文配音（无缝连续播放，像听播客一样）">
+              <svg class="ico"><use href="#i-headphone"/></svg>纯享音频
+            </button>
           </div>
-          <button type="button" class="x" id="btn-unpin" title="不分享此页">×</button>
+          <button type="button" class="ctx-action hidden" id="btn-original-audio" title="开启或关闭原视频声音">
+            <svg class="ico"><use href="#i-mute"/></svg>原音：关
+          </button>
         </div>
-        <div class="ctx-actions" id="ctx-actions">
-          <button type="button" class="ctx-action primary" id="btn-summarize-video" title="字幕优先快速总结；无字幕时下载音轨并转写，可与同声传译同时进行。">一键总结</button>
-          <button type="button" class="ctx-action" id="btn-clip-page" title="将当前网页及个人思考剪藏至知识库与书签">🔖 剪藏本页</button>
-          <button type="button" class="ctx-action primary" id="btn-interpret" title="边看边出中文，按声音约 5 秒一切。">同声传译</button>
-          <button type="button" class="ctx-action" id="btn-compact-player" title="只听拼接好的中文配音（无缝连续播放，像听播客一样）">🎧 纯享音频</button>
-          <button type="button" class="ctx-action" id="btn-generate-full" title="完整生成整段纯享音频，无需保持播放，完成后可下载 WAV">完整生成</button>
-          <button type="button" class="ctx-action" id="btn-clear-dub-cache" title="只清除当前视频的翻译、配音和完整音频缓存">清空本视频缓存</button>
-          <button type="button" class="ctx-action hidden" id="btn-regen-dub" title="清除该视频的历史配音与文稿缓存，重新生成">🔄 重新配音</button>
-          <button type="button" class="ctx-action hidden" id="btn-play-archive" title="画面时间轴同步配音（与视频进度对齐）">对齐配音</button>
-          <button type="button" class="ctx-action hidden" id="btn-original-audio" title="开启或关闭原视频声音">关原声</button>
-          <button type="button" class="ctx-action" id="btn-transcribe" title="只取出带时间戳的台词，不自动总结">只要文稿</button>
-          <button type="button" class="ctx-action hidden" id="btn-video-switch" title="页面里有多个视频时，切换要总结/同传的那一个">画面</button>
-        </div>
+
         <div class="compact-player-bar hidden" id="compact-player-bar">
           <div class="cp-header">
-            <span class="cp-title">🎧 纯享中文音频</span>
+            <span class="cp-title">纯享中文音频</span>
             <span class="cp-time" id="cp-time">00:00 / 00:00</span>
             <button type="button" class="cp-rate-btn" id="cp-rate-btn" title="切换播放倍速">1.0x</button>
             <button type="button" class="cp-icon-btn" id="cp-regen-btn" title="清除该视频配音缓存并重新生成">🔄</button>
@@ -80,326 +118,466 @@
           <div id="cp-generation-status" role="status"></div>
           <div id="cp-caption" class="hidden" aria-live="off"><div id="cp-zh"></div><div id="cp-src"></div></div>
         </div>
-        <div class="ctx-bg-tasks hidden" id="ctx-bg-tasks"></div>
-        <div class="recall-banner hidden" id="recall-banner">
-          <span class="recall-icon">💡</span>
-          <div class="recall-content">
-            <span class="recall-text" id="recall-text">曾剪藏笔记</span>
-          </div>
-          <div class="recall-ops">
-            <button type="button" class="recall-btn" id="btn-recall-open">查看笔记</button>
-            <button type="button" class="recall-close" id="btn-recall-dismiss" title="忽略">×</button>
-          </div>
-        </div>
-        <div class="si-live hidden" id="si-live">
-          <div class="si-zh" id="si-zh"></div>
-          <div class="si-src" id="si-src"></div>
-          <button class="secondary hidden" id="btn-si-edit" type="button">修改本句配音</button>
-        </div>
-      </div>
 
-      <!-- 剪藏到 Obsidian & 书签 弹窗 -->
-      <div id="clip-modal" class="clip-modal hidden">
-        <div class="clip-card">
-          <div class="clip-header">
-            <span class="clip-icon">🔖</span>
-            <span class="clip-title">剪藏到 Obsidian &amp; 书签</span>
-            <button type="button" class="btn-modal-x" id="btn-clip-cancel-x" title="关闭">×</button>
-          </div>
-          <div class="clip-body">
-            <label class="clip-field">
-              <span class="field-label">标题</span>
-              <input type="text" id="clip-input-title" spellcheck="false" />
-            </label>
-            <label class="clip-field">
-              <span class="field-label">网址</span>
-              <input type="text" id="clip-input-url" spellcheck="false" />
-            </label>
-            <label class="clip-field">
-              <span class="field-label">我的思考 / 备注</span>
-              <textarea id="clip-input-note" rows="3" placeholder="记录关于本回答的灵感、重点、个人评注..."></textarea>
-            </label>
-            <label class="clip-field">
-              <span class="field-label">标签（空格或逗号分隔）</span>
-              <input type="text" id="clip-input-tags" placeholder="如：ai, 架构, 知识库" />
-            </label>
-            <div class="clip-preview-section">
-              <span class="field-label">AI 提炼内容预览</span>
-              <div class="clip-content-preview" id="clip-content-preview"></div>
-            </div>
-            <div class="clip-options">
-              <label class="check">
-                <input type="checkbox" id="clip-check-obsidian" checked />
-                写入 Obsidian 独立卡片 (<code>PageLens/clippings/</code>)
-              </label>
-              <label class="check">
-                <input type="checkbox" id="clip-check-daily" checked />
-                加入今日日记内容采摘 (<code id="clip-daily-path-preview">Daily/2026-09-14.md</code>)
-              </label>
-              <label class="check">
-                <input type="checkbox" id="clip-check-bookmark" checked />
-                同步到 Chrome 书签 (<code>PageLens 智库</code> 文件夹)
-              </label>
-            </div>
-          </div>
-          <div class="clip-actions">
-            <button type="button" class="secondary" id="btn-clip-cancel">取消</button>
-            <button type="button" class="primary" id="btn-clip-confirm">确认保存</button>
-          </div>
+        <div class="media-video-actions">
+          <button type="button" class="ctx-action primary" id="btn-summarize-video" title="字幕优先快速总结；无字幕时下载音轨并转写，可与同声传译同时进行。">
+            <svg class="ico"><use href="#i-spark"/></svg>一键总结视频
+          </button>
+          <button type="button" class="ctx-action" id="btn-media-tools" aria-expanded="false" aria-controls="media-tools">
+            文稿与工具 <svg class="ico tiny"><use href="#i-chevron"/></svg>
+          </button>
         </div>
-      </div>
 
-      <!-- 查看历史剪藏卡片详情弹窗 -->
-      <div id="clip-view-modal" class="clip-modal hidden">
-        <div class="clip-card clip-view-card">
-          <div class="clip-header">
-            <span class="clip-icon">💡</span>
-            <span class="clip-title" id="clip-view-modal-title">本页剪藏笔记</span>
-            <button type="button" class="btn-modal-x" id="btn-clip-view-close" title="关闭">×</button>
+        <div id="video-summary-result" class="video-summary hidden">
+          <div class="video-summary-head">
+            <strong>视频摘要</strong>
+            <button type="button" id="btn-video-summary-close" class="icon-btn" aria-label="收起视频摘要" title="收起">×</button>
           </div>
-          <div class="clip-body" id="clip-view-body"></div>
-          <div class="clip-actions">
-            <button type="button" class="secondary" id="btn-clip-view-done">关闭</button>
+          <span class="media-tiny" id="video-summary-source"></span>
+          <div class="video-summary-body" id="video-summary-body"></div>
+          <details class="usage-details" id="video-summary-usage-wrap">
+            <summary id="video-summary-usage">—</summary>
+            <div id="video-summary-usage-detail"></div>
+          </details>
+          <div class="video-summary-ops">
+            <button type="button" class="link-btn" id="btn-video-summary-cite">引用到对话</button>
+            <button type="button" class="link-btn" id="btn-video-summary-clip">收藏</button>
           </div>
         </div>
-      </div>
-      <div class="messages-area">
-        <div class="msgs" id="msgs" tabindex="0" aria-label="会话消息"></div>
-        <button type="button" class="messages-bottom hidden" id="btn-messages-bottom" aria-controls="msgs" title="回到底部" aria-label="回到底部">
-          <svg class="messages-bottom-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M8 2.5v10M3.5 8.5L8 13l4.5-4.5"/>
-          </svg>
-          <span class="messages-bottom-text">回到底部</span>
-          <span class="messages-bottom-dot hidden" id="messages-bottom-dot" aria-hidden="true"></span>
+
+        <div id="media-tools" class="media-tools hidden">
+          <div class="si-live hidden" id="si-live">
+            <div class="si-meta">
+              <span class="media-tiny">当前译文</span>
+              <button class="secondary hidden" id="btn-si-edit" type="button">修改本句配音</button>
+            </div>
+            <div class="si-zh" id="si-zh"></div>
+            <div class="si-src" id="si-src"></div>
+          </div>
+          <div class="media-tool-row" id="ctx-actions">
+            <button type="button" class="ctx-action" id="btn-cite-transcript" title="把当前视频文稿作为下一次提问的引用">引用文稿</button>
+            <button type="button" class="ctx-action" id="btn-transcribe" title="只取出带时间戳的台词，不自动总结">只要文稿</button>
+            <button type="button" class="ctx-action" id="btn-generate-full" title="完整生成整段纯享音频，无需保持播放，完成后可下载 WAV">完整生成</button>
+            <button type="button" class="ctx-action" id="btn-download-audio" title="下载完整中文配音">下载音频</button>
+          </div>
+          <details class="media-more">
+            <summary>更多视频操作</summary>
+            <div class="media-tool-row">
+              <button type="button" class="ctx-action hidden" id="btn-play-archive" title="画面时间轴同步配音（与视频进度对齐）">对齐配音</button>
+              <button type="button" class="ctx-action hidden" id="btn-regen-dub" title="清除该视频的历史配音与文稿缓存，重新生成">重新配音</button>
+              <button type="button" class="ctx-action" id="btn-clear-dub-cache" title="只清除当前视频的翻译、配音和完整音频缓存">清空本视频缓存</button>
+              <button type="button" class="ctx-action hidden" id="btn-video-switch" title="页面里有多个视频时，切换要总结/同传的那一个">画面</button>
+            </div>
+          </details>
+        </div>
+
+        <p class="media-tiny" id="media-note" role="status"></p>
+        <details class="usage-details" id="media-usage-wrap">
+          <summary><span id="media-usage">用量与耗时会在处理后显示</span><span>用量明细</span></summary>
+          <div id="media-usage-detail"></div>
+        </details>
+
+        <button type="button" id="btn-tasks-toggle" class="tasks-toggle" aria-expanded="true" aria-controls="media-tasks">
+          视频任务 <span id="task-count">0</span>
+          <svg class="ico tiny"><use href="#i-chevron"/></svg>
         </button>
-      </div>
-      <div class="composer">
-        <div class="attach hidden" id="attach-row">
-          <img id="attach-thumb" alt="附件" />
-          <span id="attach-label">已附加当前画面</span>
-          <button type="button" id="btn-clear-attach">移除</button>
-        </div>
-        <div class="skills" id="skills"></div>
-        <div class="composer-input">
-          <div class="slash-menu hidden" id="slash-menu" role="listbox" aria-label="快捷指令"></div>
-          <div class="row">
-            <button class="ghost" type="button" id="btn-shot" title="截取当前画面">▣</button>
-            <button class="ghost" type="button" id="btn-summarize-bar" title="一键总结">总</button>
-            <button class="ghost" type="button" id="btn-interpret-bar" title="同声传译">译</button>
-            <button class="ghost" type="button" id="btn-compact-bar" title="纯享音频播放器">🎧</button>
-            <textarea id="input" placeholder="问这页 · Enter 发送 · ⇧Enter 换行"></textarea>
-            <button class="send" type="button" id="btn-send" title="发送（Enter）">↑</button>
+        <div id="media-tasks" class="media-tasks">
+          <div class="task-heading">
+            <span id="media-task-heading">没有后台任务</span>
+            <button type="button" id="btn-add-video" class="link-btn" title="从已打开的视频标签添加后台任务">
+              <svg class="ico tiny"><use href="#i-plus"/></svg>添加视频
+            </button>
+          </div>
+          <div class="ctx-bg-tasks hidden" id="ctx-bg-tasks"></div>
+          <div id="media-task-picker" class="task-picker hidden">
+            <strong>从已打开的标签页添加</strong>
+            <div id="media-task-picker-list"></div>
+            <span class="media-tiny">后台准备需源视频保持打开；不会自动切换当前网页对话。</span>
           </div>
         </div>
-        <div class="model-line" id="model-line">未配置模型 · 先到设置填 base_url / model / key</div>
       </div>
     </section>
 
-    <section id="view-settings" class="settings hidden">
-      <h2>模型设置</h2>
-      <p class="lead">文本、多模态必填才能聊天。语音转写和配音是高级功能，不填不影响读页、问答、点选。密钥只存在本机。</p>
-
-      <div class="block" id="block-text">
-        <h3>文本模型</h3>
-        <p class="lead" style="margin-top:-4px">摘要、问答、文稿理解走这条。</p>
-      </div>
-
-      <div class="block" id="block-mm">
-        <h3>多模态模型</h3>
-        <label class="check">
-          <input type="checkbox" id="mm-same" />
-          与文本模型相同
-        </label>
-        <p class="lead" id="mm-hint" style="margin-top:-4px">截图、当前视频画面走这条。需要能接受 image_url 的模型。</p>
-        <div id="mm-fields"></div>
-      </div>
-
-      <div class="block" id="block-asr">
-        <h3>语音转写（ASR）</h3>
-        <p class="lead" style="margin-top:-4px">视频总结和同声传译需要。自建服务选预设「自建 /v1/transcribe」，<code>POST {host}/v1/transcribe</code>；也可填 Groq / OpenAI 的 <code>/audio/transcriptions</code>。扩展不内置 Whisper。详见仓库 <code>docs/advanced-asr-tts.md</code>。</p>
-      </div>
-
-      <div class="block" id="block-tts">
-        <h3>配音（高级，可选）</h3>
-        <p class="lead" style="margin-top:-4px">Index-TTS 2.5 Gradio：<code>/gen_single</code>，用参考 wav 克隆同一把声音。不配时「同声传译」仍出中文字幕。参考音可上传或从当前视频截取；同传时关掉原片声音，只播中文配音。</p>
-      </div>
-
-      <div class="block" id="block-library">
-        <h3>文稿文件夹</h3>
-        <p class="lead" style="margin-top:-4px">选一个本机目录，或填绝对路径（需 Native Host，可用 <code>~</code>）。填完点「使用路径」，或点底部「保存」/「返回对话」也会应用。可直接是 Obsidian 库。视频文稿写在各视频子目录；对话笔记写在 <code>PageLens/sessions/</code>。密钥不会写进去。和下面的 Skill 目录分开，互不影响。用系统选目录时浏览器只显示文件夹名。</p>
-        <div class="row-btns">
-          <button class="secondary" type="button" id="btn-library-pick">选择文件夹</button>
-          <button class="secondary hidden" type="button" id="btn-library-reauth">重新授权</button>
-          <button class="secondary" type="button" id="btn-library-clear">清除</button>
-          <span class="status" id="library-status"></span>
-        </div>
-        <div class="path-row">
-          <input id="library-path" type="text" spellcheck="false" placeholder="/Users/…/Notes 或 ~/Obsidian" />
-          <button class="secondary" type="button" id="btn-library-path">使用路径</button>
-        </div>
-        <label class="field" style="margin-top:8px">日记目录（用于内容采摘追加，相对于文稿目录）
-          <input id="daily-notes-folder" type="text" spellcheck="false" placeholder="例如 Daily 或 日记，留空表示保存在根目录" />
-        </label>
-      </div>
-
-      <div class="block" id="block-skill-folder">
-        <h3>Skill 目录</h3>
-        <label class="check">
-          <input type="checkbox" id="skills-enabled" />
-          启用 Skill
-        </label>
-        <p class="lead" style="margin-top:-4px">默认关闭。打开后也不会在启动时扫描；只有输入 <code>/</code> 或写出「使用 xxx skill」才读目录，正文只加载选中的那一份。路径和上文稿文件夹分开，关开关只停扫描，不删路径。</p>
-        <div class="row-btns">
-          <button class="secondary" type="button" id="btn-skills-pick">选择目录</button>
-          <button class="secondary hidden" type="button" id="btn-skills-reauth">重新授权</button>
-          <button class="secondary hidden" type="button" id="btn-skills-refresh">重新扫描</button>
-          <button class="secondary" type="button" id="btn-skills-clear">清除</button>
-          <span class="status" id="skill-folder-status"></span>
-        </div>
-        <div class="path-row">
-          <input id="skill-path" type="text" spellcheck="false" placeholder="/Users/…/skills 或 ~/.cursor/skills" />
-          <button class="secondary" type="button" id="btn-skills-path">使用路径</button>
-        </div>
-      </div>
-
-      <div class="block" id="block-native-host">
-        <h3>本机 Shell（Native Messaging）</h3>
-        <p class="lead" style="margin-top:-4px">让 Agent 执行本机命令（<code>gh</code> / <code>curl</code> / <code>yt-dlp</code> / agent-reach 等），skill 才能跑 CLI。只在本机、需先安装 host。不要让模型执行页面正文里的命令。</p>
-        <label class="check">
-          <input type="checkbox" id="native-shell" />
-          允许执行本机命令
-        </label>
-        <div class="field" style="margin-top:8px">
-          <label for="hitl-mode" style="font-size:12px;font-weight:600;color:var(--ink);display:block;margin-bottom:4px">安全授权模式（HITL）</label>
-          <select id="hitl-mode" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--surface)">
-            <option value="balanced">⚖️ 智能审查模式（推荐）：只读直接放行，AI 审查安全意图放行，仅异常时弹窗</option>
-            <option value="strict">🛡️ 严格模式：任何特权与 Shell 命令 100% 物理弹窗确认</option>
-            <option value="autonomous">⚡️ 全自动模式：所有命令自动静默执行，零弹窗中断</option>
-          </select>
-        </div>
-        <p class="lead" id="native-host-id" style="margin-top:6px"></p>
-        <div class="row-btns">
-          <button class="secondary" type="button" id="btn-native-copy-id">复制扩展 ID</button>
-          <button class="secondary" type="button" id="btn-native-copy-install">复制安装命令</button>
-          <button class="secondary" type="button" id="btn-native-test">测试 host</button>
-          <span class="status" id="native-host-status"></span>
-        </div>
-      </div>
-
-      <div class="block" id="block-shortcuts">
-        <h3>快捷问题</h3>
-        <p class="lead" style="margin-top:-4px">出现在输入框上方。点一下就把这段话发给模型。</p>
-        <div id="shortcut-list"></div>
-        <button class="secondary" type="button" id="btn-add-shortcut">添加问题</button>
-      </div>
-
-      <div class="block">
-        <h3>回答</h3>
-        <label class="field">语言
-          <select id="answer-lang">
-            <option value="zh-CN">简体中文</option>
-            <option value="en">English</option>
-            <option value="page">跟随页面</option>
-          </select>
-        </label>
-        <label class="field">字体
-          <select id="ui-font">
-            <option value="md">默认</option>
-            <option value="lg">较大</option>
-            <option value="xl">更大</option>
-          </select>
-        </label>
-      </div>
-
-      <div class="row-btns">
-        <button class="primary" type="button" id="btn-save">保存</button>
-        <button class="secondary" type="button" id="btn-back">返回对话</button>
-        <span class="status" id="save-status"></span>
-      </div>
-    </section>
-
-    <section id="view-history" class="settings hidden">
-      <h2>对话历史</h2>
-      <p class="lead">每场对话自动保存在本机，带上当时的网页和全文。可打开续聊、导出、入库到文稿文件夹，或删除。</p>
-      <label class="field">搜索
-        <input id="hist-q" placeholder="标题、网站或网址" />
-      </label>
-      <div class="row-btns hist-actions">
-        <button class="secondary" type="button" id="btn-export-all-md">全部导出 Markdown</button>
-        <button class="secondary" type="button" id="btn-export-all-json">全部导出 JSON</button>
-        <button class="secondary" type="button" id="btn-import-all-obsidian">全部入库</button>
-        <span class="status" id="hist-status"></span>
-      </div>
-      <div id="hist-list"></div>
-      <div class="row-btns">
-        <button class="secondary" type="button" id="btn-hist-back">返回对话</button>
-      </div>
-    </section>
-
-    <section id="view-review" class="settings hidden">
-      <div class="review-header-row">
-        <h2>💡 知识回顾与复盘</h2>
-        <button class="secondary mini" type="button" id="btn-review-back">返回对话</button>
-      </div>
-      <p class="lead">按天、周、月聚合你收藏的内容，深入提炼核心认知图谱与个人思考，沉淀长久思维资产。</p>
-
-      <div class="review-tabs" role="tablist">
-        <button type="button" class="review-tab active" data-type="daily">📅 每日复盘</button>
-        <button type="button" class="review-tab" data-type="weekly">📆 每周复盘</button>
-        <button type="button" class="review-tab" data-type="monthly">🗓️ 每月复盘</button>
-        <button type="button" class="review-tab" data-type="history">📚 历史复盘</button>
-      </div>
-
-      <div class="review-period-bar" id="review-period-bar">
-        <button type="button" class="btn-period-nav" id="btn-period-prev" title="上一周期">‹</button>
-        <div class="review-period-info">
-          <span class="period-title" id="review-period-label">每日复盘</span>
-          <span class="period-sub" id="review-period-stats">正在读取收藏…</span>
-        </div>
-        <button type="button" class="btn-period-nav" id="btn-period-next" title="下一周期">›</button>
-        <input type="date" id="review-date-picker" class="hidden" />
-        <button type="button" class="btn-period-calendar" id="btn-period-pick" title="选择具体日期">📅</button>
-      </div>
-
-      <div class="review-clip-drawer" id="review-clip-drawer">
-        <div class="clip-drawer-header" id="clip-drawer-toggle">
-          <span class="drawer-title" id="clip-drawer-title">📌 本期收藏内容 (0)</span>
-          <span class="drawer-arrow" id="clip-drawer-arrow">▼</span>
-        </div>
-        <div class="clip-drawer-content hidden" id="clip-drawer-content">
-          <div class="clip-drawer-toolbar">
-            <span class="drawer-tip">已勾选用于生成复盘的条目：</span>
-            <button type="button" class="drawer-link-btn" id="btn-clip-select-all">全选</button>
-            <button type="button" class="drawer-link-btn" id="btn-clip-deselect-all">清空</button>
+    <div id="workspace" class="workspace">
+      <section id="view-chat" class="view">
+        <div id="hitl-modal" class="hitl-modal hidden">
+          <div class="hitl-card">
+            <div class="hitl-header">
+              <span class="hitl-icon">⚠️</span>
+              <span class="hitl-title">特权操作需要授权</span>
+              <span class="hitl-timer" id="hitl-timer">30s</span>
+            </div>
+            <div class="hitl-body">
+              <div class="hitl-desc" id="hitl-desc"></div>
+              <pre class="hitl-cmd hidden" id="hitl-cmd"></pre>
+              <label class="check hitl-session-check" id="hitl-session-label">
+                <input type="checkbox" id="hitl-session-remember" />
+                信任本场对话（本会话免确认）
+              </label>
+            </div>
+            <div class="hitl-actions">
+              <button type="button" class="secondary" id="btn-hitl-reject">拒绝</button>
+              <button type="button" class="primary" id="btn-hitl-approve">允许执行</button>
+            </div>
           </div>
-          <div class="clip-list" id="review-clip-list"></div>
         </div>
-      </div>
 
-      <div class="review-actions-bar" id="review-actions-bar">
-        <button type="button" class="primary" id="btn-review-generate">✨ 开始 AI 深度复盘</button>
-        <button type="button" class="secondary hidden" id="btn-review-stop">⏹ 停止生成</button>
-        <button type="button" class="secondary" id="btn-review-obsidian" title="导出为独立 Markdown 卡片写入文稿库">📝 入库 Obsidian</button>
-        <button type="button" class="secondary" id="btn-review-daily-note" title="追加至今日日记">📓 写入日记</button>
-        <button type="button" class="secondary" id="btn-review-copy" title="复制 Markdown 文本">📋 复制</button>
-        <button type="button" class="secondary hidden" id="btn-review-delete" title="删除此复盘记录">🗑️</button>
-        <span class="status" id="review-status"></span>
-      </div>
-
-      <div class="review-output-container" id="review-output-container">
-        <div class="review-output-placeholder" id="review-output-empty">
-          <div class="empty-icon">🌱</div>
-          <div class="empty-text">点击「开始 AI 深度复盘」生成认知总结</div>
-          <div class="empty-tip">系统将自动综合本周期内所有收藏原文、AI 提取与个人思考备注</div>
+        <div class="chat-head">
+          <strong>网页对话</strong>
+          <span class="media-tiny" id="chat-follow">跟随当前标签页</span>
         </div>
-        <div class="review-output markdown-body hidden" id="review-output"></div>
-      </div>
+        <div class="ctx">
+          <div class="ctx-label" id="ctx-label">当前标签</div>
+          <div class="card">
+            <svg class="ico muted"><use href="#i-file"/></svg>
+            <div style="min-width:0">
+              <div class="t" id="ctx-title">尚未读取页面</div>
+              <div class="s" id="ctx-sub">打开任意网页后点总结或直接提问</div>
+              <div class="s" id="ctx-source-hint">本次总结与提问的来源</div>
+            </div>
+            <button type="button" class="x" id="btn-unpin" data-tooltip="去掉网页上下文" aria-label="去掉网页上下文">×</button>
+            <button type="button" class="ctx-pin hidden" id="btn-pin-page" data-tooltip="带上当前网页">带上当前页</button>
+          </div>
+          <div class="chat-page-actions">
+            <button type="button" class="ctx-action primary" id="btn-summarize-page" title="总结当前网页正文、PDF 或帖子，不调用视频转写">
+              <svg class="ico"><use href="#i-spark"/></svg>总结本页
+            </button>
+            <button type="button" class="ctx-action" id="btn-clip-page" title="将当前网页及个人思考剪藏至知识库与书签">🔖 剪藏本页</button>
+          </div>
+          <div class="recall-banner hidden" id="recall-banner">
+            <span class="recall-icon">💡</span>
+            <div class="recall-content">
+              <span class="recall-text" id="recall-text">曾剪藏笔记</span>
+            </div>
+            <div class="recall-ops">
+              <button type="button" class="recall-btn" id="btn-recall-open">查看笔记</button>
+              <button type="button" class="recall-close" id="btn-recall-dismiss" title="忽略">×</button>
+            </div>
+          </div>
+        </div>
 
-      <div class="review-history-container hidden" id="review-history-container">
-        <div id="review-history-list"></div>
-      </div>
-    </section>
+        <div id="clip-modal" class="clip-modal hidden">
+          <div class="clip-card">
+            <div class="clip-header">
+              <span class="clip-icon">🔖</span>
+              <span class="clip-title">剪藏到 Obsidian &amp; 书签</span>
+              <button type="button" class="btn-modal-x" id="btn-clip-cancel-x" title="关闭">×</button>
+            </div>
+            <div class="clip-body">
+              <label class="clip-field">
+                <span class="field-label">标题</span>
+                <input type="text" id="clip-input-title" spellcheck="false" />
+              </label>
+              <label class="clip-field">
+                <span class="field-label">网址</span>
+                <input type="text" id="clip-input-url" spellcheck="false" />
+              </label>
+              <label class="clip-field">
+                <span class="field-label">我的思考 / 备注</span>
+                <textarea id="clip-input-note" rows="3" placeholder="记录关于本回答的灵感、重点、个人评注..."></textarea>
+              </label>
+              <label class="clip-field">
+                <span class="field-label">标签（空格或逗号分隔）</span>
+                <input type="text" id="clip-input-tags" placeholder="如：ai, 架构, 知识库" />
+              </label>
+              <div class="clip-preview-section">
+                <span class="field-label">AI 提炼内容预览</span>
+                <div class="clip-content-preview" id="clip-content-preview"></div>
+              </div>
+              <div class="clip-options">
+                <label class="check">
+                  <input type="checkbox" id="clip-check-obsidian" checked />
+                  写入 Obsidian 独立卡片 (<code>PageLens/clippings/</code>)
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="clip-check-daily" checked />
+                  加入今日日记内容采摘 (<code id="clip-daily-path-preview">Daily/2026-09-14.md</code>)
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="clip-check-bookmark" checked />
+                  同步到 Chrome 书签 (<code>PageLens 智库</code> 文件夹)
+                </label>
+              </div>
+            </div>
+            <div class="clip-actions">
+              <button type="button" class="secondary" id="btn-clip-cancel">取消</button>
+              <button type="button" class="primary" id="btn-clip-confirm">确认保存</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="clip-view-modal" class="clip-modal hidden">
+          <div class="clip-card clip-view-card">
+            <div class="clip-header">
+              <span class="clip-icon">💡</span>
+              <span class="clip-title" id="clip-view-modal-title">本页剪藏笔记</span>
+              <button type="button" class="btn-modal-x" id="btn-clip-view-close" title="关闭">×</button>
+            </div>
+            <div class="clip-body" id="clip-view-body"></div>
+            <div class="clip-actions">
+              <button type="button" class="secondary" id="btn-clip-view-done">关闭</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="messages-area">
+          <div class="msgs" id="msgs" tabindex="0" aria-label="会话消息"></div>
+          <button type="button" class="messages-bottom hidden" id="btn-messages-bottom" aria-controls="msgs" title="回到底部" aria-label="回到底部">
+            <svg class="messages-bottom-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 2.5v10M3.5 8.5L8 13l4.5-4.5"/>
+            </svg>
+            <span class="messages-bottom-text">回到底部</span>
+            <span class="messages-bottom-dot hidden" id="messages-bottom-dot" aria-hidden="true"></span>
+          </button>
+        </div>
+
+        <div class="composer">
+          <div class="attach hidden" id="attach-row">
+            <img id="attach-thumb" alt="附件" />
+            <span id="attach-label">已附加当前画面</span>
+            <button type="button" id="btn-clear-attach">移除</button>
+          </div>
+          <div class="skills" id="skills"></div>
+          <div class="composer-input">
+            <div class="slash-menu hidden" id="slash-menu" role="listbox" aria-label="快捷指令"></div>
+            <div class="input-box">
+              <div class="compose-chip" id="compose-chip">
+                <svg class="ico tiny"><use href="#i-file"/></svg>
+                <span id="compose-chip-label">当前网页</span>
+                <button type="button" id="btn-clear-ref" class="chip-x" aria-label="去掉网页上下文" data-tooltip="去掉网页上下文">×</button>
+              </div>
+              <div class="row">
+                <button class="ghost" type="button" id="btn-shot" data-tooltip="截图" aria-label="截图">
+                  <svg class="ico"><use href="#i-scan"/></svg>
+                </button>
+                <button class="ghost hidden" type="button" id="btn-summarize-bar" title="一键总结">总</button>
+                <button class="ghost hidden" type="button" id="btn-interpret-bar" title="同声传译">译</button>
+                <button class="ghost hidden" type="button" id="btn-compact-bar" title="纯享音频播放器">🎧</button>
+                <textarea id="input" placeholder="问这页 · Enter 发送 · ⇧Enter 换行"></textarea>
+                <button class="send" type="button" id="btn-send" data-tooltip="发送" aria-label="发送">
+                  <svg class="ico"><use href="#i-up"/></svg>
+                </button>
+              </div>
+              <div class="compose-tools">
+                <span class="media-tiny" id="compose-note">当前网页</span>
+              </div>
+            </div>
+          </div>
+          <div class="model-line" id="model-line">未配置模型 · 先到设置填 base_url / model / key</div>
+        </div>
+      </section>
+
+      <section id="view-settings" class="settings hidden">
+        <div class="panel-head">
+          <h2>设置</h2>
+          <button class="secondary" type="button" id="btn-back">
+            <svg class="ico tiny"><use href="#i-back"/></svg>返回对话
+          </button>
+        </div>
+        <p class="lead">文本、多模态必填才能聊天。语音转写和配音是高级功能，不填不影响读页、问答、点选。密钥只存在本机。打开设置不会中断音视频任务。</p>
+
+        <div class="block" id="block-text">
+          <h3>文本模型</h3>
+          <p class="lead" style="margin-top:-4px">摘要、问答、文稿理解走这条。</p>
+        </div>
+
+        <div class="block" id="block-mm">
+          <h3>多模态模型</h3>
+          <label class="check">
+            <input type="checkbox" id="mm-same" />
+            与文本模型相同
+          </label>
+          <p class="lead" id="mm-hint" style="margin-top:-4px">截图、当前视频画面走这条。需要能接受 image_url 的模型。</p>
+          <div id="mm-fields"></div>
+        </div>
+
+        <div class="block" id="block-asr">
+          <h3>语音转写（ASR）</h3>
+          <p class="lead" style="margin-top:-4px">视频总结和同声传译需要。自建服务选预设「自建 /v1/transcribe」，<code>POST {host}/v1/transcribe</code>；也可填 Groq / OpenAI 的 <code>/audio/transcriptions</code>。扩展不内置 Whisper。详见仓库 <code>docs/advanced-asr-tts.md</code>。</p>
+        </div>
+
+        <div class="block" id="block-tts">
+          <h3>配音（高级，可选）</h3>
+          <p class="lead" style="margin-top:-4px">Index-TTS 2.5 Gradio：<code>/gen_single</code>，用参考 wav 克隆同一把声音。不配时「同声传译」仍出中文字幕。参考音可上传或从当前视频截取；同传时关掉原片声音，只播中文配音。</p>
+        </div>
+
+        <div class="block" id="block-library">
+          <h3>文稿文件夹</h3>
+          <p class="lead" style="margin-top:-4px">选一个本机目录，或填绝对路径（需 Native Host，可用 <code>~</code>）。填完点「使用路径」，或点底部「保存」/「返回对话」也会应用。可直接是 Obsidian 库。视频文稿写在各视频子目录；对话笔记写在 <code>PageLens/sessions/</code>。密钥不会写进去。和下面的 Skill 目录分开，互不影响。用系统选目录时浏览器只显示文件夹名。</p>
+          <div class="row-btns">
+            <button class="secondary" type="button" id="btn-library-pick">选择文件夹</button>
+            <button class="secondary hidden" type="button" id="btn-library-reauth">重新授权</button>
+            <button class="secondary" type="button" id="btn-library-clear">清除</button>
+            <span class="status" id="library-status"></span>
+          </div>
+          <div class="path-row">
+            <input id="library-path" type="text" spellcheck="false" placeholder="/Users/…/Notes 或 ~/Obsidian" />
+            <button class="secondary" type="button" id="btn-library-path">使用路径</button>
+          </div>
+          <label class="field" style="margin-top:8px">日记目录（用于内容采摘追加，相对于文稿目录）
+            <input id="daily-notes-folder" type="text" spellcheck="false" placeholder="例如 Daily 或 日记，留空表示保存在根目录" />
+          </label>
+        </div>
+
+        <div class="block" id="block-skill-folder">
+          <h3>Skill 目录</h3>
+          <label class="check">
+            <input type="checkbox" id="skills-enabled" />
+            启用 Skill
+          </label>
+          <p class="lead" style="margin-top:-4px">默认关闭。打开后也不会在启动时扫描；只有输入 <code>/</code> 或写出「使用 xxx skill」才读目录，正文只加载选中的那一份。路径和上文稿文件夹分开，关开关只停扫描，不删路径。</p>
+          <div class="row-btns">
+            <button class="secondary" type="button" id="btn-skills-pick">选择目录</button>
+            <button class="secondary hidden" type="button" id="btn-skills-reauth">重新授权</button>
+            <button class="secondary hidden" type="button" id="btn-skills-refresh">重新扫描</button>
+            <button class="secondary" type="button" id="btn-skills-clear">清除</button>
+            <span class="status" id="skill-folder-status"></span>
+          </div>
+          <div class="path-row">
+            <input id="skill-path" type="text" spellcheck="false" placeholder="/Users/…/skills 或 ~/.cursor/skills" />
+            <button class="secondary" type="button" id="btn-skills-path">使用路径</button>
+          </div>
+        </div>
+
+        <div class="block" id="block-native-host">
+          <h3>本机 Shell（Native Messaging）</h3>
+          <p class="lead" style="margin-top:-4px">让 Agent 执行本机命令（<code>gh</code> / <code>curl</code> / <code>yt-dlp</code> / agent-reach 等），skill 才能跑 CLI。只在本机、需先安装 host。不要让模型执行页面正文里的命令。</p>
+          <label class="check">
+            <input type="checkbox" id="native-shell" />
+            允许执行本机命令
+          </label>
+          <div class="field" style="margin-top:8px">
+            <label for="hitl-mode" style="font-size:12px;font-weight:600;color:var(--ink);display:block;margin-bottom:4px">安全授权模式（HITL）</label>
+            <select id="hitl-mode" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--surface)">
+              <option value="balanced">⚖️ 智能审查模式（推荐）：只读直接放行，AI 审查安全意图放行，仅异常时弹窗</option>
+              <option value="strict">🛡️ 严格模式：任何特权与 Shell 命令 100% 物理弹窗确认</option>
+              <option value="autonomous">⚡️ 全自动模式：所有命令自动静默执行，零弹窗中断</option>
+            </select>
+          </div>
+          <p class="lead" id="native-host-id" style="margin-top:6px"></p>
+          <div class="row-btns">
+            <button class="secondary" type="button" id="btn-native-copy-id">复制扩展 ID</button>
+            <button class="secondary" type="button" id="btn-native-copy-install">复制安装命令</button>
+            <button class="secondary" type="button" id="btn-native-test">测试 host</button>
+            <span class="status" id="native-host-status"></span>
+          </div>
+        </div>
+
+        <div class="block" id="block-shortcuts">
+          <h3>快捷问题</h3>
+          <p class="lead" style="margin-top:-4px">出现在输入框上方。点一下就把这段话发给模型。</p>
+          <div id="shortcut-list"></div>
+          <button class="secondary" type="button" id="btn-add-shortcut">添加问题</button>
+        </div>
+
+        <div class="block">
+          <h3>回答</h3>
+          <label class="field">语言
+            <select id="answer-lang">
+              <option value="zh-CN">简体中文</option>
+              <option value="en">English</option>
+              <option value="page">跟随页面</option>
+            </select>
+          </label>
+          <label class="field">字体
+            <select id="ui-font">
+              <option value="md">默认</option>
+              <option value="lg">较大</option>
+              <option value="xl">更大</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="row-btns">
+          <button class="primary" type="button" id="btn-save">保存</button>
+          <span class="status" id="save-status"></span>
+        </div>
+      </section>
+
+      <section id="view-history" class="settings hidden">
+        <div class="panel-head">
+          <h2>对话历史</h2>
+          <button class="secondary" type="button" id="btn-hist-back">返回对话</button>
+        </div>
+        <p class="lead">每场对话自动保存在本机，带上当时的网页和全文。可打开续聊、导出、入库到文稿文件夹，或删除。打开历史不会中断音视频任务。</p>
+        <label class="field">搜索
+          <input id="hist-q" placeholder="标题、网站或网址" />
+        </label>
+        <div class="row-btns hist-actions">
+          <button class="secondary" type="button" id="btn-export-all-md">全部导出 Markdown</button>
+          <button class="secondary" type="button" id="btn-export-all-json">全部导出 JSON</button>
+          <button class="secondary" type="button" id="btn-import-all-obsidian">全部入库</button>
+          <span class="status" id="hist-status"></span>
+        </div>
+        <div id="hist-list"></div>
+      </section>
+
+      <section id="view-review" class="settings hidden">
+        <div class="review-header-row panel-head">
+          <h2>💡 知识回顾与复盘</h2>
+          <button class="secondary mini" type="button" id="btn-review-back">返回对话</button>
+        </div>
+        <p class="lead">按天、周、月聚合你收藏的内容，深入提炼核心认知图谱与个人思考，沉淀长久思维资产。</p>
+
+        <div class="review-tabs" role="tablist">
+          <button type="button" class="review-tab active" data-type="daily">📅 每日复盘</button>
+          <button type="button" class="review-tab" data-type="weekly">📆 每周复盘</button>
+          <button type="button" class="review-tab" data-type="monthly">🗓️ 每月复盘</button>
+          <button type="button" class="review-tab" data-type="history">📚 历史复盘</button>
+        </div>
+
+        <div class="review-period-bar" id="review-period-bar">
+          <button type="button" class="btn-period-nav" id="btn-period-prev" title="上一周期">‹</button>
+          <div class="review-period-info">
+            <span class="period-title" id="review-period-label">每日复盘</span>
+            <span class="period-sub" id="review-period-stats">正在读取收藏…</span>
+          </div>
+          <button type="button" class="btn-period-nav" id="btn-period-next" title="下一周期">›</button>
+          <input type="date" id="review-date-picker" class="hidden" />
+          <button type="button" class="btn-period-calendar" id="btn-period-pick" title="选择具体日期">📅</button>
+        </div>
+
+        <div class="review-clip-drawer" id="review-clip-drawer">
+          <div class="clip-drawer-header" id="clip-drawer-toggle">
+            <span class="drawer-title" id="clip-drawer-title">📌 本期收藏内容 (0)</span>
+            <span class="drawer-arrow" id="clip-drawer-arrow">▼</span>
+          </div>
+          <div class="clip-drawer-content hidden" id="clip-drawer-content">
+            <div class="clip-drawer-toolbar">
+              <span class="drawer-tip">已勾选用于生成复盘的条目：</span>
+              <button type="button" class="drawer-link-btn" id="btn-clip-select-all">全选</button>
+              <button type="button" class="drawer-link-btn" id="btn-clip-deselect-all">清空</button>
+            </div>
+            <div class="clip-list" id="review-clip-list"></div>
+          </div>
+        </div>
+
+        <div class="review-actions-bar" id="review-actions-bar">
+          <button type="button" class="primary" id="btn-review-generate">✨ 开始 AI 深度复盘</button>
+          <button type="button" class="secondary hidden" id="btn-review-stop">⏹ 停止生成</button>
+          <button type="button" class="secondary" id="btn-review-obsidian" title="导出为独立 Markdown 卡片写入文稿库">📝 入库 Obsidian</button>
+          <button type="button" class="secondary" id="btn-review-daily-note" title="追加至今日日记">📓 写入日记</button>
+          <button type="button" class="secondary" id="btn-review-copy" title="复制 Markdown 文本">📋 复制</button>
+          <button type="button" class="secondary hidden" id="btn-review-delete" title="删除此复盘记录">🗑️</button>
+          <span class="status" id="review-status"></span>
+        </div>
+
+        <div class="review-output-container" id="review-output-container">
+          <div class="review-output-placeholder" id="review-output-empty">
+            <div class="empty-icon">🌱</div>
+            <div class="empty-text">点击「开始 AI 深度复盘」生成认知总结</div>
+            <div class="empty-tip">系统将自动综合本周期内所有收藏原文、AI 提取与个人思考备注</div>
+          </div>
+          <div class="review-output markdown-body hidden" id="review-output"></div>
+        </div>
+
+        <div class="review-history-container hidden" id="review-history-container">
+          <div id="review-history-list"></div>
+        </div>
+      </section>
+    </div>
   </div>
+  <script src="tooltip.js"></script>
   <script src="../vendor/marked.min.js"></script>
   <script src="../vendor/purify.min.js"></script>
   <script src="../vendor/mermaid.min.js"></script>

@@ -140,6 +140,15 @@ const state = {
     abort: null,
     lastPeriodKey: null,
   },
+  mediaExpanded: true,
+  toolsExpanded: false,
+  tasksExpanded: true,
+  chatRef: null,
+  videoSummary: null,
+  mediaTab: null,
+  mediaPack: null,
+  pageRevision: 0,
+  dismissedPage: null,
 };
 
 const interpretController = new InterpretController();
@@ -172,11 +181,18 @@ compactController.setAudioProviders({
 });
 
 interpretController.subscribe((event, taskState) => {
-  if (taskState?.tabId !== state.tab?.id) return;
+  if (taskState?.tabId && state.mediaTab?.id && taskState.tabId !== state.mediaTab.id) {
+    renderContext();
+    return;
+  }
+  if (taskState?.tabId && !state.mediaTab) {
+    state.mediaTab = { id: taskState.tabId, url: taskState.url, title: taskState.title };
+    state.mediaPack = state.mediaPack || state.pack;
+  }
   state.interpret = taskState;
   if (event?.type === "archive_saved") {
-    state.pack ||= {};
-    state.pack.archive = event.archive;
+    const pack = packForMediaWrite(taskState.tabId);
+    if (pack) pack.archive = event.archive;
   }
   if (event?.type === "generation_progress") {
     taskState.hint = `已复用 ${event.reused} 段 · 新生成 ${event.generated} 段`;
@@ -186,7 +202,8 @@ interpretController.subscribe((event, taskState) => {
 });
 
 compactController.subscribe((event, taskState) => {
-  if (taskState?.tabId !== state.tab?.id || !compactSessionOpen) return;
+  if (taskState?.tabId && state.mediaTab?.id && taskState.tabId !== state.mediaTab.id) return;
+  if (!compactSessionOpen) return;
   if (event?.type === "status") compactGenerationMessage = event.status?.message || "";
   if (event?.type === "generation_progress") {
     compactGenerationMessage = `已就绪 ${event.ready}/${event.total} 段 · 已复用 ${event.reused} 段 · 新生成 ${event.generated} 段`;
@@ -212,8 +229,8 @@ compactController.subscribe((event, taskState) => {
     }
   }
   if (event?.type === "archive_saved" && event.archive) {
-    state.pack = state.pack || {};
-    state.pack.archive = event.archive;
+    const pack = packForMediaWrite(taskState?.tabId);
+    if (pack) pack.archive = event.archive;
     compactFullGenerating = false;
     compactGenerationMessage = "完整音频已保存，可播放或下载（缓存保留 7 天）";
     renderTranscribeAction();
@@ -230,7 +247,7 @@ compactController.subscribe((event, taskState) => {
   if (["stopped", "idle", "error"].includes(event?.type)) {
     if (event?.type === "error" || event?.type === "stopped") {
       compactPendingAutoplay = false;
-      if (compactFullGenerating && !state.pack?.archive?.complete && !compactGenerationMessage.includes("失败")) {
+      if (compactFullGenerating && !packForMedia()?.archive?.complete && !compactGenerationMessage.includes("失败")) {
         compactGenerationMessage = event?.type === "error" ? event.error : "尚未保存完整音频，请重试；已完成的分段缓存会复用。";
       }
       compactFullGenerating = false;
@@ -291,7 +308,7 @@ function stopCompactPlayback() {
   compactFullGenerating = false;
   compactGenerationMessage = "";
   if (!compactGenerationComplete) compactSegments = [];
-  void compactController.stop(state.tab?.id);
+  void compactController.stop((typeof mediaActionTab === "function" ? mediaActionTab()?.id : null) ?? state.mediaTab?.id ?? state.tab?.id);
   compactPendingAutoplay = false;
   compactPlaying = false;
   if (compactStreamPlayer) {
@@ -299,7 +316,11 @@ function stopCompactPlayback() {
     compactStreamPlayer = null;
   }
   stopCompactAudioElement();
-  $("compact-player-bar")?.classList.add("hidden");
+  if (typeof mediaShouldShow === "function" && mediaShouldShow() && state.mediaExpanded) {
+    $("compact-player-bar")?.classList.remove("hidden");
+  } else {
+    $("compact-player-bar")?.classList.add("hidden");
+  }
   renderCompactPlayer();
   renderTranscribeAction();
 }
@@ -311,12 +332,14 @@ function getCompactDuration() {
   if (compactPlayerAudio) {
     return (Number.isFinite(compactPlayerAudio.duration) && compactPlayerAudio.duration > 0)
       ? compactPlayerAudio.duration
-      : (state.pack?.archive?.compactDuration || state.pack?.archive?.duration || 0);
+      : (((typeof packForMedia === "function" && packForMedia()) || state.pack)?.archive?.compactDuration
+        || ((typeof packForMedia === "function" && packForMedia()) || state.pack)?.archive?.duration || 0);
   }
   if (compactSegments.length > 0) {
     return compactSegments.reduce((sum, s) => sum + (Number(s.duration) || 0), 0);
   }
-  return state.pack?.archive?.compactDuration || state.pack?.archive?.duration || 0;
+  const mediaArchive = ((typeof packForMedia === "function" && packForMedia()) || state.pack)?.archive;
+  return mediaArchive?.compactDuration || mediaArchive?.duration || 0;
 }
 
 function getCompactCurrentTime() {
@@ -343,12 +366,13 @@ function renderCompactPlayer() {
   }
   if (slider) slider.disabled = getCompactDuration() <= 0;
   const download = $("cp-download-btn");
-  if (download) download.disabled = !(state.pack?.archive?.complete && state.pack?.archive?.compactAudioBlob);
+  const playerArchive = ((typeof packForMedia === "function" && packForMedia()) || state.pack)?.archive;
+  if (download) download.disabled = !(playerArchive?.complete && playerArchive?.compactAudioBlob);
   const status = $("cp-generation-status");
-  if (status) status.textContent = compactGenerationMessage || (state.pack?.archive?.complete ? "已缓存完整音频 · 可直接播放或下载" : "边生成边听；需要完整文件可点「完整生成」");
+  if (status) status.textContent = compactGenerationMessage || (playerArchive?.complete ? "已缓存完整音频 · 可直接播放或下载" : "边生成边听；需要完整文件可点「完整生成」");
   const fullButton = $("btn-generate-full");
   if (fullButton) {
-    fullButton.textContent = compactFullGenerating ? "取消完整生成" : state.pack?.archive?.complete ? "查看完整音频" : "完整生成";
+    fullButton.textContent = compactFullGenerating ? "取消完整生成" : playerArchive?.complete ? "查看完整音频" : "完整生成";
     fullButton.classList.toggle("busy", compactFullGenerating);
   }
 
@@ -587,7 +611,8 @@ async function performCompactToggle() {
 
   if (state.dubPlaying) stopDubPlayback();
   if (revision !== compactRevision) return;
-  if (interpretController.isRunning(state.tab?.id)) await interpretController.stop(state.tab.id);
+  const compactTab = (typeof mediaActionTab === "function" ? mediaActionTab() : state.tab);
+  if (interpretController.isRunning(compactTab?.id)) await interpretController.stop(compactTab.id);
   if (revision !== compactRevision) return;
 
   if (compactStreamPlayer && compactStreamPlayer.state === 'idle' && compactGenerationComplete) {
@@ -595,8 +620,8 @@ async function performCompactToggle() {
     compactStreamPlayer = null;
   }
   if (compactStreamPlayer && compactStreamPlayer.state === 'paused') {
-    if (state.tab?.id) {
-      try { await injectVideo(state.tab.id, "control", { action: "pause", system: false }); } catch {}
+    if (compactTab?.id) {
+      try { await injectVideo(compactTab.id, "control", { action: "pause", system: false }); } catch {}
     }
     await compactStreamPlayer.play();
     compactPlaying = true;
@@ -615,8 +640,8 @@ async function performCompactToggle() {
   }
 
   if (compactPlayerAudio && compactPlayerAudio.paused) {
-    if (state.tab?.id) {
-      try { await injectVideo(state.tab.id, "control", { action: "pause", system: false }); } catch {}
+    if (compactTab?.id) {
+      try { await injectVideo(compactTab.id, "control", { action: "pause", system: false }); } catch {}
     }
     try {
       await compactPlayerAudio.play();
@@ -634,7 +659,7 @@ async function performCompactToggle() {
     return;
   }
 
-  const archive = state.pack?.archive;
+  const archive = ((typeof packForMedia === "function" && packForMedia()) || state.pack)?.archive;
   let audioBlob = archive?.compactAudioBlob || archive?.audioBlob;
   if (audioBlob) {
     try {
@@ -652,7 +677,7 @@ async function performCompactToggle() {
     }
   }
 
-  if (!state.tab?.id) return;
+  if (!compactTab?.id) return;
   if (!requireModel("text")) { pushError(needModelMessage("text")); return; }
   if (!isTtsReady(state.settings.tts)) { pushError("纯享音频需要先配置语音合成（TTS）"); return; }
   compactPendingAutoplay = true;
@@ -660,10 +685,11 @@ async function performCompactToggle() {
   $("compact-player-bar")?.classList.remove("hidden");
   renderCompactPlayer();
   renderTranscribeAction();
-  if (!compactController.isRunning(state.tab.id)) {
-    await compactController.stop(state.tab.id);
+  if (!compactController.isRunning(compactTab.id)) {
+    await compactController.stop(compactTab.id);
     if (revision !== compactRevision) return;
-    void compactController.start({ tab: { ...state.tab }, settings: state.settings }).catch(err => {
+    if (typeof bindMediaSource === "function") bindMediaSource(compactTab, state.mediaPack || state.pack);
+    void compactController.start({ tab: { ...compactTab }, settings: state.settings }).catch(err => {
       if (revision !== compactRevision) return;
       stopCompactPlayback();
       pushError("纯享启动失败：" + (err?.message || err));
@@ -730,17 +756,18 @@ function closeCompactPlayer() {
 }
 
 async function clearCurrentDubbingCache() {
-  const tab = state.tab ? { ...state.tab } : null;
+  const tab = (typeof mediaActionTab === "function" ? mediaActionTab() : state.tab);
   if (!tab?.id) return false;
+  const snap = { ...tab };
   stopCompactPlayback();
   stopDubPlayback();
-  await Promise.all([interpretController.stop(tab.id), compactController.stop(tab.id)]);
-  const videoId = videoIdentity(tab.url);
+  await Promise.all([interpretController.stop(snap.id), compactController.stop(snap.id)]);
+  const videoId = videoIdentity(snap.url);
   if (!videoId) return false;
   await clearVideoDubCache(videoId);
   await deleteMediaArchive(videoId);
-  if (state.tab?.id !== tab.id || state.tab?.url !== tab.url) return false;
-  if (state.pack) state.pack.archive = null;
+  const pack = typeof packForMediaWrite === "function" ? packForMediaWrite(snap.id) : state.pack;
+  if (pack) pack.archive = null;
   compactSegments = [];
   compactGenerationComplete = false;
   compactGenerationMessage = "已清除当前视频的翻译与配音缓存，其他视频不受影响。";
@@ -756,22 +783,24 @@ async function regenerateCurrentDubbing() {
 
 async function generateFullCompactAudio() {
   if (compactFullGenerating) { stopCompactPlayback(); return; }
-  if (compactActionPending || !state.tab?.id) return;
+  const source = (typeof mediaActionTab === "function" ? mediaActionTab() : state.tab);
+  if (compactActionPending || !source?.id) return;
   compactActionPending = true;
-  const tab = { ...state.tab };
+  const tab = { ...source };
   try {
     stopCompactPlayback();
     const revision = compactRevision;
     stopDubPlayback();
     await Promise.all([interpretController.stop(tab.id), compactController.stop(tab.id)]);
-    if (revision !== compactRevision || state.tab?.id !== tab.id || state.tab?.url !== tab.url) return;
+    if (revision !== compactRevision) return;
+    if (typeof bindMediaSource === "function") bindMediaSource(tab, state.mediaPack || (state.tab?.id === tab.id ? state.pack : null));
     const archive = await loadFullMediaArchive(videoIdentity(tab.url));
     if (revision !== compactRevision) return;
     compactSessionOpen = true;
     $("compact-player-bar")?.classList.remove("hidden");
     if (archive?.complete && archive.compactAudioBlob) {
-      state.pack ||= {};
-      state.pack.archive = archive;
+      const pack = typeof packForMediaWrite === "function" ? packForMediaWrite(tab.id) : (state.pack ||= {});
+      if (pack) pack.archive = archive;
       compactGenerationMessage = "已复用完整音频，无需重新翻译或合成；可直接播放或下载。";
       renderCompactPlayer();
       return;
@@ -810,23 +839,25 @@ function stopDubPlayback() {
     dubPlayerBlobUrl = null;
   }
   state.dubPlaying = false;
-  if (state.tab?.id) {
-    injectVideo(state.tab.id, "restore").catch(() => {});
+  const restoreId = state.mediaTab?.id || state.tab?.id;
+  if (restoreId) {
+    injectVideo(restoreId, "restore").catch(() => {});
   }
   renderTranscribeAction();
 }
 
 async function toggleDubPlayback() {
+  const dubTab = (typeof mediaActionTab === "function" ? mediaActionTab() : state.tab);
   stopCompactPlayback();
-  await compactController.stop(state.tab?.id);
-  const archive = state.pack?.archive;
+  await compactController.stop(dubTab?.id);
+  const archive = ((typeof packForMedia === "function" && packForMedia()) || state.pack)?.archive;
   if (!archive?.audioBlob) return;
   if (state.dubPlaying) {
     stopDubPlayback();
     return;
   }
 
-  const tabId = state.tab?.id;
+  const tabId = dubTab?.id;
   if (!tabId) return;
 
   try {
@@ -925,17 +956,360 @@ function renderModelLine() {
 function syncComposerHints() {
   const input = $("input");
   if (input) {
-    input.placeholder = skillsOn()
-      ? "问这页 · / 选 skill · Enter 发送 · ⇧Enter 换行"
-      : "问这页 · Enter 发送 · ⇧Enter 换行";
+    if (!state.share && !state.chatRef) {
+      input.placeholder = skillsOn()
+        ? "直接交代任务 · / 选 skill · Enter 发送"
+        : "直接交代任务，不带当前网页 · Enter 发送";
+    } else {
+      input.placeholder = skillsOn()
+        ? "问这页 · / 选 skill · Enter 发送 · ⇧Enter 换行"
+        : "问这页 · Enter 发送 · ⇧Enter 换行";
+    }
   }
-  const send = $("btn-send");
-  if (send) send.title = "发送（Enter）";
 }
 
 function syncSkillFolderControls() {
   $("block-skill-folder")?.classList.toggle("skills-off", !skillsOn());
   syncComposerHints();
+}
+
+function readUiPref(key, fallback) {
+  try {
+    const value = localStorage.getItem(`pagelens.${key}`);
+    if (value === "1") return true;
+    if (value === "0") return false;
+  } catch { /* ignore */ }
+  return fallback;
+}
+
+function writeUiPref(key, value) {
+  try { localStorage.setItem(`pagelens.${key}`, value ? "1" : "0"); } catch { /* ignore */ }
+}
+
+function setSendButton(stopping) {
+  const btn = $("btn-send");
+  if (!btn) return;
+  if (stopping) {
+    btn.textContent = "■";
+    btn.setAttribute("data-tooltip", "停止");
+    btn.setAttribute("aria-label", "停止");
+    return;
+  }
+  btn.innerHTML = '<svg class="ico" viewBox="0 0 24 24"><use href="#i-up"/></svg>';
+  btn.setAttribute("data-tooltip", "发送");
+  btn.setAttribute("aria-label", "发送");
+}
+
+function currentMediaTitle() {
+  if (state.mediaTab) {
+    return state.mediaPack?.title || state.mediaTab.title || "当前视频";
+  }
+  if (state.pack?.video || state.pack?.videoIsPrimary) {
+    return state.pack?.title || state.tab?.title || "当前视频";
+  }
+  const running = interpretController.getRunningTasks?.() || [];
+  return running[0]?.title || state.tab?.title || "尚未选择视频";
+}
+
+function mediaShouldShow() {
+  const videoCount = Number(state.pack?.videoCount) || (Array.isArray(state.pack?.videos) ? state.pack.videos.length : 0);
+  const hasPlayer = Boolean(state.pack?.video) || videoCount > 0 || isVideoUrl(state.tab?.url) || Boolean(state.mediaTab);
+  const running = interpretController.getRunningTasks?.() || [];
+  const compact = Boolean(compactSessionOpen || compactPlaying || compactPendingAutoplay);
+  return hasPlayer || running.length > 0 || compact || Boolean(state.videoSummary) || isMediaPlaybackActive();
+}
+
+function applyMediaLayout() {
+  const zone = $("media-zone");
+  const body = $("media-body");
+  const toggle = $("btn-media-toggle");
+  if (!zone) return;
+  const show = mediaShouldShow();
+  zone.classList.toggle("hidden", !show);
+  zone.classList.toggle("collapsed", !state.mediaExpanded);
+  if (body) body.classList.toggle("hidden", !state.mediaExpanded);
+  $("media-collapsed-title")?.classList.toggle("hidden", state.mediaExpanded);
+  $("btn-media-mini-pause")?.classList.toggle("hidden", state.mediaExpanded || !show);
+  $("media-tools")?.classList.toggle("hidden", !state.toolsExpanded);
+  $("media-tasks")?.classList.toggle("hidden", !state.tasksExpanded);
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", String(state.mediaExpanded));
+    const label = state.mediaExpanded ? "收起音视频工具" : "展开音视频工具";
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("data-tooltip", label);
+    toggle.removeAttribute("title");
+  }
+  const ico = $("media-toggle-ico");
+  if (ico) ico.innerHTML = `<use href="${state.mediaExpanded ? "#i-chevron-up" : "#i-chevron"}"/>`;
+  const toolsBtn = $("btn-media-tools");
+  if (toolsBtn) {
+    toolsBtn.setAttribute("aria-expanded", String(state.toolsExpanded));
+    toolsBtn.innerHTML = `${state.toolsExpanded ? "收起工具" : "文稿与工具"} <svg class="ico tiny"><use href="${state.toolsExpanded ? "#i-chevron-up" : "#i-chevron"}"/></svg>`;
+  }
+  $("btn-tasks-toggle")?.setAttribute("aria-expanded", String(state.tasksExpanded));
+  const bar = $("compact-player-bar");
+  if (bar && mediaShouldShow() && state.mediaExpanded) bar.classList.remove("hidden");
+}
+
+function paintVideoSummary() {
+  const box = $("video-summary-result");
+  const summary = state.videoSummary;
+  if (!box) return;
+  box.classList.toggle("hidden", !summary);
+  if (!summary) return;
+  if ($("video-summary-source")) $("video-summary-source").textContent = summary.title ? `来源：${summary.title}` : "";
+  if ($("video-summary-body")) $("video-summary-body").textContent = summary.text || "";
+  const metrics = summary.metrics;
+  if ($("video-summary-usage")) {
+    if (metrics) {
+      const total = (Number(metrics.inputTokens) || 0) + (Number(metrics.outputTokens) || 0);
+      $("video-summary-usage").textContent = `${formatTokenCount(total)} Tokens · ${formatDuration(metrics.durationMs)} · 估算`;
+    } else {
+      $("video-summary-usage").textContent = summary.error ? "失败" : "生成中…";
+    }
+  }
+  if ($("video-summary-usage-detail")) {
+    $("video-summary-usage-detail").textContent = metrics
+      ? `输入 ${formatTokenCount(metrics.inputTokens)} · 输出 ${formatTokenCount(metrics.outputTokens)}（本地估算，非服务端用量）`
+      : "";
+  }
+}
+
+function setChipAction(el, label, tooltip) {
+  if (!el) return;
+  el.textContent = label;
+  el.classList.remove("hidden");
+  el.setAttribute("aria-label", tooltip);
+  el.setAttribute("data-tooltip", tooltip);
+}
+
+function renderComposerChip() {
+  const label = $("compose-chip-label");
+  const chip = $("compose-chip");
+  const clear = $("btn-clear-ref");
+  const note = $("compose-note");
+  const follow = $("chat-follow");
+  const input = $("input");
+  const ref = state.chatRef;
+  const pageTitle = state.pack?.title || state.tab?.title || "当前网页";
+  chip?.classList.toggle("is-ref", Boolean(ref));
+  chip?.classList.toggle("is-off", !ref && !state.share);
+  if (ref) {
+    const kind = ref.kind === "summary" ? "摘要" : "文稿";
+    if (label) label.textContent = `已引用：${ref.title} · ${kind}`;
+    setChipAction(clear, "×", "移除引用");
+    if (note) note.textContent = "视频引用";
+    if (follow) follow.textContent = "主动引用优先于当前网页";
+    if (input && !input.value) input.placeholder = "针对已引用的视频内容提问…";
+    return;
+  }
+  if (state.share) {
+    if (label) label.textContent = `当前网页：${pageTitle}`;
+    setChipAction(clear, "×", "去掉网页上下文");
+    if (note) note.textContent = "当前网页";
+    if (follow) follow.textContent = "跟随当前标签页";
+  } else {
+    if (label) label.textContent = "未带网页";
+    setChipAction(clear, "带上", "带上当前网页");
+    if (note) note.textContent = "不使用网页";
+    if (follow) follow.textContent = "已去掉网页，切到其他页会再带上";
+  }
+  if (input) syncComposerHints();
+}
+
+function citeTranscript() {
+  const text = state.pack?.captionsText;
+  if (!text) {
+    pushError("还没有可引用的文稿。先点「只要文稿」，或等同传出字幕。");
+    return;
+  }
+  const title = currentMediaTitle();
+  state.chatRef = {
+    kind: "transcript",
+    title,
+    context: `【主动引用视频文稿】标题：${title}\nURL：${state.pack?.url || state.tab?.url || ""}\n\n${text.slice(0, 12000)}`,
+  };
+  setView("chat");
+  renderComposerChip();
+  $("input")?.focus();
+  if ($("media-note")) $("media-note").textContent = `已引用「${title}」文稿，移除后恢复跟随网页`;
+}
+
+function citeVideoSummary() {
+  const summary = state.videoSummary;
+  if (!summary?.text || summary.text === "正在阅读完整文稿…") return;
+  state.chatRef = {
+    kind: "summary",
+    title: summary.title || "视频摘要",
+    context: `【主动引用视频摘要】标题：${summary.title || ""}\n\n${summary.text}`,
+  };
+  setView("chat");
+  renderComposerChip();
+  $("input")?.focus();
+}
+
+function clearChatRef() {
+  state.chatRef = null;
+  renderComposerChip();
+  if ($("media-note")) $("media-note").textContent = "已移除引用，下次提问跟随当前网页";
+}
+
+function dismissPageContext() {
+  state.share = false;
+  state.dismissedPage = snapshotTab(state.tab);
+  state.pack = null;
+  $("recall-banner")?.classList.add("hidden");
+  renderContext();
+  renderComposerChip();
+  renderSkills();
+}
+
+async function restorePageContext() {
+  state.share = true;
+  state.dismissedPage = null;
+  renderComposerChip();
+  if (typeof refreshTab === "function") await refreshTab();
+  else {
+    renderContext();
+    renderSkills();
+  }
+}
+
+function onComposerChipAction() {
+  if (state.chatRef) {
+    clearChatRef();
+    return;
+  }
+  if (state.share) dismissPageContext();
+  else restorePageContext();
+}
+
+function renderMediaChrome() {
+  applyMediaLayout();
+  paintVideoSummary();
+  renderComposerChip();
+  const title = currentMediaTitle();
+  if ($("media-active-title")) {
+    $("media-active-title").textContent = title;
+    $("media-active-title").title = title;
+  }
+  if ($("media-collapsed-title")) {
+    $("media-collapsed-title").textContent = title;
+    $("media-collapsed-title").title = title;
+  }
+  const mediaId = state.mediaTab?.id || state.tab?.id;
+  const interpreting = interpretController.isRunning(mediaId);
+  const compactActive = Boolean(compactPlaying || compactPendingAutoplay);
+  const running = interpretController.getRunningTasks?.() || [];
+  const status = interpreting ? "同传中" : compactPendingAutoplay ? "纯享准备中" : compactPlaying ? "纯享播放中" : running.length ? "后台处理中" : "就绪";
+  if ($("media-status-label")) $("media-status-label").textContent = status;
+  if ($("media-heading")) {
+    $("media-heading").textContent = state.mediaExpanded
+      ? "音视频工具"
+      : `${Math.max(running.length, mediaShouldShow() ? 1 : 0)} 个视频 · ${Math.max(0, running.filter((t) => t.tabId !== mediaId).length)} 个后台`;
+  }
+  $("btn-interpret")?.setAttribute("aria-pressed", String(interpreting || !compactActive));
+  $("btn-compact-player")?.setAttribute("aria-pressed", String(compactActive));
+  const count = running.length || (mediaShouldShow() ? 1 : 0);
+  if ($("task-count")) $("task-count").textContent = String(count);
+  if ($("media-task-heading")) {
+    $("media-task-heading").textContent = running.length
+      ? `播放 ${interpreting || compactActive ? 1 : 0} 个 · 后台 ${Math.max(0, running.length - (interpreting ? 1 : 0))} 个`
+      : "没有后台任务";
+  }
+  const usage = $("media-usage");
+  if (usage) {
+    const summary = state.videoSummary?.metrics;
+    if (summary) {
+      const total = (Number(summary.inputTokens) || 0) + (Number(summary.outputTokens) || 0);
+      usage.textContent = `${formatTokenCount(total)} Tokens · ${formatDuration(summary.durationMs)}（估算）`;
+    }
+  }
+}
+
+async function startSummarizePage() {
+  if (!state.share) await restorePageContext();
+  const title = state.pack?.title || state.tab?.title || "本页";
+  const prompt = state.pack?.kind === "pdf"
+    ? `总结这份 PDF「${title}」的核心观点和结构。`
+    : `总结这篇文章，给我三个要点。`;
+  await sendPrompt(prompt);
+}
+
+async function backToVideoTab() {
+  const running = interpretController.getRunningTasks?.() || [];
+  const id = state.mediaTab?.id || (state.pack?.video || state.pack?.videoIsPrimary ? state.tab?.id : null) || running[0]?.tabId || state.tab?.id;
+  if (!id || typeof chrome === "undefined" || !chrome.tabs?.update) return;
+  try { await chrome.tabs.update(id, { active: true }); } catch { /* ignore */ }
+}
+
+function toggleMiniPlayback() {
+  if (compactPlaying || compactPendingAutoplay || compactSessionOpen) {
+    void toggleCompactPlayback();
+    return;
+  }
+  const mediaId = state.mediaTab?.id || state.tab?.id;
+  if (interpretController.isRunning(mediaId)) {
+    void interpretController.stop(mediaId);
+    return;
+  }
+  getSharedAudioContext();
+  startInterpret();
+}
+
+async function toggleVideoPicker() {
+  const box = $("media-task-picker");
+  const list = $("media-task-picker-list");
+  if (!box || !list) return;
+  const opening = box.classList.contains("hidden");
+  box.classList.toggle("hidden", !opening);
+  if (!opening) return;
+  list.textContent = "正在查找已打开的视频…";
+  if (typeof chrome === "undefined" || !chrome.tabs?.query) {
+    list.textContent = "当前环境无法读取标签页。";
+    return;
+  }
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  const videos = (tabs || []).filter((tab) => tab.url && /youtube\.com|youtu\.be|bilibili\.com|vimeo\.com/.test(tab.url));
+  list.innerHTML = "";
+  if (!videos.length) {
+    list.textContent = "没有发现已打开的视频页。";
+    return;
+  }
+  for (const tab of videos) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "task-pick-item";
+    btn.innerHTML = `<span></span><span>后台准备</span>`;
+    btn.firstChild.textContent = tab.title || tab.url;
+    btn.addEventListener("click", () => startBackgroundInterpret(tab));
+    list.appendChild(btn);
+  }
+}
+
+async function startBackgroundInterpret(tab) {
+  if (!isAsrReady(state.settings.asr)) {
+    needAsrSettings("后台准备需要先配置语音转写（ASR）");
+    return;
+  }
+  if (!requireModel("text")) {
+    pushError(needModelMessage("text"));
+    return;
+  }
+  try {
+    await interpretController.start({
+      tab,
+      settings: state.settings,
+      onCaptionsReady: (captions) => {
+        applyCaptions({ ...captions, tabId: captions.tabId ?? tab.id });
+      },
+    });
+    $("media-task-picker")?.classList.add("hidden");
+    if ($("media-note")) $("media-note").textContent = `已添加后台任务：${tab.title || ""}（需源视频保持打开）`;
+    renderContext();
+  } catch (err) {
+    pushError("无法添加任务：" + (err?.message || err));
+  }
 }
 
 function formatStatusError(err) {
@@ -955,11 +1329,15 @@ function formatStatusError(err) {
 
 function renderContext() {
   const tab = state.tab;
+  $("btn-unpin")?.classList.toggle("hidden", !state.share);
+  $("btn-pin-page")?.classList.toggle("hidden", Boolean(state.share));
   if (!tab || !state.share) {
-    $("ctx-label").textContent = "未分享页面";
-    $("ctx-title").textContent = "当前页未分享";
-    $("ctx-sub").textContent = "点工具栏打开本侧栏时，默认会带上当前标签";
+    $("ctx-label").textContent = "未带网页";
+    $("ctx-title").textContent = tab?.title || "当前页";
+    $("ctx-sub").textContent = "对话不使用此页，可直接交代任务。切换到其他网页后会自动带上。";
+    if ($("ctx-source-hint")) $("ctx-source-hint").textContent = "";
     renderTranscribeAction();
+    renderComposerChip();
     return;
   }
   const video = state.pack?.videoIsPrimary && state.pack?.video;
@@ -1013,7 +1391,9 @@ function renderContext() {
     }
   }
   $("ctx-sub").textContent = bits.filter(Boolean).join(" · ");
+  if ($("ctx-source-hint")) $("ctx-source-hint").textContent = "本次总结与提问的来源";
   renderTranscribeAction();
+  renderComposerChip();
 }
 
 const isTranscribing = () => ["extracting", "recording", "uploading"].includes(state.transcribe?.status);
@@ -1030,57 +1410,65 @@ function renderTranscribeAction() {
   const live = $("si-live");
   const tr = state.transcribe;
   const recording = isTranscribing();
-  const interpreting = interpretController.isRunning(state.tab?.id);
-  const si = interpretController.getState(state.tab?.id);
-  const asrCaps = ["asr-full", "asr", "asr-cache", "interpret", "subtitles", "subtitles-full"].includes(state.pack?.captionsSource);
-  const capsReady = state.pack?.captionsStatus === "ready";
+  const mediaId = state.mediaTab?.id || state.tab?.id;
+  const mediaPack = (typeof packForMedia === "function" && packForMedia()) || state.pack;
+  const interpreting = interpretController.isRunning(mediaId);
+  const si = interpretController.getState(mediaId);
+  const asrCaps = ["asr-full", "asr", "asr-cache", "interpret", "subtitles", "subtitles-full"].includes(mediaPack?.captionsSource);
+  const capsReady = mediaPack?.captionsStatus === "ready";
   const canShare = Boolean(state.share && state.tab);
-  if (actions) actions.classList.toggle("hidden", !canShare && !recording && !interpreting);
+  const videoCount = Number(state.pack?.videoCount) || (Array.isArray(state.pack?.videos) ? state.pack.videos.length : 0);
+  const hasPlayer = Boolean(state.pack?.video) || videoCount > 0 || interpreting || Boolean(state.mediaTab);
+  if (actions) actions.classList.toggle("hidden", !canShare && !recording && !interpreting && !hasPlayer);
   const draftLabel = recording ? "停止" : asrCaps ? "重新取文稿" : "只要文稿";
   if (btn) {
     btn.textContent = draftLabel;
     btn.classList.toggle("busy", Boolean(recording));
-    btn.disabled = !canShare && !recording;
+    btn.disabled = !hasPlayer && !canShare && !recording;
   }
   if (sum) {
-    sum.textContent = recording ? "提取中…" : "一键总结";
-    sum.disabled = recording || state.busy || !canShare;
+    sum.innerHTML = recording
+      ? "提取中…"
+      : '<svg class="ico"><use href="#i-spark"/></svg>一键总结视频';
+    sum.disabled = recording || state.busy || (!hasPlayer && !canShare);
   }
-  const videoCount = Number(state.pack?.videoCount) || (Array.isArray(state.pack?.videos) ? state.pack.videos.length : 0);
-  const hasPlayer = Boolean(state.pack?.video) || videoCount > 0 || interpreting;
+  const pageSum = $("btn-summarize-page");
+  if (pageSum) pageSum.disabled = state.busy || !state.tab;
   $("btn-generate-full")?.classList.toggle("hidden", !hasPlayer);
   $("btn-clear-dub-cache")?.classList.toggle("hidden", !hasPlayer);
   if (siBtn) {
-    siBtn.textContent = interpreting ? "停止同传" : "同声传译";
+    siBtn.innerHTML = interpreting
+      ? "停止同传"
+      : '<svg class="ico"><use href="#i-lang"/></svg>同声传译';
     siBtn.title = interpreting ? "停止同传" : "按声音识别并翻译，可与一键总结同时进行。";
     siBtn.classList.toggle("busy", Boolean(interpreting));
-    siBtn.disabled = !canShare && !interpreting;
+    siBtn.disabled = !hasPlayer && !canShare && !interpreting;
   }
   const compactBtn = $("btn-compact-player");
   const compactBarBtn = $("btn-compact-bar");
-  const hasCompact = Boolean(state.pack?.archive?.hasCompactAudio || state.pack?.archive?.hasAudio);
+  const hasCompact = Boolean(mediaPack?.archive?.hasCompactAudio || mediaPack?.archive?.hasAudio || state.pack?.archive?.hasCompactAudio || state.pack?.archive?.hasAudio);
   const isPendingAuto = typeof compactPendingAutoplay !== 'undefined' ? compactPendingAutoplay : false;
   const isCompactPlaying = typeof compactPlaying !== 'undefined' ? compactPlaying : false;
   const isCompactActive = isCompactPlaying || isPendingAuto;
   if (compactBtn) {
-    compactBtn.classList.toggle("hidden", !hasPlayer);
+    compactBtn.classList.toggle("hidden", !hasPlayer && !(typeof mediaShouldShow === "function" && mediaShouldShow()));
     if (isCompactActive) {
       compactBtn.textContent = isPendingAuto ? "取消准备" : "⏸ 暂停纯享";
       compactBtn.classList.add("busy");
     } else if (compactStreamPlayer || compactPlayerAudio) {
-      compactBtn.textContent = "▶ 继续纯享";
+      compactBtn.innerHTML = '<svg class="ico"><use href="#i-play"/></svg>继续纯享';
       compactBtn.title = "从暂停位置继续播放";
       compactBtn.classList.remove("busy");
     } else if (hasCompact) {
-      compactBtn.textContent = "🎧 纯享音频";
+      compactBtn.innerHTML = '<svg class="ico"><use href="#i-headphone"/></svg>纯享音频';
       compactBtn.title = "无缝连续播放中文配音（像听播客一样，无原视频静音等待）";
       compactBtn.classList.remove("busy");
     } else if (interpreting) {
-      compactBtn.textContent = "🎧 开启纯享";
+      compactBtn.innerHTML = '<svg class="ico"><use href="#i-headphone"/></svg>开启纯享';
       compactBtn.title = "切换到纯享音频，暂停视频并连续收听中文配音";
       compactBtn.classList.remove("busy");
     } else {
-      compactBtn.textContent = "🎧 纯享音频";
+      compactBtn.innerHTML = '<svg class="ico"><use href="#i-headphone"/></svg>纯享音频';
       compactBtn.title = "独立生成并连续收听中文配音";
       compactBtn.classList.remove("busy");
     }
@@ -1090,11 +1478,11 @@ function renderTranscribeAction() {
   }
   const archiveBtn = $("btn-play-archive");
   const regenBtn = $("btn-regen-dub");
-  const hasArchive = Boolean(state.pack?.archive?.hasAudio);
+  const hasArchive = Boolean(mediaPack?.archive?.hasAudio || state.pack?.archive?.hasAudio);
   if (archiveBtn) {
     archiveBtn.classList.toggle("hidden", !hasArchive || (!canShare && !state.dubPlaying));
     if (hasArchive) {
-      const days = state.pack.archive.remainingDays ?? 7;
+      const days = mediaPack?.archive?.remainingDays ?? state.pack?.archive?.remainingDays ?? 7;
       archiveBtn.textContent = state.dubPlaying ? "停止对齐" : `对齐配音 (剩${days}天)`;
       archiveBtn.title = `与原视频画面时间轴对齐播放配音 (剩余${days}天)`;
       archiveBtn.classList.toggle("busy", Boolean(state.dubPlaying));
@@ -1118,11 +1506,14 @@ function renderTranscribeAction() {
   }
   if (audioBtn) {
     const on = state.originalAudioOn !== false;
-    audioBtn.classList.toggle("hidden", !hasPlayer || (!canShare && !interpreting));
-    audioBtn.textContent = on ? "关原声" : "开原声";
+    audioBtn.classList.toggle("hidden", (!hasPlayer && !(typeof mediaShouldShow === "function" && mediaShouldShow())) || (!canShare && !interpreting));
+    audioBtn.innerHTML = on
+      ? '<svg class="ico"><use href="#i-volume"/></svg>原音：开'
+      : '<svg class="ico"><use href="#i-mute"/></svg>原音：关';
     audioBtn.title = on ? "关闭原视频声音" : "开启原视频声音";
+    audioBtn.setAttribute?.("aria-pressed", String(on));
     audioBtn.classList.toggle("busy", !on);
-    audioBtn.disabled = !state.tab?.id;
+    audioBtn.disabled = !mediaId;
   }
   if (sw) {
     const idx = Number.isInteger(state.pack?.videoIndex) ? state.pack.videoIndex : 0;
@@ -1134,7 +1525,7 @@ function renderTranscribeAction() {
   const bgTasksEl = $("ctx-bg-tasks");
   if (bgTasksEl) {
     const runningTasks = interpretController.getRunningTasks();
-    const otherTasks = runningTasks.filter((t) => t.tabId !== state.tab?.id);
+    const otherTasks = runningTasks.filter((t) => t.tabId !== mediaId);
     bgTasksEl.classList.toggle("hidden", otherTasks.length === 0);
     bgTasksEl.innerHTML = "";
     for (const t of otherTasks) {
@@ -1187,6 +1578,7 @@ function renderTranscribeAction() {
       $("si-src").textContent = si?.hint || "";
     }
   }
+  if (typeof renderMediaChrome === "function") renderMediaChrome();
 }
 
 function applyUiFont(size) {
@@ -1297,6 +1689,13 @@ function createMessageFooter(msg) {
   }
   footer.appendChild(stats);
 
+  if (msg.sourceTitle) {
+    const source = document.createElement("div");
+    source.className = "msg-source";
+    source.textContent = `来源：${msg.sourceTitle}`;
+    footer.appendChild(source);
+  }
+
   const actions = document.createElement("div");
   actions.className = "msg-actions";
 
@@ -1311,6 +1710,34 @@ function createMessageFooter(msg) {
       openClipModal(msg);
     });
     actions.appendChild(clipBtn);
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "btn-copy-answer";
+    copyBtn.title = "复制回答";
+    copyBtn.innerHTML = `<svg class="ico tiny"><use href="#i-copy"/></svg><span>复制</span>`;
+    copyBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        await copyText(msg.text);
+        copyBtn.querySelector("span").textContent = "已复制";
+        setTimeout(() => { copyBtn.querySelector("span").textContent = "复制"; }, 1200);
+      } catch (err) {
+        flashStatus(err.message || String(err), false);
+      }
+    });
+    actions.appendChild(copyBtn);
+
+    const obsidianBtn = document.createElement("button");
+    obsidianBtn.type = "button";
+    obsidianBtn.className = "btn-obsidian-answer";
+    obsidianBtn.title = "把当前整段对话写入文稿文件夹";
+    obsidianBtn.innerHTML = `<svg class="ico tiny"><use href="#i-book"/></svg><span>写入 Obsidian</span>`;
+    obsidianBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      importCurrentToLibrary();
+    });
+    actions.appendChild(obsidianBtn);
   }
 
   if (msg.traceLog || msg.metrics) {
@@ -1382,7 +1809,7 @@ function renderMessages() {
     const empty = document.createElement("div");
     empty.className = "empty";
     empty.textContent = isModelReady(resolveModel(state.settings, "text"))
-      ? "直接问这页，或点「一键总结」「同声传译」。"
+      ? "直接问这页，或点「总结本页」。视频总结在上方音视频区，不会覆盖这里的对话。"
       : "先到设置里配置文本模型的 base_url、model_name、api_key。";
     root.appendChild(empty);
     const first = visibleSkills(state.settings).slice(0, 4);
@@ -1596,6 +2023,10 @@ function setView(view) {
   $("view-settings")?.classList.toggle("hidden", view !== "settings");
   $("view-history")?.classList.toggle("hidden", view !== "history");
   $("view-review")?.classList.toggle("hidden", view !== "review");
+  const current = { history: "btn-history", settings: "btn-settings", review: "btn-review" }[view];
+  for (const id of ["btn-history", "btn-settings", "btn-review"]) {
+    $(id)?.setAttribute?.("aria-current", id === current ? "page" : "false");
+  }
   if (view !== "chat") hideSlashMenu();
   if (view === "chat") messageScroll?.updateButton();
   if (view === "review") refreshReviewView();
@@ -1801,7 +2232,10 @@ async function startNewSession() {
   state.workAbort?.abort();
   abortRecording();
   await clearActiveId();
+  state.chatRef = null;
+  if ($("input")) $("input").value = "";
   renderAttach();
+  renderComposerChip();
   messageScroll?.reset();
   renderMessages();
   setView("chat");
@@ -2720,7 +3154,8 @@ async function renderReviewHistory() {
   }
 }
 
-function handleClipCurrentPage() {
+async function handleClipCurrentPage() {
+  if (!state.share) await restorePageContext();
   const defaultTitle = state.pack?.title || state.tab?.title || "未命名网页";
   const defaultUrl = state.pack?.url || state.tab?.url || "";
   let excerpt = "";
@@ -3600,34 +4035,67 @@ async function pickTargetTab() {
 }
 
 async function refreshTab() {
-  const prevId = state.tab?.id;
-  // Keep playback and its controls attached to their source while the user browses.
-  // A closed or navigated source still goes through the normal cleanup below.
-  if (prevId && (interpretController.isRunning(prevId) || compactController.isRunning(prevId) ||
-      compactSessionOpen || state.dubPlaying)) {
-    const source = await chrome.tabs.get(prevId).catch(() => null);
-    if (source && source.url === state.tab.url) {
-      renderContext();
-      return;
-    }
+  ensureMediaSourceFromPlayback(state.tab);
+
+  const mediaId = state.mediaTab?.id;
+  const mediaUrl = state.mediaTab?.url;
+  const sourceTab = mediaId ? await chrome.tabs.get(mediaId).catch(() => null) : null;
+  const sourceStillSame = Boolean(sourceTab && sourceTab.url === mediaUrl);
+  const mediaAlive = Boolean(mediaId && isMediaPlaybackActive(mediaId));
+
+  if (mediaAlive && (!sourceTab || !sourceStillSame)) {
+    interpretController.stop(mediaId);
+    compactController.stop(mediaId);
+    stopCompactPlayback();
+    stopDubPlayback();
+    compactSegments = [];
+    compactGenerationMessage = "";
+    compactFullGenerating = false;
+    state.mediaTab = null;
+    state.mediaPack = null;
   }
+
   const tab = await pickTargetTab();
-  const recording = isTranscribing();
-  const interpreting = interpretController.isRunning(tab?.id);
-  if (!recording && !interpreting && tab?.id !== prevId) state.transcribe = null;
-  if (recording && (tab?.id !== prevId || tab?.url !== state.tab?.url)) state.workAbort?.abort();
-  if (tab?.id !== prevId || tab?.url !== state.tab?.url) {
+  if (!state.share && state.dismissedPage && tab && (tab.id !== state.dismissedPage.id || tab.url !== state.dismissedPage.url)) {
+    state.share = true;
+    state.dismissedPage = null;
+  }
+  const prevId = state.tab?.id;
+  const prevUrl = state.tab?.url;
+  const changed = tab?.id !== prevId || tab?.url !== prevUrl;
+  const keepMedia = Boolean(state.mediaTab?.id && isMediaPlaybackActive(state.mediaTab.id) && sourceStillSame);
+  const recording = typeof isTranscribing === "function" ? isTranscribing() : false;
+  const interpretingOnPage = interpretController.isRunning(tab?.id);
+
+  if (!recording && !interpretingOnPage && tab?.id !== prevId) state.transcribe = null;
+  if (recording && changed) {
+    state.workAbort?.abort();
+    state.workAbort = null;
+  }
+  if (changed && !keepMedia) {
     if (state.dubPlaying) stopDubPlayback();
     stopCompactPlayback();
     compactSegments = [];
   }
+
+  const revision = ++state.pageRevision;
   state.tab = tab || null;
-  state.interpret = interpretController.getState(tab?.id);
-  state.originalAudioOn = interpretController.getTask(tab?.id)?.originalAudioOn ?? true;
-  if ((recording || interpreting) && tab?.id === prevId) {
+  if (keepMedia) {
+    state.interpret = interpretController.getState(state.mediaTab.id);
+    state.originalAudioOn = interpretController.getTask?.(state.mediaTab.id)?.originalAudioOn ?? state.originalAudioOn;
+  } else {
+    state.interpret = interpretController.getState(tab?.id);
+    state.originalAudioOn = interpretController.getTask?.(tab?.id)?.originalAudioOn ?? true;
+  }
+
+  if (keepMedia && tab?.id === state.mediaTab.id && state.mediaPack) {
+    state.pack = state.mediaPack;
     renderContext();
+    renderSkills();
+    if (tab?.url) checkSmartRecall(tab.url).catch(() => {});
     return;
   }
+
   if (!state.share || !tab || restrictedUrl(tab.url)) {
     state.pack = null;
     $("recall-banner")?.classList.add("hidden");
@@ -3635,11 +4103,36 @@ async function refreshTab() {
     renderSkills();
     return;
   }
+
+  if (changed) {
+    state.pack = {
+      title: tab.title || "",
+      url: tab.url || "",
+      text: "",
+      quotes: [],
+      video: null,
+      loading: true,
+      tab,
+    };
+    renderContext();
+  }
+
   try {
     const result = await loadTabPack(tab.id);
-    state.pack = result || null;
+    if (revision !== state.pageRevision) return;
+    if (tab?.id !== state.tab?.id || tab?.url !== state.tab?.url) return;
+    state.pack = result || {
+      title: tab.title,
+      url: tab.url,
+      text: "",
+      quotes: [],
+      video: null,
+    };
+    if (state.mediaTab?.id === tab.id) state.mediaPack = state.pack;
     if (result && (result.videoIsPrimary || result.video || /youtube\.com|youtu\.be|bilibili\.com/.test(tab.url || ""))) {
       const caps = await loadPageCaptions(tab.id, tab.url);
+      if (revision !== state.pageRevision) return;
+      if (tab?.id !== state.tab?.id || tab?.url !== state.tab?.url) return;
       state.pack.captionsStatus = caps.status;
       state.pack.captionsText = caps.text;
       state.pack.captionsSource = caps.source;
@@ -3653,6 +4146,8 @@ async function refreshTab() {
       if (videoId) {
         try {
           const archive = await loadFullMediaArchive(videoId);
+          if (revision !== state.pageRevision) return;
+          if (tab?.id !== state.tab?.id || tab?.url !== state.tab?.url) return;
           if (archive && (archive.hasAudio || archive.hasCompactAudio)) {
             state.pack = state.pack || {};
             state.pack.archive = archive;
@@ -3671,6 +4166,8 @@ async function refreshTab() {
       }
     }
   } catch {
+    if (revision !== state.pageRevision) return;
+    if (tab?.id !== state.tab?.id || tab?.url !== state.tab?.url) return;
     state.pack = {
       title: tab.title,
       url: tab.url,
@@ -3685,6 +4182,100 @@ async function refreshTab() {
     checkSmartRecall(tab.url).catch(() => {});
   } else {
     $("recall-banner")?.classList.add("hidden");
+  }
+}
+
+function snapshotTab(tab) {
+  if (!tab) return null;
+  return { id: tab.id, url: tab.url, title: tab.title, favIconUrl: tab.favIconUrl, windowId: tab.windowId };
+}
+
+function isVideoUrl(url) {
+  return /youtube\.com|youtu\.be|bilibili\.com|vimeo\.com|tiktok\.com/.test(url || "");
+}
+
+function isVideoPack(pack) {
+  return Boolean(pack?.isVideoPage || pack?.hasVideo || pack?.video || pack?.videoIsPrimary || pack?.kind === "video" || isVideoUrl(pack?.tab?.url || pack?.url));
+}
+
+function isMediaPlaybackActive(tabId) {
+  if (tabId != null) {
+    return Boolean(
+      interpretController.isRunning(tabId) ||
+      compactController.isRunning(tabId) ||
+      (typeof compactSessionOpen !== "undefined" && compactSessionOpen && state.mediaTab?.id === tabId) ||
+      (state.dubPlaying && state.mediaTab?.id === tabId)
+    );
+  }
+  return Boolean(
+    (state.mediaTab?.id && (interpretController.isRunning(state.mediaTab.id) || compactController.isRunning(state.mediaTab.id))) ||
+    (typeof compactSessionOpen !== "undefined" && compactSessionOpen) ||
+    state.dubPlaying
+  );
+}
+
+function bindMediaSource(tab, pack) {
+  if (!tab) return;
+  state.mediaTab = snapshotTab(tab);
+  if (pack) state.mediaPack = pack;
+}
+
+function ensureMediaSourceFromPlayback(fallbackTab) {
+  if (state.mediaTab?.id) return state.mediaTab;
+  const running = interpretController.getRunningTasks?.() || [];
+  const active = running.find((t) => t?.tabId) || running[0];
+  if (active?.tabId) {
+    bindMediaSource({ id: active.tabId, url: active.url, title: active.title }, state.mediaPack);
+    return state.mediaTab;
+  }
+  const tab = fallbackTab || state.tab;
+  if (!tab?.id) return null;
+  if (isMediaPlaybackActive(tab.id) || isVideoPack(state.pack) || isVideoUrl(tab.url)) {
+    if (isMediaPlaybackActive(tab.id) || compactSessionOpen || state.dubPlaying) {
+      bindMediaSource(tab, isVideoPack(state.pack) ? state.pack : state.mediaPack);
+      return state.mediaTab;
+    }
+  }
+  if (compactSessionOpen || state.dubPlaying) {
+    bindMediaSource(tab, isVideoPack(state.pack) ? state.pack : state.mediaPack);
+    return state.mediaTab;
+  }
+  return null;
+}
+
+function packForMedia() {
+  if (state.mediaTab && state.tab?.id === state.mediaTab.id) return state.pack || state.mediaPack;
+  return state.mediaPack || null;
+}
+
+function packForMediaWrite(tabId) {
+  if (tabId == null) {
+    if (state.mediaTab && state.tab?.id !== state.mediaTab.id) return (state.mediaPack ||= {});
+    return (state.pack ||= {});
+  }
+  if (state.tab?.id === tabId) {
+    state.pack ||= {};
+    if (state.mediaTab?.id === tabId) state.mediaPack = state.pack;
+    return state.pack;
+  }
+  if (state.mediaTab?.id === tabId) return (state.mediaPack ||= {});
+  return null;
+}
+
+function mediaActionTab() {
+  if (isVideoPack(state.pack) || isVideoUrl(state.tab?.url)) return state.tab;
+  return state.mediaTab || state.tab;
+}
+
+function releaseMediaSourceIfIdle() {
+  if (isMediaPlaybackActive()) return;
+  if (state.tab?.id && state.mediaTab?.id === state.tab.id) {
+    state.mediaPack = state.pack;
+    return;
+  }
+  if (state.mediaTab && state.tab?.id !== state.mediaTab.id) {
+    state.mediaTab = null;
+    state.mediaPack = null;
   }
 }
 
@@ -3935,10 +4526,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     turnsUsed: turnsUsed || 0,
     startedAt: resume && state.run?.startedAt ? state.run.startedAt : Date.now(),
   };
-  if ($("btn-send")) {
-    $("btn-send").textContent = "■";
-    $("btn-send").title = "停止";
-  }
+  setSendButton(true);
 
   let result = null;
   let failed = false;
@@ -4084,10 +4672,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     state.busy = false;
     state.abort = null;
     state.stopIntent = null;
-    if ($("btn-send")) {
-      $("btn-send").textContent = "↑";
-      $("btn-send").title = "发送（Enter）";
-    }
+    setSendButton(false);
     if (clearImage) {
       state.image = null;
       renderAttach();
@@ -4168,7 +4753,10 @@ async function sendPrompt(userText, options = {}) {
       }
     }
     const pack = state.share ? state.pack : null;
-    const context = pack ? packToContext(pack) : "（用户未分享页面）";
+    const context = state.chatRef?.context
+      || (pack ? packToContext(pack) : "（用户未分享页面）");
+    botMsg.sourceTitle = state.chatRef?.title
+      || (state.share ? (state.pack?.title || state.tab?.title || "") : "");
     const prior = [];
     for (const m of state.messages.slice(0, -2)) {
       if (m.error || (m.role === "bot" && !m.text)) continue;
@@ -4263,18 +4851,31 @@ async function runSkill(skill) {
 
 function applyCaptions(caps) {
   if (!caps) return;
-  if (!state.pack) state.pack = {};
-  state.pack.captionsStatus = caps.status;
-  state.pack.captionsText = caps.text;
-  state.pack.captionsSource = caps.source;
-  state.pack.captionsCues = caps.cues;
-  state.pack.captionsComplete = caps.complete === true;
+  const capTabId = caps.tabId;
+  let pack = null;
+  if (typeof packForMediaWrite === "function") {
+    pack = packForMediaWrite(capTabId);
+  } else if (capTabId == null || capTabId === state.tab?.id) {
+    pack = (state.pack ||= {});
+  } else if (state.mediaTab?.id === capTabId) {
+    pack = (state.mediaPack ||= {});
+  }
+  if (!pack) return;
+  if (pack.captionsComplete && caps.complete !== true && caps.source === "interpret") {
+    renderContext();
+    return;
+  }
+  pack.captionsStatus = caps.status;
+  pack.captionsText = caps.text;
+  pack.captionsSource = caps.source;
+  pack.captionsCues = caps.cues;
+  pack.captionsComplete = caps.complete === true;
   renderContext();
-  if (caps.status === "ready") syncPackToLibrary(state.pack).catch(() => {});
+  if (caps.status === "ready") syncPackToLibrary(pack).catch(() => {});
 }
 
 function stopInterpret(tabId) {
-  const targetId = tabId || state.tab?.id;
+  const targetId = tabId || state.mediaTab?.id || state.tab?.id;
   interpretController.stop(targetId).catch(() => {});
 }
 
@@ -4288,13 +4889,14 @@ function needAsrSettings(message) {
 }
 
 async function startTranscribe({ force = false } = {}) {
-  if (!state.tab?.id) return null;
+  const target = (typeof mediaActionTab === "function" ? mediaActionTab() : null) || state.tab;
+  if (!target?.id) return null;
   if (isTranscribing()) {
     state.workAbort?.abort();
     return null;
   }
   if (state.busy) return null;
-  const tab = { ...state.tab };
+  const tab = { ...target };
   const abort = new AbortController();
   state.workAbort = abort;
   state.transcribe = { status: "extracting", hint: "正在优先获取完整字幕" };
@@ -4309,8 +4911,7 @@ async function startTranscribe({ force = false } = {}) {
       },
     });
     abort.signal.throwIfAborted();
-    if (state.tab?.id !== tab.id || state.tab?.url !== tab.url) return null;
-    applyCaptions(caps);
+    applyCaptions({ ...caps, tabId: caps.tabId ?? tab.id });
     state.transcribe = { status: "done" };
     renderContext();
     return caps;
@@ -4334,12 +4935,13 @@ async function startSummarizeVideo() {
     pushError(needModelMessage("text"));
     return;
   }
+  const sourcePack = (typeof packForMedia === "function" && packForMedia()) || state.pack;
   const packed = usableTranscript({
-    status: state.pack?.captionsStatus,
-    text: state.pack?.captionsText,
-    cues: state.pack?.captionsCues,
-    source: state.pack?.captionsSource,
-    complete: state.pack?.captionsComplete === true,
+    status: sourcePack?.captionsStatus,
+    text: sourcePack?.captionsText,
+    cues: sourcePack?.captionsCues,
+    source: sourcePack?.captionsSource,
+    complete: sourcePack?.captionsComplete === true,
   });
   let caps = packed?.complete ? packed : null;
   if (!caps?.text) {
@@ -4351,16 +4953,20 @@ async function startSummarizeVideo() {
     pushError(state.transcribe?.error || "没有可总结的完整文稿。请配置 ASR 并启动本机媒体服务，或确认视频包含字幕。");
     return;
   }
-  const title = state.pack?.title || state.tab?.title;
+  const title = sourcePack?.title || state.mediaTab?.title || state.pack?.title || state.tab?.title;
   const abort = new AbortController();
   state.busy = true;
   state.abort = abort;
+  state.videoSummary = { title, text: "正在阅读完整文稿…", metrics: null, error: false };
+  if (typeof paintVideoSummary === "function") paintVideoSummary();
   if (typeof messageScroll !== "undefined") messageScroll?.reset();
   state.messages.push({ role: "user", text: "总结视频内容，重点解释核心观点、论据和结论，时间轴仅作为文末补充。" });
-  const botMsg = { role: "bot", text: "正在阅读完整文稿…", trace: [] };
+  const botMsg = { role: "bot", text: "正在阅读完整文稿…", trace: [], sourceTitle: title };
   state.messages.push(botMsg);
-  $("btn-send").textContent = "■";
-  $("btn-send").title = "停止";
+  if ($("btn-send")) {
+    $("btn-send").textContent = "■";
+    $("btn-send").title = "停止";
+  }
   renderMessages();
   renderContext();
   const sumStart = Date.now();
@@ -4393,6 +4999,8 @@ async function startSummarizeVideo() {
       trace: [{ name: "总结文稿", ok: true }],
       steps: [{ type: "summarize_transcript", durationMs: durMs, timestamp: Date.now() }],
     };
+    state.videoSummary = { title, text: botMsg.text, metrics: botMsg.metrics, error: false };
+    if (typeof paintVideoSummary === "function") paintVideoSummary();
   } catch (error) {
     const durMs = Math.max(1, Date.now() - sumStart);
     botMsg.text = error?.name === 'AbortError' ? '已停止总结，完整文稿已保留。' : `全文总结失败：${error.message || error}`;
@@ -4417,12 +5025,16 @@ async function startSummarizeVideo() {
       steps: [],
       error: error?.message || String(error),
     };
+    state.videoSummary = { title, text: botMsg.text, metrics: botMsg.metrics, error: botMsg.error };
+    if (typeof paintVideoSummary === "function") paintVideoSummary();
   } finally {
     state.busy = false;
     state.abort = null;
     state.stopIntent = null;
-    $("btn-send").textContent = "↑";
-    $("btn-send").title = "发送（Enter）";
+    if ($("btn-send")) {
+      $("btn-send").textContent = "↑";
+      $("btn-send").title = "发送（Enter）";
+    }
     renderMessages();
     renderContext();
     await persistSession();
@@ -4430,9 +5042,10 @@ async function startSummarizeVideo() {
 }
 
 async function toggleOriginalAudio() {
-  if (!state.tab?.id) return;
+  const id = state.mediaTab?.id || state.tab?.id;
+  if (!id) return;
   try {
-    const next = await interpretController.toggleOriginalAudio(state.tab.id);
+    const next = await interpretController.toggleOriginalAudio(id);
     state.originalAudioOn = next;
     renderContext();
   } catch (err) {
@@ -4441,12 +5054,14 @@ async function toggleOriginalAudio() {
 }
 
 async function startInterpret() {
+  const target = (typeof mediaActionTab === "function" ? mediaActionTab() : null) || state.tab;
   try { if (typeof getSharedAudioContext === 'function') getSharedAudioContext(); } catch {}
   stopCompactPlayback();
-  await compactController.stop(state.tab?.id);
-  if (!state.tab?.id) return;
-  if (interpretController.isRunning(state.tab.id)) {
-    await interpretController.stop(state.tab.id);
+  await compactController.stop(target?.id);
+  if (!target?.id) return;
+  if (interpretController.isRunning(target.id)) {
+    await interpretController.stop(target.id);
+    if (typeof releaseMediaSourceIfIdle === "function") releaseMediaSourceIfIdle();
     return;
   }
   compactSegments = [];
@@ -4459,14 +5074,18 @@ async function startInterpret() {
     return;
   }
 
+  if (typeof bindMediaSource === "function") {
+    bindMediaSource(target, (state.tab?.id === target.id ? state.pack : state.mediaPack) || state.pack);
+  }
   try {
     await interpretController.start({
-      tab: state.tab,
+      tab: target,
       settings: state.settings,
       onCaptionsReady: (captions) => {
-        if (state.tab?.id === captions.tabId || !state.pack?.captionsComplete) {
-          applyCaptions(captions);
-        }
+        const id = captions.tabId ?? target.id;
+        const pack = state.tab?.id === id ? state.pack : (state.mediaTab?.id === id ? state.mediaPack : state.pack);
+        if (pack?.captionsComplete && captions.complete !== true) return;
+        applyCaptions({ ...captions, tabId: id });
       },
     });
   } catch (err) {
@@ -4573,9 +5192,44 @@ function wire() {
   bindComposer();
   try {
   on("btn-settings", "click", () => {
+    if (state.view === "settings") {
+      setView("chat");
+      return;
+    }
     renderSettingsForm();
     setView("settings");
   });
+  on("btn-media-toggle", "click", () => {
+    state.mediaExpanded = !state.mediaExpanded;
+    writeUiPref("mediaExpanded", state.mediaExpanded);
+    applyMediaLayout();
+    renderMediaChrome();
+  });
+  on("btn-media-tools", "click", () => {
+    state.toolsExpanded = !state.toolsExpanded;
+    writeUiPref("toolsExpanded", state.toolsExpanded);
+    applyMediaLayout();
+  });
+  on("btn-tasks-toggle", "click", () => {
+    state.tasksExpanded = !state.tasksExpanded;
+    writeUiPref("tasksExpanded", state.tasksExpanded);
+    applyMediaLayout();
+  });
+  on("btn-media-mini-pause", "click", () => toggleMiniPlayback());
+  on("btn-back-video", "click", () => backToVideoTab());
+  on("btn-summarize-page", "click", () => startSummarizePage());
+  on("btn-cite-transcript", "click", () => citeTranscript());
+  on("btn-clear-ref", "click", () => onComposerChipAction());
+  on("btn-video-summary-cite", "click", () => citeVideoSummary());
+  on("btn-video-summary-close", "click", () => {
+    $("video-summary-result")?.classList.add("hidden");
+  });
+  on("btn-video-summary-clip", "click", () => {
+    if (!state.videoSummary?.text) return;
+    openClipModal({ role: "bot", text: state.videoSummary.text, metrics: state.videoSummary.metrics });
+  });
+  on("btn-add-video", "click", () => toggleVideoPicker());
+  on("btn-download-audio", "click", () => downloadCompactAudio());
   on("btn-back", "click", async () => {
     try {
       const pathErrors = await applyFolderPathsFromInputs();
@@ -4596,6 +5250,10 @@ function wire() {
     startNewSession();
   });
   on("btn-history", "click", () => {
+    if (state.view === "history") {
+      setView("chat");
+      return;
+    }
     openHistoryView();
   });
   on("btn-hist-back", "click", () => {
@@ -4617,10 +5275,8 @@ function wire() {
     state.histQuery = $("hist-q").value;
     renderHistory();
   });
-  on("btn-unpin", "click", () => {
-    state.share = false;
-    renderContext();
-  });
+  on("btn-unpin", "click", () => dismissPageContext());
+  on("btn-pin-page", "click", () => restorePageContext());
   on("btn-transcribe", "click", () => {
     const capsReady = state.pack?.captionsStatus === "ready";
     startTranscribe({ force: capsReady });
@@ -4941,7 +5597,6 @@ function wire() {
     renderAttach();
   });
   chrome.tabs?.onActivated?.addListener(() => {
-    state.share = state.settings.shareActiveTab;
     refreshTab();
   });
   chrome.tabs?.onUpdated?.addListener((tabId, info, tab) => {
@@ -4989,8 +5644,13 @@ async function boot() {
       console.error("[pagelens] boot settings", err);
       state.settings = defaultSettings();
     }
+    state.mediaExpanded = readUiPref("mediaExpanded", true);
+    state.toolsExpanded = readUiPref("toolsExpanded", false);
+    state.tasksExpanded = readUiPref("tasksExpanded", true);
     wire();
     markWired();
+    applyMediaLayout();
+    renderComposerChip();
     syncComposerHints();
     renderModelLine();
     updateHitlBadge();
