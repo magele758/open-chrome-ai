@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chatCompletionsUrl, completeChat, messageText, streamTurn } from "../lib/openai.js";
+import { chatCompletionsUrl, completeChat, expandChatTokens, messageText, streamTurn } from "../lib/openai.js";
 import { summarizeTranscript } from "../lib/summarize-transcript.js";
 
 assert.equal(
@@ -11,6 +11,8 @@ assert.equal(messageText({ choices: [{ message: { content: "  hi  " } }] }), "hi
 assert.equal(messageText({
   choices: [{ message: { content: [{ type: "thinking", text: "scratch" }, { type: "text", text: "笔记" }] } }],
 }), "笔记");
+assert.equal(expandChatTokens(1200), 8192);
+assert.equal(expandChatTokens(8192), 16384);
 assert.equal(messageText({
   choices: [{ message: { content: "" }, finish_reason: "length" }],
 }), "");

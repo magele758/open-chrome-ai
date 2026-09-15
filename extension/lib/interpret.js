@@ -455,7 +455,7 @@ export async function translateToZh(model, text, signal, trace = {}, context = [
       { role: "user", content: src },
     ],
     temperature: 0.15,
-    maxTokens: Math.min(1800, Math.max(300, Math.ceil(src.length * 1.5))),
+    maxTokens: Math.min(8192, Math.max(4096, Math.ceil(src.length * 4))),
     rejectTruncated: true,
     signal: requestSignal,
   }), signal);
@@ -476,7 +476,7 @@ export async function translateSemanticPrefix(model, src, signal, context = [], 
         ...context.flatMap(p => [{ role: 'user', content: p.src }, { role: 'assistant', content: p.zh }]),
         { role: 'user', content: src },
       ],
-      temperature: 0.1, maxTokens: Math.min(3000, Math.max(1024, Math.ceil(src.length * 3))),
+      temperature: 0.1, maxTokens: Math.min(8192, Math.max(4096, Math.ceil(src.length * 4))),
       rejectTruncated: true, signal: requestSignal,
     }), signal);
     signal?.throwIfAborted();

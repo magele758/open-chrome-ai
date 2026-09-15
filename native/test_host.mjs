@@ -10,6 +10,7 @@ import {
   execCommand,
   handleFs,
   handleRequest,
+  isUnderAgentRoot,
   safeJoinRoot,
   tryReadMessage,
 } from "./pagelens-host.mjs";
@@ -124,6 +125,16 @@ try {
     joinThrew = true;
   }
   assert(joinThrew, "safeJoin");
+
+  const agentRoot = handleFs({ action: "readdir", path: "/", scope: "agent" });
+  assert(agentRoot.ok === false && /已拦截/.test(agentRoot.error), "agent blocks /");
+  const agentTmp = handleFs({ action: "readdir", root: tmp, rel: "", scope: "agent" });
+  assert(agentTmp.ok && agentTmp.entries.some((e) => e.name === "yt-x"), "agent lists tmp");
+  const agentSsh = handleFs({ action: "readText", path: path.join(os.homedir(), ".ssh", "id_rsa"), scope: "agent" });
+  assert(agentSsh.ok === false && /敏感|拦截/.test(agentSsh.error), "agent blocks .ssh");
+  const agentWrite = handleFs({ action: "writeText", root: tmp, rel: "no.md", text: "x", scope: "agent" });
+  assert(agentWrite.ok === false && /写文件/.test(agentWrite.error), "agent cannot write");
+  assert(isUnderAgentRoot(tmp) === true, "tmp is under agent roots");
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

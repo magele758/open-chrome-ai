@@ -175,6 +175,20 @@ const bounded = promise => withInterpretDeadline(() => promise, undefined, 1500)
   await translateToZh(model, "I don't think this is a good idea.", undefined, {}, [{ src: 'We have a proposal.', zh: '我们有一个提议。' }]);
   assert.equal(requests[0].messages.at(-1).content, "I don't think this is a good idea.");
   assert.equal(requests[0].messages[2].content, '我们有一个提议。');
+  assert.ok(requests[0].max_tokens >= 4096, 'translate budget starts at 4096+');
+  let lengthCalls = 0;
+  globalThis.fetch = async (_url, options) => {
+    lengthCalls += 1;
+    const body = JSON.parse(options.body);
+    if (lengthCalls === 1) {
+      assert.ok(body.max_tokens >= 4096);
+      return Response.json({ choices: [{ finish_reason: 'length', message: { content: '这不是' } }] });
+    }
+    assert.ok(body.max_tokens >= 8192, 'retry enlarges max_tokens');
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: '这不是好主意。' } }] });
+  };
+  assert.equal(await translateToZh(model, 'This is not a good idea.'), '这不是好主意。');
+  assert.equal(lengthCalls, 2, 'length finish retries once before skipping');
   globalThis.fetch = async () => Response.json({ choices: [{ finish_reason: 'length', message: { content: '这不是' } }] });
   await assert.rejects(translateToZh(model, 'This is not a good idea.'), /输出上限/);
 }

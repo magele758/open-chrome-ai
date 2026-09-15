@@ -227,6 +227,16 @@ function chatBody(model, { messages, temperature, maxTokens, stream }) {
   return body;
 }
 
+function isLengthFinish(reason) {
+  return /^(length|max_tokens)$/i.test(String(reason || ""));
+}
+
+/** Thinking models often exhaust the first budget; retry once with more room. */
+export function expandChatTokens(maxTokens) {
+  const n = Number(maxTokens) || 400;
+  return Math.min(16384, Math.max(8192, n * 2));
+}
+
 /**
  * Non-streaming chat completion for short jobs (live translation).
  * Thinking models can spend max_tokens on reasoning and return empty content;
@@ -238,14 +248,15 @@ export async function completeChat(model, { messages, temperature = 0.2, maxToke
     return response.json();
   };
   let json = await once(maxTokens);
-  if (rejectTruncated && /^(length|max_tokens)$/i.test(json.choices?.[0]?.finish_reason || '')) {
-    throw new Error('译文超过输出上限，已跳过本段，避免播放不完整译文。');
-  }
   let text = messageText(json);
-  const finish = String(json.choices?.[0]?.finish_reason || "").toLowerCase();
-  if (!text && maxTokens && (finish === "length" || finish === "max_tokens")) {
-    json = await once(Math.max(8192, maxTokens * 8));
+  let finish = String(json.choices?.[0]?.finish_reason || "");
+  if (maxTokens && isLengthFinish(finish)) {
+    json = await once(expandChatTokens(maxTokens));
     text = messageText(json);
+    finish = String(json.choices?.[0]?.finish_reason || "");
+    if (rejectTruncated && isLengthFinish(finish)) {
+      throw new Error("译文超过输出上限，已跳过本段，避免播放不完整译文。");
+    }
   }
   if (!text) {
     text = String(await streamChat(model, { messages, temperature, signal }, () => {}) || "").trim();

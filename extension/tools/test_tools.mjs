@@ -62,6 +62,10 @@ globalThis.chrome = {
       const tab = tabs.find((t) => t.id === id) || tabs[0];
       return { ...tab, ...opts, id };
     },
+    onUpdated: {
+      addListener() {},
+      removeListener() {},
+    },
     remove: async () => {},
     reload: async () => {},
     captureVisibleTab: async () => "data:image/jpeg;base64,xx",
@@ -145,6 +149,25 @@ globalThis.chrome = {
           cwd: "/tmp",
         };
       }
+      if (msg?.op === "fs") {
+        const target = String(msg.root || msg.path || "");
+        if (msg.scope === "agent" && (target === "/" || target === "/Users" || /\/\.ssh(\/|$)/.test(target))) {
+          return { ok: false, error: "已拦截：只能访问家目录、下载/桌面/文档、临时目录、字幕缓存或 ~/.agent-reach。" };
+        }
+        if (msg.action === "readdir") {
+          return {
+            ok: true,
+            action: "readdir",
+            folder: "Downloads",
+            abs: "/tmp/Downloads",
+            count: 1,
+            entries: [{ name: "a.md", kind: "file", path: "a.md" }],
+          };
+        }
+        if (msg.action === "readText") {
+          return { ok: true, text: "file body", bytes: 9, path: "a.md", abs: "/tmp/Downloads/a.md" };
+        }
+      }
       return { ok: false, error: "unknown op" };
     },
   },
@@ -162,6 +185,14 @@ globalThis.chrome = {
     getTitle: async () => "PageLens",
   },
 };
+
+Object.defineProperty(globalThis.navigator, "clipboard", {
+  configurable: true,
+  value: {
+    writeText: async () => {},
+    readText: async () => "https://clip.example/x",
+  },
+});
 
 const ctx = {
   getTabId: () => 1,
@@ -325,6 +356,34 @@ chrome.runtime.sendNativeMessage = async () => {
 const shMiss = await byName.run_shell.execute({ command: "echo hi" });
 chrome.runtime.sendNativeMessage = savedNative;
 assert(/未安装 Native Host/.test(shMiss), "run_shell missing host: " + shMiss);
+
+const pages = JSON.parse(await byName.extract_pages.execute({}));
+assert(pages.count === 2 && pages.pages[0].text, "extract_pages batch: " + JSON.stringify(pages).slice(0, 200));
+
+const clip = await byName.clipboard_read.execute({});
+assert(clip === "https://clip.example/x", "clipboard_read: " + clip);
+
+const listedDir = JSON.parse(await byName.list_directory.execute({ path: "downloads" }));
+assert(listedDir.count === 1 && listedDir.entries[0].name === "a.md", "list_directory alias");
+const listedRoot = await byName.list_directory.execute({ path: "/" });
+assert(/已拦截/.test(listedRoot), "list_directory blocks /");
+const readMd = await byName.read_file.execute({ path: "~/Downloads/a.md" });
+assert(/file body/.test(readMd), "read_file: " + readMd);
+const readBin = await byName.read_file.execute({ path: "~/Downloads/secret.pem" });
+assert(/已拦截/.test(readBin), "read_file blocks pem");
+
+const navWait = JSON.parse(await byName.wait_for_navigation.execute({ timeoutMs: 300, urlChange: true }));
+assert(navWait.ok && navWait.timedOut === true, "wait_for_navigation timeout: " + JSON.stringify(navWait));
+const origOnUpdated = chrome.tabs.onUpdated;
+chrome.tabs.onUpdated = {
+  addListener(fn) {
+    queueMicrotask(() => fn(1, { status: "complete" }, { id: 1, title: "Next", url: "https://a.example/next", status: "complete" }));
+  },
+  removeListener() {},
+};
+const navOk = JSON.parse(await byName.wait_for_navigation.execute({}));
+chrome.tabs.onUpdated = origOnUpdated;
+assert(navOk.changed && navOk.url.includes("/next"), "wait_for_navigation url change: " + JSON.stringify(navOk));
 
 assert(names.includes("transcribe_video"), "has transcribe_video");
 assert(names.includes("tts_speak"), "has tts_speak");

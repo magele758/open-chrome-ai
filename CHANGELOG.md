@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 下载的字幕和转写稿改为写入 `~/.cache/pagelens-docs`，不再自动落到 Obsidian 文稿文件夹。
 - 文本模型改为多服务商：可新增多个 OpenAI 兼容 Provider、扫描/手填模型、勾选可选模型，并在对话底部切换。
 - `run_shell` 拦访达 / 递归扫盘：整串匹配（含 `bash -c`、`/usr/bin/open`），换目录 `ls` 满 8 次或连续拦截 3 次后强制收束。
+- 同传译文 `max_tokens` 提到 4096–8192；碰到输出上限先加大预算重试，仍截断才跳段。
 
 ### Added
+- Agent 补 `extract_pages`、`wait_for_navigation`、`clipboard_read`、`list_directory` / `read_file`（本机只列一层、限根目录）。
 - **一键剪藏至 Obsidian 独立卡片与 Chrome 书签联动 (Clippings & Footprint Recall)**:
   - 新增 `extension/lib/clippings.js`：核心剪藏逻辑，生成带标准 YAML Frontmatter（title, url, date, tags, clipping_id, source）与思考备注的独立 Markdown 卡片文件（`PageLens/clippings/YYYY-MM-DD-slug-id.md`）。
   - Chrome 书签联动：保存时自动查找或创建 Chrome 收藏夹专用目录 `PageLens 智库`，书签标题前置用户随手备注（如 `[思考前15字] 网页标题`），提升地址栏直达与检索体验。

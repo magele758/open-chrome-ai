@@ -182,6 +182,46 @@ export function safeJoinRoot(root, rel) {
   return abs;
 }
 
+const AGENT_DENY_SEG = new Set([".ssh", ".aws", ".gnupg", ".kube", ".netrc"]);
+
+export function agentFsRoots(extra = []) {
+  const home = os.homedir();
+  const roots = [
+    home,
+    path.join(home, "Downloads"),
+    path.join(home, "Desktop"),
+    path.join(home, "Documents"),
+    os.tmpdir(),
+    path.join(home, ".cache", "pagelens-docs"),
+    path.join(home, ".agent-reach"),
+  ];
+  for (const raw of extra || []) {
+    try {
+      if (raw) roots.push(resolveAbs(raw));
+    } catch {
+      /* skip bad extra root */
+    }
+  }
+  return [...new Set(roots.map((r) => path.resolve(r)))];
+}
+
+export function isUnderAgentRoot(abs, extraRoots) {
+  const target = path.resolve(abs);
+  return agentFsRoots(extraRoots).some((root) => {
+    const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+    return target === root || target.startsWith(prefix);
+  });
+}
+
+function denyAgentAbs(abs, extraRoots) {
+  const segs = String(abs || "").split(/[/\\]/);
+  if (segs.some((s) => AGENT_DENY_SEG.has(s))) return `已拦截敏感路径：${abs}`;
+  if (!isUnderAgentRoot(abs, extraRoots)) {
+    return `已拦截：只能访问家目录、下载/桌面/文档、临时目录、字幕缓存或 ~/.agent-reach。收到：${abs}`;
+  }
+  return "";
+}
+
 function sortEntries(entries) {
   entries.sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
@@ -249,7 +289,11 @@ function scanSkillTreeFromPath(root, { maxSkills = MAX_SKILL_COUNT, maxDepth = M
 
 export function handleFs(req) {
   const action = String(req?.action || "").trim();
+  const agentScope = req?.scope === "agent";
   try {
+    if (agentScope && (action === "writeText" || action === "deleteFile" || action === "ensureDir")) {
+      return { ok: false, op: "fs", action, error: "已拦截：agent 不能通过此接口写文件。" };
+    }
     if (action === "stat") {
       const abs = resolveAbs(req.path);
       if (!fs.existsSync(abs)) return { ok: false, op: "fs", action, error: `路径不存在：${abs}` };
@@ -279,6 +323,10 @@ export function handleFs(req) {
     }
     if (action === "readdir") {
       const abs = safeJoinRoot(req.root || req.path, req.rel || "");
+      if (agentScope) {
+        const denied = denyAgentAbs(abs, req.extraRoots);
+        if (denied) return { ok: false, op: "fs", action, error: denied };
+      }
       if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
         return { ok: false, op: "fs", action, error: `不是目录：${abs}` };
       }
@@ -305,8 +353,12 @@ export function handleFs(req) {
     }
     if (action === "readText") {
       const rel = String(req.rel || "").trim();
-      const parts = splitRelParts(rel);
+      const parts = rel ? splitRelParts(rel) : [];
       const abs = safeJoinRoot(req.root || req.path, rel);
+      if (agentScope) {
+        const denied = denyAgentAbs(abs, req.extraRoots);
+        if (denied) return { ok: false, op: "fs", action, error: denied };
+      }
       if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
         return { ok: false, op: "fs", action, error: `文件不存在：${abs}` };
       }
@@ -318,11 +370,12 @@ export function handleFs(req) {
           action,
           text: `${text.slice(0, MAX_FS_TEXT)}\n【已截断】`,
           bytes: text.length,
-          path: parts.join("/"),
+          path: parts.join("/") || path.basename(abs),
+          abs,
           truncated: true,
         };
       }
-      return { ok: true, op: "fs", action, text, bytes: text.length, path: parts.join("/") };
+      return { ok: true, op: "fs", action, text, bytes: text.length, path: parts.join("/") || path.basename(abs), abs };
     }
     if (action === "writeText") {
       const rel = String(req.rel || "").trim();

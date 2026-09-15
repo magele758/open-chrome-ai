@@ -159,6 +159,72 @@ export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Wait until a tab finishes navigating. Default: URL must change, then status=complete. */
+export async function waitForTabNavigation(tabId, { timeoutMs = 8000, urlChange = true } = {}) {
+  if (!tabId) return { ok: false, error: "没有可操作的标签。" };
+  const ms = Math.min(Math.max(Number(timeoutMs) || 8000, 300), 20000);
+  let initial;
+  try {
+    initial = await chrome.tabs.get(tabId);
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+
+  const started = Date.now();
+  const snapshot = (tab, extra = {}) => ({
+    ok: true,
+    tabId,
+    title: tab?.title || "",
+    url: tab?.url || "",
+    status: tab?.status || "",
+    changed: Boolean(tab?.url && tab.url !== initial.url),
+    ms: Date.now() - started,
+    ...extra,
+  });
+
+  if (!urlChange && initial.status === "complete") {
+    return snapshot(initial, { timedOut: false });
+  }
+
+  if (typeof chrome.tabs?.onUpdated?.addListener !== "function") {
+    return snapshot(initial, { timedOut: true, note: "当前环境无法监听导航。" });
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = 0;
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+      } catch {
+        /* ignore */
+      }
+      resolve(payload);
+    };
+
+    function onUpdated(id, _info, tab) {
+      if (id !== tabId || !tab) return;
+      if (tab.status && tab.status !== "complete") return;
+      const changed = Boolean(tab.url && tab.url !== initial.url);
+      if (urlChange && !changed) return;
+      finish(snapshot(tab, { timedOut: false }));
+    }
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    timer = setTimeout(async () => {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        finish(snapshot(tab, { timedOut: true }));
+      } catch (err) {
+        finish({ ok: false, error: err?.message || String(err) });
+      }
+    }, ms);
+  });
+}
+
 export function extensionUrl(path) {
   try {
     return chrome.runtime.getURL(path);

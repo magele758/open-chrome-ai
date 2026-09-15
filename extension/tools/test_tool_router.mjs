@@ -23,10 +23,12 @@ const readerNames = readerTools.map((t) => t.name);
 assert(readerNames.includes("extract_page"), "has extract_page");
 assert(readerNames.includes("screenshot"), "has screenshot");
 assert(readerNames.includes("request_toolsets"), "has request_toolsets meta-tool");
+assert(readerNames.includes("extract_pages"), "has extract_pages");
+assert(readerNames.includes("clipboard_read"), "has clipboard_read");
 assert(!readerNames.includes("click"), "does not have click");
 assert(!readerNames.includes("open_tab"), "does not have open_tab");
 assert(!readerNames.includes("run_shell"), "does not have run_shell");
-assert(readerTools.length <= 10, "reader tools count <= 10 (actual: " + readerTools.length + ")");
+assert(readerTools.length <= 13, "reader tools count <= 13 (actual: " + readerTools.length + ")");
 
 // 2. DOM interaction intent
 const domTools = resolveActiveTools({
@@ -38,6 +40,7 @@ const domNames = domTools.map((t) => t.name);
 assert(domNames.includes("click"), "has click");
 assert(domNames.includes("fill"), "has fill");
 assert(domNames.includes("list_controls"), "has list_controls");
+assert(domNames.includes("wait_for_navigation"), "has wait_for_navigation");
 assert(!domNames.includes("open_tab"), "does not have open_tab");
 
 // 3. Browser management intent
@@ -59,6 +62,8 @@ const sysTools = resolveActiveTools({
 });
 const sysNames = sysTools.map((t) => t.name);
 assert(sysNames.includes("run_shell"), "has run_shell");
+assert(sysNames.includes("list_directory"), "has list_directory");
+assert(sysNames.includes("read_file"), "has read_file");
 assert(sysNames.includes("load_skill"), "has load_skill");
 
 // 5. Video / Media intent
