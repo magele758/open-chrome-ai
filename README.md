@@ -125,27 +125,35 @@ conda run -n pagelens-media python tools/media_helper.py --ensure
 
 YouTube 下载还需要可用的 Deno 或 Node.js，服务会自动检测并传给下载器。若旧版下载器出现 HTTP 403，更新实际使用的 yt-dlp 及其 EJS 组件（pip 安装使用 `python -m pip install -U 'yt-dlp[default]'`）。服务会忽略用户级下载器配置，避免额外字幕下载或输出格式覆盖。
 
-默认地址 `http://127.0.0.1:18789`。点「一键总结」时若服务未就绪会尝试自动拉起。媒体服务 v5 支持字幕文稿专用任务：优先读取完整字幕，只有字幕不可用才下载完整音轨；音频分段发往设置里的 ASR，原音轨不发给文本模型。更新后需重启旧媒体服务并重新加载扩展，已有完整文稿可直接复用。成功、失败或取消后清理临时音频；意外关闭侧栏留下的任务一小时后清理。若本机已启动仍提示未连接，到扩展详情的网站设置允许「本地网络」。站点需登录或 yt-dlp 不支持时会失败，不回退到播放录音。完整文稿保留在扩展缓存；选了文稿文件夹还会写入 `original.vtt` 和 `transcript.md`。长文稿总结会阅读全文，旧录音缓存完整性未知时会重新提取。
+默认地址 `http://127.0.0.1:18789`。点「一键总结」时若服务未就绪会尝试自动拉起。媒体服务 v5 支持字幕文稿专用任务：优先读取完整字幕，只有字幕不可用才下载完整音轨；音频分段发往设置里的 ASR，原音轨不发给文本模型。更新后需重启旧媒体服务并重新加载扩展，已有完整文稿可直接复用。成功、失败或取消后清理临时音频；意外关闭侧栏留下的任务一小时后清理。若本机已启动仍提示未连接，到扩展详情的网站设置允许「本地网络」。站点需登录或 yt-dlp 不支持时会失败，不回退到播放录音。完整文稿保留在扩展缓存；装了 Native Host 时字幕和转写稿还会写入 `~/.cache/pagelens-docs`，不会进 Obsidian 文稿文件夹。长文稿总结会阅读全文，旧录音缓存完整性未知时会重新提取。
 
 ### 文稿文件夹
 
-设置里可以「选择文件夹」，或填绝对路径（需已安装 Native Host，支持 `~`）。Obsidian 库、`~/Movies/PageLens` 都可以。之后音频转写完成时，会写成普通文件，而不是堆在扩展存储里。对话也可以一键写入同一目录：
+设置里可以「选择文件夹」，或填绝对路径（需已安装 Native Host，支持 `~`）。Obsidian 库、普通笔记目录都可以，只放剪藏和对话笔记，不要指望下载字幕出现在这里。对话可以一键写入：
 
 ```
 你选的目录/
+  PageLens/
+    sessions/
+      2026-09-10-对话标题-xxxxxxxx.md
+    clippings/
+      ...
+```
+
+下载的字幕和转写稿在本机缓存：
+
+```
+~/.cache/pagelens-docs/
   yt-xxxxxxxxxxx/
     meta.json
     original.vtt      # 原稿
     zh.vtt            # 译稿（有翻译才有）
     transcript.md     # 给人看的双语
-  PageLens/
-    sessions/
-      2026-09-10-对话标题-xxxxxxxx.md
 ```
 
-用系统选目录时浏览器不提供完整路径，只显示文件夹名；填绝对路径则会记下并显示该路径。改译句请改 `zh.vtt`；`transcript.md` 会按两份 VTT 生成。密钥不会写进这个目录。Agent 可以用 `list_library` / `read_library` / `save_video_doc` / `save_session_note` 读写这个授权目录，出不去。
+用系统选目录时浏览器不提供完整路径，只显示文件夹名；填绝对路径则会记下并显示该路径。密钥不会写进文稿文件夹。Agent 可以用 `list_library` / `read_library` / `save_session_note` 读写授权的笔记目录；`save_video_doc` 只写缓存目录。
 
-没选目录时，转写结果仍会临时记在扩展存储里，最多 24 部。
+没装 Native Host 时，转写结果仍会临时记在扩展存储里，最多 24 部。
 
 ### Skill 目录
 
@@ -255,7 +263,7 @@ Chrome 不允许扩展随便互调。你机器上目前接得上的只有：
 3. 「加载已解压的扩展程序」，选仓库里的 `extension/` 目录
 4. 点工具栏 PageLens，或快捷键 `Alt+L`
 5. 设置里填 `base_url` / `model_name` / `api_key`，点「测试连接」，保存
-6. 可选：设置里「文稿文件夹」指定视频文稿落盘目录；「Skill 目录」另选本机 skill 根目录（只读）
+6. 可选：设置里「文稿文件夹」指定笔记目录（Obsidian 等）；字幕缓存在 `~/.cache/pagelens-docs`。「Skill 目录」另选本机 skill 根目录（只读）
 7. 可选：要让 skill 跑 CLI，再装本机 host（见上文「本机 Shell」）
 
 权限：侧栏、存储、脚本注入、标签、标签组、书签、浏览历史、通知、剪贴板、标签页声音（`tabCapture`）、offscreen 文档、Native Messaging。加载或升级后若 Chrome 提示权限变更，接受即可。

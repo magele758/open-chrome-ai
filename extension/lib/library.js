@@ -15,6 +15,8 @@ const ROOT_KEY = "libraryRoot";
 const PATH_KEY = "libraryPath";
 const TEXT_EXT = TEXT_FILE_EXT;
 const MAX_TEXT = MAX_FS_TEXT;
+export const TRANSCRIPT_CACHE_PATH = "~/.cache/pagelens-docs";
+const VIDEO_DOC_FILES = ["meta.json", "original.vtt", "transcript.md", "zh.vtt"];
 
 export function videoIdentity(url) {
   try {
@@ -308,6 +310,24 @@ function missingLibraryError() {
   return "还没有选择文稿文件夹。到设置里选一个目录，或填绝对路径。";
 }
 
+function missingCacheError() {
+  return "无法使用字幕缓存目录 ~/.cache/pagelens-docs。需要已安装 Native Host。";
+}
+
+export async function ensureTranscriptCache() {
+  const ensured = await nativeFs({ action: "ensureDir", path: TRANSCRIPT_CACHE_PATH });
+  if (ensured.ok && ensured.kind === "directory") {
+    return { granted: true, path: ensured.path, name: ensured.name || "pagelens-docs" };
+  }
+  const wrote = await nativeFs({ action: "writeText", root: TRANSCRIPT_CACHE_PATH, rel: ".keep", text: "" });
+  if (!wrote.ok) return { granted: false, error: wrote.error || ensured.error || missingCacheError() };
+  const stat = await nativeFs({ action: "stat", path: TRANSCRIPT_CACHE_PATH });
+  if (stat.ok && stat.kind === "directory") {
+    return { granted: true, path: stat.path, name: stat.name || "pagelens-docs" };
+  }
+  return { granted: false, error: stat.error || missingCacheError() };
+}
+
 export async function libraryStatus({ request = false } = {}) {
   const root = await getLibraryRoot({ request });
   if (!root) return { ok: true, configured: false, granted: false, name: "", mode: "", path: "" };
@@ -426,6 +446,38 @@ function requireLibraryRoot(root) {
   return root;
 }
 
+async function writeNativeText(rootPath, rel, text) {
+  const parts = splitRelPath(rel);
+  const name = parts[parts.length - 1];
+  if (!TEXT_EXT.has(extOf(name))) {
+    throw new Error(`只能写入 ${[...TEXT_EXT].join("、")} 文件。`);
+  }
+  const body = String(text ?? "");
+  if (body.length > MAX_TEXT) throw new Error(`文件太大（>${MAX_TEXT} 字）。`);
+  const res = await nativeFs({ action: "writeText", root: rootPath, rel: parts.join("/"), text: body });
+  if (!res.ok) throw new Error(res.error || "写入失败。");
+  return { ok: true, path: parts.join("/"), bytes: body.length };
+}
+
+async function readNativeText(rootPath, rel) {
+  const parts = splitRelPath(rel);
+  const res = await nativeFs({ action: "readText", root: rootPath, rel: parts.join("/") });
+  if (!res.ok) throw new Error(res.error || "读取失败。");
+  return { ok: true, path: parts.join("/"), text: res.text || "", bytes: res.bytes || 0 };
+}
+
+export async function writeCacheText(rel, text) {
+  const root = await ensureTranscriptCache();
+  if (!root.granted) throw new Error(root.error || missingCacheError());
+  return writeNativeText(root.path, rel, text);
+}
+
+export async function readCacheText(rel) {
+  const root = await ensureTranscriptCache();
+  if (!root.granted) throw new Error(root.error || missingCacheError());
+  return readNativeText(root.path, rel);
+}
+
 export async function writeLibraryText(rel, text, { request = false } = {}) {
   const root = requireLibraryRoot(await getLibraryRoot({ request }));
   const parts = splitRelPath(rel);
@@ -436,9 +488,7 @@ export async function writeLibraryText(rel, text, { request = false } = {}) {
   const body = String(text ?? "");
   if (body.length > MAX_TEXT) throw new Error(`文件太大（>${MAX_TEXT} 字）。`);
   if (root.mode === "path") {
-    const res = await nativeFs({ action: "writeText", root: root.path, rel: parts.join("/"), text: body });
-    if (!res.ok) throw new Error(res.error || "写入文稿失败。");
-    return { ok: true, path: parts.join("/"), bytes: body.length };
+    return writeNativeText(root.path, parts.join("/"), body);
   }
   const dir = await walkDir(root.handle, parts.slice(0, -1), true);
   const file = await dir.getFileHandle(name, { create: true });
@@ -535,22 +585,28 @@ function normalizeCues(doc) {
   return [];
 }
 
-export async function writeVideoDoc(doc, { request = false } = {}) {
-  const root = await getLibraryRoot({ request });
-  if (!root) return { ok: false, error: missingLibraryError() };
+async function readVideoDocFiles(readText, folder) {
+  const vtt = await readText(`${folder}/original.vtt`);
+  const cues = parseVtt(vtt.text);
+  if (!cues.length) return null;
+  const formatted = formatTranscript(cues);
+  const meta = await readText(`${folder}/meta.json`).then((r) => JSON.parse(r.text)).catch(() => ({}));
+  if (meta.audioOnly !== true && !["asr-full", "asr"].includes(meta.source)) return null;
+  return { status: "ready", ...formatted, source: meta.source || "unknown", complete: meta.complete === true, duration: meta.duration };
+}
+
+export async function writeVideoDoc(doc, { required = false } = {}) {
+  const root = await ensureTranscriptCache();
   if (!root.granted) {
-    return {
-      ok: false,
-      error: root.mode === "path"
-        ? (root.error || "文稿路径不可用。")
-        : "文稿文件夹未授权。",
-    };
+    return required
+      ? { ok: false, error: root.error || missingCacheError() }
+      : { ok: true, skipped: true };
   }
   const identity = doc.identity || videoIdentity(doc.url || "");
   const folder = folderNameFor(identity);
   if (!doc.complete) {
-    const prior = await readLibraryText(`${folder}/meta.json`, { request }).then(r => JSON.parse(r.text)).catch(() => ({}));
-    if (prior.complete) return { ok: true, skipped: true, folder };
+    const prior = await readCacheText(`${folder}/meta.json`).then((r) => JSON.parse(r.text)).catch(() => ({}));
+    if (prior.complete) return { ok: true, skipped: true, folder, cache: root.path };
   }
   const cues = normalizeCues(doc);
   if (!cues.length) return { ok: false, error: "没有可写入的字幕。" };
@@ -558,7 +614,7 @@ export async function writeVideoDoc(doc, { request = false } = {}) {
   let zhCues = Array.isArray(doc.zhCues) ? doc.zhCues : [];
   if (!zhCues.length) {
     try {
-      const existing = await readLibraryText(`${folder}/zh.vtt`, { request });
+      const existing = await readCacheText(`${folder}/zh.vtt`);
       zhCues = parseVtt(existing.text);
     } catch {
       zhCues = [];
@@ -579,14 +635,19 @@ export async function writeVideoDoc(doc, { request = false } = {}) {
     hasZh: merged.some((c) => c.zh),
     updatedAt,
   };
-  await writeLibraryText(`${folder}/meta.json`, `${JSON.stringify(meta, null, 2)}\n`, { request });
-  await writeLibraryText(`${folder}/original.vtt`, cuesToVtt(cues, "text"), { request });
+  await writeCacheText(`${folder}/meta.json`, `${JSON.stringify(meta, null, 2)}\n`);
+  await writeCacheText(`${folder}/original.vtt`, cuesToVtt(cues, "text"));
   if (merged.some((c) => c.zh)) {
-    await writeLibraryText(`${folder}/zh.vtt`, cuesToVtt(merged, "zh"), { request });
+    await writeCacheText(`${folder}/zh.vtt`, cuesToVtt(merged, "zh"));
   }
-  await writeLibraryText(`${folder}/transcript.md`, cuesToMarkdown({ ...meta, identity }, merged), { request });
+  await writeCacheText(`${folder}/transcript.md`, cuesToMarkdown({ ...meta, identity }, merged));
   lastSync.set(identity, `${doc.source || ""}:${cues.length}:${(doc.text || "").length}`);
-  return { ok: true, folder, files: ["meta.json", "original.vtt", "transcript.md"].concat(merged.some((c) => c.zh) ? ["zh.vtt"] : []) };
+  return {
+    ok: true,
+    folder,
+    cache: root.path,
+    files: VIDEO_DOC_FILES.filter((name) => name !== "zh.vtt" || merged.some((c) => c.zh)),
+  };
 }
 
 export async function readVideoDocFromLibrary(url, { request = false } = {}) {
@@ -594,19 +655,17 @@ export async function readVideoDocFromLibrary(url, { request = false } = {}) {
   if (!identity) return null;
   const folder = folderNameFor(identity);
   try {
-    const vtt = await readLibraryText(`${folder}/original.vtt`, { request });
-    const cues = parseVtt(vtt.text);
-    if (!cues.length) return null;
-    const formatted = formatTranscript(cues);
-    const meta = await readLibraryText(`${folder}/meta.json`, { request }).then(r => JSON.parse(r.text)).catch(() => ({}));
-    if (meta.audioOnly !== true && !["asr-full", "asr"].includes(meta.source)) return null;
-    return { status: "ready", ...formatted, source: meta.source || "unknown", complete: meta.complete === true, duration: meta.duration };
+    return await readVideoDocFiles(readCacheText, folder);
   } catch {
-    return null;
+    try {
+      return await readVideoDocFiles((rel) => readLibraryText(rel, { request }), folder);
+    } catch {
+      return null;
+    }
   }
 }
 
-export async function syncPackToLibrary(pack, { request = false } = {}) {
+export async function syncPackToLibrary(pack, { request = false, required = false } = {}) {
   if (!pack?.url || pack.captionsStatus !== "ready") return { ok: false, skipped: true };
   const identity = videoIdentity(pack.url);
   const sig = `${pack.captionsSource || ""}:${(pack.captionsText || "").length}`;
@@ -622,7 +681,7 @@ export async function syncPackToLibrary(pack, { request = false } = {}) {
       cues: pack.captionsCues,
       text: pack.captionsText,
     },
-    { request },
+    { required },
   );
   if (result.ok) lastSync.set(identity, sig);
   return result;

@@ -25,7 +25,7 @@ import {
 } from "../extension/lib/fs-path.js";
 
 export const HOST_NAME = "com.pagelens.host";
-export const HOST_VERSION = "1.2.0";
+export const HOST_VERSION = "1.3.0";
 export const DEFAULT_TIMEOUT_MS = 60_000;
 export const MAX_TIMEOUT_MS = 300_000;
 export const MAX_OUTPUT = 200_000;
@@ -258,6 +258,20 @@ export function handleFs(req) {
         path: abs,
         name: path.basename(abs) || abs,
         kind: st.isDirectory() ? "directory" : "file",
+      };
+    }
+    if (action === "ensureDir") {
+      const abs = resolveAbs(req.path);
+      fs.mkdirSync(abs, { recursive: true });
+      const st = fs.statSync(abs);
+      if (!st.isDirectory()) return { ok: false, op: "fs", action, error: `不是目录：${abs}` };
+      return {
+        ok: true,
+        op: "fs",
+        action,
+        path: abs,
+        name: path.basename(abs) || abs,
+        kind: "directory",
       };
     }
     if (action === "readdir") {

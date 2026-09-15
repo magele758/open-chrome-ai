@@ -438,7 +438,7 @@ export function createAgentTools(ctx) {
           const note = caps.reused
             ? "已有完整音频文稿，未重新提取。要重提请传 force=true。\n\n"
             : "已转写并保存文稿。\n\n";
-          const lib = caps.library ? `已写入文稿文件夹 ${caps.library}/\n\n` : caps.libraryError ? `文稿未落盘：${caps.libraryError}\n\n` : "";
+          const lib = caps.library ? `已写入字幕缓存 ${caps.cache || "~/.cache/pagelens-docs"}/${caps.library}/\n\n` : caps.libraryError ? `字幕未写入缓存：${caps.libraryError}\n\n` : "";
           return lib + note + String(caps.text || "");
         } catch (err) {
           return `转写失败：${err?.message || err}`;
@@ -930,7 +930,7 @@ export function createAgentTools(ctx) {
     },
     {
       name: "library_info",
-      description: "查看文稿文件夹是否已选择、是否已授权。视频原稿/译稿和对话笔记都写在这个目录里。",
+      description: "查看文稿文件夹是否已选择、是否已授权。这里只放剪藏和对话笔记；下载的字幕在 ~/.cache/pagelens-docs。",
       parameters: obj({}),
       async execute() {
         return toToolText(await libraryStatus());
@@ -938,7 +938,7 @@ export function createAgentTools(ctx) {
     },
     {
       name: "list_library",
-      description: "列出文稿文件夹里的目录或文件。path 相对根目录，省略则列出根。只在用户已授权的目录内。",
+      description: "列出文稿文件夹里的笔记目录或文件。path 相对根目录，省略则列出根。只在用户已授权的目录内；不含下载字幕。",
       parameters: obj({
         path: { type: "string", description: "相对路径，如 yt-xxxx；省略为根" },
       }),
@@ -952,7 +952,7 @@ export function createAgentTools(ctx) {
     },
     {
       name: "read_library",
-      description: "读取文稿文件夹内的文本文件，如 yt-xxxx/transcript.md、original.vtt、zh.vtt。",
+      description: "读取文稿文件夹内的笔记文本（如 PageLens/sessions/、剪藏）。下载的字幕不在这里。",
       parameters: obj({ path: { type: "string", description: "相对路径" } }, ["path"]),
       async execute(args) {
         try {
@@ -967,7 +967,7 @@ export function createAgentTools(ctx) {
     {
       name: "write_library",
       description:
-        "向文稿文件夹写入文本（md / vtt / json / txt / srt / csv）。只在用户明确要求保存或修改译稿时用。导入当前对话请用 save_session_note。不要写密钥。",
+        "向文稿文件夹写入笔记文本（md / txt / json）。只在用户明确要求保存笔记时用。导入当前对话请用 save_session_note。不要把下载字幕写入这个目录，也不要写密钥。",
       parameters: obj(
         {
           path: { type: "string", description: "相对路径，如 yt-xxxx/zh.vtt" },
@@ -985,7 +985,7 @@ export function createAgentTools(ctx) {
     },
     {
       name: "save_video_doc",
-      description: "把当前视频音频转写稿写入文稿文件夹（original.vtt、transcript.md、meta.json）。需已选择文件夹。",
+      description: "把当前视频字幕/转写稿写入本机缓存 ~/.cache/pagelens-docs（original.vtt、transcript.md、meta.json），不写入 Obsidian 文稿文件夹。需 Native Host。",
       parameters: obj({ tabId: tabIdProp() }),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
@@ -1002,7 +1002,7 @@ export function createAgentTools(ctx) {
           captionsText: caps.text,
           captionsCues: caps.cues,
           captionsSource: caps.source,
-        });
+        }, { required: true });
         return toToolText(saved);
       },
     },

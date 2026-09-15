@@ -84,6 +84,10 @@ try {
   const st = await handleRequest({ op: "fs", action: "stat", path: tmp });
   assert(st.ok && st.kind === "directory" && st.path === path.resolve(tmp), "fs stat dir");
 
+  const nested = path.join(tmp, "cache", "docs");
+  const ensured = await handleFs({ action: "ensureDir", path: nested });
+  assert(ensured.ok && ensured.kind === "directory" && fs.existsSync(nested), "fs ensureDir");
+
   const wrote = await handleFs({ action: "writeText", root: tmp, rel: "yt-x/meta.json", text: '{"ok":1}\n' });
   assert(wrote.ok && wrote.path === "yt-x/meta.json", "fs write");
   const read = await handleFs({ action: "readText", root: tmp, rel: "yt-x/meta.json" });

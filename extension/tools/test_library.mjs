@@ -9,6 +9,7 @@ import {
   parseTimedText,
   cuesToMarkdown,
   mergeZhCues,
+  TRANSCRIPT_CACHE_PATH,
 } from "../lib/library.js";
 
 function assert(cond, msg) {
@@ -17,6 +18,7 @@ function assert(cond, msg) {
 
 assert(videoIdentity("https://www.youtube.com/watch?v=dQw4w9wgGcQ&t=12") === "yt:dQw4w9wgGcQ", "yt");
 assert(folderNameFor("yt:dQw4w9wgGcQ") === "yt-dQw4w9wgGcQ", "folder " + folderNameFor("yt:dQw4w9wgGcQ"));
+assert(TRANSCRIPT_CACHE_PATH === "~/.cache/pagelens-docs", "cache path");
 assert(folderNameFor("https://example.com/a/b") === "example.com-a-b" || folderNameFor("https://example.com/a/b").startsWith("example.com"), "http folder");
 
 assert(splitRelPath("yt-x/original.vtt").join("/") === "yt-x/original.vtt", "rel path");

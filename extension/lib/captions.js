@@ -157,7 +157,8 @@ export async function transcribeTab({ tabId, settings, force = false, onProgress
     captionsSource: formatted.source, captionsComplete: true,
     video: { duration: formatted.duration },
   });
-  formatted.library = saved?.ok ? saved.folder : "";
+  formatted.library = saved?.ok && saved.folder ? saved.folder : "";
+  formatted.cache = saved?.cache || "";
   if (saved?.ok === false && saved.error && !saved.skipped) formatted.libraryError = saved.error;
   onProgress?.({ status: "done" });
   return formatted;

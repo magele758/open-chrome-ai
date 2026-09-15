@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- 下载的字幕和转写稿改为写入 `~/.cache/pagelens-docs`，不再自动落到 Obsidian 文稿文件夹。
+
 ### Added
 - **一键剪藏至 Obsidian 独立卡片与 Chrome 书签联动 (Clippings & Footprint Recall)**:
   - 新增 `extension/lib/clippings.js`：核心剪藏逻辑，生成带标准 YAML Frontmatter（title, url, date, tags, clipping_id, source）与思考备注的独立 Markdown 卡片文件（`PageLens/clippings/YYYY-MM-DD-slug-id.md`）。

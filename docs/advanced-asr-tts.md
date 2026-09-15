@@ -49,7 +49,7 @@ conda run -n pagelens-media python tools/media_helper.py --ensure
 curl -sS http://127.0.0.1:18789/health
 ```
 
-若选了文稿文件夹，再写成 `original.vtt` / `transcript.md`。长文稿分段阅读后汇总，不截取开头代替全文。「同声传译」始终按声音约 5 秒一片走同一接口。两项可以同时运行，取消各自独立。
+装了 Native Host 时，再写成 `~/.cache/pagelens-docs` 下的 `original.vtt` / `transcript.md`，不写入 Obsidian 文稿文件夹。长文稿分段阅读后汇总，不截取开头代替全文。「同声传译」始终按声音约 5 秒一片走同一接口。两项可以同时运行，取消各自独立。
 
 也兼容 Groq / OpenAI 形态：`POST {base_url}/audio/transcriptions`。按预设切换即可。
 
