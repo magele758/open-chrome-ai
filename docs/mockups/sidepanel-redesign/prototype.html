@@ -1,0 +1,1616 @@
+<!doctype html>
+<html lang="en" data-visualize-standalone>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Pagelens Independent Context V4</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Pagelens Independent Context V4" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot; data-visualize-standalone&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;Pagelens Independent Context V4&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(
+    --background,
+    var(--color-background-primary, light-dark(rgb(255 255 255), rgb(24 24 24)))
+  ) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: var(
+    --color-background-primary,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --card: color-mix(in oklab, var(--foreground) 5%, var(--background));
+  --card-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --popover: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255), rgb(45 45 45))
+  );
+  --popover-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --primary: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --primary-foreground: var(
+    --color-text-inverse,
+    light-dark(rgb(255 255 255), rgb(13 13 13))
+  );
+  --secondary: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%))
+  );
+  --secondary-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: var(
+    --color-text-secondary,
+    light-dark(rgb(26 28 31 / 49.4%), rgb(255 255 255 / 49.8%))
+  );
+  --accent: var(
+    --color-background-info,
+    light-dark(rgb(229 242 255), rgb(13 39 63))
+  );
+  --accent-foreground: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --destructive: var(
+    --color-text-warning,
+    light-dark(rgb(226 85 7), rgb(255 133 73))
+  );
+  --border: var(
+    --color-border-secondary,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+  --input: var(
+    --color-border-primary,
+    light-dark(
+      rgb(26 28 31 / 11.8%),
+      color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+    )
+  );
+  --ring: var(
+    --color-ring-primary,
+    light-dark(rgb(51 156 255), rgb(131 195 255 / 76%))
+  );
+  --font-size-base: var(--font-text-md-size, 14px);
+  --blue: light-dark(rgb(51 156 255), rgb(51 156 255));
+  --orange: light-dark(rgb(226 85 7), rgb(251 106 34));
+  --green: light-dark(rgb(0 162 64), rgb(64 201 119));
+  --red: light-dark(rgb(224 46 42), rgb(255 103 100));
+  --purple: light-dark(rgb(146 79 247), rgb(173 123 249));
+  --yellow: light-dark(rgb(255 195 0), rgb(255 210 64));
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --icon-size: 16px;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --corner-shape: round;
+  --radius: var(--border-radius-lg, 10px);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  /* Preserve MCP aliases for older inline renderers without creating :root cycles. */
+  --color-background-primary: var(
+    --background,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --color-text-primary: var(
+    --foreground,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --color-border-secondary: var(
+    --border,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+
+  margin: 0;
+  padding: var(--visualize-paint-gutter, 0px);
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans) !important;
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--font-weight-medium, 500);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: var(--corner-shape);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--foreground);
+  font: inherit;
+  text-align: start;
+}
+
+.table :is(th, td) {
+  padding-block: 10px;
+  padding-inline: 0 24px;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.table-responsive &gt; .table :is(th, td) {
+  overflow-wrap: break-word;
+}
+
+.table :is(th, td):last-child {
+  padding-inline-end: 0;
+}
+
+.table :is(caption, thead th) {
+  font-weight: 600;
+}
+
+.table thead th {
+  padding-block: 8px;
+  border-bottom-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+}
+
+.table tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+
+.table.table-sm :is(th, td) {
+  padding-block: 6px;
+}
+
+.table.table-sm :is(th, td):not(:last-child) {
+  padding-inline-end: 16px;
+}
+
+.table :is(.text-end, [align=&quot;right&quot;]) {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.table :is(.text-center, [align=&quot;center&quot;]) {
+  text-align: center;
+}
+
+.table .text-nowrap {
+  white-space: nowrap;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: var(--corner-shape);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card, .progress) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+hr {
+  width: 100%;
+  height: 1px;
+  margin-block: 6px;
+  border: 0;
+  background: var(--border);
+}
+
+.nav {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.progress {
+  display: flex;
+  height: 8px;
+  margin-block: calc((var(--line-height-normal, 1.5em) - 8px) / 2);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+}
+
+.progress-bar:only-child {
+  border-radius: var(--radius-full);
+}
+
+.progress-bar {
+  height: 100%;
+  flex-shrink: 0;
+  border: 0;
+  background: var(--viz-series-1);
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.nav-link,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn,
+.nav-link {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover,
+.nav-link:not(:disabled):not([aria-disabled=&quot;true&quot;]):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.nav-pills .nav-link {
+  min-width: 0;
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.nav-justified .nav-link {
+  flex: 1 1 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.nav-pills .nav-link.active {
+  color: var(--foreground);
+  background: var(--muted);
+}
+
+.btn:disabled,
+.nav-link:disabled,
+.nav-link[aria-disabled=&quot;true&quot;] {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: var(--corner-shape);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: var(--corner-shape);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+  [aria-pressed=&quot;true&quot;],
+  [aria-selected=&quot;true&quot;],
+  .is-selected
+) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible,
+.nav-link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .btn,
+  .nav-link,
+  .form-control,
+  .form-select {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Keep small-screen WebKit from zooming when a text field receives focus. */
+  .form-control,
+  .form-select {
+    font-size: max(16px, var(--font-size-normal));
+  }
+
+  .form-control[type=&quot;file&quot;]::file-selector-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .form-control-color[type=&quot;color&quot;] {
+    width: 44px;
+    height: 44px;
+  }
+
+  .form-control:is(
+    [type=&quot;date&quot;],
+    [type=&quot;datetime-local&quot;],
+    [type=&quot;month&quot;],
+    [type=&quot;time&quot;],
+    [type=&quot;week&quot;]
+  ) {
+    min-width: 0;
+    max-width: 100%;
+    padding-block: 8px;
+  }
+
+  .form-check {
+    min-height: 44px;
+    padding-inline: 15px;
+  }
+
+  .form-check-input {
+    position: relative;
+  }
+
+  .form-check-input::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 44px;
+    content: &quot;&quot;;
+    transform: translate(-50%, -50%);
+  }
+
+  .form-check-label {
+    display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .form-range {
+    height: 44px;
+    touch-action: pan-y;
+  }
+
+  .form-range::-webkit-slider-runnable-track {
+    height: 44px;
+  }
+
+  .form-range::-moz-range-track {
+    height: 44px;
+  }
+
+  .form-range::-webkit-slider-thumb {
+    margin-top: 12px;
+  }
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+/* Model-authored chart rules can otherwise stretch icons after these styles load. */
+svg.lucide {
+  display: block;
+  width: var(--icon-size) !important;
+  height: var(--icon-size) !important;
+  flex: none;
+  margin: 0 !important;
+  stroke-width: 1.6;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;style&gt;
+#pl-design{--pl-bg:light-dark(#f7f6f2,#211f1c);--pl-surface:light-dark(#fff,#292622);--pl-line:light-dark(#e6e1d8,#49423a);--pl-ink:light-dark(#292420,#eee8df);--pl-muted:light-dark(#78716c,#b4aaa0);--pl-accent:light-dark(#b95122,#ee986e);--pl-soft:light-dark(#f8e9df,#493327);--pl-green:light-dark(#237269,#8ecfc3);color:var(--pl-ink);font:13px/1.6 &#x27;PingFang SC&#x27;,system-ui,sans-serif;background:var(--pl-surface);border:1px solid var(--pl-line);border-radius:14px;overflow:hidden}
+#pl-design *{box-sizing:border-box}#pl-design button,#pl-design textarea,#pl-design select{font:inherit;color:inherit}#pl-design button{cursor:pointer;border:0;background:transparent;border-radius:7px;padding:6px 9px;display:inline-flex;align-items:center;justify-content:center;gap:6px}#pl-design button:hover{background:var(--pl-bg)}#pl-design button:focus-visible{outline:2px solid var(--pl-accent);outline-offset:2px}#pl-design svg{width:16px;height:16px;flex:none}#pl-design .pl-muted{color:var(--pl-muted)}#pl-design .pl-browser-top{background:var(--pl-bg);padding:9px 12px 0;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--pl-line)}#pl-design .pl-dots{display:flex;gap:5px;margin-right:12px}#pl-design .pl-dots span{width:8px;height:8px;border-radius:50%;background:var(--pl-line)}#pl-design .pl-tab{border-radius:8px 8px 0 0;padding:9px 13px;color:var(--pl-muted);border:1px solid transparent;border-bottom:0}#pl-design .pl-tab[aria-selected=true]{background:var(--pl-surface);color:var(--pl-ink);border-color:var(--pl-line)}#pl-design .pl-tab em{font-style:normal;font-size:11px;color:var(--pl-green)}#pl-design .pl-main{display:grid;grid-template-columns:minmax(0,1fr) 390px;min-height:700px}#pl-design .pl-page{background:var(--pl-bg);padding:23px 35px}#pl-design .pl-url{font-size:11px;color:var(--pl-muted);padding-bottom:32px}#pl-design .pl-kicker{color:var(--pl-accent);font-size:11px;letter-spacing:2px}#pl-design h1{font-size:29px;line-height:1.4;font-weight:600;margin:14px 0}#pl-design .pl-deck{font-size:14px;color:var(--pl-muted)}#pl-design .pl-meta{font-size:11px;color:var(--pl-muted);margin:20px 0 26px;padding-bottom:23px;border-bottom:1px solid var(--pl-line)}#pl-design .pl-article h2{font-size:17px;font-weight:550;margin:27px 0 10px}#pl-design .pl-article p{line-height:1.95;margin:13px 0}#pl-design .pl-quote{padding:13px 17px;border-left:2px solid var(--pl-accent);margin:22px 0;color:var(--pl-accent)}#pl-design .pl-side{border-left:1px solid var(--pl-line);display:flex;flex-direction:column;min-width:0;background:var(--pl-surface)}#pl-design .pl-head{padding:12px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--pl-line)}#pl-design .pl-brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:15px}#pl-design .pl-mark{width:19px;height:19px;background:var(--pl-accent);border-radius:5px;display:block}#pl-design .pl-player{background:var(--pl-bg);border-bottom:1px solid var(--pl-line);padding:14px 16px}#pl-design .pl-flex{display:flex;align-items:center;gap:8px}#pl-design .pl-between{justify-content:space-between}#pl-design .pl-status{color:var(--pl-green);font-size:11px;display:flex;gap:6px;align-items:center}#pl-design .pl-dot{width:6px;height:6px;background:var(--pl-green);border-radius:50%}#pl-design .pl-tiny{font-size:11px;color:var(--pl-muted)}#pl-design .pl-player-title{font-size:13px;font-weight:550;margin:6px 0 10px}#pl-design .pl-cover{background:var(--pl-soft);color:var(--pl-accent);width:36px;height:36px;border-radius:8px;display:grid;place-items:center;flex:none}#pl-design .pl-track{flex:1}#pl-design .pl-progress{height:3px;background:var(--pl-line);border-radius:3px;margin-top:6px;overflow:hidden}#pl-design .pl-progress span{display:block;width:37%;height:100%;background:var(--pl-accent)}#pl-design .pl-play{background:var(--pl-surface);border:1px solid var(--pl-line);width:32px;height:32px}#pl-design .pl-transcript{padding:13px 0 3px;margin-top:12px;border-top:1px solid var(--pl-line)}#pl-design .pl-transcript p{margin:5px 0}#pl-design .pl-transcript .pl-en{font-size:11px;color:var(--pl-muted)}#pl-design .pl-controls{display:flex;gap:4px;flex-wrap:wrap;margin:13px 0 5px}#pl-design .pl-controls button{font-size:11px;border:1px solid var(--pl-line);background:var(--pl-surface)}#pl-design .pl-link{color:var(--pl-accent);font-size:12px;padding-left:0}#pl-design .pl-chat-head{padding:17px 17px 11px;display:flex;align-items:center;justify-content:space-between;font-size:12px}#pl-design .pl-context{margin:0 16px;padding:10px 12px;border:1px solid var(--pl-line);border-radius:9px;display:flex;align-items:flex-start;gap:10px}#pl-design .pl-context svg{color:var(--pl-muted);margin-top:4px}#pl-design .pl-context strong{font-weight:500;display:block;font-size:12px}#pl-design .pl-chat-actions{padding:8px 16px;display:flex;gap:6px}#pl-design .pl-chat-actions button{font-size:12px;border:1px solid var(--pl-line)}#pl-design .pl-chat-actions .pl-primary{background:var(--pl-soft);color:var(--pl-accent);border-color:transparent}#pl-design .pl-messages{padding:15px 18px 24px;flex:1;min-height:275px}#pl-design .pl-user{background:var(--pl-bg);border-radius:12px 12px 3px 12px;padding:10px 12px;margin:0 0 20px auto;width:fit-content;max-width:95%}#pl-design .pl-answer h3{font-size:14px;font-weight:550;margin:8px 0}#pl-design .pl-answer p{margin:9px 0;line-height:1.85}#pl-design .pl-answer ol{padding-left:20px;margin:11px 0}#pl-design .pl-answer li{padding-left:2px;margin:8px 0}#pl-design .pl-source{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--pl-muted);margin-top:10px}#pl-design .pl-compose{padding:12px 14px 11px;border-top:1px solid var(--pl-line)}#pl-design .pl-input-box{border:1px solid var(--pl-line);border-radius:11px;padding:10px;background:var(--pl-surface)}#pl-design .pl-chip{display:flex;align-items:center;gap:6px;color:var(--pl-muted);font-size:11px;width:fit-content;max-width:100%;padding:4px 7px;background:var(--pl-bg);border-radius:5px}#pl-design .pl-chip.pl-ref{background:var(--pl-soft);color:var(--pl-accent)}#pl-design .pl-chip button{padding:0 2px}#pl-design textarea{resize:vertical;width:100%;min-height:65px;max-height:160px;background:transparent;border:0;padding:10px 1px;outline:none}#pl-design .pl-send{background:var(--pl-accent);color:var(--pl-surface);width:29px;height:29px}#pl-design .pl-foot{font-size:10px;color:var(--pl-muted);margin:7px 3px 0;display:flex;justify-content:space-between}#pl-design [hidden]{display:none!important}#pl-design .pl-video{padding:32px 20px;background:var(--pl-surface);border:1px solid var(--pl-line);border-radius:10px;text-align:center;margin:20px 0}#pl-design .pl-video strong{display:block;font-size:22px;margin:12px}#pl-design .pl-toast{font-size:11px;color:var(--pl-accent);min-height:0}#pl-design .pl-mode{background:var(--pl-surface);border:1px solid var(--pl-line);border-radius:6px;padding:3px 5px;font-size:11px}
+@media(max-width:740px){#pl-design .pl-main{grid-template-columns:minmax(0,1fr) 350px}#pl-design .pl-page{padding:22px}#pl-design h1{font-size:23px}}@media(max-width:610px){#pl-design .pl-main{display:block;min-height:0}#pl-design .pl-page{display:none}#pl-design .pl-side{border-left:0}#pl-design .pl-tab{padding:8px;font-size:11px}#pl-design .pl-dots{display:none}#pl-design .pl-messages{min-height:220px}}
+#pl-design #pl-chat-zone{display:flex;flex:1;flex-direction:column;min-height:0}
+#pl-design #pl-settings{padding:18px;flex:1;background:var(--pl-surface)}
+#pl-design .pl-settings-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px;font-size:15px}
+#pl-design .pl-settings-heading button{font-size:12px;color:var(--pl-muted)}
+#pl-design .pl-settings-section{margin-bottom:23px}
+#pl-design .pl-settings-section details{padding:12px 0;border-bottom:1px solid var(--pl-line)}
+#pl-design .pl-settings-section summary{cursor:pointer;font-size:13px}
+#pl-design .pl-settings-section summary span{float:right;color:var(--pl-green);font-size:11px}
+#pl-design .pl-settings-section details label{display:block;font-size:12px;margin:12px 0}
+#pl-design .pl-settings-section details input{display:block;width:100%;padding:7px 9px;border:1px solid var(--pl-line);border-radius:6px;background:var(--pl-bg);margin-top:5px}
+#pl-design .pl-settings-section details p{font-size:12px;color:var(--pl-muted)}
+#pl-design .pl-setting-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;font-size:12px}
+#pl-design .pl-setting-row select{background:var(--pl-bg);border:1px solid var(--pl-line);border-radius:5px;padding:4px 7px}
+#pl-design .pl-setting-row input{accent-color:var(--pl-accent)}
+#pl-design #pl-settings-save{background:var(--pl-accent);color:var(--pl-surface);padding:8px 15px}
+
+#pl-design .pl-head{padding:10px 16px;border-bottom:0}
+#pl-design .pl-head button{font-size:12px;color:var(--pl-muted)}
+#pl-design .pl-global{display:flex;align-items:center;justify-content:space-between;padding:0 10px 9px;border-bottom:1px solid var(--pl-line);gap:2px}
+#pl-design .pl-global button{font-size:12px;padding:5px 7px;color:var(--pl-muted);gap:5px}
+#pl-design .pl-global button[aria-current=page]{color:var(--pl-accent);background:var(--pl-soft)}
+#pl-design .pl-player{padding:12px 16px}
+#pl-design .pl-section-label{font-size:11px;color:var(--pl-muted)}
+#pl-design .pl-player-title{display:flex;align-items:center;justify-content:space-between;margin:2px 0 8px}
+#pl-design .pl-player-title button{color:var(--pl-muted);padding:4px}
+#pl-design .pl-mode-row{display:flex;align-items:center;gap:8px;justify-content:space-between}
+#pl-design .pl-segments{display:flex;gap:2px;padding:3px;background:var(--pl-line);border-radius:8px}
+#pl-design .pl-segments button{font-size:12px;padding:6px 8px;color:var(--pl-muted);gap:4px}
+#pl-design .pl-segments button[aria-pressed=true]{background:var(--pl-surface);color:var(--pl-accent);box-shadow:0 1px 2px #00000008}
+#pl-design #pl-mute{font-size:11px;padding:5px;gap:4px;white-space:nowrap;color:var(--pl-muted)}
+#pl-design #pl-mute[aria-pressed=true]{color:var(--pl-accent)}
+#pl-design .pl-play-row{margin:9px 0 5px;gap:10px}
+#pl-design .pl-play-row .pl-play{background:var(--pl-accent);color:var(--pl-surface);border:0}
+#pl-design #pl-seek{display:block;width:100%;height:4px;margin:2px 0 8px;accent-color:var(--pl-accent);cursor:pointer}
+#pl-design #pl-rate{padding:0 3px;font-size:11px}
+#pl-design .pl-video-actions{display:flex;align-items:center;justify-content:space-between;gap:5px;margin-top:7px}
+#pl-design .pl-video-actions button{font-size:12px;padding:7px 9px}
+#pl-design #pl-video-summary{color:var(--pl-accent);background:var(--pl-soft)}
+#pl-design #pl-expand{color:var(--pl-muted);font-size:11px}
+#pl-design #pl-media-note{font-size:10px;margin-top:8px}
+#pl-design .pl-more{margin-top:8px;font-size:11px;color:var(--pl-muted)}
+#pl-design .pl-more summary{cursor:pointer}
+#pl-design #pl-video-result{padding:12px;margin-top:11px;background:var(--pl-surface);border:1px solid var(--pl-line);border-radius:8px;font-size:12px}
+#pl-design #pl-video-result p{margin:9px 0;line-height:1.85}
+#pl-design #pl-utility{padding:18px;flex:1}
+#pl-design .pl-history-item{display:block;width:100%;padding:13px 0;border-bottom:1px solid var(--pl-line);text-align:left}
+#pl-design .pl-history-item strong{display:block;font-size:13px;font-weight:500}
+#pl-design .pl-history-item span{display:block;font-size:11px;color:var(--pl-muted)}
+#pl-design .pl-answer-actions{display:flex;gap:12px;padding-top:9px;margin-top:7px;border-top:1px solid var(--pl-line)}
+#pl-design .pl-answer-actions button{font-size:11px;color:var(--pl-muted);padding:3px 0}
+#pl-design .pl-messages{min-height:240px;padding-top:6px}
+#pl-design .pl-chat-head{padding-top:14px}
+#pl-design .pl-compose textarea{min-height:52px}
+#pl-design .pl-review-tabs{display:flex;gap:8px;margin-bottom:12px}
+#pl-design .pl-review-tabs button{border:1px solid var(--pl-line)}
+#pl-design #pl-caption-edit{min-height:85px;border:1px solid var(--pl-line);border-radius:6px;padding:8px}
+@media(max-width:380px){#pl-design .pl-segments button{font-size:11px;padding:6px 5px}#pl-design .pl-global button{font-size:11px;padding:5px}#pl-design .pl-global svg{width:13px}#pl-design .pl-mode-row{gap:3px}}
+
+#pl-design #pl-tasks-toggle{padding:0;font-size:11px;color:var(--pl-muted);gap:5px}
+#pl-design #pl-task-count{background:var(--pl-line);padding:0 5px;border-radius:4px}
+#pl-design .pl-usage{font-size:11px;margin-top:8px;color:var(--pl-muted)}
+#pl-design .pl-usage summary{display:flex;justify-content:space-between;cursor:pointer;padding:4px 0}
+#pl-design .pl-usage p{margin:7px 0}
+#pl-design #pl-media-usage-detail{padding-top:6px;line-height:1.8}
+#pl-design #pl-tasks{border-top:1px solid var(--pl-line);margin-top:10px;padding-top:9px}
+#pl-design .pl-task-heading{display:flex;align-items:center;justify-content:space-between;gap:5px;font-size:11px;color:var(--pl-muted)}
+#pl-design .pl-task-heading button{font-size:11px;padding:3px;color:var(--pl-accent)}
+#pl-design .pl-task-item{padding:11px 0;border-bottom:1px solid var(--pl-line)}
+#pl-design .pl-task-item strong{font-size:12px;font-weight:500;overflow-wrap:anywhere}
+#pl-design .pl-task-state{font-size:10px;color:var(--pl-green);white-space:nowrap}
+#pl-design .pl-task-progress{height:3px;background:var(--pl-line);margin:7px 0 5px;border-radius:3px;overflow:hidden}
+#pl-design .pl-task-progress span{display:block;height:100%;background:var(--pl-green)}
+#pl-design .pl-task-item .pl-tiny{font-size:10px}
+#pl-design .pl-task-ops{display:flex;gap:5px;padding-top:4px}
+#pl-design .pl-task-ops button{font-size:10px;padding:2px;color:var(--pl-accent)}
+#pl-design .pl-task-help{padding-top:7px;font-size:10px}
+#pl-design .pl-answer-usage{font-size:11px;color:var(--pl-muted);margin-top:12px;font-variant-numeric:tabular-nums}
+#pl-design .pl-answer-usage summary{cursor:pointer;display:flex;align-items:center;gap:8px}
+#pl-design .pl-answer-usage div{padding:7px 0}
+#pl-design #pl-task-picker{margin-top:8px;padding:10px;background:var(--pl-surface);border:1px solid var(--pl-line);border-radius:7px;font-size:11px}
+#pl-design #pl-task-picker strong{font-size:11px;font-weight:500}
+#pl-design #pl-pick-task{display:flex;width:100%;justify-content:space-between;font-size:11px;padding:10px 0}
+#pl-design #pl-pick-task span{color:var(--pl-accent)}
+
+#pl-design .pl-head{padding:11px 13px 11px 16px;border-bottom:1px solid var(--pl-line);gap:8px}
+#pl-design .pl-head .pl-global{padding:0;border:0;gap:3px;flex:none}
+#pl-design .pl-head .pl-global button{width:29px;height:29px;padding:6px;display:flex;align-items:center;justify-content:center;color:var(--pl-muted)}
+#pl-design .pl-head .pl-global button:hover{color:var(--pl-ink);background:var(--pl-bg)}
+#pl-design .pl-head .pl-global svg{width:16px;height:16px}
+#pl-design .pl-audio-bar{display:flex;align-items:center;gap:7px;margin-bottom:4px;min-width:0}
+#pl-design #pl-audio-toggle{padding:3px;color:var(--pl-muted);flex:none}
+#pl-design .pl-audio-label{flex:1;min-width:0}
+#pl-design #pl-collapsed-title{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;font-weight:500;max-width:100%}
+#pl-design .pl-audio-bar .pl-status{font-size:10px;white-space:nowrap}
+#pl-design #pl-mini-pause{width:28px;height:28px;background:var(--pl-surface);border:1px solid var(--pl-line);color:var(--pl-accent);padding:5px;flex:none}
+#pl-design .pl-audio-collapsed{padding:9px 13px}
+#pl-design .pl-audio-collapsed .pl-audio-bar{margin:0}
+#pl-design .pl-audio-collapsed .pl-section-label{font-size:10px}
+#pl-design #pl-tasks-toggle{display:flex;width:100%;justify-content:flex-start;padding-top:10px;margin-top:8px;border-top:1px solid var(--pl-line)}
+#pl-design #pl-tasks{border-top:0;margin-top:3px}
+@media(max-width:380px){#pl-design .pl-head{padding:10px;gap:5px}#pl-design .pl-brand{font-size:14px;gap:6px}#pl-design .pl-head .pl-global{gap:1px}#pl-design .pl-head .pl-global button{width:27px;height:28px;padding:5px}}
+&lt;/style&gt;
+&lt;div id=&quot;pl-design&quot; aria-label=&quot;PageLens 音视频与网页对话独立设计稿&quot;&gt;
+  &lt;div class=&quot;pl-browser-top&quot; role=&quot;tablist&quot; aria-label=&quot;浏览器标签页&quot;&gt;
+    &lt;div class=&quot;pl-dots&quot; aria-hidden=&quot;true&quot;&gt;&lt;span&gt;&lt;/span&gt;&lt;span&gt;&lt;/span&gt;&lt;span&gt;&lt;/span&gt;&lt;/div&gt;
+    &lt;button class=&quot;pl-tab&quot; role=&quot;tab&quot; aria-selected=&quot;false&quot; data-page=&quot;video&quot;&gt;&lt;i data-lucide=&quot;youtube&quot;&gt;&lt;/i&gt; 重新理解 AI Agent &lt;em id=&quot;pl-tab-audio&quot;&gt;正在同传&lt;/em&gt;&lt;/button&gt;
+    &lt;button class=&quot;pl-tab&quot; role=&quot;tab&quot; aria-selected=&quot;true&quot; data-page=&quot;article&quot;&gt;&lt;i data-lucide=&quot;file-text&quot;&gt;&lt;/i&gt; 给深度工作留出空间&lt;/button&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;pl-main&quot;&gt;
+    &lt;main class=&quot;pl-page&quot;&gt;
+      &lt;div class=&quot;pl-url&quot; id=&quot;pl-url&quot;&gt;阅读笔记 / 工作与生活&lt;/div&gt;
+      &lt;div id=&quot;pl-article&quot;&gt;
+        &lt;div class=&quot;pl-kicker&quot;&gt;工作方式 · 阅读 6 分钟&lt;/div&gt;
+        &lt;h1&gt;给深度工作&lt;br&gt;留出空间&lt;/h1&gt;
+        &lt;p class=&quot;pl-deck&quot;&gt;在不断被打断的日常里，重新找回完整思考的时间。&lt;/p&gt;
+        &lt;div class=&quot;pl-meta&quot;&gt;林间笔记　·　2026 年 9 月 15 日&lt;/div&gt;
+        &lt;div class=&quot;pl-article&quot;&gt;&lt;h2&gt;忙碌，并不等于推进&lt;/h2&gt;&lt;p&gt;一天结束，我们回复了很多消息，也参加了几场会议，却很难说清，真正重要的事情向前走了多少。&lt;/p&gt;&lt;p&gt;问题往往不在于时间不足，而在于注意力被分成了太多小块。每次切换任务，都需要重新拾起前一个问题的线索。&lt;/p&gt;&lt;div class=&quot;pl-quote&quot;&gt;为重要的事留下一段连续的时间，是一种主动的选择。&lt;/div&gt;&lt;h2&gt;从一小段不被打扰的时间开始&lt;/h2&gt;&lt;p&gt;在日历上保留九十分钟，关掉通知，只完成一件明确的事情。把需要沟通的内容集中处理，为思考留出边界。&lt;/p&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div id=&quot;pl-video-page&quot; hidden&gt;&lt;div class=&quot;pl-kicker&quot;&gt;视频 · 28 分 40 秒&lt;/div&gt;&lt;h1&gt;重新理解 AI Agent&lt;/h1&gt;&lt;p class=&quot;pl-deck&quot;&gt;从单次回答，到持续完成任务。&lt;/p&gt;&lt;div class=&quot;pl-video&quot;&gt;&lt;i data-lucide=&quot;audio-lines&quot;&gt;&lt;/i&gt;&lt;strong&gt;从回答，到行动&lt;/strong&gt;&lt;span class=&quot;pl-muted&quot;&gt;10:32 / 28:40 · 中文配音中&lt;/span&gt;&lt;/div&gt;&lt;p&gt;同声传译正在 PageLens 音视频工具中运行。&lt;/p&gt;&lt;/div&gt;
+    &lt;/main&gt;
+    &lt;aside class=&quot;pl-side&quot; aria-label=&quot;PageLens 侧栏&quot;&gt;
+      &lt;header class=&quot;pl-head&quot;&gt;&lt;div class=&quot;pl-brand&quot;&gt;&lt;span class=&quot;pl-mark&quot;&gt;&lt;/span&gt;PageLens&lt;/div&gt;&lt;nav class=&quot;pl-global&quot; aria-label=&quot;全局功能&quot;&gt;&lt;button id=&quot;pl-new&quot; aria-label=&quot;新对话&quot; data-tooltip=&quot;新对话&quot;&gt;&lt;i data-lucide=&quot;square-pen&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;button data-view=&quot;history&quot; aria-label=&quot;历史会话&quot; data-tooltip=&quot;历史会话&quot;&gt;&lt;i data-lucide=&quot;history&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;button data-view=&quot;logs&quot; aria-label=&quot;运行日志&quot; data-tooltip=&quot;运行日志&quot;&gt;&lt;i data-lucide=&quot;file-clock&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;button data-view=&quot;review&quot; aria-label=&quot;知识盘点&quot; data-tooltip=&quot;知识盘点&quot;&gt;&lt;i data-lucide=&quot;notebook-pen&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;button id=&quot;pl-settings-open&quot; aria-label=&quot;设置&quot; data-tooltip=&quot;设置&quot; aria-expanded=&quot;false&quot;&gt;&lt;i data-lucide=&quot;settings&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;/nav&gt;&lt;/header&gt;
+      &lt;section class=&quot;pl-player&quot; aria-label=&quot;独立音视频工具&quot;&gt;
+        &lt;div class=&quot;pl-audio-bar&quot;&gt;&lt;button id=&quot;pl-audio-toggle&quot; aria-expanded=&quot;true&quot; aria-controls=&quot;pl-audio-body&quot; aria-label=&quot;收起音视频工具&quot; data-tooltip=&quot;收起音视频工具&quot;&gt;&lt;i data-lucide=&quot;chevron-up&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;div class=&quot;pl-audio-label&quot;&gt;&lt;span class=&quot;pl-section-label&quot; id=&quot;pl-audio-heading&quot;&gt;音视频工具&lt;/span&gt;&lt;strong id=&quot;pl-collapsed-title&quot; hidden&gt;重新理解 AI Agent&lt;/strong&gt;&lt;/div&gt;&lt;div class=&quot;pl-status&quot;&gt;&lt;span class=&quot;pl-dot&quot;&gt;&lt;/span&gt;&lt;span id=&quot;pl-status-label&quot;&gt;同传中&lt;/span&gt;&lt;/div&gt;&lt;button id=&quot;pl-mini-pause&quot; hidden aria-label=&quot;暂停播放&quot; data-tooltip=&quot;暂停播放&quot;&gt;&lt;i data-lucide=&quot;pause&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;/div&gt;
+        &lt;div id=&quot;pl-audio-body&quot;&gt;
+        &lt;div class=&quot;pl-player-title&quot;&gt;&lt;span id=&quot;pl-active-title&quot;&gt;重新理解 AI Agent&lt;/span&gt; &lt;button id=&quot;pl-back&quot; aria-label=&quot;返回此视频&quot;&gt;&lt;i data-lucide=&quot;external-link&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;/div&gt;
+        &lt;div class=&quot;pl-mode-row&quot;&gt;&lt;div class=&quot;pl-segments&quot; role=&quot;group&quot; aria-label=&quot;播放模式&quot;&gt;&lt;button data-mode=&quot;interpret&quot; aria-pressed=&quot;true&quot;&gt;&lt;i data-lucide=&quot;languages&quot;&gt;&lt;/i&gt;同声传译&lt;/button&gt;&lt;button data-mode=&quot;audio&quot; aria-pressed=&quot;false&quot;&gt;&lt;i data-lucide=&quot;headphones&quot;&gt;&lt;/i&gt;纯享音频&lt;/button&gt;&lt;/div&gt;&lt;button id=&quot;pl-mute&quot; aria-pressed=&quot;false&quot;&gt;&lt;i data-lucide=&quot;volume-x&quot;&gt;&lt;/i&gt;原音：关&lt;/button&gt;&lt;/div&gt;
+        &lt;div class=&quot;pl-flex pl-play-row&quot;&gt;&lt;button id=&quot;pl-pause&quot; class=&quot;pl-play&quot; aria-label=&quot;暂停播放&quot;&gt;&lt;i data-lucide=&quot;pause&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;div class=&quot;pl-track&quot;&gt;&lt;div class=&quot;pl-flex pl-between&quot;&gt;&lt;span class=&quot;pl-tiny&quot; id=&quot;pl-time&quot;&gt;10:32 / 28:40&lt;/span&gt;&lt;button class=&quot;pl-tiny&quot; id=&quot;pl-rate&quot;&gt;1.0×&lt;/button&gt;&lt;/div&gt;&lt;input id=&quot;pl-seek&quot; type=&quot;range&quot; min=&quot;0&quot; max=&quot;1720&quot; value=&quot;632&quot; aria-label=&quot;播放进度&quot;&gt;&lt;/div&gt;&lt;/div&gt;
+        &lt;div class=&quot;pl-video-actions&quot;&gt;&lt;button id=&quot;pl-video-summary&quot;&gt;&lt;i data-lucide=&quot;sparkles&quot;&gt;&lt;/i&gt;一键总结视频&lt;/button&gt;&lt;button id=&quot;pl-expand&quot; aria-expanded=&quot;false&quot;&gt;文稿与工具 &lt;i data-lucide=&quot;chevron-down&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;/div&gt;
+        &lt;div id=&quot;pl-video-result&quot; hidden&gt;&lt;div class=&quot;pl-flex pl-between&quot;&gt;&lt;strong&gt;视频摘要&lt;/strong&gt;&lt;button id=&quot;pl-video-result-close&quot; aria-label=&quot;收起视频摘要&quot;&gt;×&lt;/button&gt;&lt;/div&gt;&lt;span class=&quot;pl-tiny&quot;&gt;来源：重新理解 AI Agent&lt;/span&gt;&lt;p&gt;Agent 的核心，是围绕目标执行、检查结果，并根据反馈持续推进。视频从任务规划、工具调用和结果验证三个方面展开。&lt;/p&gt;&lt;details class=&quot;pl-answer-usage&quot;&gt;&lt;summary&gt;5,120 Tokens · 6.8 秒&lt;/summary&gt;&lt;div&gt;输入 4,420 · 输出 700&lt;/div&gt;&lt;/details&gt;&lt;div class=&quot;pl-flex&quot;&gt;&lt;button id=&quot;pl-summary-reference&quot; class=&quot;pl-link&quot;&gt;引用到对话&lt;/button&gt;&lt;button data-save=&quot;视频摘要&quot; class=&quot;pl-link&quot;&gt;&lt;i data-lucide=&quot;bookmark&quot;&gt;&lt;/i&gt;收藏&lt;/button&gt;&lt;/div&gt;&lt;/div&gt;
+        &lt;div class=&quot;pl-transcript&quot; id=&quot;pl-details&quot; hidden&gt;
+          &lt;div class=&quot;pl-flex pl-between&quot;&gt;&lt;span class=&quot;pl-tiny&quot;&gt;当前译文 · 10:32&lt;/span&gt;&lt;button id=&quot;pl-edit&quot; class=&quot;pl-tiny&quot;&gt;修改本句&lt;/button&gt;&lt;/div&gt;&lt;p id=&quot;pl-caption&quot;&gt;真正的变化，是让模型从回答问题，走向持续完成一个任务。&lt;/p&gt;&lt;p class=&quot;pl-en&quot;&gt;The shift is from answering questions to carrying a task through.&lt;/p&gt;
+          &lt;textarea id=&quot;pl-caption-edit&quot; aria-label=&quot;修改本句配音&quot; hidden&gt;真正的变化，是让模型从回答问题，走向持续完成一个任务。&lt;/textarea&gt;
+          &lt;div class=&quot;pl-controls&quot;&gt;&lt;button id=&quot;pl-reference&quot;&gt;&lt;i data-lucide=&quot;text-quote&quot;&gt;&lt;/i&gt;引用文稿&lt;/button&gt;&lt;button id=&quot;pl-transcript-only&quot;&gt;只要文稿&lt;/button&gt;&lt;button id=&quot;pl-full&quot;&gt;完整生成&lt;/button&gt;&lt;button id=&quot;pl-download&quot;&gt;下载音频&lt;/button&gt;&lt;/div&gt;
+          &lt;details class=&quot;pl-more&quot;&gt;&lt;summary&gt;更多视频操作&lt;/summary&gt;&lt;div class=&quot;pl-controls&quot;&gt;&lt;button data-operation=&quot;已切换至对齐配音&quot;&gt;对齐配音&lt;/button&gt;&lt;button data-operation=&quot;预览：重新生成当前视频配音&quot;&gt;重新配音&lt;/button&gt;&lt;button data-operation=&quot;预览：清除当前视频缓存&quot;&gt;清空本视频缓存&lt;/button&gt;&lt;button data-operation=&quot;当前画面：主视频&quot;&gt;切换画面&lt;/button&gt;&lt;button data-operation=&quot;当前正在运行：重新理解 AI Agent&quot;&gt;视频任务&lt;/button&gt;&lt;button id=&quot;pl-end&quot;&gt;结束播放&lt;/button&gt;&lt;/div&gt;&lt;/details&gt;
+        &lt;/div&gt;&lt;div class=&quot;pl-tiny&quot; id=&quot;pl-media-note&quot; role=&quot;status&quot;&gt;绑定此视频 · 切换网页继续播放&lt;/div&gt;
+        &lt;details class=&quot;pl-usage&quot;&gt;&lt;summary&gt;&lt;span id=&quot;pl-media-usage&quot;&gt;12.8k Tokens · 处理 02:18&lt;/span&gt;&lt;span&gt;用量明细&lt;/span&gt;&lt;/summary&gt;&lt;div id=&quot;pl-media-usage-detail&quot;&gt;&lt;/div&gt;&lt;p class=&quot;pl-tiny&quot;&gt;Token 仅统计模型返回的用量；语音服务单独计量。&lt;/p&gt;&lt;/details&gt;
+        &lt;button id=&quot;pl-tasks-toggle&quot; aria-expanded=&quot;true&quot; aria-controls=&quot;pl-tasks&quot;&gt;视频任务 &lt;span id=&quot;pl-task-count&quot;&gt;3&lt;/span&gt;&lt;i data-lucide=&quot;chevron-down&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;div id=&quot;pl-tasks&quot;&gt;&lt;div class=&quot;pl-task-heading&quot;&gt;&lt;span&gt;播放 1 个 · 并行预缓存 2 个&lt;/span&gt;&lt;button id=&quot;pl-add-task&quot;&gt;&lt;i data-lucide=&quot;plus&quot;&gt;&lt;/i&gt;添加视频&lt;/button&gt;&lt;/div&gt;&lt;div id=&quot;pl-task-list&quot;&gt;&lt;/div&gt;&lt;div id=&quot;pl-task-picker&quot; hidden&gt;&lt;strong&gt;从已打开的标签页添加&lt;/strong&gt;&lt;button id=&quot;pl-pick-task&quot;&gt;第四个视频 · 设计系统入门 &lt;span&gt;预缓存&lt;/span&gt;&lt;/button&gt;&lt;span class=&quot;pl-tiny&quot;&gt;仅准备文稿和配音，不自动播放&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;pl-tiny pl-task-help&quot;&gt;切换播放会暂停上一视频；预缓存继续。&lt;/div&gt;&lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/section&gt;
+      &lt;section id=&quot;pl-utility&quot; hidden aria-label=&quot;全局功能面板&quot;&gt;&lt;div class=&quot;pl-settings-heading&quot;&gt;&lt;strong id=&quot;pl-utility-title&quot;&gt;&lt;/strong&gt;&lt;button id=&quot;pl-utility-back&quot;&gt;&lt;i data-lucide=&quot;arrow-left&quot;&gt;&lt;/i&gt;返回对话&lt;/button&gt;&lt;/div&gt;&lt;div id=&quot;pl-utility-content&quot;&gt;&lt;/div&gt;&lt;p class=&quot;pl-tiny&quot;&gt;设计预览 · 示例内容&lt;/p&gt;&lt;/section&gt;
+      &lt;section id=&quot;pl-settings&quot; aria-label=&quot;设置面板&quot; hidden&gt;
+        &lt;div class=&quot;pl-settings-heading&quot;&gt;&lt;strong&gt;设置&lt;/strong&gt;&lt;button id=&quot;pl-settings-close&quot;&gt;&lt;i data-lucide=&quot;arrow-left&quot;&gt;&lt;/i&gt;返回对话&lt;/button&gt;&lt;/div&gt;
+        &lt;div class=&quot;pl-settings-section&quot;&gt;&lt;span class=&quot;pl-tiny&quot;&gt;模型与服务&lt;/span&gt;
+          &lt;details&gt;&lt;summary&gt;对话模型&lt;span&gt;已配置&lt;/span&gt;&lt;/summary&gt;&lt;label&gt;服务地址&lt;input value=&quot;https://api.example.com/v1&quot; aria-label=&quot;对话服务地址&quot;&gt;&lt;/label&gt;&lt;label&gt;模型名称&lt;input placeholder=&quot;输入模型名称&quot; aria-label=&quot;模型名称&quot;&gt;&lt;/label&gt;&lt;label&gt;API Key&lt;input type=&quot;password&quot; placeholder=&quot;输入 API Key&quot; aria-label=&quot;API Key&quot;&gt;&lt;/label&gt;&lt;/details&gt;
+          &lt;details&gt;&lt;summary&gt;语音识别&lt;span&gt;已配置&lt;/span&gt;&lt;/summary&gt;&lt;label&gt;服务地址&lt;input placeholder=&quot;语音识别服务地址&quot; aria-label=&quot;语音识别服务地址&quot;&gt;&lt;/label&gt;&lt;p&gt;用于提取视频文稿和同声传译。&lt;/p&gt;&lt;/details&gt;
+          &lt;details&gt;&lt;summary&gt;中文配音&lt;span&gt;已配置&lt;/span&gt;&lt;/summary&gt;&lt;label&gt;服务地址&lt;input placeholder=&quot;配音服务地址&quot; aria-label=&quot;配音服务地址&quot;&gt;&lt;/label&gt;&lt;p&gt;用于同声传译、纯享音频和完整生成。&lt;/p&gt;&lt;/details&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;pl-settings-section&quot;&gt;&lt;span class=&quot;pl-tiny&quot;&gt;阅读与对话&lt;/span&gt;&lt;label class=&quot;pl-setting-row&quot;&gt;回答语言&lt;select aria-label=&quot;回答语言&quot;&gt;&lt;option&gt;简体中文&lt;/option&gt;&lt;option&gt;跟随提问&lt;/option&gt;&lt;/select&gt;&lt;/label&gt;&lt;label class=&quot;pl-setting-row&quot;&gt;文字大小&lt;select aria-label=&quot;文字大小&quot;&gt;&lt;option&gt;标准&lt;/option&gt;&lt;option&gt;大&lt;/option&gt;&lt;/select&gt;&lt;/label&gt;&lt;/div&gt;
+        &lt;div class=&quot;pl-settings-section&quot;&gt;&lt;span class=&quot;pl-tiny&quot;&gt;音视频偏好&lt;/span&gt;&lt;label class=&quot;pl-setting-row&quot;&gt;开始同传时关闭原声&lt;input type=&quot;checkbox&quot; checked aria-label=&quot;开始同传时关闭原声&quot;&gt;&lt;/label&gt;&lt;label class=&quot;pl-setting-row&quot;&gt;默认收起播放器&lt;input type=&quot;checkbox&quot; checked aria-label=&quot;默认收起播放器&quot;&gt;&lt;/label&gt;&lt;/div&gt;
+        &lt;button id=&quot;pl-settings-save&quot;&gt;保存设置&lt;/button&gt;&lt;p class=&quot;pl-tiny&quot; id=&quot;pl-settings-feedback&quot; role=&quot;status&quot;&gt;设计预览 · 不修改实际配置&lt;/p&gt;
+      &lt;/section&gt;
+      &lt;div id=&quot;pl-chat-zone&quot;&gt;
+      &lt;div class=&quot;pl-chat-head&quot;&gt;&lt;strong&gt;网页对话&lt;/strong&gt;&lt;span class=&quot;pl-tiny&quot;&gt;跟随当前标签页&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;pl-context&quot;&gt;&lt;i data-lucide=&quot;file-text&quot;&gt;&lt;/i&gt;&lt;div&gt;&lt;strong id=&quot;pl-context-title&quot;&gt;给深度工作留出空间&lt;/strong&gt;&lt;span class=&quot;pl-tiny&quot;&gt;本次总结与提问的来源&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;pl-chat-actions&quot;&gt;&lt;button class=&quot;pl-primary&quot; id=&quot;pl-summary&quot;&gt;&lt;i data-lucide=&quot;sparkles&quot;&gt;&lt;/i&gt;总结本页&lt;/button&gt;&lt;/div&gt;
+      &lt;div class=&quot;pl-messages&quot; id=&quot;pl-messages&quot; aria-live=&quot;polite&quot;&gt;&lt;/div&gt;
+      &lt;div class=&quot;pl-compose&quot;&gt;&lt;div class=&quot;pl-input-box&quot;&gt;&lt;div class=&quot;pl-chip&quot; id=&quot;pl-chip&quot;&gt;&lt;i data-lucide=&quot;file-text&quot;&gt;&lt;/i&gt;&lt;span id=&quot;pl-chip-label&quot;&gt;当前网页：给深度工作留出空间&lt;/span&gt;&lt;button id=&quot;pl-remove&quot; aria-label=&quot;移除引用&quot; hidden&gt;×&lt;/button&gt;&lt;/div&gt;&lt;textarea id=&quot;pl-input&quot; aria-label=&quot;输入问题&quot; placeholder=&quot;问问这篇文章…&quot;&gt;&lt;/textarea&gt;&lt;div class=&quot;pl-flex pl-between&quot;&gt;&lt;div class=&quot;pl-flex&quot;&gt;&lt;button id=&quot;pl-shot&quot; aria-label=&quot;截图&quot;&gt;&lt;i data-lucide=&quot;scan&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;button id=&quot;pl-attach&quot; aria-label=&quot;添加附件&quot;&gt;&lt;i data-lucide=&quot;paperclip&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;span class=&quot;pl-tiny&quot; id=&quot;pl-compose-note&quot;&gt;当前网页&lt;/span&gt;&lt;/div&gt;&lt;button class=&quot;pl-send&quot; id=&quot;pl-send&quot; aria-label=&quot;发送问题&quot;&gt;&lt;i data-lucide=&quot;arrow-up&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;pl-foot&quot;&gt;&lt;span id=&quot;pl-notice&quot;&gt;文本模型 · 已就绪&lt;/span&gt;&lt;span&gt;Enter 发送&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/aside&gt;
+  &lt;/div&gt;
+&lt;/div&gt;
+&lt;script&gt;
+(()=&gt;{
+ const root=document.getElementById(&#x27;pl-design&#x27;),q=id=&gt;root.querySelector(&#x27;#&#x27;+id);
+ const state={page:&#x27;article&#x27;,expanded:false,playing:true,ended:false,original:false,reference:false,mode:&#x27;interpret&#x27;,view:&#x27;chat&#x27;,rate:1,summaryReference:false,referenceTitle:&#x27;重新理解 AI Agent&#x27;,tasksOpen:true,audioOpen:true};
+ const tasks=[
+ {id:&#x27;a&#x27;,title:&#x27;重新理解 AI Agent&#x27;,percent:68,tokens:&#x27;12.8k&#x27;,elapsed:&#x27;02:18&#x27;,input:&#x27;10,240&#x27;,output:&#x27;2,560&#x27;,stage:&#x27;配音已准备至 19:30&#x27;,paused:false,duration:1720,position:632,summary:&#x27;Agent 的核心，是围绕目标执行、检查结果，并根据反馈持续推进。&#x27;},
+ {id:&#x27;b&#x27;,title:&#x27;大模型推理的下一步&#x27;,percent:46,tokens:&#x27;8.6k&#x27;,elapsed:&#x27;01:42&#x27;,input:&#x27;6,880&#x27;,output:&#x27;1,720&#x27;,stage:&#x27;配音生成中 · 已就绪 18 / 39 段&#x27;,paused:false,duration:2400,position:0,summary:&#x27;视频讨论推理时计算、结果验证与多步任务，并比较不同方法的成本。&#x27;},
+ {id:&#x27;c&#x27;,title:&#x27;从零搭建个人知识库&#x27;,percent:23,tokens:&#x27;4.1k&#x27;,elapsed:&#x27;00:56&#x27;,input:&#x27;3,280&#x27;,output:&#x27;820&#x27;,stage:&#x27;翻译中 · 已就绪 7 / 30 段&#x27;,paused:false,duration:1800,position:0,summary:&#x27;先建立收集与整理习惯，再把笔记关联到实际问题和项目中。&#x27;}
+ ];let activeId=&#x27;a&#x27;;const activeTask=()=&gt;tasks.find(t=&gt;t.id===activeId);
+ function renderTasks(){
+  const active=activeTask();if(activeId!==&#x27;a&#x27;)q(&#x27;pl-tab-audio&#x27;).textContent=tasks[0].paused?&#x27;缓存暂停&#x27;:&#x27;预缓存中&#x27;;q(&#x27;pl-active-title&#x27;).textContent=active.title;q(&#x27;pl-task-count&#x27;).textContent=tasks.length;q(&#x27;pl-tasks&#x27;).hidden=!state.tasksOpen;q(&#x27;pl-tasks-toggle&#x27;).setAttribute(&#x27;aria-expanded&#x27;,String(state.tasksOpen));
+  q(&#x27;pl-media-usage&#x27;).textContent=active.tokens+&#x27; Tokens · 处理 &#x27;+active.elapsed;q(&#x27;pl-media-usage-detail&#x27;).textContent=&#x27;输入 &#x27;+(active.input||&#x27;—&#x27;)+&#x27; · 输出 &#x27;+(active.output||&#x27;—&#x27;)+&#x27; · 处理耗时 &#x27;+active.elapsed;
+  const count=tasks.filter(t=&gt;t.id!==activeId&amp;&amp;!t.paused).length;
+  q(&#x27;pl-tasks&#x27;).querySelector(&#x27;.pl-task-heading &gt; span&#x27;).textContent=(state.playing?&#x27;播放 1 个&#x27;:&#x27;播放已暂停&#x27;)+&#x27; · 并行预缓存 &#x27;+count+&#x27; 个&#x27;;
+  q(&#x27;pl-task-list&#x27;).innerHTML=tasks.map(t=&gt;&#x27;&lt;div class=&quot;pl-task-item&quot;&gt;&lt;div class=&quot;pl-flex pl-between&quot;&gt;&lt;strong&gt;&#x27;+esc(t.title)+&#x27;&lt;/strong&gt;&lt;span class=&quot;pl-task-state&quot;&gt;&#x27;+(t.id===activeId?(state.playing?&#x27;正在播放&#x27;:&#x27;播放暂停&#x27;):t.paused?&#x27;缓存暂停&#x27;:&#x27;预缓存中&#x27;)+&#x27;&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;pl-task-progress&quot;&gt;&lt;span style=&quot;width:&#x27;+t.percent+&#x27;%&quot;&gt;&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;pl-flex pl-between pl-tiny&quot;&gt;&lt;span&gt;&#x27;+t.stage+&#x27;&lt;/span&gt;&lt;span&gt;&#x27;+t.percent+&#x27;%&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;pl-flex pl-between&quot;&gt;&lt;span class=&quot;pl-tiny&quot;&gt;&#x27;+t.tokens+&#x27; Tokens · &#x27;+t.elapsed+&#x27;&lt;/span&gt;&lt;div class=&quot;pl-task-ops&quot;&gt;&#x27;+(t.id===activeId?&#x27;&lt;span class=&quot;pl-tiny&quot;&gt;当前播放器&lt;/span&gt;&#x27;:&#x27;&lt;button data-task-play=&quot;&#x27;+t.id+&#x27;&quot;&gt;切换播放&lt;/button&gt;&lt;button data-task-cache=&quot;&#x27;+t.id+&#x27;&quot;&gt;&#x27;+(t.paused?&#x27;继续缓存&#x27;:&#x27;暂停缓存&#x27;)+&#x27;&lt;/button&gt;&#x27;)+&#x27;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;&#x27;).join(&#x27;&#x27;);
+ }
+ const title=()=&gt;state.page===&#x27;article&#x27;?&#x27;给深度工作留出空间&#x27;:&#x27;重新理解 AI Agent&#x27;;
+ const icons=()=&gt;{if(globalThis.lucide)globalThis.lucide.createIcons();};
+ const esc=s=&gt;s.replace(/[&amp;&lt;&gt;&quot;&#x27;]/g,c=&gt;({&#x27;&amp;&#x27;:&#x27;&amp;amp;&#x27;,&#x27;&lt;&#x27;:&#x27;&amp;lt;&#x27;,&#x27;&gt;&#x27;:&#x27;&amp;gt;&#x27;,&#x27;&quot;&#x27;:&#x27;&amp;quot;&#x27;,&quot;&#x27;&quot;:&#x27;&amp;#39;&#x27;}[c]));
+ const footer=source=&gt;&#x27;&lt;details class=&quot;pl-answer-usage&quot;&gt;&lt;summary&gt;3,842 Tokens &lt;span&gt;·&lt;/span&gt; 4.2 秒 &lt;span class=&quot;pl-tiny&quot;&gt;用量明细&lt;/span&gt;&lt;/summary&gt;&lt;div&gt;输入 3,216 · 输出 626 · 首字 0.8 秒&lt;/div&gt;&lt;/details&gt;&lt;span class=&quot;pl-source&quot;&gt;&lt;i data-lucide=&quot;file-text&quot;&gt;&lt;/i&gt;来源：&#x27;+esc(source)+&#x27;&lt;/span&gt;&lt;div class=&quot;pl-answer-actions&quot;&gt;&lt;button data-save=&quot;&#x27;+esc(source)+&#x27;&quot;&gt;&lt;i data-lucide=&quot;bookmark&quot;&gt;&lt;/i&gt;收藏&lt;/button&gt;&lt;button data-local=&quot;copy&quot;&gt;&lt;i data-lucide=&quot;copy&quot;&gt;&lt;/i&gt;复制&lt;/button&gt;&lt;button data-local=&quot;obsidian&quot;&gt;&lt;i data-lucide=&quot;notebook&quot;&gt;&lt;/i&gt;写入 Obsidian&lt;/button&gt;&lt;/div&gt;&#x27;;
+ function render(){
+ q(&#x27;pl-audio-body&#x27;).hidden=!state.audioOpen;q(&#x27;pl-collapsed-title&#x27;).hidden=state.audioOpen;q(&#x27;pl-collapsed-title&#x27;).textContent=activeTask().title;q(&#x27;pl-mini-pause&#x27;).hidden=state.audioOpen;
+ q(&#x27;pl-audio-heading&#x27;).textContent=state.audioOpen?&#x27;音视频工具&#x27;:tasks.length+&#x27; 个视频 · &#x27;+tasks.filter(t=&gt;t.id!==activeId&amp;&amp;!t.paused).length+&#x27; 个预缓存&#x27;;
+ q(&#x27;pl-audio-toggle&#x27;).setAttribute(&#x27;aria-expanded&#x27;,String(state.audioOpen));q(&#x27;pl-audio-toggle&#x27;).setAttribute(&#x27;aria-label&#x27;,state.audioOpen?&#x27;收起音视频工具&#x27;:&#x27;展开音视频工具&#x27;);q(&#x27;pl-audio-toggle&#x27;).setAttribute(&#x27;data-tooltip&#x27;,state.audioOpen?&#x27;收起音视频工具&#x27;:&#x27;展开音视频工具&#x27;);q(&#x27;pl-audio-toggle&#x27;).innerHTML=&#x27;&lt;i data-lucide=&quot;&#x27;+(state.audioOpen?&#x27;chevron-up&#x27;:&#x27;chevron-down&#x27;)+&#x27;&quot;&gt;&lt;/i&gt;&#x27;;
+ q(&#x27;pl-mini-pause&#x27;).innerHTML=&#x27;&lt;i data-lucide=&quot;&#x27;+(state.playing?&#x27;pause&#x27;:&#x27;play&#x27;)+&#x27;&quot;&gt;&lt;/i&gt;&#x27;;q(&#x27;pl-mini-pause&#x27;).setAttribute(&#x27;aria-label&#x27;,state.playing?&#x27;暂停播放&#x27;:&#x27;继续播放&#x27;);q(&#x27;pl-mini-pause&#x27;).setAttribute(&#x27;data-tooltip&#x27;,state.playing?&#x27;暂停播放&#x27;:&#x27;继续播放&#x27;);
+ root.querySelector(&#x27;.pl-player&#x27;).classList.toggle(&#x27;pl-audio-collapsed&#x27;,!state.audioOpen);
+
+ root.querySelectorAll(&#x27;[data-page]&#x27;).forEach(b=&gt;b.setAttribute(&#x27;aria-selected&#x27;,String(b.dataset.page===state.page)));
+ root.querySelectorAll(&#x27;[data-mode]&#x27;).forEach(b=&gt;b.setAttribute(&#x27;aria-pressed&#x27;,String(b.dataset.mode===state.mode)));
+ root.querySelectorAll(&#x27;[data-view]&#x27;).forEach(b=&gt;b.setAttribute(&#x27;aria-current&#x27;,b.dataset.view===state.view?&#x27;page&#x27;:&#x27;false&#x27;));
+ q(&#x27;pl-article&#x27;).hidden=state.page!==&#x27;article&#x27;;q(&#x27;pl-video-page&#x27;).hidden=state.page!==&#x27;video&#x27;;q(&#x27;pl-url&#x27;).textContent=state.page===&#x27;article&#x27;?&#x27;阅读笔记 / 工作与生活&#x27;:&#x27;视频 / 重新理解 AI Agent&#x27;;
+ q(&#x27;pl-context-title&#x27;).textContent=title();q(&#x27;pl-chip-label&#x27;).textContent=state.reference?&#x27;已引用：&#x27;+state.referenceTitle+&#x27; · &#x27;+(state.summaryReference?&#x27;摘要&#x27;:&#x27;文稿&#x27;):&#x27;当前网页：&#x27;+title();q(&#x27;pl-chip&#x27;).classList.toggle(&#x27;pl-ref&#x27;,state.reference);q(&#x27;pl-remove&#x27;).hidden=!state.reference;
+ q(&#x27;pl-input&#x27;).placeholder=state.reference?&#x27;针对已引用的视频内容提问…&#x27;:state.page===&#x27;article&#x27;?&#x27;问问这篇文章…&#x27;:&#x27;问问这个视频…&#x27;;q(&#x27;pl-compose-note&#x27;).textContent=state.reference?&#x27;视频引用&#x27;:&#x27;当前网页&#x27;;
+ q(&#x27;pl-details&#x27;).hidden=!state.expanded;q(&#x27;pl-expand&#x27;).setAttribute(&#x27;aria-expanded&#x27;,String(state.expanded));q(&#x27;pl-expand&#x27;).innerHTML=(state.expanded?&#x27;收起工具&#x27;:&#x27;文稿与工具&#x27;)+&#x27; &lt;i data-lucide=&quot;&#x27;+(state.expanded?&#x27;chevron-up&#x27;:&#x27;chevron-down&#x27;)+&#x27;&quot;&gt;&lt;/i&gt;&#x27;;
+ const status=state.ended?&#x27;已结束&#x27;:!state.playing?&#x27;已暂停&#x27;:state.mode===&#x27;interpret&#x27;?&#x27;同传中&#x27;:&#x27;纯享播放中&#x27;;q(&#x27;pl-status-label&#x27;).textContent=status;q(&#x27;pl-tab-audio&#x27;).textContent=state.ended?&#x27;&#x27;:status;
+ q(&#x27;pl-pause&#x27;).innerHTML=&#x27;&lt;i data-lucide=&quot;&#x27;+(state.playing?&#x27;pause&#x27;:&#x27;play&#x27;)+&#x27;&quot;&gt;&lt;/i&gt;&#x27;;q(&#x27;pl-pause&#x27;).setAttribute(&#x27;aria-label&#x27;,state.playing?&#x27;暂停播放&#x27;:&#x27;继续播放&#x27;);
+ q(&#x27;pl-mute&#x27;).innerHTML=&#x27;&lt;i data-lucide=&quot;&#x27;+(state.original?&#x27;volume-2&#x27;:&#x27;volume-x&#x27;)+&#x27;&quot;&gt;&lt;/i&gt;原音：&#x27;+(state.original?&#x27;开&#x27;:&#x27;关&#x27;);q(&#x27;pl-mute&#x27;).setAttribute(&#x27;aria-pressed&#x27;,String(state.original));
+ q(&#x27;pl-settings&#x27;).hidden=state.view!==&#x27;settings&#x27;;q(&#x27;pl-chat-zone&#x27;).hidden=state.view!==&#x27;chat&#x27;;q(&#x27;pl-utility&#x27;).hidden=[&#x27;chat&#x27;,&#x27;settings&#x27;].includes(state.view);q(&#x27;pl-settings-open&#x27;).setAttribute(&#x27;aria-expanded&#x27;,String(state.view===&#x27;settings&#x27;));renderTasks();icons();
+ }
+ function summarize(){const article=state.page===&#x27;article&#x27;;q(&#x27;pl-messages&#x27;).innerHTML=&#x27;&lt;div class=&quot;pl-user&quot;&gt;&#x27;+(article?&#x27;总结这篇文章，给我三个要点。&#x27;:&#x27;总结当前视频的核心观点。&#x27;)+&#x27;&lt;/div&gt;&lt;div class=&quot;pl-answer&quot;&gt;&lt;span class=&quot;pl-tiny&quot;&gt;PageLens&lt;/span&gt;&lt;h3&gt;&#x27;+(article?&#x27;把注意力留给真正重要的事&#x27;:&#x27;从回答问题，到完成任务&#x27;)+&#x27;&lt;/h3&gt;&#x27;+(article?&#x27;&lt;ol&gt;&lt;li&gt;&lt;strong&gt;减少切换。&lt;/strong&gt;反复切换会打断思路，忙碌不等于有效推进。&lt;/li&gt;&lt;li&gt;&lt;strong&gt;保留连续时间。&lt;/strong&gt;为重要工作安排一段不被打扰的时间。&lt;/li&gt;&lt;li&gt;&lt;strong&gt;从小处开始。&lt;/strong&gt;先尝试九十分钟专注，再调整节奏。&lt;/li&gt;&lt;/ol&gt;&#x27;:&#x27;&lt;p&gt;围绕目标规划行动，通过工具执行，并持续检查结果，是 Agent 工作方式的核心。&lt;/p&gt;&#x27;)+footer(title())+&#x27;&lt;/div&gt;&#x27;;icons();}
+ function send(){const input=q(&#x27;pl-input&#x27;);if(!input.value.trim())return;const source=state.reference?state.referenceTitle+&#x27; · &#x27;+(state.summaryReference?&#x27;摘要&#x27;:&#x27;文稿&#x27;):title();q(&#x27;pl-messages&#x27;).innerHTML=&#x27;&lt;div class=&quot;pl-user&quot;&gt;&#x27;+esc(input.value.trim())+&#x27;&lt;/div&gt;&lt;div class=&quot;pl-answer&quot;&gt;&lt;span class=&quot;pl-tiny&quot;&gt;PageLens · 交互预览&lt;/span&gt;&lt;p&gt;这次问题使用「&#x27;+esc(source)+&#x27;」作为来源。上方音视频任务继续独立运行。&lt;/p&gt;&#x27;+footer(source)+&#x27;&lt;/div&gt;&#x27;;input.value=&#x27;&#x27;;icons();}
+ function utility(view){state.view=view;const names={history:&#x27;历史会话&#x27;,logs:&#x27;运行日志&#x27;,review:&#x27;知识盘点&#x27;};q(&#x27;pl-utility-title&#x27;).textContent=names[view];q(&#x27;pl-utility-content&#x27;).innerHTML=view===&#x27;history&#x27;?&#x27;&lt;div class=&quot;pl-tiny&quot;&gt;今天&lt;/div&gt;&lt;button class=&quot;pl-history-item&quot; data-history=&quot;给深度工作留出空间&quot;&gt;&lt;strong&gt;给深度工作留出空间&lt;/strong&gt;&lt;span&gt;网页总结 · 3 条消息&lt;/span&gt;&lt;/button&gt;&lt;button class=&quot;pl-history-item&quot; data-history=&quot;AI Agent 的工作方式&quot;&gt;&lt;strong&gt;AI Agent 的工作方式&lt;/strong&gt;&lt;span&gt;视频问答 · 8 条消息&lt;/span&gt;&lt;/button&gt;&#x27;:view===&#x27;logs&#x27;?&#x27;&lt;div class=&quot;pl-tiny&quot;&gt;当前任务：重新理解 AI Agent&lt;/div&gt;&lt;div class=&quot;pl-history-item&quot;&gt;&lt;strong&gt;10:32　中文配音播放中&lt;/strong&gt;&lt;span&gt;原音关闭 · 同声传译&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;pl-history-item&quot;&gt;&lt;strong&gt;10:30　下一段配音已就绪&lt;/strong&gt;&lt;span&gt;语音识别 → 翻译 → 配音&lt;/span&gt;&lt;/div&gt;&lt;button data-operation=&quot;预览：导出本次运行日志&quot;&gt;导出日志&lt;/button&gt;&#x27;:&#x27;&lt;div class=&quot;pl-review-tabs&quot;&gt;&lt;button data-review=&quot;每日&quot;&gt;每日盘点&lt;/button&gt;&lt;button data-review=&quot;每周&quot;&gt;每周盘点&lt;/button&gt;&lt;/div&gt;&lt;h3 id=&quot;pl-review-heading&quot;&gt;每日盘点&lt;/h3&gt;&lt;p&gt;汇总收藏、阅读记录和个人思考。&lt;/p&gt;&lt;label class=&quot;pl-setting-row&quot;&gt;范围&lt;select aria-label=&quot;盘点范围&quot;&gt;&lt;option&gt;今天&lt;/option&gt;&lt;option&gt;昨天&lt;/option&gt;&lt;option&gt;最近 7 天&lt;/option&gt;&lt;/select&gt;&lt;/label&gt;&lt;button id=&quot;pl-review-generate&quot;&gt;生成盘点&lt;/button&gt;&lt;div id=&quot;pl-review-result&quot;&gt;&lt;/div&gt;&#x27;;render();}
+ root.addEventListener(&#x27;click&#x27;,e=&gt;{const b=e.target.closest(&#x27;button&#x27;);if(!b)return;if(b.dataset.page){state.page=b.dataset.page;render();}if(b.dataset.mode){state.mode=b.dataset.mode;q(&#x27;pl-media-note&#x27;).textContent=state.mode===&#x27;audio&#x27;?&#x27;视频暂停 · 连续收听中文配音&#x27;:&#x27;绑定此视频 · 切换网页继续播放&#x27;;render();}if(b.dataset.view)utility(b.dataset.view);if(b.dataset.save){b.innerHTML=&#x27;&lt;i data-lucide=&quot;bookmark-check&quot;&gt;&lt;/i&gt;已收藏&#x27;;icons();}if(b.dataset.operation){q(&#x27;pl-media-note&#x27;).textContent=b.dataset.operation;}if(b.dataset.local)b.textContent=b.dataset.local===&#x27;copy&#x27;?&#x27;预览：已复制&#x27;:&#x27;预览：已写入&#x27;;if(b.dataset.history){state.view=&#x27;chat&#x27;;state.reference=false;q(&#x27;pl-messages&#x27;).innerHTML=&#x27;&lt;div class=&quot;pl-user&quot;&gt;&#x27;+esc(b.dataset.history)+&#x27;&lt;/div&gt;&lt;div class=&quot;pl-answer&quot;&gt;&lt;p&gt;已打开这段历史会话。音视频任务保持播放。&lt;/p&gt;&#x27;+footer(b.dataset.history)+&#x27;&lt;/div&gt;&#x27;;render();}if(b.dataset.review)q(&#x27;pl-review-heading&#x27;).textContent=b.dataset.review+&#x27;盘点&#x27;;if(b.id===&#x27;pl-review-generate&#x27;)q(&#x27;pl-review-result&#x27;).innerHTML=&#x27;&lt;p&gt;本次阅读围绕注意力管理和 AI Agent 展开：前者强调减少干扰，后者关注持续推进任务。&lt;/p&gt;&#x27;;});
+ q(&#x27;pl-expand&#x27;).onclick=()=&gt;{state.expanded=!state.expanded;render();};q(&#x27;pl-pause&#x27;).onclick=()=&gt;{state.playing=!state.playing;state.ended=false;render();};q(&#x27;pl-mute&#x27;).onclick=()=&gt;{state.original=!state.original;render();};q(&#x27;pl-back&#x27;).onclick=()=&gt;{if(activeId===&#x27;a&#x27;){state.page=&#x27;video&#x27;;render();}else q(&#x27;pl-media-note&#x27;).textContent=&#x27;预览：打开「&#x27;+activeTask().title+&#x27;」所在标签页&#x27;;};q(&#x27;pl-end&#x27;).onclick=()=&gt;{state.playing=false;state.ended=true;render();};
+ const reference=summary=&gt;{state.reference=true;state.summaryReference=summary;state.referenceTitle=activeTask().title;state.view=&#x27;chat&#x27;;render();q(&#x27;pl-input&#x27;).focus();};q(&#x27;pl-reference&#x27;).onclick=()=&gt;reference(false);q(&#x27;pl-summary-reference&#x27;).onclick=()=&gt;reference(true);q(&#x27;pl-remove&#x27;).onclick=()=&gt;{state.reference=false;render();};q(&#x27;pl-summary&#x27;).onclick=summarize;
+ q(&#x27;pl-video-summary&#x27;).onclick=()=&gt;{q(&#x27;pl-video-result&#x27;).hidden=false;q(&#x27;pl-video-result&#x27;).querySelector(&#x27;.pl-tiny&#x27;).textContent=&#x27;来源：&#x27;+activeTask().title;q(&#x27;pl-video-result&#x27;).querySelector(&#x27;p&#x27;).textContent=activeTask().summary;};q(&#x27;pl-video-result-close&#x27;).onclick=()=&gt;{q(&#x27;pl-video-result&#x27;).hidden=true;};
+ q(&#x27;pl-new&#x27;).onclick=()=&gt;{state.view=&#x27;chat&#x27;;state.reference=false;q(&#x27;pl-messages&#x27;).innerHTML=&#x27;&lt;span class=&quot;pl-muted&quot;&gt;新的对话，从当前网页开始。&lt;/span&gt;&#x27;;q(&#x27;pl-input&#x27;).value=&#x27;&#x27;;render();};q(&#x27;pl-send&#x27;).onclick=send;q(&#x27;pl-input&#x27;).onkeydown=e=&gt;{if(e.key===&#x27;Enter&#x27;&amp;&amp;!e.shiftKey&amp;&amp;!e.isComposing){e.preventDefault();send();}};
+ q(&#x27;pl-settings-open&#x27;).onclick=()=&gt;{state.view=state.view===&#x27;settings&#x27;?&#x27;chat&#x27;:&#x27;settings&#x27;;render();};q(&#x27;pl-settings-close&#x27;).onclick=q(&#x27;pl-utility-back&#x27;).onclick=()=&gt;{state.view=&#x27;chat&#x27;;render();};q(&#x27;pl-settings-save&#x27;).onclick=()=&gt;{q(&#x27;pl-settings-feedback&#x27;).textContent=&#x27;预览：设置已保存，新任务使用新设置。&#x27;;};
+ q(&#x27;pl-rate&#x27;).onclick=()=&gt;{state.rate=state.rate&gt;=2?1:state.rate+.25;q(&#x27;pl-rate&#x27;).textContent=state.rate.toFixed(2).replace(/0$/,&#x27;&#x27;)+&#x27;×&#x27;;};q(&#x27;pl-seek&#x27;).oninput=e=&gt;{const n=Number(e.target.value);q(&#x27;pl-time&#x27;).textContent=Math.floor(n/60)+&#x27;:&#x27;+String(n%60).padStart(2,&#x27;0&#x27;)+&#x27; / 28:40&#x27;;};q(&#x27;pl-edit&#x27;).onclick=()=&gt;{const editing=q(&#x27;pl-caption-edit&#x27;).hidden;q(&#x27;pl-caption-edit&#x27;).hidden=!editing;if(!editing)q(&#x27;pl-caption&#x27;).textContent=q(&#x27;pl-caption-edit&#x27;).value;q(&#x27;pl-edit&#x27;).textContent=editing?&#x27;保存修改&#x27;:&#x27;修改本句&#x27;;};
+ q(&#x27;pl-transcript-only&#x27;).onclick=()=&gt;{q(&#x27;pl-media-note&#x27;).textContent=&#x27;预览：完整文稿已就绪，可引用到对话&#x27;;};q(&#x27;pl-full&#x27;).onclick=()=&gt;{q(&#x27;pl-full&#x27;).textContent=&#x27;完整生成中&#x27;;q(&#x27;pl-media-note&#x27;).textContent=&#x27;预览：当前任务已加入完整生成&#x27;;};q(&#x27;pl-download&#x27;).onclick=()=&gt;{q(&#x27;pl-media-note&#x27;).textContent=&#x27;预览：下载「&#x27;+activeTask().title+&#x27;」中文音频&#x27;;};q(&#x27;pl-shot&#x27;).onclick=()=&gt;{q(&#x27;pl-notice&#x27;).textContent=&#x27;预览：截取当前网页画面&#x27;;};q(&#x27;pl-attach&#x27;).onclick=()=&gt;{q(&#x27;pl-notice&#x27;).textContent=&#x27;预览：选择图片或文件&#x27;;};
+ q(&#x27;pl-tasks-toggle&#x27;).onclick=()=&gt;{state.tasksOpen=!state.tasksOpen;renderTasks();};q(&#x27;pl-add-task&#x27;).onclick=()=&gt;{q(&#x27;pl-task-picker&#x27;).hidden=!q(&#x27;pl-task-picker&#x27;).hidden;};q(&#x27;pl-pick-task&#x27;).onclick=()=&gt;{if(!tasks.some(t=&gt;t.id===&#x27;d&#x27;))tasks.push({id:&#x27;d&#x27;,title:&#x27;设计系统入门&#x27;,percent:0,tokens:&#x27;—&#x27;,elapsed:&#x27;00:00&#x27;,stage:&#x27;等待处理资源&#x27;,paused:false,duration:1200,position:0,summary:&#x27;从可复用组件与一致的交互规则开始建立设计系统。&#x27;});q(&#x27;pl-task-picker&#x27;).hidden=true;renderTasks();};
+ root.addEventListener(&#x27;click&#x27;,e=&gt;{const b=e.target.closest(&#x27;button&#x27;);if(!b)return;if(b.dataset.taskCache){const t=tasks.find(t=&gt;t.id===b.dataset.taskCache);t.paused=!t.paused;renderTasks();}if(b.dataset.taskPlay){activeTask().position=Number(q(&#x27;pl-seek&#x27;).value);activeId=b.dataset.taskPlay;state.playing=true;state.ended=false;state.original=false;q(&#x27;pl-seek&#x27;).max=activeTask().duration;q(&#x27;pl-seek&#x27;).value=activeTask().position;q(&#x27;pl-time&#x27;).textContent=&#x27;00:00 / &#x27;+Math.floor(activeTask().duration/60)+&#x27;:00&#x27;;q(&#x27;pl-video-result&#x27;).hidden=true;q(&#x27;pl-details&#x27;).hidden=true;state.expanded=false;q(&#x27;pl-full&#x27;).textContent=&#x27;完整生成&#x27;;q(&#x27;pl-caption&#x27;).textContent=&#x27;等待当前视频下一段译文…&#x27;;q(&#x27;pl-details&#x27;).querySelector(&#x27;.pl-en&#x27;).textContent=&#x27;&#x27;;q(&#x27;pl-media-note&#x27;).textContent=&#x27;已切换播放；其他视频继续预缓存。&#x27;;render();}});
+ q(&#x27;pl-audio-toggle&#x27;).onclick=()=&gt;{state.audioOpen=!state.audioOpen;render();};q(&#x27;pl-mini-pause&#x27;).onclick=()=&gt;{state.playing=!state.playing;state.ended=false;render();};
+ render();summarize();
+ if(globalThis.Tweak){const tweak=new Tweak({container:root,onChange:render});tweak.addToggle(state,&#x27;audioOpen&#x27;,{label:&#x27;展开音视频工具&#x27;});tweak.addToggle(state,&#x27;expanded&#x27;,{label:&#x27;默认展开文稿与工具&#x27;});tweak.addSelect(state,&#x27;mode&#x27;,{label:&#x27;播放模式&#x27;,options:[{label:&#x27;同声传译&#x27;,value:&#x27;interpret&#x27;},{label:&#x27;纯享音频&#x27;,value:&#x27;audio&#x27;}]});tweak.addToggle(state,&#x27;original&#x27;,{label:&#x27;原音开启&#x27;});}
+})();
+&lt;/script&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+  let lastPointerWasTouch = false;
+  let pinnedByTouch = false;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    pinnedByTouch = false;
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handlePointer = (event) =&gt; {
+    lastPointerWasTouch =
+      event.type === &quot;pointerdown&quot; &amp;&amp; event.pointerType === &quot;touch&quot;;
+  };
+  const handleTouchClick = (event) =&gt; {
+    const isTouch = event.pointerType === &quot;touch&quot; || lastPointerWasTouch;
+    lastPointerWasTouch = false;
+    if (!isTouch || event.detail === 0) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (
+      trigger == null ||
+      !trigger.isConnected ||
+      getContent(trigger).length === 0 ||
+      (pinnedByTouch &amp;&amp; activeTrigger === trigger)
+    ) {
+      if (pinnedByTouch) {
+        closeTooltip();
+      }
+      return;
+    }
+    openTooltip(trigger);
+    pinnedByTouch = activeTrigger === trigger;
+    window.setTimeout(() =&gt; {
+      if (activeTrigger === trigger &amp;&amp; !trigger.isConnected) {
+        closeTooltip(false);
+      }
+    }, 0);
+  };
+  const handleLeave = (event) =&gt; {
+    if (pinnedByTouch) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    lastPointerWasTouch = false;
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    lastPointerWasTouch = false;
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerdown&quot;, handlePointer);
+    document.removeEventListener(&quot;pointercancel&quot;, handlePointer);
+    document.removeEventListener(&quot;click&quot;, handleTouchClick);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerdown&quot;, handlePointer);
+  document.addEventListener(&quot;pointercancel&quot;, handlePointer);
+  document.addEventListener(&quot;click&quot;, handleTouchClick);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-tabs&quot;&gt;
+(() =&gt; {
+  const selector = &#x27;.nav[role=&quot;tablist&quot;] [role=&quot;tab&quot;]&#x27;;
+  const disabled = &#x27;:disabled,[aria-disabled=&quot;true&quot;]&#x27;;
+  const selectTab = (selected) =&gt; {
+    const panelId = selected.getAttribute(&quot;aria-controls&quot;);
+    for (const tab of selected.closest(&#x27;[role=&quot;tablist&quot;]&#x27;).querySelectorAll(&#x27;[role=&quot;tab&quot;]&#x27;)) {
+      const active = tab === selected;
+      tab.classList.toggle(&quot;active&quot;, active);
+      tab.setAttribute(&quot;aria-selected&quot;, String(active));
+      const id = tab.getAttribute(&quot;aria-controls&quot;);
+      const panel = id &amp;&amp; document.getElementById(id);
+      if (panel != null) {
+        panel.hidden = id !== panelId;
+        if (!panel.hidden &amp;&amp; selected.id) {
+          panel.setAttribute(&quot;aria-labelledby&quot;, selected.id);
+        }
+      }
+    }
+  };
+  const interact = (event) =&gt; {
+    const tab = event.target?.closest?.(selector);
+    if (event.defaultPrevented || tab == null || tab.matches(disabled)) {
+      return;
+    }
+    if (event.type === &quot;click&quot;) {
+      selectTab(tab);
+      return;
+    }
+    const tabs = Array.from(
+      tab.closest(&#x27;[role=&quot;tablist&quot;]&#x27;).querySelectorAll(&#x27;[role=&quot;tab&quot;]&#x27;),
+    ).filter((candidate) =&gt; !candidate.matches(disabled));
+    const current = tabs.indexOf(tab);
+    let next;
+    if (event.key === &quot;ArrowRight&quot; || event.key === &quot;ArrowDown&quot;) {
+      next = (current + 1) % tabs.length;
+    } else if (event.key === &quot;ArrowLeft&quot; || event.key === &quot;ArrowUp&quot;) {
+      next = (current + tabs.length - 1) % tabs.length;
+    } else if (event.key === &quot;Home&quot;) {
+      next = 0;
+    } else if (event.key === &quot;End&quot;) {
+      next = tabs.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    tabs[next].focus();
+    selectTab(tabs[next]);
+  };
+
+  for (const list of document.querySelectorAll(&#x27;.nav[role=&quot;tablist&quot;]&#x27;)) {
+    const selected =
+      list.querySelector(&#x27;[role=&quot;tab&quot;][aria-selected=&quot;true&quot;]&#x27;) ??
+      list.querySelector(&#x27;[role=&quot;tab&quot;].active&#x27;) ??
+      list.querySelector(&#x27;[role=&quot;tab&quot;]&#x27;);
+    if (selected != null) {
+      selectTab(selected);
+    }
+  }
+  document.addEventListener(&quot;click&quot;, interact);
+  document.addEventListener(&quot;keydown&quot;, interact);
+  window.addEventListener(&quot;pagehide&quot;, () =&gt; {
+    document.removeEventListener(&quot;click&quot;, interact);
+    document.removeEventListener(&quot;keydown&quot;, interact);
+  }, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>
