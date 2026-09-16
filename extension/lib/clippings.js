@@ -6,40 +6,121 @@
  * 3. Local storage index for URL-based smart recall & browsing
  */
 
-import { readLibraryText, writeLibraryText, deleteLibraryFile } from "./library.js";
+import { readLibraryText, writeLibraryText, deleteLibraryFile, videoIdentity } from "./library.js";
 
 export const CLIPPINGS_STORAGE_KEY = "pagelens_clippings";
 export const BOOKMARK_FOLDER_NAME = "PageLens 智库";
 
-/**
- * Normalizes a URL for stable matching across visits:
- * - strips tracking query params (utm_*, fbclid, ref, etc.)
- * - removes url hash/fragment
- * - normalizes lowercased host
- */
+const TRACKING_QUERY_EXACT = new Set([
+  "fbclid",
+  "gclid",
+  "gbraid",
+  "wbraid",
+  "msclkid",
+  "mc_cid",
+  "mc_eid",
+  "spm",
+  "spm_id_from",
+  "from_spmid",
+  "vd_source",
+  "share_source",
+  "share_medium",
+  "share_from",
+  "share_plat",
+  "share_session_id",
+  "share_tag",
+  "share_token",
+  "ref",
+  "ref_src",
+  "from",
+  "source",
+  "feature",
+  "si",
+  "pp",
+  "t",
+  "start",
+  "time_continue",
+  "t_s",
+  "list",
+  "index",
+  "ab_channel",
+  "rc",
+  "sttick",
+]);
+
+const TRACKING_QUERY_PREFIXES = ["utm_", "spm_"];
+
+function stripTrackingParams(u) {
+  const toDelete = [];
+  u.searchParams.forEach((_, key) => {
+    const lower = key.toLowerCase();
+    if (TRACKING_QUERY_EXACT.has(lower) || TRACKING_QUERY_PREFIXES.some((p) => lower.startsWith(p))) {
+      toDelete.push(key);
+    }
+  });
+  for (const key of toDelete) u.searchParams.delete(key);
+}
+
+const MOBILE_HOST_ALIAS = {
+  "m.youtube.com": "youtube.com",
+  "m.twitter.com": "twitter.com",
+  "mobile.twitter.com": "twitter.com",
+  "m.bilibili.com": "bilibili.com",
+  "m.zhihu.com": "zhihu.com",
+};
+
+function canonicalHost(hostname) {
+  let host = String(hostname || "").toLowerCase().replace(/^www\./, "");
+  return MOBILE_HOST_ALIAS[host] || host;
+}
+
+/** Display/storage URL: drop hash + known trackers. Host/path stay as visited. */
 export function normalizeClippingUrl(rawUrl) {
   if (!rawUrl) return "";
   try {
     const u = new URL(rawUrl);
     u.hash = "";
-    const trackingPrefixes = ["utm_", "fbclid", "spm", "ref", "ref_src", "from", "source", "feature"];
-    const toDelete = [];
-    u.searchParams.forEach((_, key) => {
-      const lower = key.toLowerCase();
-      if (trackingPrefixes.some((p) => lower === p || lower.startsWith("utm_"))) {
-        toDelete.push(key);
-      }
-    });
-    for (const key of toDelete) {
-      u.searchParams.delete(key);
-    }
+    stripTrackingParams(u);
     let res = u.toString();
-    if (u.pathname === "/" && !u.search) {
-      res = res.replace(/\/$/, "");
-    }
+    if (u.pathname === "/" && !u.search) res = res.replace(/\/$/, "");
     return res;
   } catch {
     return String(rawUrl || "").trim();
+  }
+}
+
+/**
+ * Stable page identity for recall. Same video / tweet / article matches
+ * even when the next visit has a different tracker, host alias, or hash.
+ */
+export function clippingPageKey(rawUrl) {
+  const raw = String(rawUrl || "").trim();
+  if (!raw) return "";
+  const video = videoIdentity(raw);
+  if (/^(yt|bili):/.test(video)) return video;
+  try {
+    const u = new URL(raw);
+    const host = canonicalHost(u.hostname);
+    const path = u.pathname.replace(/\/+$/, "") || "/";
+    const xStatus = path.match(/\/status\/(\d+)/);
+    if ((host === "x.com" || host === "twitter.com") && xStatus) return "x:" + xStatus[1];
+    const zhihu = path.match(/^\/(p|question|answer)\/(\d+)/);
+    if ((host === "zhihu.com" || host === "zhuanlan.zhihu.com") && zhihu) {
+      return "zhihu:" + zhihu[1] + ":" + zhihu[2];
+    }
+    stripTrackingParams(u);
+    u.hash = "";
+    u.protocol = "https:";
+    u.hostname = host;
+    u.pathname = path;
+    u.port = "";
+    u.username = "";
+    u.password = "";
+    let res = u.toString();
+    if (path === "/" && !u.search) res = res.replace(/\/$/, "");
+    return res;
+  } catch {
+    return normalizeClippingUrl(raw);
   }
 }
 
@@ -369,6 +450,9 @@ export async function listAllClippings() {
  */
 export async function saveClippingRecord(clipping) {
   if (typeof chrome === "undefined" || !chrome.storage?.local) return clipping;
+  if (clipping && !clipping.pageKey && clipping.url) {
+    clipping.pageKey = clippingPageKey(clipping.url);
+  }
   const list = await listAllClippings();
   const next = [clipping, ...list.filter((item) => item.id !== clipping.id)];
   const capped = next.slice(0, 1000);
@@ -376,15 +460,24 @@ export async function saveClippingRecord(clipping) {
   return clipping;
 }
 
+function clippingMatchesUrl(item, targetUrl) {
+  const targetKey = clippingPageKey(targetUrl);
+  if (!targetKey) return false;
+  const storedKey = item.pageKey || clippingPageKey(item.url);
+  if (storedKey && storedKey === targetKey) return true;
+  const norm = normalizeClippingUrl(targetUrl);
+  return !!norm && normalizeClippingUrl(item.url) === norm;
+}
+
 /**
- * Finds existing clippings matching a given page URL (normalized).
+ * Finds existing clippings for this page. Match by stable page identity
+ * (YouTube/Bilibili/X/Zhihu IDs, host+path after stripping trackers),
+ * not the raw address bar string.
  */
 export async function getClippingsForUrl(targetUrl) {
   if (!targetUrl) return [];
-  const norm = normalizeClippingUrl(targetUrl);
-  if (!norm) return [];
   const list = await listAllClippings();
-  return list.filter((item) => normalizeClippingUrl(item.url) === norm);
+  return list.filter((item) => clippingMatchesUrl(item, targetUrl));
 }
 
 /**

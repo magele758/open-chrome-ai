@@ -21,18 +21,22 @@ const VIDEO_DOC_FILES = ["meta.json", "original.vtt", "transcript.md", "zh.vtt"]
 export function videoIdentity(url) {
   try {
     const u = new URL(url);
-    const host = u.hostname.replace(/^www\./, "");
+    const host = u.hostname.replace(/^www\./, "").toLowerCase();
     if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
       const v = u.searchParams.get("v");
       if (v) return "yt:" + v;
+      const parts = u.pathname.split("/").filter(Boolean);
+      if (["shorts", "embed", "live"].includes(parts[0]) && parts[1]) return "yt:" + parts[1];
     }
     if (host === "youtu.be") {
       const id = u.pathname.split("/").filter(Boolean)[0];
       if (id) return "yt:" + id;
     }
-    if (host.includes("bilibili.com")) {
-      const m = u.pathname.match(/BV[\w]+/);
-      if (m) return "bili:" + m[0];
+    if (host.endsWith("bilibili.com") || host === "b23.tv") {
+      const bv = u.pathname.match(/BV[\w]+/);
+      if (bv) return "bili:" + bv[0];
+      const av = u.pathname.match(/\/av(\d+)/i);
+      if (av) return "bili:av" + av[1];
     }
     u.hash = "";
     for (const key of ["t", "start", "t_s", "utm_source", "utm_medium", "utm_campaign", "si"]) {

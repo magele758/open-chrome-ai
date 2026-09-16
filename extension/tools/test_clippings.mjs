@@ -1,5 +1,6 @@
 import {
   normalizeClippingUrl,
+  clippingPageKey,
   clippingSlug,
   clippingNoteRelPath,
   clippingToObsidianMarkdown,
@@ -7,6 +8,7 @@ import {
   yamlScalar,
   saveClippingRecord,
   listAllClippings,
+  getClippingsForUrl,
   deleteClippingRecord,
   deleteClippingFull,
 } from "../lib/clippings.js";
@@ -26,6 +28,24 @@ assert(norm2 === "https://github.com/torvalds/linux", "should strip spm and ref:
 
 const u3 = "https://example.com/";
 assert(normalizeClippingUrl(u3) === "https://example.com", "should normalize root trailing slash");
+
+assert(
+  clippingPageKey("https://www.youtube.com/watch?v=dQw4w9wgGcQ&t=91&si=abc") === "yt:dQw4w9wgGcQ",
+  "yt watch+trackers"
+);
+assert(clippingPageKey("https://youtu.be/dQw4w9wgGcQ?t=3") === "yt:dQw4w9wgGcQ", "youtu.be");
+assert(
+  clippingPageKey("https://www.bilibili.com/video/BV1xx411c7mD/?spm_id_from=333.788") === "bili:BV1xx411c7mD",
+  "bili spm_id_from"
+);
+assert(
+  clippingPageKey("https://www.example.com/blog/article/") === clippingPageKey("http://example.com/blog/article"),
+  "www/http/slash same page"
+);
+assert(
+  clippingPageKey("https://x.com/foo/status/1234567890?s=20") === "x:1234567890",
+  "x status"
+);
 
 // 2. Test clippingSlug
 assert(clippingSlug("Hello World! 123") === "Hello-World-123", "slug basic");
@@ -104,6 +124,17 @@ const testClip = {
 await saveClippingRecord(testClip);
 let all = await listAllClippings();
 assert(all.length === 1 && all[0].id === "del-test-1", "saved clipping record");
+assert(all[0].pageKey === clippingPageKey(testClip.url), "persists pageKey");
+
+await saveClippingRecord({
+  id: "yt-old",
+  title: "old yt",
+  url: "https://www.youtube.com/watch?v=dQw4w9wgGcQ&t=12",
+  createdAt: Date.now(),
+});
+const recalled = await getClippingsForUrl("https://youtu.be/dQw4w9wgGcQ?si=zzz");
+assert(recalled.some((item) => item.id === "yt-old"), "recall by video identity, not raw url");
+await deleteClippingRecord("yt-old");
 
 const delRes = await deleteClippingFull(testClip);
 assert(delRes.ok === true, "deleteClippingFull ok");

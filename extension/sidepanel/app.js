@@ -46,6 +46,7 @@ import {
   dailyNoteRelPath,
   executeClipping,
   getClippingsForUrl,
+  clippingPageKey,
   listAllClippings,
   deleteClippingRecord,
   deleteClippingFull,
@@ -2640,10 +2641,14 @@ async function submitClipModal() {
   }
 }
 
+function recallDismissKey(url) {
+  return clippingPageKey(url) || url;
+}
+
 async function checkSmartRecall(url) {
   const banner = $("recall-banner");
   if (!banner) return;
-  if (!url || state.dismissedRecallUrls?.has(url)) {
+  if (!url || state.dismissedRecallUrls?.has(recallDismissKey(url))) {
     banner.classList.add("hidden");
     return;
   }
@@ -2673,7 +2678,7 @@ async function checkSmartRecall(url) {
 function dismissRecallBanner() {
   if (state.tab?.url) {
     if (!state.dismissedRecallUrls) state.dismissedRecallUrls = new Set();
-    state.dismissedRecallUrls.add(state.tab.url);
+    state.dismissedRecallUrls.add(recallDismissKey(state.tab.url));
   }
   $("recall-banner")?.classList.add("hidden");
 }
