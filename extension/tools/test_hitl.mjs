@@ -6,9 +6,11 @@ import {
   checkHitlRequirement,
 } from "../lib/agent/tools.js";
 import {
+  isCodeSearchCommand,
   isDirectoryBrowseCommand,
   isGuiLaunchCommand,
   isUnboundedFsWalk,
+  searchesAreSimilar,
   shellPolicyBlock,
 } from "../lib/agent/shell-policy.js";
 
@@ -43,6 +45,17 @@ assert(isUnboundedFsWalk("bash -c 'ls -R ~'") === true, "wrapped ls -R");
 assert(isUnboundedFsWalk("du /") === true, "du /");
 assert(isUnboundedFsWalk("find . -maxdepth 2") === false, "shallow find ok");
 assert(isDirectoryBrowseCommand("ls /opt") === true, "ls is browse");
+assert(isCodeSearchCommand("rg -n custom css packages") === true, "rg is search");
+assert(isCodeSearchCommand("pwd && rg --files | head") === true, "piped rg is search");
+assert(isCodeSearchCommand("echo hi") === false, "echo is not search");
+assert(
+  searchesAreSimilar(
+    'rg -n -i "custom css|自定义样式" packages',
+    'rg -n "style custom css editor" apps',
+  ),
+  "css/custom searches are similar",
+);
+assert(!searchesAreSimilar("rg alpha", "rg bravo"), "unrelated rg not similar");
 assert(shellPolicyBlock("open /tmp").startsWith("已拦截"), "policy blocks open");
 assert(shellPolicyBlock("echo hi") === "", "echo allowed by policy");
 

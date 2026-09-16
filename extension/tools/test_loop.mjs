@@ -187,3 +187,81 @@ const walked = await walker.run("列目录");
 assert.equal(lsExec, 8, "ninth distinct ls must not execute");
 assert.ok(walked.history.some((m) => /列目录已/.test(m.content || "")));
 console.log("PASS directory browse budget");
+
+let similarExec = 0;
+let similarTurns = 0;
+const similar = await createAgentLoop({
+  maxTurns: 0,
+  systemPrompt: "test",
+  tools: [{ name: "run_shell", execute: async () => { similarExec += 1; return "hit"; } }],
+  model: {
+    async runTurn({ tools }) {
+      similarTurns += 1;
+      if (!tools.length) return { content: "stop search", toolCalls: [] };
+      return {
+        content: "",
+        toolCalls: [{
+          id: `sim${similarTurns}`,
+          name: "run_shell",
+          arguments: JSON.stringify({ command: `rg -n "custom css theme ${similarTurns}" packages` }),
+        }],
+      };
+    },
+  },
+}).run("css 怎么生效");
+assert.equal(similarExec, 2, "third similar rg must not execute");
+assert.ok(similar.history.some((m) => /同类搜索/.test(m.content || "")));
+console.log("PASS similar rg circuit breaker");
+
+let fatExec = 0;
+let fatTurns = 0;
+const fat = "x".repeat(2400);
+const archived = await createAgentLoop({
+  maxTurns: 0,
+  systemPrompt: "test",
+  tools: [{ name: "run_shell", execute: async () => { fatExec += 1; return fat; } }],
+  model: {
+    async runTurn({ tools }) {
+      fatTurns += 1;
+      if (!tools.length) return { content: "read the archive", toolCalls: [] };
+      return {
+        content: "",
+        toolCalls: [{
+          id: `fat${fatTurns}`,
+          name: "run_shell",
+          arguments: JSON.stringify({ command: `rg token${fatTurns}` }),
+        }],
+      };
+    },
+  },
+}).run("再搜");
+assert.equal(fatExec, 2, "third search after two archives must not execute");
+assert.ok(archived.history.some((m) => /已归档且未翻页/.test(m.content || "")));
+console.log("PASS archived search streak");
+
+let diverseExec = 0;
+let diverseTurns = 0;
+const words = ["alpha", "bravo", "charlie", "delta", "echo"];
+const diverse = await createAgentLoop({
+  maxTurns: 0,
+  systemPrompt: "test",
+  tools: [{ name: "run_shell", execute: async () => { diverseExec += 1; return "ok"; } }],
+  model: {
+    async runTurn({ tools }) {
+      diverseTurns += 1;
+      if (!tools.length) return { content: "enough searches", toolCalls: [] };
+      const word = words[Math.min(diverseTurns - 1, words.length - 1)];
+      return {
+        content: "",
+        toolCalls: [{
+          id: `div${diverseTurns}`,
+          name: "run_shell",
+          arguments: JSON.stringify({ command: `rg ${word}` }),
+        }],
+      };
+    },
+  },
+}).run("多搜几次");
+assert.equal(diverseExec, 4, "fifth distinct rg must not execute");
+assert.ok(diverse.history.some((m) => /代码搜索已/.test(m.content || "")));
+console.log("PASS code search budget");

@@ -455,6 +455,98 @@ button { cursor: pointer; }
   margin: 0 0 6px;
   line-height: 1.4;
 }
+.msg.bot .tool-trace {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+.msg.bot .tool-trace-meta {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.msg.bot .tool-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #faf9f6;
+  overflow: hidden;
+}
+.msg.bot .tool-card.running { border-color: #d8c4a8; background: #fffaf3; }
+.msg.bot .tool-card.fail { border-color: #e4b4b0; background: #fff7f6; }
+.msg.bot .tool-card-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+}
+.msg.bot .tool-card-summary::-webkit-details-marker,
+.msg.bot .tool-card-summary::marker { display: none; }
+.msg.bot .tool-card-title {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--ink);
+}
+.msg.bot .tool-card-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.msg.bot .tool-card-meta {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.msg.bot .tool-card.fail .tool-card-meta { color: #b42318; }
+.msg.bot .tool-card.running .tool-card-meta { color: #9a6b2f; }
+.msg.bot .tool-card-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #c45c26;
+  box-shadow: 0 0 0 0 rgba(196, 92, 38, 0.5);
+  animation: tool-pulse 1.2s ease-out infinite;
+}
+@keyframes tool-pulse {
+  0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(196, 92, 38, 0.45); }
+  70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(196, 92, 38, 0); }
+  100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(196, 92, 38, 0); }
+}
+.msg.bot .tool-card-body {
+  border-top: 1px solid var(--line);
+  padding: 8px 9px 9px;
+}
+.msg.bot .tool-card-label {
+  font-size: 10px;
+  color: var(--muted);
+  margin: 0 0 3px;
+}
+.msg.bot .tool-card-pre {
+  margin: 0 0 8px;
+  padding: 7px 8px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid #eee8df;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.msg.bot .tool-card-pre:last-child { margin-bottom: 0; }
 /* Collapsible Thinking Box */
 .msg.bot .thinking-box {
   margin: 4px 0 8px;

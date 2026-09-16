@@ -9,11 +9,17 @@
 import { CHAR_BUDGET, cloneHistory, packForModel, repairMessages } from "./context.js";
 import { interceptToolOutput } from "./tool-guardian.js";
 import {
+  ARCHIVE_SEARCH_STREAK,
   BLOCKED_SHELL_STREAK,
   DIR_BROWSE_LIMIT,
   REPEAT_TOOL_LIMIT,
+  SEARCH_SHELL_LIMIT,
+  SIMILAR_SEARCH_LIMIT,
+  countCodeSearchRuns,
   countCompletedToolRuns,
   countDirectoryBrowseRuns,
+  countSimilarSearchRuns,
+  isCodeSearchCommand,
   isDirectoryBrowseCommand,
   shellPolicyBlock,
 } from "./shell-policy.js";
@@ -45,7 +51,7 @@ async function runLoop(host, userText, options) {
   const budget = host.charBudget || CHAR_BUDGET;
   const maxTurns = resolveMaxTurns(host.maxTurns);
   const sessionId = options.sessionId || host.sessionId || "default";
-  const gate = { forceAnswer: false, blockedShell: 0 };
+  const gate = { forceAnswer: false, blockedShell: 0, archivedSearch: 0 };
 
   let history = cloneHistory(options.history || []);
   if (!options.resume) {
@@ -288,6 +294,8 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
     } catch {
       args = {};
     }
+    onEvent({ type: "tools_start", name: call.name, args });
+    debugLog("agent.tool.start", { name: call.name, args });
     try {
       if (!tool) {
         ok = false;
@@ -303,8 +311,8 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
               tool_call_id: call.id,
               content,
             });
-            onEvent({ type: "tools_intercepted", name: call.name, reason: content });
-            onEvent({ type: "tools_done", name: call.name, ok, content: content.slice(0, 1500) });
+            onEvent({ type: "tools_intercepted", name: call.name, args, reason: content });
+            emitToolsDone(onEvent, { name: call.name, ok, args, content, durationMs: Date.now() - t0 });
             debugLog("agent.tool", { name: call.name, ok, blocked: true, args, preview: String(content).slice(0, 300) });
             if (gate && call.name === "run_shell") {
               gate.blockedShell += 1;
@@ -327,6 +335,12 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
         const dirUsed = call.name === "run_shell" && isDirectoryBrowseCommand(command)
           ? countDirectoryBrowseRuns(history)
           : 0;
+        const searchUsed = call.name === "run_shell" && isCodeSearchCommand(command)
+          ? countCodeSearchRuns(history)
+          : 0;
+        const similarSearch = call.name === "run_shell" && isCodeSearchCommand(command)
+          ? countSimilarSearchRuns(history, command)
+          : 0;
         if (prior >= REPEAT_TOOL_LIMIT) {
           ok = false;
           content = `已拦截重复工具调用：${call.name} 同样参数已执行 ${prior} 次。请基于已有结果作答，不要再打开目录或重复同一条命令。`;
@@ -336,6 +350,18 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
         } else if (dirUsed >= DIR_BROWSE_LIMIT) {
           ok = false;
           content = `已拦截：本轮列目录已 ${dirUsed} 次。不要再 ls/find/open，请根据已有结果直接回答。`;
+        } else if (searchUsed >= SEARCH_SHELL_LIMIT) {
+          ok = false;
+          content = `已拦截：本轮代码搜索已 ${searchUsed} 次。请用 read_tool_page / search_tool_artifact 阅读已归档结果后直接回答，不要再换关键词 rg/grep。`;
+          if (gate) gate.forceAnswer = true;
+        } else if (similarSearch >= SIMILAR_SEARCH_LIMIT) {
+          ok = false;
+          content = `已拦截：同类搜索已执行 ${similarSearch} 次。先 read_tool_page / search_tool_artifact，不要改几个词再搜一遍。`;
+          if (gate) gate.forceAnswer = true;
+        } else if (gate && isCodeSearchCommand(command) && (gate.archivedSearch || 0) >= ARCHIVE_SEARCH_STREAK) {
+          ok = false;
+          content = `已拦截：连续 ${gate.archivedSearch} 次搜索结果已归档且未翻页。请先 read_tool_page 或 search_tool_artifact，不要再开新的 rg。`;
+          gate.forceAnswer = true;
         } else {
           content = await tool.execute(args, { signal });
         }
@@ -365,7 +391,13 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
               originalLength: guarded.originalLength,
             });
             content = guarded.content;
+            if (gate && call.name === "run_shell" && isCodeSearchCommand(command)) {
+              gate.archivedSearch = (gate.archivedSearch || 0) + 1;
+            }
           }
+        }
+        if (gate && (call.name === "read_tool_page" || call.name === "search_tool_artifact") && ok) {
+          gate.archivedSearch = 0;
         }
       }
     } catch (err) {
@@ -383,7 +415,7 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
       timestamp: Date.now(),
     });
     content = String(content ?? "").slice(0, TOOL_RESULT_CHARS);
-    onEvent({ type: "tools_done", name: call.name, ok, content: content.slice(0, 1500) });
+    emitToolsDone(onEvent, { name: call.name, ok, args, content, durationMs });
     debugLog("agent.tool", {
       name: call.name,
       ok,
@@ -399,6 +431,18 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
     });
   }
   return { results, aborted: false };
+}
+
+function emitToolsDone(onEvent, { name, ok, args, content, durationMs }) {
+  onEvent({
+    type: "tools_done",
+    name,
+    ok,
+    args: args || {},
+    content: String(content ?? "").slice(0, 4000),
+    durationMs: durationMs || 0,
+    archived: /已归档为分页本地文档/.test(String(content || "")),
+  });
 }
 
 function toOpenAITool(tool) {

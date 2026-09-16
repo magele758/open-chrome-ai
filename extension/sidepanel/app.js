@@ -1691,6 +1691,154 @@ function formatDuration(ms) {
   return `${(n / 1000).toFixed(1)}s`;
 }
 
+function isMetaTrace(item) {
+  return item?.kind === "meta" || ["思考", "压缩上下文", "从中断处继续"].includes(item?.name);
+}
+
+function truncateToolText(text, max = 80) {
+  const s = String(text || "").replace(/\s+/g, " ").trim();
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + "…";
+}
+
+function toolArgHint(item) {
+  const args = item?.args || {};
+  if (item?.name === "run_shell" && args.command) return truncateToolText(args.command, 88);
+  if (args.url) return truncateToolText(args.url, 72);
+  if (args.selector) return truncateToolText(args.selector, 56);
+  if (args.path) return truncateToolText(args.path, 56);
+  if (args.handle) return String(args.handle);
+  if (args.query) return truncateToolText(args.query, 48);
+  if (args.code) return truncateToolText(args.code, 56);
+  return "";
+}
+
+function hasToolArgs(args) {
+  return Boolean(args && typeof args === "object" && Object.keys(args).length);
+}
+
+function formatToolArgs(name, args) {
+  if (!hasToolArgs(args)) return "（无输入）";
+  if (name === "run_shell") {
+    return [
+      args.command || "",
+      args.cwd ? `cwd: ${args.cwd}` : "",
+      args.timeoutMs ? `timeout: ${args.timeoutMs}ms` : "",
+    ].filter(Boolean).join("\n") || "（无输入）";
+  }
+  try {
+    return JSON.stringify(args, (_k, v) => (
+      typeof v === "string" && v.length > 1200 ? `${v.slice(0, 1200)}…` : v
+    ), 2);
+  } catch {
+    return String(args);
+  }
+}
+
+function pickToolArgs(ev, fallback) {
+  return hasToolArgs(ev?.args) ? ev.args : (hasToolArgs(fallback) ? fallback : {});
+}
+
+function toolStatusLabel(item) {
+  if (item.status === "running") return "进行中";
+  if (item.ok === false || item.status === "fail") {
+    return /拦截/.test(String(item.preview || "")) ? "已拦截" : "失败";
+  }
+  const dur = Number(item.durationMs);
+  const time = Number.isFinite(dur) && dur > 0 ? formatDuration(dur) : "";
+  if (item.archived) return time ? `已归档 · ${time}` : "已归档";
+  return time || "完成";
+}
+
+function pushTraceItem(botMsg, item) {
+  if (!botMsg.trace) botMsg.trace = [];
+  botMsg._traceSeq = (botMsg._traceSeq || 0) + 1;
+  botMsg.trace.push({ id: String(botMsg._traceSeq), ...item });
+}
+
+function finishTraceTool(botMsg, ev) {
+  const running = [...(botMsg.trace || [])].reverse().find((t) => t.name === ev.name && t.status === "running");
+  const next = {
+    kind: "tool",
+    name: ev.name,
+    ok: ev.ok,
+    status: ev.ok ? "ok" : "fail",
+    args: pickToolArgs(ev, running?.args),
+    preview: ev.content || "",
+    durationMs: ev.durationMs || 0,
+    archived: Boolean(ev.archived),
+  };
+  if (running) Object.assign(running, next);
+  else pushTraceItem(botMsg, next);
+}
+
+function fillToolTrace(root, items, { live = false } = {}) {
+  const openIds = new Set(
+    [...root.querySelectorAll("details.tool-card[open]")].map((el) => el.dataset.id)
+  );
+  root.innerHTML = "";
+  const list = Array.isArray(items) ? items : [];
+  const meta = list.filter(isMetaTrace);
+  const tools = list.filter((t) => !isMetaTrace(t));
+  if (meta.length) {
+    const row = document.createElement("div");
+    row.className = "tool-trace-meta";
+    row.textContent = meta.map((t) => t.name).join(" · ");
+    root.appendChild(row);
+  }
+  for (const item of tools) {
+    const id = String(item.id || item.name);
+    const shouldOpen = true;
+    root.appendChild(createToolCard(item, { open: shouldOpen || openIds.has(id), live }));
+  }
+}
+
+function createToolCard(item, { open = false } = {}) {
+  const details = document.createElement("details");
+  const status = item.status || (item.ok === false ? "fail" : "ok");
+  details.className = `tool-card ${status}`;
+  details.dataset.id = String(item.id || item.name);
+  if (open) details.open = true;
+
+  const summary = document.createElement("summary");
+  summary.className = "tool-card-summary";
+  const title = document.createElement("span");
+  title.className = "tool-card-title";
+  title.textContent = item.name || "tool";
+  const hint = document.createElement("span");
+  hint.className = "tool-card-hint";
+  hint.textContent = toolArgHint(item);
+  const meta = document.createElement("span");
+  meta.className = "tool-card-meta";
+  meta.textContent = toolStatusLabel(item);
+  if (status === "running") {
+    const pulse = document.createElement("span");
+    pulse.className = "tool-card-pulse";
+    meta.prepend(pulse);
+  }
+  summary.append(title, hint, meta);
+
+  const body = document.createElement("div");
+  body.className = "tool-card-body";
+  const inputLabel = document.createElement("div");
+  inputLabel.className = "tool-card-label";
+  inputLabel.textContent = "输入";
+  const input = document.createElement("pre");
+  input.className = "tool-card-pre";
+  input.textContent = formatToolArgs(item.name, item.args);
+  body.append(inputLabel, input);
+  const resultLabel = document.createElement("div");
+  resultLabel.className = "tool-card-label";
+  resultLabel.textContent = status === "running" ? "输出（进行中）" : "输出";
+  const result = document.createElement("pre");
+  result.className = "tool-card-pre";
+  result.textContent = status === "running" && !item.preview ? "执行中…" : String(item.preview || "（无输出）");
+  body.append(resultLabel, result);
+
+  details.append(summary, body);
+  return details;
+}
+
 function finishReasonLabel(reason) {
   const map = {
     stop: "正常结束",
@@ -1898,16 +2046,14 @@ function renderMessages() {
       who.className = "who";
       who.textContent = "PageLens";
       wrap.appendChild(who);
-      if (msg.trace?.length) {
-        const tr = document.createElement("div");
-        tr.className = "trace";
-        tr.textContent = msg.trace
-          .map((t) => (t.ok === false ? `${t.name} 失败` : t.name))
-          .join(" → ");
-        wrap.appendChild(tr);
-      }
       const isLast = msg === state.messages[state.messages.length - 1];
       const streamingThis = state.busy && isLast && !msg.metrics;
+      if (msg.trace?.length) {
+        const tr = document.createElement("div");
+        tr.className = "tool-trace";
+        fillToolTrace(tr, msg.trace, { live: streamingThis });
+        wrap.appendChild(tr);
+      }
       const { thinking, answer, isStreamingThinking } = splitThinking(msg.text, msg.thinking);
       const isThinkingNow = streamingThis && (isStreamingThinking || (!answer && Boolean(thinking)));
 
@@ -4696,16 +4842,19 @@ function paintBot(botMsg) {
   const wrap = bots[bots.length - 1];
   if (!wrap) return;
   const trace = Array.isArray(botMsg.trace) ? botMsg.trace : [];
-  let traceEl = wrap.querySelector(".trace");
+  let traceEl = wrap.querySelector(".tool-trace") || wrap.querySelector(".trace");
   if (trace.length) {
     if (!traceEl) {
       traceEl = document.createElement("div");
-      traceEl.className = "trace";
+      traceEl.className = "tool-trace";
       wrap.querySelector(".who")?.after(traceEl);
     }
-    traceEl.textContent = trace
-      .map((t) => (t.ok === false ? `${t.name} 失败` : t.name))
-      .join(" → ");
+    traceEl.className = "tool-trace";
+    const sig = trace.map((t) => [t.id, t.status, t.ok, t.preview?.length, t.durationMs].join(":")).join("|");
+    if (traceEl.dataset.sig !== sig) {
+      fillToolTrace(traceEl, trace, { live: true });
+      traceEl.dataset.sig = sig;
+    }
   }
 
   const { thinking, answer, isStreamingThinking } = splitThinking(botMsg.text, botMsg.thinking);
@@ -4715,7 +4864,7 @@ function paintBot(botMsg) {
   if (thinking) {
     if (!thinkingEl) {
       thinkingEl = createThinkingBox(thinking, { isStreaming: isThinkingNow });
-      const anchor = wrap.querySelector(".trace") || wrap.querySelector(".who");
+      const anchor = wrap.querySelector(".tool-trace") || wrap.querySelector(".trace") || wrap.querySelector(".who");
       anchor ? anchor.after(thinkingEl) : wrap.prepend(thinkingEl);
     } else {
       updateThinkingBox(thinkingEl, thinking, { isStreaming: isThinkingNow });
@@ -4731,7 +4880,7 @@ function paintBot(botMsg) {
     if (!body) {
       body = document.createElement("div");
       body.className = "body";
-      const afterEl = thinkingEl || wrap.querySelector(".trace") || wrap.querySelector(".who");
+      const afterEl = thinkingEl || wrap.querySelector(".tool-trace") || wrap.querySelector(".trace") || wrap.querySelector(".who");
       if (afterEl) afterEl.after(body);
       else wrap.appendChild(body);
     }
@@ -4966,7 +5115,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             persistSession();
           }
           if (ev.type === "compressed") {
-            botMsg.trace.push({ name: "压缩上下文", ok: true });
+            pushTraceItem(botMsg, { kind: "meta", name: "压缩上下文", ok: true });
             paintBot(botMsg);
           }
           if (ev.type === "turn_prepared") {
@@ -4974,7 +5123,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
               botMsg.thinking += "\n\n";
             }
             if (!isPlaceholderBotText(botMsg.text)) {
-              botMsg.trace.push({ name: "思考", ok: true });
+              pushTraceItem(botMsg, { kind: "meta", name: "思考", ok: true });
               botMsg.text = "";
             }
             paintBot(botMsg);
@@ -4983,8 +5132,19 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             botMsg.text = ev.content;
             paintBot(botMsg);
           }
+          if (ev.type === "tools_start") {
+            pushTraceItem(botMsg, {
+              kind: "tool",
+              name: ev.name,
+              args: ev.args || {},
+              status: "running",
+              ok: null,
+              preview: "",
+            });
+            paintBot(botMsg);
+          }
           if (ev.type === "tools_done") {
-            botMsg.trace.push({ name: ev.name, ok: ev.ok });
+            finishTraceTool(botMsg, ev);
             paintBot(botMsg);
           }
         } catch (err) {
@@ -5151,7 +5311,7 @@ async function sendPrompt(userText, options = {}) {
         await withTimeout(refreshTab(), 8000, "读当前页超时，先用已缓存内容。");
       } catch (err) {
         console.warn("[pagelens] refreshTab", err);
-        botMsg.trace.push({ name: "读页", ok: false });
+        pushTraceItem(botMsg, { kind: "meta", name: "读页", ok: false });
       }
     }
     const pack = state.share ? state.pack : null;
@@ -5171,7 +5331,7 @@ async function sendPrompt(userText, options = {}) {
         await ensureSkillsMeta();
       } catch (err) {
         console.warn("[pagelens] skills meta", err);
-        botMsg.trace.push({ name: "skill 扫描", ok: false });
+        pushTraceItem(botMsg, { kind: "meta", name: "skill 扫描", ok: false });
       }
       const runtimeSkills = [...(state.skills || []), ...shortcutsAsSkills(state.settings)];
       try {
@@ -5182,7 +5342,7 @@ async function sendPrompt(userText, options = {}) {
         );
       } catch (err) {
         console.warn("[pagelens] skill body", err);
-        botMsg.trace.push({ name: "读取 skill", ok: false });
+        pushTraceItem(botMsg, { kind: "meta", name: "读取 skill", ok: false });
       }
     }
     await executeLoop({
@@ -5219,7 +5379,7 @@ async function resumeInterruptedRun() {
   }
   botMsg.trace = Array.isArray(botMsg.trace) ? botMsg.trace : [];
   if (!botMsg.trace.some((t) => t.name === "从中断处继续")) {
-    botMsg.trace.unshift({ name: "从中断处继续", ok: true });
+    botMsg.trace.unshift({ kind: "meta", name: "从中断处继续", ok: true });
   }
 
   await executeLoop({

@@ -5,6 +5,9 @@
 export const REPEAT_TOOL_LIMIT = 2;
 export const DIR_BROWSE_LIMIT = 8;
 export const BLOCKED_SHELL_STREAK = 3;
+export const SEARCH_SHELL_LIMIT = 4;
+export const ARCHIVE_SEARCH_STREAK = 2;
+export const SIMILAR_SEARCH_LIMIT = 2;
 
 const GUI_OPEN = /(?:^|[\s;&|`($'"])(?:\/(?:usr\/)?bin\/)?open\s+(?:(?:-[A-Za-z]+|--)\s+)*['"]?(?:\/|~|\.|\.\.\/|\$HOME)/i;
 const GUI_OPEN_FLAG = /(?:^|[\s;&|`($'"])(?:\/(?:usr\/)?bin\/)?open\s+-[WwAa]/i;
@@ -45,6 +48,45 @@ export function isDirectoryBrowseCommand(cmd) {
   const s = String(cmd || "");
   if (isGuiLaunchCommand(s) || isUnboundedFsWalk(s)) return true;
   return DIR_CMD.test(s);
+}
+
+const SEARCH_BIN = /(?:^|[\s;&|`($])(?:\/(?:usr\/)?bin\/)?(?:rg|grep|egrep|fgrep|ag|ack|mdfind)\b|\bgit\s+grep\b/i;
+const SEARCH_STOP = new Set([
+  "head", "printf", "files", "packages", "apps", "grep", "egrep", "fgrep",
+  "true", "false", "echo", "cwd", "tmp", "usr", "bin", "timeout", "type",
+  "and", "the", "for", "from", "with",
+]);
+
+export function isCodeSearchCommand(cmd) {
+  return SEARCH_BIN.test(String(cmd || ""));
+}
+
+export function searchKeywords(cmd) {
+  const s = String(cmd || "").toLowerCase();
+  const tokens = [...s.matchAll(/[\u4e00-\u9fff]{2,}|[a-z]{3,}/g)].map((m) => m[0]);
+  return [...new Set(tokens.filter((t) => t !== "rg" && !SEARCH_STOP.has(t)))];
+}
+
+export function searchesAreSimilar(a, b) {
+  const ka = searchKeywords(a);
+  const kb = searchKeywords(b);
+  if (!ka.length || !kb.length) return false;
+  const setB = new Set(kb);
+  return ka.filter((k) => setB.has(k)).length >= 2;
+}
+
+export function countCodeSearchRuns(history) {
+  return countCompletedToolRunsBy(history, (name, args) => (
+    name === "run_shell" && isCodeSearchCommand(String(args?.command || ""))
+  ));
+}
+
+export function countSimilarSearchRuns(history, cmd) {
+  return countCompletedToolRunsBy(history, (name, args) => {
+    if (name !== "run_shell") return false;
+    const other = String(args?.command || "");
+    return isCodeSearchCommand(other) && searchesAreSimilar(cmd, other);
+  });
 }
 
 export function shellPolicyBlock(cmd) {

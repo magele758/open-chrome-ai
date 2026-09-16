@@ -70,6 +70,23 @@ const msg = normalizeMessage({
 });
 assert(msg.hasImage === true && msg.image === undefined, "strip image bytes");
 
+const traced = normalizeMessage({
+  role: "bot",
+  text: "ok",
+  trace: [{
+    id: "3",
+    kind: "tool",
+    name: "run_shell",
+    ok: true,
+    status: "ok",
+    args: { command: "rg css", cwd: "/tmp/doocs-md" },
+    preview: "exit 0\nhit",
+    durationMs: 42,
+  }],
+});
+assert(traced.trace[0].args.command === "rg css", "keeps tool input");
+assert(traced.trace[0].preview.includes("hit"), "keeps tool output");
+
 const session = normalizeSession({
   id: "s1",
   createdAt: Date.parse("2026-09-09T04:00:00.000Z"),

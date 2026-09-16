@@ -6,7 +6,7 @@
 import { saveArtifact } from "./artifact-store.js";
 
 export const DEFAULT_ARCHIVE_THRESHOLD = 1800;
-export const PREVIEW_CHARS = 450;
+export const PREVIEW_CHARS = 900;
 
 export const SKIP_GUARDIAN_TOOLS = new Set([
   "search_tool_artifact",
@@ -26,7 +26,7 @@ export function formatToolArchivePreview(manifest, fullText, previewChars = PREV
     `来源工具: ${manifest.sourceTool}\n` +
     `文档句柄 (Handle): \`${manifest.handle}\`（共 ${manifest.totalPages} 页 / ${manifest.totalChars} 字符）\n` +
     `完整内容已存入本地，未全量打入上下文以保护模型窗口。\n\n` +
-    `💡 召回与查阅工具：\n` +
+    `💡 下一步必须先读这份归档，不要换关键词再搜一遍：\n` +
     `  • 搜索关键内容: search_tool_artifact(query="...", handle="${manifest.handle}")\n` +
     `  • 翻阅指定页数: read_tool_page(handle="${manifest.handle}", page=1)\n\n` +
     `前瞻预览：\n${preview}${truncated}`

@@ -146,12 +146,39 @@ export function normalizeRun(raw, now = Date.now()) {
   };
 }
 
+function compactTraceArgs(args) {
+  if (!args || typeof args !== "object") return undefined;
+  try {
+    return JSON.parse(JSON.stringify(args, (_k, v) => (
+      typeof v === "string" && v.length > 1500 ? `${v.slice(0, 1500)}…` : v
+    )));
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeTraceItem(raw) {
+  const name = String(raw?.name || "");
+  if (!name) return null;
+  const item = {
+    name,
+    ok: raw?.ok !== false,
+  };
+  if (raw.id) item.id = String(raw.id);
+  if (raw.kind === "tool" || raw.kind === "meta") item.kind = raw.kind;
+  if (raw.status) item.status = String(raw.status);
+  const durationMs = Number(raw.durationMs);
+  if (Number.isFinite(durationMs) && durationMs > 0) item.durationMs = Math.round(durationMs);
+  if (raw.archived) item.archived = true;
+  const args = compactTraceArgs(raw.args);
+  if (args && Object.keys(args).length) item.args = args;
+  if (raw.preview != null && raw.preview !== "") item.preview = String(raw.preview).slice(0, 4000);
+  return item;
+}
+
 export function normalizeMessage(raw) {
   const trace = Array.isArray(raw?.trace)
-    ? raw.trace
-        .map((t) => ({ name: String(t?.name || ""), ok: t?.ok !== false }))
-        .filter((t) => t.name)
-        .slice(0, 40)
+    ? raw.trace.map(normalizeTraceItem).filter(Boolean).slice(0, 40)
     : undefined;
   const metrics = raw?.metrics && typeof raw.metrics === "object" ? {
     durationMs: Math.max(0, Number(raw.metrics.durationMs) || 0),
