@@ -290,7 +290,7 @@ python3 extension/tools/mock_llm.py
 
 侧栏是唯一编排中心。`sw.js` 只做开栏、右键选区、录音转发。模型、工具、同传都在 side panel 里跑。本机能力走 Native Host 或 `127.0.0.1` 助手。没有独立后端；密钥和对话在本机。
 
-主循环从 [ppeng-agent-core](https://github.com/magele758/ppeng-agent-core) 的 L4 `createAgentLoop` 扣成浏览器版：`prepare → model → tools`，不另起进程、没有 Node daemon。最多 12 轮。发给模型前会修补残缺的 `tool_calls`，并结合 **Tool Guardian** 治理长工具返回，配合 **Micro-Compact** 与 **Safe Session Cut** 控制上下文。
+主循环走 npm `@mage-ai-lab/agent-loop/mini`（`createMiniAssembledLoop`），Chrome 工具仍由本扩展 host 执行：`prepare → model → tools`，不另起进程、没有 Node daemon。最多 12 轮。发给模型前会修补残缺的 `tool_calls`，并结合 **Tool Guardian** 治理长工具返回，配合 **Micro-Compact** 与 **Safe Session Cut** 控制上下文。构建：`npm run bundle:agent-loop`。
 
 #### 上下文治理与长输出拦截（Tool Output Guardian）
 

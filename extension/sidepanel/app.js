@@ -3835,6 +3835,7 @@ function renderSettingsForm() {
   applyUiTheme(state.settings.uiTheme, state.settings.uiThemeColors);
   if ($("native-shell")) $("native-shell").checked = state.settings.nativeShell !== false;
   if ($("hitl-mode")) $("hitl-mode").value = state.settings.hitlMode || "balanced";
+  if ($("loop-engine-label")) $("loop-engine-label").textContent = LOOP_ENGINE_ID;
   if ($("skills-enabled")) $("skills-enabled").checked = skillsOn();
   if ($("daily-notes-folder")) $("daily-notes-folder").value = state.settings.dailyNotesFolder ?? "Daily";
   syncSkillFolderControls();
@@ -4906,6 +4907,10 @@ function lastUserAskedForSkill() {
   return userInvokedSkill(lastUser?.text || "");
 }
 
+function createPageLensLoop(host) {
+  return createKernelAgentLoop(host);
+}
+
 async function executeLoop({ userText, history, resume, turnsUsed, lastText, botMsg, model, clearImage }) {
   const useSkills = skillsOn() && lastUserAskedForSkill();
   const skills = useSkills ? [...(state.skills || []), ...shortcutsAsSkills(state.settings)] : [];
@@ -5057,7 +5062,11 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     renderMessages();
     return;
   }
-  console.info("[pagelens] executeLoop", { tools: tools.length, useSkills, loopEngine: LOOP_ENGINE_ID });
+  console.info("[pagelens] executeLoop", {
+    tools: tools.length,
+    useSkills,
+    loopEngine: LOOP_ENGINE_ID,
+  });
 
   state.busy = true;
   state.abort = new AbortController();

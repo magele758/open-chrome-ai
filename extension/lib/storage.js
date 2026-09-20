@@ -83,6 +83,7 @@ export function defaultSettings() {
     shareActiveTab: true,
     nativeShell: true,
     hitlMode: "balanced",
+    loopEngine: "kernel",
     hitlTimeoutSeconds: 30,
     skillsEnabled: false,
     dailyNotesFolder: "Daily",
@@ -126,6 +127,7 @@ export function normalizeSettings(raw) {
   merged.uiThemeColors = normalizeThemeColors(raw?.uiThemeColors);
   merged.nativeShell = raw?.nativeShell !== false;
   merged.hitlMode = ["strict", "balanced", "autonomous"].includes(raw?.hitlMode) ? raw.hitlMode : "balanced";
+  merged.loopEngine = "kernel";
   const timeout = Number(raw?.hitlTimeoutSeconds);
   merged.hitlTimeoutSeconds = Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.max(timeout, 5), 300) : 30;
   merged.skillsEnabled = raw?.skillsEnabled === true;
