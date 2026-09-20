@@ -99,7 +99,7 @@ await evalExpr(`(async () => {
 await evalExpr(`(async () => {
   document.getElementById("btn-back")?.click();
   await new Promise((r) => setTimeout(r, 400));
-  return document.getElementById("ctx-title")?.textContent || "";
+  return document.getElementById("compose-chip-label")?.textContent || "";
 })()`).then((t) => console.log("ctx:", t));
 await shot("02-chat-empty.png");
 

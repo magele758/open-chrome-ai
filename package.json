@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node scripts/run-tests.mjs",
-    "test:quick": "node scripts/run-tests.mjs --quick"
+    "bundle:agent-loop": "node scripts/bundle-agent-loop.mjs",
+    "test": "node scripts/bundle-agent-loop.mjs && node scripts/run-tests.mjs",
+    "test:quick": "node scripts/bundle-agent-loop.mjs && node scripts/run-tests.mjs --quick"
+  },
+  "dependencies": {
+    "@mage-ai-lab/agent-loop": "0.1.1"
   }
 }

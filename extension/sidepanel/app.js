@@ -1,3 +1,5 @@
+import { toolCardOpen, bindToolCardState } from "./tool-card-state.js";
+import { applyUiTheme, bindThemeEditor } from "./theme.js";
 import { debugLog, exportDebugLogFresh, DEBUG_BUILD, hydrateDebugLog } from "../lib/debug-log.js";
 hydrateDebugLog();
 debugLog("panel.loaded", { build: DEBUG_BUILD, source: "sidepanel" });
@@ -64,7 +66,7 @@ import {
   appendReviewToDailyNote,
 } from "../lib/reviews.js";
 import { initMarkdown, formatAnswer, splitThinking, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
-import { createAgentLoop } from "../lib/agent/loop.js";
+import { createKernelAgentLoop, LOOP_ENGINE_ID } from "../lib/agent/loop-kernel.js";
 import { createAgentTools, resolveActiveTools, checkHitlRequirement } from "../lib/agent/tools.js";
 import { deleteSessionArtifacts } from "../lib/agent/artifact-store.js";
 import { auditToolCall } from "../lib/agent/guardrail.js";
@@ -1131,12 +1133,77 @@ function setChipAction(el, label, tooltip) {
   el.setAttribute("data-tooltip", tooltip);
 }
 
+function pageContextBits() {
+  const tab = state.tab;
+  if (!tab || !state.share) return state.share ? [] : ["不使用网页"];
+  const bits = [];
+  const host = hostOf(tab.url);
+  if (host) bits.push(host);
+  if (state.pack?.kind === "x") bits.push("已提取帖子");
+  if (state.pack?.kind === "pdf") {
+    bits.push("已提取 PDF");
+    if (state.pack.pdfPages) bits.push(`${state.pack.pdfPages} 页`);
+  } else if (state.pack?.pdfError) {
+    bits.push("PDF 未抽出");
+  }
+  if (state.pack?.text) bits.push(`${state.pack.text.length} 字`);
+  return bits;
+}
+
+function videoContextBits() {
+  const video = state.pack?.videoIsPrimary && state.pack?.video;
+  const mediaId = state.mediaTab?.id || state.tab?.id;
+  const si = interpretController.getState?.(mediaId) || state.interpret;
+  const tr = state.transcribe;
+  const bits = [];
+  if (video) {
+    bits.push(formatTime(video.duration));
+    const src = state.pack?.captionsSource;
+    if (state.pack?.captionsStatus === "ready") {
+      bits.push(src === "subtitles" ? "含完整字幕" : "已转写");
+    } else {
+      bits.push("尚未转写");
+    }
+  }
+  if (si?.status === "running") {
+    bits.push("同传中（按声音）");
+    if (si.hint) bits.push(si.hint);
+  } else if (video) {
+    bits.push("同传按声音切句");
+  }
+  if (tr?.status === "recording") {
+    bits.push(`提取中 ${formatTime(tr.currentTime || 0)}/${formatTime(tr.duration || video?.duration || 0)}`);
+    if (tr.hint) bits.push(tr.hint);
+  }
+  if (tr?.status === "extracting" || tr?.status === "uploading") bits.push(tr.hint || "正在识别完整音轨");
+  if (tr?.status === "error" && tr.error) bits.push(formatStatusError(tr.error));
+  if (si?.status === "error" && si.error) bits.push(formatStatusError(si.error));
+  const src = state.pack?.captionsSource;
+  if (video && (src === "asr-full" || src === "asr" || src === "asr-cache" || src === "interpret" || src === "subtitles" || src === "subtitles-full") && (!tr || tr.status === "done" || tr.status === "idle")) {
+    bits.push("可以直接问总结或章节");
+  }
+  const n = Number(state.pack?.videoCount) || (Array.isArray(state.pack?.videos) ? state.pack.videos.length : 0);
+  if (n > 1) {
+    const idx = Number.isInteger(state.pack?.videoIndex) ? state.pack.videoIndex + 1 : 1;
+    bits.push(`画面 ${idx}/${n}`);
+  }
+  return bits;
+}
+
+function renderMediaProgress() {
+  const el = $("media-progress");
+  const bits = videoContextBits();
+  if (el) {
+    el.textContent = bits.join(" · ");
+    el.hidden = !bits.length;
+  }
+}
+
 function renderComposerChip() {
   const label = $("compose-chip-label");
   const chip = $("compose-chip");
   const clear = $("btn-clear-ref");
   const note = $("compose-note");
-  const follow = $("chat-follow");
   const input = $("input");
   const ref = state.chatRef;
   const pageTitle = state.pack?.title || state.tab?.title || "当前网页";
@@ -1147,20 +1214,20 @@ function renderComposerChip() {
     if (label) label.textContent = `已引用：${ref.title} · ${kind}`;
     setChipAction(clear, "×", "移除引用");
     if (note) note.textContent = "视频引用";
-    if (follow) follow.textContent = "主动引用优先于当前网页";
     if (input && !input.value) input.placeholder = "针对已引用的视频内容提问…";
     return;
   }
   if (state.share) {
     if (label) label.textContent = `当前网页：${pageTitle}`;
     setChipAction(clear, "×", "去掉网页上下文");
-    if (note) note.textContent = "当前网页";
-    if (follow) follow.textContent = "跟随当前标签页";
+    if (note) {
+      const bits = pageContextBits();
+      note.textContent = bits.length ? bits.join(" · ") : "当前网页";
+    }
   } else {
     if (label) label.textContent = "未带网页";
     setChipAction(clear, "带上", "带上当前网页");
-    if (note) note.textContent = "不使用网页";
-    if (follow) follow.textContent = "已去掉网页，切到其他页会再带上";
+    if (note) note.textContent = "不使用网页，切到其他页会再带上";
   }
   if (input) syncComposerHints();
 }
@@ -1249,8 +1316,14 @@ function renderMediaChrome() {
   const interpreting = interpretController.isRunning(mediaId);
   const compactActive = Boolean(compactPlaying || compactPendingAutoplay);
   const running = interpretController.getRunningTasks?.() || [];
+  const progress = videoContextBits();
   const status = interpreting ? "同传中" : compactPendingAutoplay ? "纯享准备中" : compactPlaying ? "纯享播放中" : running.length ? "后台处理中" : "就绪";
-  if ($("media-status-label")) $("media-status-label").textContent = status;
+  if ($("media-status-label")) {
+    $("media-status-label").textContent = !state.mediaExpanded && progress.length
+      ? `${status} · ${progress.slice(0, 2).join(" · ")}`
+      : status;
+  }
+  renderMediaProgress();
   if ($("media-heading")) {
     $("media-heading").textContent = state.mediaExpanded
       ? "音视频工具"
@@ -1376,72 +1449,9 @@ function formatStatusError(err) {
 }
 
 function renderContext() {
-  const tab = state.tab;
-  $("btn-unpin")?.classList.toggle("hidden", !state.share);
-  $("btn-pin-page")?.classList.toggle("hidden", Boolean(state.share));
-  if (!tab || !state.share) {
-    $("ctx-label").textContent = "未带网页";
-    $("ctx-title").textContent = tab?.title || "当前页";
-    $("ctx-sub").textContent = "对话不使用此页，可直接交代任务。切换到其他网页后会自动带上。";
-    if ($("ctx-source-hint")) $("ctx-source-hint").textContent = "";
-    renderTranscribeAction();
-    renderComposerChip();
-    return;
-  }
-  const video = state.pack?.videoIsPrimary && state.pack?.video;
-  $("ctx-label").textContent = video
-    ? "正在观看"
-    : state.pack?.kind === "x"
-      ? "正在看帖"
-      : state.pack?.kind === "pdf"
-        ? "正在读 PDF"
-        : "正在阅读";
-  $("ctx-title").textContent = tab.title || "无标题";
-  const bits = [hostOf(tab.url)];
-  if (state.pack?.kind === "x") bits.push("已提取帖子");
-  if (state.pack?.kind === "pdf") {
-    bits.push("已提取 PDF");
-    if (state.pack.pdfPages) bits.push(`${state.pack.pdfPages} 页`);
-  } else if (state.pack?.pdfError) {
-    bits.push("PDF 未抽出");
-  }
-  if (state.pack?.text) bits.push(`${state.pack.text.length} 字`);
-  if (video) {
-    bits.push(formatTime(video.duration));
-    const src = state.pack?.captionsSource;
-    if (state.pack?.captionsStatus === "ready") {
-      bits.push(src === "subtitles" ? "含完整字幕" : "已转写");
-    } else {
-      bits.push("尚未转写");
-    }
-    const tr = state.transcribe;
-    const si = state.interpret;
-    if (si?.status === "running") {
-      bits.push("同传中（按声音）");
-      if (si.hint) bits.push(si.hint);
-    } else {
-      bits.push("同传按声音切句");
-    }
-    if (tr?.status === "recording") {
-      bits.push(`提取中 ${formatTime(tr.currentTime || 0)}/${formatTime(tr.duration || video.duration || 0)}`);
-      if (tr.hint) bits.push(tr.hint);
-    }
-    if (tr?.status === "extracting" || tr?.status === "uploading") bits.push(tr.hint || "正在识别完整音轨");
-    if (tr?.status === "error" && tr.error) bits.push(formatStatusError(tr.error));
-    if (si?.status === "error" && si.error) bits.push(formatStatusError(si.error));
-    if ((src === "asr-full" || src === "asr" || src === "asr-cache" || src === "interpret" || src === "subtitles" || src === "subtitles-full") && (!tr || tr.status === "done" || tr.status === "idle")) {
-      bits.push("可以直接问总结或章节");
-    }
-    const n = Number(state.pack?.videoCount) || (Array.isArray(state.pack?.videos) ? state.pack.videos.length : 0);
-    if (n > 1) {
-      const idx = Number.isInteger(state.pack?.videoIndex) ? state.pack.videoIndex + 1 : 1;
-      bits.push(`画面 ${idx}/${n}`);
-    }
-  }
-  $("ctx-sub").textContent = bits.filter(Boolean).join(" · ");
-  if ($("ctx-source-hint")) $("ctx-source-hint").textContent = "本次总结与提问的来源";
   renderTranscribeAction();
   renderComposerChip();
+  renderMediaProgress();
 }
 
 const isTranscribing = () => ["extracting", "recording", "uploading"].includes(state.transcribe?.status);
@@ -1480,8 +1490,6 @@ function renderTranscribeAction() {
       : '<svg class="ico"><use href="#i-spark"/></svg>一键总结视频';
     sum.disabled = recording || state.busy || (!hasPlayer && !canShare);
   }
-  const pageSum = $("btn-summarize-page");
-  if (pageSum) pageSum.disabled = state.busy || !state.tab;
   $("btn-generate-full")?.classList.toggle("hidden", !hasPlayer);
   $("btn-clear-dub-cache")?.classList.toggle("hidden", !hasPlayer);
   if (siBtn) {
@@ -1773,9 +1781,6 @@ function finishTraceTool(botMsg, ev) {
 }
 
 function fillToolTrace(root, items, { live = false } = {}) {
-  const openIds = new Set(
-    [...root.querySelectorAll("details.tool-card[open]")].map((el) => el.dataset.id)
-  );
   root.innerHTML = "";
   const list = Array.isArray(items) ? items : [];
   const meta = list.filter(isMetaTrace);
@@ -1787,9 +1792,7 @@ function fillToolTrace(root, items, { live = false } = {}) {
     root.appendChild(row);
   }
   for (const item of tools) {
-    const id = String(item.id || item.name);
-    const shouldOpen = true;
-    root.appendChild(createToolCard(item, { open: shouldOpen || openIds.has(id), live }));
+    root.appendChild(createToolCard(item, { open: toolCardOpen(item), live }));
   }
 }
 
@@ -1836,6 +1839,7 @@ function createToolCard(item, { open = false } = {}) {
   body.append(resultLabel, result);
 
   details.append(summary, body);
+  bindToolCardState(details, item);
   return details;
 }
 
@@ -3465,7 +3469,6 @@ function initReviewView() {
   $("btn-review-delete")?.addEventListener("click", () => handleDeleteActiveReview());
   $("btn-review-back")?.addEventListener("click", () => setView("chat"));
   $("btn-review")?.addEventListener("click", () => openReviewView());
-  $("btn-clip-page")?.addEventListener("click", () => handleClipCurrentPage());
 }
 
 function fieldBlock(prefix, model, hints = {}) {
@@ -3829,6 +3832,7 @@ function renderSettingsForm() {
   $("mm-fields").classList.toggle("hidden", state.settings.multimodalSameAsText);
   $("answer-lang").value = state.settings.answerLanguage;
   $("ui-font").value = state.settings.uiFont || "md";
+  applyUiTheme(state.settings.uiTheme, state.settings.uiThemeColors);
   if ($("native-shell")) $("native-shell").checked = state.settings.nativeShell !== false;
   if ($("hitl-mode")) $("hitl-mode").value = state.settings.hitlMode || "balanced";
   if ($("skills-enabled")) $("skills-enabled").checked = skillsOn();
@@ -4955,7 +4959,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       enableSkills: useSkills,
     });
 
-    loop = createAgentLoop({
+    loop = createKernelAgentLoop({
       maxTurns: 0,
       allTools: tools,
       systemPrompt: [systemPrompt(state.settings, { useSkills }), useSkills ? skillCatalogText(skills) : ""].filter(Boolean).join("\n\n"),
@@ -5053,7 +5057,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     renderMessages();
     return;
   }
-  console.info("[pagelens] executeLoop", { tools: tools.length, useSkills });
+  console.info("[pagelens] executeLoop", { tools: tools.length, useSkills, loopEngine: LOOP_ENGINE_ID });
 
   state.busy = true;
   state.abort = new AbortController();
@@ -5794,7 +5798,6 @@ function wire() {
   });
   on("btn-media-mini-pause", "click", () => toggleMiniPlayback());
   on("btn-back-video", "click", () => backToVideoTab());
-  on("btn-summarize-page", "click", () => startSummarizePage());
   on("btn-cite-transcript", "click", () => citeTranscript());
   on("btn-clear-ref", "click", () => onComposerChipAction());
   on("btn-video-summary-cite", "click", () => citeVideoSummary());
@@ -5852,8 +5855,6 @@ function wire() {
     state.histQuery = $("hist-q").value;
     renderHistory();
   });
-  on("btn-unpin", "click", () => dismissPageContext());
-  on("btn-pin-page", "click", () => restorePageContext());
   on("btn-transcribe", "click", () => {
     const capsReady = state.pack?.captionsStatus === "ready";
     startTranscribe({ force: capsReady });
@@ -6117,6 +6118,7 @@ function wire() {
   on("answer-lang", "change", (e) => {
     state.settings.answerLanguage = e.target.value;
   });
+  bindThemeEditor(state);
   on("ui-font", "change", (e) => {
     state.settings.uiFont = e.target.value;
     applyUiFont(state.settings.uiFont);
@@ -6221,6 +6223,7 @@ async function boot() {
       console.error("[pagelens] boot settings", err);
       state.settings = defaultSettings();
     }
+    applyUiTheme(state.settings.uiTheme, state.settings.uiThemeColors);
     state.mediaExpanded = readUiPref("mediaExpanded", true);
     state.toolsExpanded = readUiPref("toolsExpanded", false);
     state.tasksExpanded = readUiPref("tasksExpanded", true);

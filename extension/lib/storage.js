@@ -1,3 +1,4 @@
+import { normalizeUiTheme, normalizeThemeColors } from "./ui-theme.js";
 import { hydrateTextCatalog } from "./text-providers.js";
 
 export const PRESETS = [
@@ -77,6 +78,8 @@ export function defaultSettings() {
     multimodalSameAsText: false,
     answerLanguage: "zh-CN",
     uiFont: "md",
+    uiTheme: "default",
+    uiThemeColors: {},
     shareActiveTab: true,
     nativeShell: true,
     hitlMode: "balanced",
@@ -119,6 +122,8 @@ export function normalizeSettings(raw) {
   merged.tts.gapMs = Number.isFinite(gap) && gap >= 0 ? Math.min(2000, gap) : 0;
   if (!["ZH", "EN", "JA", "AR", "ES"].includes(merged.tts.lang)) merged.tts.lang = "ZH";
   merged.uiFont = ["md", "lg", "xl"].includes(raw?.uiFont) ? raw.uiFont : "md";
+  merged.uiTheme = normalizeUiTheme(raw?.uiTheme);
+  merged.uiThemeColors = normalizeThemeColors(raw?.uiThemeColors);
   merged.nativeShell = raw?.nativeShell !== false;
   merged.hitlMode = ["strict", "balanced", "autonomous"].includes(raw?.hitlMode) ? raw.hitlMode : "balanced";
   const timeout = Number(raw?.hitlTimeoutSeconds);

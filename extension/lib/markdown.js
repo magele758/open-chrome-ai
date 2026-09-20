@@ -10,6 +10,119 @@ function mermaidBlock(src) {
   return `<pre class="mermaid-src">${escapeHtml(src)}</pre>`;
 }
 
+function isProtectedInline(el) {
+  return (
+    el.classList?.contains("mermaid-wrap") ||
+    el.classList?.contains("mermaid-src") ||
+    el.classList?.contains("katex") ||
+    el.classList?.contains("katex-display")
+  );
+}
+
+export function looksLikeLatex(tex) {
+  const s = String(tex || "").trim();
+  if (!s || s.length > 4000) return false;
+  if (/\\[a-zA-Z]+/.test(s)) return true;
+  if (/[\^_{}]/.test(s)) return true;
+  if (/[=<>±∞∑∏∫√≤≥≠]/.test(s)) return true;
+  if (/^[A-Za-z](?:[A-Za-z0-9]|_[A-Za-z0-9])*$/.test(s)) return true;
+  if (/^\d+[A-Za-z]$/.test(s) || /^[A-Za-z]\d+$/.test(s)) return true;
+  return false;
+}
+
+export function extractMathSegments(src) {
+  const text = String(src || "");
+  const maths = [];
+  let out = "";
+  let i = 0;
+  const n = text.length;
+
+  const take = (display, tex, end) => {
+    const key = `@@PLMATH${maths.length}@@`;
+    maths.push({ key, display, tex });
+    out += key;
+    return end;
+  };
+
+  while (i < n) {
+    if (text.startsWith("```", i) || text.startsWith("~~~", i)) {
+      const fence = text.slice(i, i + 3);
+      const end = text.indexOf(fence, i + 3);
+      if (end === -1) {
+        out += text.slice(i);
+        break;
+      }
+      const close = end + 3;
+      out += text.slice(i, close);
+      i = close;
+      continue;
+    }
+    if (text[i] === "`") {
+      const end = text.indexOf("`", i + 1);
+      if (end === -1) {
+        out += text.slice(i);
+        break;
+      }
+      out += text.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (text.startsWith("$$", i)) {
+      const end = text.indexOf("$$", i + 2);
+      if (end !== -1) {
+        i = take(true, text.slice(i + 2, end), end + 2);
+        continue;
+      }
+    }
+    if (text.startsWith("\\[", i)) {
+      const end = text.indexOf("\\]", i + 2);
+      if (end !== -1) {
+        i = take(true, text.slice(i + 2, end), end + 2);
+        continue;
+      }
+    }
+    if (text.startsWith("\\(", i)) {
+      const end = text.indexOf("\\)", i + 2);
+      if (end !== -1) {
+        i = take(false, text.slice(i + 2, end), end + 2);
+        continue;
+      }
+    }
+    if (text[i] === "$" && text[i + 1] !== "$") {
+      const end = text.indexOf("$", i + 1);
+      if (end !== -1 && !text.slice(i + 1, end).includes("\n")) {
+        const tex = text.slice(i + 1, end);
+        if (looksLikeLatex(tex)) {
+          i = take(false, tex, end + 1);
+          continue;
+        }
+      }
+    }
+    out += text[i];
+    i += 1;
+  }
+  return { text: out, maths };
+}
+
+function renderMathHtml(tex, display) {
+  const katex = globalThis.katex;
+  if (!katex?.renderToString) {
+    const body = escapeHtml(tex);
+    return display ? `<pre class="math-fallback">${body}</pre>` : `<code class="math-fallback">${body}</code>`;
+  }
+  try {
+    return katex.renderToString(tex, {
+      displayMode: !!display,
+      throwOnError: false,
+      output: "html",
+      strict: "ignore",
+      trust: false,
+    });
+  } catch {
+    return escapeHtml(tex);
+  }
+}
+
 export function resolveLinkHref(href, baseUrl) {
   const raw = String(href || "").trim();
   if (!raw || raw.startsWith("#")) return "";
@@ -103,16 +216,20 @@ export function formatAnswer(text) {
   if (!markedApi?.parse || !purify?.sanitize) {
     return escapeHtml(src).replace(/\n/g, "<br>");
   }
-  const html = markedApi.parse(src, {
+  const { text: md, maths } = extractMathSegments(src);
+  let html = markedApi.parse(md, {
     async: false,
     gfm: true,
     breaks: true,
     renderer: makeRenderer(),
   });
+  for (const item of maths) {
+    html = html.split(item.key).join(renderMathHtml(item.tex, item.display));
+  }
   return purify.sanitize(html, {
     USE_PROFILES: { html: true },
     ADD_TAGS: ["button", "details", "summary"],
-    ADD_ATTR: ["class", "data-t", "data-q", "type", "target", "rel", "open"],
+    ADD_ATTR: ["class", "style", "data-t", "data-q", "type", "target", "rel", "open", "aria-hidden", "aria-label"],
   });
 }
 
@@ -167,7 +284,7 @@ function autolinkText(root) {
     acceptNode(node) {
       let p = node.parentElement;
       while (p && p !== root) {
-        if (skip.has(p.tagName) || p.classList?.contains("mermaid-wrap") || p.classList?.contains("mermaid-src")) {
+        if (skip.has(p.tagName) || isProtectedInline(p)) {
           return NodeFilter.FILTER_REJECT;
         }
         p = p.parentElement;
@@ -237,7 +354,7 @@ export function decorateInlines(root, { baseUrl } = {}) {
   for (const code of root.querySelectorAll('code')) {
     const timestamp = code.textContent.trim();
     if (!/^\d{1,3}:[0-5]\d(?::[0-5]\d)?$/.test(timestamp)) continue;
-    if (code.closest('pre, a, button, svg, textarea, .mermaid-wrap, .mermaid-src')) continue;
+    if (code.closest('pre, a, button, svg, textarea, .mermaid-wrap, .mermaid-src, .katex, .katex-display')) continue;
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'ts';
@@ -251,7 +368,7 @@ export function decorateInlines(root, { baseUrl } = {}) {
     acceptNode(node) {
       let p = node.parentElement;
       while (p && p !== root) {
-        if (skip.has(p.tagName) || p.classList?.contains("mermaid-wrap") || p.classList?.contains("mermaid-src")) {
+        if (skip.has(p.tagName) || isProtectedInline(p)) {
           return NodeFilter.FILTER_REJECT;
         }
         p = p.parentElement;

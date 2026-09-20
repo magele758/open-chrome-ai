@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <title>markdown fixture</title>
   <link rel="stylesheet" href="../sidepanel/styles.css" />
+  <link rel="stylesheet" href="../vendor/katex/katex.min.css" />
   <style>
     body { height: auto; padding: 16px; }
     .msg { max-width: 520px; }
@@ -14,6 +15,7 @@
   <script src="../vendor/marked.min.js"></script>
   <script src="../vendor/purify.min.js"></script>
   <script src="../vendor/mermaid.min.js"></script>
+  <script src="../vendor/katex/katex.min.js"></script>
   <script type="module">
     import { initMarkdown, formatAnswer, decorateInlines, enhanceMermaid } from "../lib/markdown.js";
     initMarkdown();
@@ -35,6 +37,10 @@
       "  B --> C[Markdown]",
       "```",
       "",
+      "行内 $E=mc^2$，独立：",
+      "",
+      "$$\\frac{1}{2}$$",
+      "",
     ].join("\n");
     const out = document.getElementById("out");
     out.innerHTML = formatAnswer(src);
@@ -47,6 +53,8 @@
       out.querySelector(".ref") &&
       out.querySelector(".ts") &&
       out.querySelector(".mermaid-wrap svg") &&
+      out.querySelector(".katex") &&
+      out.querySelector(".katex-display") &&
       [...out.querySelectorAll("a")].some(
         (a) => a.target === "_blank" && a.rel.includes("noopener") && a.href.includes("example.com/docs"),
       ) &&
@@ -59,6 +67,8 @@
       "ref=" + !!out.querySelector(".ref"),
       "ts=" + !!out.querySelector(".ts"),
       "svg=" + !!out.querySelector(".mermaid-wrap svg"),
+      "katex=" + !!out.querySelector(".katex"),
+      "display=" + !!out.querySelector(".katex-display"),
       "links=" + out.querySelectorAll("a[target='_blank']").length,
       "err=" + (out.querySelector(".mermaid-error-msg")?.textContent || ""),
     ].join(" ");

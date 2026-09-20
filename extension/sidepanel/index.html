@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PageLens</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="themes.css" />
+  <link rel="stylesheet" href="../vendor/katex/katex.min.css" />
 </head>
 <body>
   <svg xmlns="http://www.w3.org/2000/svg" class="icon-sprite" aria-hidden="true">
@@ -172,6 +174,7 @@
         </div>
 
         <p class="media-tiny" id="media-note" role="status"></p>
+        <p class="media-tiny" id="media-progress" hidden></p>
         <details class="usage-details" id="media-usage-wrap">
           <summary><span id="media-usage">用量与耗时会在处理后显示</span><span>用量明细</span></summary>
           <div id="media-usage-detail"></div>
@@ -218,40 +221,6 @@
             <div class="hitl-actions">
               <button type="button" class="secondary" id="btn-hitl-reject">拒绝</button>
               <button type="button" class="primary" id="btn-hitl-approve">允许执行</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="chat-head">
-          <strong>网页对话</strong>
-          <span class="media-tiny" id="chat-follow">跟随当前标签页</span>
-        </div>
-        <div class="ctx">
-          <div class="ctx-label" id="ctx-label">当前标签</div>
-          <div class="card">
-            <svg class="ico muted"><use href="#i-file"/></svg>
-            <div style="min-width:0">
-              <div class="t" id="ctx-title">尚未读取页面</div>
-              <div class="s" id="ctx-sub">打开任意网页后点总结或直接提问</div>
-              <div class="s" id="ctx-source-hint">本次总结与提问的来源</div>
-            </div>
-            <button type="button" class="x" id="btn-unpin" data-tooltip="去掉网页上下文" aria-label="去掉网页上下文">×</button>
-            <button type="button" class="ctx-pin hidden" id="btn-pin-page" data-tooltip="带上当前网页">带上当前页</button>
-          </div>
-          <div class="chat-page-actions">
-            <button type="button" class="ctx-action primary" id="btn-summarize-page" title="总结当前网页正文、PDF 或帖子，不调用视频转写">
-              <svg class="ico"><use href="#i-spark"/></svg>总结本页
-            </button>
-            <button type="button" class="ctx-action" id="btn-clip-page" title="将当前网页及个人思考剪藏至知识库与书签">🔖 剪藏本页</button>
-          </div>
-          <div class="recall-banner hidden" id="recall-banner">
-            <span class="recall-icon">💡</span>
-            <div class="recall-content">
-              <span class="recall-text" id="recall-text">曾剪藏笔记</span>
-            </div>
-            <div class="recall-ops">
-              <button type="button" class="recall-btn" id="btn-recall-open">查看笔记</button>
-              <button type="button" class="recall-close" id="btn-recall-dismiss" title="忽略">×</button>
             </div>
           </div>
         </div>
@@ -332,6 +301,16 @@
         </div>
 
         <div class="composer">
+          <div class="recall-banner hidden" id="recall-banner">
+            <span class="recall-icon">💡</span>
+            <div class="recall-content">
+              <span class="recall-text" id="recall-text">曾剪藏笔记</span>
+            </div>
+            <div class="recall-ops">
+              <button type="button" class="recall-btn" id="btn-recall-open">查看笔记</button>
+              <button type="button" class="recall-close" id="btn-recall-dismiss" title="忽略">×</button>
+            </div>
+          </div>
           <div class="attach hidden" id="attach-row">
             <img id="attach-thumb" alt="附件" />
             <span id="attach-label">已附加当前画面</span>
@@ -378,6 +357,38 @@
           </button>
         </div>
         <p class="lead">文本、多模态必填才能聊天。语音转写和配音是高级功能，不填不影响读页、问答、点选。密钥只存在本机。打开设置不会中断音视频任务。</p>
+
+        <div class="block" id="block-appearance">
+          <h3>界面主题</h3>
+          <p class="lead">点击即生效并自动保存，不中断对话或播放。</p>
+          <div class="theme-picker" role="group" aria-label="界面主题">
+            <button type="button" class="theme-option" data-ui-theme="default" aria-pressed="true"><span class="theme-colors" aria-hidden="true"><i style="background:#f7f6f2"></i><i style="background:#c45c26"></i><i style="background:#1c1917"></i></span><strong>默认</strong><small>原始简洁外观</small></button>
+            <button type="button" class="theme-option" data-ui-theme="cyber" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i style="background:#100c25"></i><i style="background:#b47bff"></i><i style="background:#71baff"></i></span><strong>赛博朋克</strong><small>紫蓝霓虹 · 故障边框</small></button>
+            <button type="button" class="theme-option" data-ui-theme="terminal" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i style="background:#141413"></i><i style="background:#f3a66a"></i><i style="background:#abbf87"></i></span><strong>Terminal</strong><small>炭黑控制台 · 橙色提示</small></button>
+            <button type="button" class="theme-option" data-ui-theme="warm" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i style="background:#f4ecdf"></i><i style="background:#9b5638"></i><i style="background:#887040"></i></span><strong>暖纸阅读</strong><small>米杏纸色 · 宋体正文</small></button>
+            <button type="button" class="theme-option" data-ui-theme="mint" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i style="background:#f5f7df"></i><i style="background:#687e24"></i><i style="background:#d3df86"></i></span><strong>青柠小径</strong><small>奶油黄绿 · 清新圆角</small></button>
+          </div>
+          <div class="theme-editor">
+            <h4>自定义当前主题</h4>
+            <p class="lead">4 个基础色，其他层次自动搭配。每套主题分别记住你的配色。</p>
+            <div class="theme-color-grid">
+              <div class="theme-color-field"><label for="theme-color-surface">背景色</label><div><input id="theme-color-surface" type="color" data-theme-color="surface" aria-label="背景色" /><input type="text" data-theme-color="surface" aria-label="背景色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+              <div class="theme-color-field"><label for="theme-color-ink">正文色</label><div><input id="theme-color-ink" type="color" data-theme-color="ink" aria-label="正文色" /><input type="text" data-theme-color="ink" aria-label="正文色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+              <div class="theme-color-field"><label for="theme-color-accent">主题主色</label><div><input id="theme-color-accent" type="color" data-theme-color="accent" aria-label="主题主色" /><input type="text" data-theme-color="accent" aria-label="主题主色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+              <div class="theme-color-field"><label for="theme-color-teal">辅助色</label><div><input id="theme-color-teal" type="color" data-theme-color="teal" aria-label="辅助色" /><input type="text" data-theme-color="teal" aria-label="辅助色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+            </div>
+            <h4>错误框配色</h4>
+            <p class="lead">用于失败的工具调用和对话错误提示。</p>
+            <div class="theme-color-grid">
+              <div class="theme-color-field"><label for="theme-color-danger-bg">错误背景</label><div><input id="theme-color-danger-bg" type="color" data-theme-color="danger-bg" aria-label="错误背景" /><input type="text" data-theme-color="danger-bg" aria-label="错误背景十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+              <div class="theme-color-field"><label for="theme-color-danger">错误文字</label><div><input id="theme-color-danger" type="color" data-theme-color="danger" aria-label="错误文字" /><input type="text" data-theme-color="danger" aria-label="错误文字十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+              <div class="theme-color-field"><label for="theme-color-danger-line">错误边框</label><div><input id="theme-color-danger-line" type="color" data-theme-color="danger-line" aria-label="错误边框" /><input type="text" data-theme-color="danger-line" aria-label="错误边框十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+            </div>
+            <p id="theme-contrast" class="lead" role="status"></p>
+            <button id="btn-theme-reset" class="secondary" type="button">重置当前主题配色</button>
+          </div>
+          <p class="status" id="theme-status" role="status" aria-live="polite"></p>
+        </div>
 
         <div class="block" id="block-text">
           <h3>文本模型</h3>
@@ -458,6 +469,7 @@
               <option value="autonomous">⚡️ 全自动模式：所有命令自动静默执行，零弹窗中断</option>
             </select>
           </div>
+          <p class="lead" style="margin-top:8px">Agent 循环：<code>@mage-ai-lab/agent-loop/mini</code>（npm）</p>
           <p class="lead" id="native-host-id" style="margin-top:6px"></p>
           <div class="row-btns">
             <button class="secondary" type="button" id="btn-native-copy-id">复制扩展 ID</button>
@@ -585,6 +597,7 @@
   <script src="../vendor/marked.min.js"></script>
   <script src="../vendor/purify.min.js"></script>
   <script src="../vendor/mermaid.min.js"></script>
+  <script src="../vendor/katex/katex.min.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>
