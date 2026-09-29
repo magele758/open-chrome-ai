@@ -1,0 +1,25 @@
+{
+  "id": "multi-speaker",
+  "label": "多人对话（不同 speaker / overlap）",
+  "kind": "asr",
+  "duration": 32,
+  "spans": [
+    { "start": 0, "end": 7.5, "kind": "speech", "speaker": "A" },
+    { "start": 7.5, "end": 8.0, "kind": "silence", "speaker": null },
+    { "start": 8.0, "end": 14.5, "kind": "speech", "speaker": "B" },
+    { "start": 14.5, "end": 17.0, "kind": "speech", "speaker": "A", "overlap": true },
+    { "start": 17.0, "end": 17.6, "kind": "silence", "speaker": null },
+    { "start": 17.6, "end": 26.0, "kind": "speech", "speaker": "B" },
+    { "start": 26.0, "end": 32.0, "kind": "speech", "speaker": "A" }
+  ],
+  "asr": [
+    { "start": 0.3, "end": 3.4, "text": "I think we should ship the smaller model first", "speaker": "A" },
+    { "start": 3.6, "end": 7.3, "text": "and keep the larger one in the lab", "speaker": "A" },
+    { "start": 8.2, "end": 11.6, "text": "the larger model already wins the benchmark", "speaker": "B" },
+    { "start": 12.2, "end": 14.3, "text": "by a wide margin on the public set", "speaker": "B" },
+    { "start": 14.6, "end": 16.8, "text": "wait that benchmark is contaminated", "speaker": "A" },
+    { "start": 17.8, "end": 21.6, "text": "even then the gap is still large", "speaker": "B" },
+    { "start": 21.8, "end": 25.6, "text": "we should not hide the result", "speaker": "B" },
+    { "start": 26.2, "end": 31.4, "text": "then publish the caveat in the paper", "speaker": "A" }
+  ]
+}

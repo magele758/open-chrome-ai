@@ -1,0 +1,25 @@
+{
+  "id": "auto-captions",
+  "label": "自动字幕（少标点碎片）",
+  "kind": "subtitle",
+  "duration": 36,
+  "spans": [
+    { "start": 0, "end": 36, "kind": "speech", "speaker": "A" }
+  ],
+  "subtitles": [
+    { "id": "a0", "start": 0.4, "end": 2.2, "src": "so what I want to do today" },
+    { "id": "a1", "start": 2.2, "end": 4.0, "src": "is explain" },
+    { "id": "a2", "start": 4.0, "end": 6.2, "src": "how neural networks learn" },
+    { "id": "a3", "start": 6.2, "end": 7.6, "src": "from messy product data" },
+    { "id": "a4", "start": 7.6, "end": 9.4, "src": "and why that changes" },
+    { "id": "a5", "start": 9.4, "end": 11.6, "src": "the way we ship models" },
+    { "id": "a6", "start": 12.2, "end": 14.4, "src": "the first idea is" },
+    { "id": "a7", "start": 14.4, "end": 16.8, "src": "backpropagation which is" },
+    { "id": "a8", "start": 16.8, "end": 19.2, "src": "just the chain rule" },
+    { "id": "a9", "start": 19.2, "end": 21.6, "src": "applied many times" },
+    { "id": "a10", "start": 21.6, "end": 24.2, "src": "the second idea is that scale" },
+    { "id": "a11", "start": 24.2, "end": 26.8, "src": "changes what the model can represent" },
+    { "id": "a12", "start": 27.2, "end": 30.0, "src": "thanks for listening" },
+    { "id": "a13", "start": 30.0, "end": 33.4, "src": "see you next week" }
+  ]
+}

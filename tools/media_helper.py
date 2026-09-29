@@ -23,6 +23,8 @@ from urllib.parse import parse_qs, urlparse
 JOBS = {}
 LOCK = threading.RLock()
 PART_SECONDS = 300
+# Bump when cue segmentation changes; cached cues from older parsers are refetched.
+SUBTITLE_VERSION = 3
 DEFAULT_PORT = 18789
 SERVICE = 'pagelens-media'
 CONDA_ENV = 'pagelens-media'
@@ -176,6 +178,8 @@ def run(job, args):
             reason = 'YouTube JavaScript 解析失败。请更新 yt-dlp[default]，并安装 Node.js 或 Deno。'
         else:
             reason = '媒体提取失败：链接已失效或格式不受支持。请更新 yt-dlp 后重试。'
+        if any(str(arg).endswith('audio_analysis.py') for arg in args):
+            reason = '说话人分析失败，同传会继续，音色可能不按说话人分开。'
         log_event({'event': 'media.command-error', 'tool': Path(args[0]).name,
                    'exit': proc.returncode, 'reason': reason})
         raise RuntimeError(reason)
@@ -190,7 +194,8 @@ def duration(job, path):
 def downloader_args():
     args = [executable('yt-dlp'), '--ignore-config', '--no-playlist',
             '--no-write-subs', '--no-write-auto-subs', '--no-warnings',
-            '--socket-timeout', '30', '--retries', '2']
+            '--socket-timeout', '15', '--retries', '2', '--fragment-retries', '2',
+            '--file-access-retries', '3']
     # YouTube requires the EJS solver and an explicitly enabled JS runtime.
     # Use an installed runtime; never download executable scripts on demand.
     for runtime in ('deno', 'node'):
@@ -301,12 +306,28 @@ def strip_subtitle_directions(text):
 
 def parse_json3_cues(data):
     words = []
+    prev_lines, prev_end = [], None
     for ev in data.get('events', []):
         t_start = ev.get('tStartMs', 0)
         dur = ev.get('dDurationMs', 0)
         segs = ev.get('segs', [])
         if not segs:
             continue
+        if len(segs) == 1:
+            # Line-level tracks (human or auto-translated) redraw the whole
+            # rolling window per event; keep only lines not already shown.
+            lines = [l.strip() for l in segs[0].get('utf8', '').split('\n') if l.strip()]
+            if not lines:
+                continue
+            rolling = prev_end is not None and t_start - prev_end < 50
+            fresh = list(lines)
+            while rolling and fresh and len(fresh[0]) >= 4 and fresh[0] in prev_lines:
+                fresh.pop(0)
+            prev_lines, prev_end = lines, t_start + dur
+            if fresh:
+                words.append({'text': ' '.join(fresh), 'start_ms': t_start, 'end_ms': t_start + max(dur, 200)})
+            continue
+        prev_lines, prev_end = [], t_start + dur
         for seg in segs:
             text = seg.get('utf8', '')
             if not text or text == '\n':
@@ -328,8 +349,11 @@ def parse_json3_cues(data):
 
     def join_words(w_list):
         res = ''
+        cjk = re.compile(r'[\u3000-\u303f\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\uff00-\uffef]')
         for w in w_list:
             if not res or w.startswith(' ') or res.endswith(' '):
+                res += w
+            elif cjk.match(w[0]) or cjk.match(res[-1]):
                 res += w
             elif re.match(r'^[.,!?;:\'"]', w):
                 res += w
@@ -353,11 +377,14 @@ def parse_json3_cues(data):
 
         last_word = re.sub(r'[^a-zA-Z]', '', clean_text.split()[-1].lower()) if clean_text.split() else ''
         is_connector = last_word in TRAILING_CONNECTORS
-        has_terminal = bool(re.search(r'[.?!]\s*$', clean_text))
+        has_terminal = bool(re.search(r'[.?!。？！…]["”’」』)）]*\s*$', clean_text))
         is_long_pause = next_gap > 1100 and not is_connector
-        is_max_len = len(curr_words) >= 14 and not is_connector
+        # Human/CJK tracks carry a whole caption line per segment, so a segment
+        # count alone can merge a minute of speech into one cue.
+        span_ms = w['end_ms'] - curr_start
+        is_max_len = (len(curr_words) >= 14 or span_ms >= 10000) and not is_connector or span_ms >= 15000
         is_last = (i == len(clean_words) - 1)
-        too_short = len(curr_words) < 4 and not has_terminal and not is_last
+        too_short = len(curr_words) < 4 and not has_terminal and not is_last and span_ms < 10000
 
         if (has_terminal or is_long_pause or is_max_len or is_last) and not too_short and clean_text:
             end_ms = clean_words[i + 1]['start_ms'] if i + 1 < len(clean_words) else w['end_ms']
@@ -382,6 +409,7 @@ def parse_vtt_srt_cues(text):
     cues = []
     pattern = re.compile(r'(?:(\d{1,2}):)?(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(?:(\d{1,2}):)?(\d{2}):(\d{2})[.,](\d{3})')
     blocks = re.split(r'\n\s*\n', text.strip())
+    prev_lines, prev_end = [], None
     for block in blocks:
         lines = [l.strip() for l in block.splitlines() if l.strip()]
         for idx, line in enumerate(lines):
@@ -390,8 +418,22 @@ def parse_vtt_srt_cues(text):
                 h1, m1, s1, ms1, h2, m2, s2, ms2 = m.groups()
                 start = (int(h1 or 0) * 3600 + int(m1) * 60 + int(s1)) + int(ms1) / 1000.0
                 end = (int(h2 or 0) * 3600 + int(m2) * 60 + int(s2)) + int(ms2) / 1000.0
-                content = ' '.join(lines[idx + 1:])
-                content = strip_subtitle_directions(re.sub(r'<[^>]+>', '', content))
+                text_lines = [re.sub(r'<[^>]+>', '', l).strip() for l in lines[idx + 1:]]
+                text_lines = [l for l in text_lines if l]
+                # YouTube rolling captions repeat the previous line and insert
+                # ~10 ms flash cues; keep only the newly added text.
+                if end - start < 0.05:
+                    break
+                rolling = prev_end is not None and start - prev_end < 0.05
+                fresh = list(text_lines)
+                while rolling and fresh and fresh[0] in prev_lines:
+                    fresh.pop(0)
+                prev_lines, prev_end = text_lines, end
+                if not fresh:
+                    if cues and rolling:
+                        cues[-1]['end'] = round(end, 3)
+                    break
+                content = strip_subtitle_directions(' '.join(fresh))
                 if content and end > start:
                     cues.append({
                         'id': f'sub:{len(cues)}',
@@ -435,6 +477,23 @@ def fetch_subtitles(job, target, info, root):
     # One selected language; a failed direct URL must still reach the fallback.
     language = next((key for group in ('subtitles', 'automatic_captions')
                      for key, value in (info.get(group) or {}).items() if value is tracks), None)
+    cues = fetch_track(job, target, tracks, language, root)
+    if cues or job['cancel'].is_set():
+        return cues
+    # YouTube throttles auto-translated tracks (HTTP 429) far more than the
+    # original-language captions; try those once before giving up to ASR.
+    auto = info.get('automatic_captions') or {}
+    original = info.get('language')
+    if language in auto and original and not language.startswith(original):
+        for key in (f'{original}-orig', original):
+            if auto.get(key) and auto[key] is not tracks:
+                cues = fetch_track(job, target, auto[key], key, root)
+                if cues or job['cancel'].is_set():
+                    return cues
+    return []
+
+
+def fetch_track(job, target, tracks, language, root):
     supported = [t for t in tracks if t.get('ext') in ('json3', 'vtt', 'srt') and t.get('url')]
     supported.sort(key=lambda t: ('json3', 'vtt', 'srt').index(t['ext']))
     for track in supported[:3]:
@@ -543,7 +602,7 @@ def apply_extract_cache(job, target, root):
         meta = json.loads(meta_file.read_text(encoding='utf-8'))
         cached_parts = meta.get('parts', [])
         cached_duration = float(meta.get('duration', 0))
-        cached_subtitles = meta.get('subtitles')
+        cached_subtitles = meta.get('subtitles') if meta.get('subtitles_version') == SUBTITLE_VERSION else None
         if job.get('purpose') == 'transcript' and cached_subtitles and cached_duration > 0:
             job.update(status='ready', duration=cached_duration, subtitles=cached_subtitles, parts=[])
             return True
@@ -560,6 +619,7 @@ def apply_extract_cache(job, target, root):
                     if healed_subs:
                         cached_subtitles = healed_subs
                         meta['subtitles'] = healed_subs
+                        meta['subtitles_version'] = SUBTITLE_VERSION
                         meta_file.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
                 except Exception:
                     pass
@@ -570,7 +630,7 @@ def apply_extract_cache(job, target, root):
                     os.link(src_part, dst_part)
                 except OSError:
                     shutil.copyfile(src_part, dst_part)
-            job.update(status='ready', duration=cached_duration, parts=cached_parts, subtitles=cached_subtitles)
+            job.update(status='ready', duration=cached_duration, parts=cached_parts, subtitles=cached_subtitles, subtitlesComplete=bool(cached_subtitles))
             log_event({'event': 'media.cache-hit', 'target': target, 'duration': cached_duration})
             return True
     except Exception:
@@ -635,6 +695,7 @@ def extract(job, url, media_url):
         subtitles = fetch_subtitles(job, target, info, root)
         if subtitles:
             job['subtitles'] = subtitles
+            job['subtitlesComplete'] = True
             log_event({'event': 'media.subtitles-ready', 'target': target, 'count': len(subtitles)})
             if job.get('purpose') == 'transcript':
                 job.update(status='ready', parts=[])
@@ -692,6 +753,7 @@ def extract(job, url, media_url):
                 'part_seconds': PART_SECONDS,
                 'cached_at': time.time(),
                 'subtitles': subtitles,
+                'subtitles_version': SUBTITLE_VERSION,
             }
             (target_cache_dir / 'source.txt').write_text(f'{target}\n', encoding='utf-8')
             (target_cache_dir / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
@@ -825,7 +887,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(pieces) == 3 and pieces[2] == 'subtitles':
             return self.reply(200, {'subtitles': job.get('subtitles') or []})
         if len(pieces) == 2:
-            return self.reply(200, {k: job[k] for k in ('id', 'status', 'error', 'duration', 'parts', 'subtitles') if k in job})
+            return self.reply(200, {k: job[k] for k in ('id', 'status', 'error', 'duration', 'parts', 'subtitles', 'subtitlesComplete') if k in job})
         if len(pieces) == 4 and pieces[2] in ('audio', 'background') and pieces[3].isdigit() and job['status'] == 'ready':
             index = int(pieces[3])
             if index < len(job.get('parts', [])):

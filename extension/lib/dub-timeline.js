@@ -39,6 +39,49 @@ export function subtitleSpeaker(cue, spans, index) {
 
 // Keep each subtitle whole at preparation boundaries, rather than translating
 // the same text once on each side of the boundary.
+/** A known stretch with no speech. Unknown time stays null so playback keeps waiting. */
+export function knownQuietUntil(time, { lines, subtitles, spans, subtitlesComplete = false } = {}) {
+  lines ||= []; subtitles ||= []; spans ||= [];
+  const t = Number(time) || 0;
+  if (lines.some(line => line.start <= t + .04 && line.end > t)) return null;
+  const ordered = [...spans].sort((a, b) => a.start - b.start);
+  const current = ordered.find(span => span.start <= t && span.end > t);
+  if (current && !['silence', 'music'].includes(current.kind)) return null;
+  let end = t;
+  if (current) {
+    end = current.end;
+    for (const span of ordered) {
+      if (span.end <= end) continue;
+      if (span.start > end + .001 || !['silence', 'music'].includes(span.kind)) break;
+      end = span.end;
+    }
+  } else if (subtitlesComplete) {
+    const next = subtitles.filter(c => String(c.src || c.text || '').trim() && c.end > t).sort((a, b) => a.start - b.start)[0];
+    if (!next || next.start <= t + .04) return null;
+    end = next.start;
+    const conflict = ordered.find(span => span.end > t && span.start < end && !['silence', 'music'].includes(span.kind));
+    if (conflict) end = Math.min(end, Math.max(t, conflict.start));
+  }
+  for (const cue of [...lines, ...subtitles]) {
+    if (cue.end > t && cue.start < end) end = Math.max(t, cue.start);
+  }
+  return end > t + .001 ? end : null;
+}
+
+/** Subtitle absence is evidence only for an explicitly complete track. */
+export function subtitleLeadGap(cues, start, duration, { spans = [], subtitlesComplete = false } = {}) {
+  const from = Number(start) || 0;
+  if (!(duration > from)) return null;
+  const next = (cues || []).filter(c => String(c.src || c.text || '').trim() && c.end > from).sort((a, b) => a.start - b.start)[0];
+  if (next && next.start <= from + .001) return null;
+  let end = subtitlesComplete ? Math.min(next?.start ?? duration, duration)
+    : knownQuietUntil(from, { spans, subtitles: cues });
+  if (!(end > from)) return null;
+  const conflict = spans.filter(s => s.end > from && s.start < end && !['silence', 'music'].includes(s.kind)).sort((a, b) => a.start - b.start)[0];
+  if (conflict) end = Math.min(end, Math.max(from, conflict.start));
+  return end > from + .001 ? { kind: next ? 'gap' : 'rest', end } : null;
+}
+
 export function subtitleWindowEnd(cues, start, desiredEnd, duration) {
   let end = Math.min(desiredEnd, duration);
   for (;;) {
@@ -149,29 +192,20 @@ export function validateDubTranslation(raw, cues) {
   const rawLines = Array.isArray(json) ? json : (Array.isArray(json?.lines) ? json.lines : null);
   if (!rawLines) throw new Error('口播稿格式不正确');
   const lines = rawLines.map(l => ({
-    ids: Array.isArray(l?.ids) ? l.ids : (l?.id !== undefined ? [String(l.id)] : []),
+    ids: (Array.isArray(l?.ids) ? l.ids : (l?.id !== undefined ? [l.id] : [])).map(String),
     zh: typeof l?.zh === 'string' ? l.zh : (typeof l?.text === 'string' ? l.text : (typeof l?.content === 'string' ? l.content : ''))
   }));
-  const expected = cues.map(c => c.id);
+  const expected = cues.map(c => String(c.id));
   let actual = lines.flatMap(l => l.ids || []);
 
-  if (cues.length === 1 && lines.length === 1) {
-    lines[0].ids = [cues[0].id];
-    actual = [cues[0].id];
-  } else if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    if (lines.length === cues.length && lines.every(l => l.ids.length <= 1)) {
-      lines.forEach((l, idx) => { l.ids = [cues[idx].id]; });
-      actual = cues.map(c => c.id);
-    }
-  }
-
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('口播稿遗漏、重复或调换了原文');
-  const byId = new Map(cues.map(c => [c.id, c]));
+  const byId = new Map(cues.map(c => [String(c.id), c]));
   return lines.map(line => {
     if (!line.ids?.length || typeof line.zh !== 'string' || !line.zh.trim() || line.zh.length > 500) throw new Error('口播稿为空');
     const source = line.ids.map(id => byId.get(id));
     if (source.some(c => c.speaker !== source[0].speaker) || source.length > 1 && source.some(c => c.overlap)) throw new Error('口播稿合并了不同说话人');
-    if (source.at(-1).end - source[0].start > 30.1 || source.slice(1).some((c, i) => c.start - source[i].end > .35)) throw new Error('口播段过长或跨越了原声空档');
+    // Limits merges only: one long source cue is the input's shape, not a model error.
+    if (source.length > 1 && source.at(-1).end - source[0].start > 30.1 || source.slice(1).some((c, i) => c.start - source[i].end > .35)) throw new Error('口播段过长或跨越了原声空档');
     return { id: line.ids.join('+'), sourceIds: line.ids, start: source[0].start, end: source.at(-1).end,
       src: source.map(c => c.src).join(' '), zh: line.zh.trim(), speaker: source[0].speaker,
       overlap: source.some(c => c.overlap) };

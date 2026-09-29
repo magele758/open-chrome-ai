@@ -93,9 +93,10 @@ if (result.error && result.error.name !== 'AbortError') {
 }
 
 assert.equal(synthRequests.length, 3, 'All 3 cues must be synthesized');
+// Without a configured voice, a reference-less request fails in real Index-TTS
+// and the line goes silent. Every cue must carry the video's cloned voice.
 for (const req of synthRequests) {
   assert.equal(req.hasRef, true, `Cue "${req.text}" must have a voice reference`);
   assert.equal(req.refText, 'SPEAKER_SAMPLE_AUDIO', `Cue "${req.text}" must use the speaker's cloned audio`);
 }
-
-console.log('PASS: Speaker voice reference continuity preserved across all cues!');
+console.log('PASS: every cue has a cloned voice reference when no manual voice is configured');

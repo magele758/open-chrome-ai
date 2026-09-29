@@ -1,0 +1,972 @@
+{
+  "version": 1,
+  "generatedAt": "2026-09-28T08:26:59.593Z",
+  "mode": "progressive",
+  "description": "改生产代码前的同传基线。按侧栏默认 progressive 调用 prepareDubPlan：首窗约 12 秒，其后约 24 秒；incrementalContext 为已完成的前 12 句「src → zh」。有字幕时用 subtitleWindowEnd 对齐字幕边界。",
+  "heuristics": {
+    "approxTokens": "ceil((systemChars + userChars) / 2)，中文 prompt 的粗略 token",
+    "zhLength": "非中文按英文词数 × 1.6 生成等长占位中文；中文按原文字数",
+    "dubRate": "audioSeconds = 译文字数 / 3.8。progressive 下 fitDub 的 nextStart 取本句 end，不借用后句静音。fitDub 把 rate 钳在 1.12，rateOver112 统计钳制前 audioSeconds/available > 1.12 的比例。",
+    "fullSummary": "翻译请求的 context 非空、且不是「src → zh」历史行，才算带全文摘要",
+    "lookahead": "user JSON 的 after 缺失或为空，记 lookahead 为空"
+  },
+  "llmScores": {
+    "skipped": true,
+    "reason": "未配置文本模型。设置 INTERPRET_EVAL_TEXT_BASE_URL、INTERPRET_EVAL_TEXT_MODEL、INTERPRET_EVAL_TEXT_API_KEY（或同名 PAGELENS_TEXT_*）后才会请求评分。"
+  },
+  "totals": {
+    "requests": 8,
+    "translateRequests": 8,
+    "summaryRequests": 0,
+    "avgPromptChars": 1205.6,
+    "avgSystemChars": 434,
+    "avgUserChars": 771.6,
+    "avgApproxTokens": 603.1,
+    "avgContextChars": 89.1,
+    "avgHistoryCount": 1.88,
+    "cueCount": 38,
+    "lineCount": 38,
+    "mergeRate": 0,
+    "lookaheadEmpty": true,
+    "hasFullSummary": false,
+    "mergeForbidden": true,
+    "firstBatchCurrentSeconds": {
+      "auto-captions": 11.2,
+      "human-captions": 11.2,
+      "asr-only": 10.7,
+      "multi-speaker": 11.3
+    },
+    "rateOver112Ratio": 0.1842
+  },
+  "fixtures": [
+    {
+      "id": "auto-captions",
+      "label": "自动字幕（少标点碎片）",
+      "kind": "subtitle",
+      "windows": [
+        {
+          "start": 0,
+          "end": 12,
+          "cues": 6,
+          "lines": 6
+        },
+        {
+          "start": 12,
+          "end": 36,
+          "cues": 8,
+          "lines": 8
+        }
+      ],
+      "cueCount": 14,
+      "lineCount": 14,
+      "mergeRate": 0,
+      "mergedLineCount": 0,
+      "speakers": [
+        "A"
+      ],
+      "overlapLineCount": 0,
+      "requests": 2,
+      "translateRequests": 2,
+      "summaryRequests": 0,
+      "avgPromptChars": 1469.5,
+      "avgContextChars": 94.5,
+      "avgHistoryCount": 3,
+      "lookaheadEmpty": true,
+      "hasFullSummary": false,
+      "mergeForbidden": true,
+      "firstBatchCurrentCount": 6,
+      "firstBatchCurrentSeconds": 11.2,
+      "rateOver112": 2,
+      "rateOver112Ratio": 0.1429,
+      "requestsDetail": [
+        {
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "translate",
+          "systemChars": 434,
+          "userChars": 743,
+          "promptChars": 1177,
+          "approxTokens": 589,
+          "hasFullSummary": false,
+          "historyCount": 0,
+          "beforeCount": 0,
+          "afterCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 6,
+          "currentSpanSeconds": 11.2,
+          "mergeForbidden": true,
+          "contextChars": 0
+        },
+        {
+          "windowStart": 12,
+          "windowEnd": 36,
+          "kind": "translate",
+          "systemChars": 434,
+          "userChars": 1328,
+          "promptChars": 1762,
+          "approxTokens": 881,
+          "hasFullSummary": false,
+          "historyCount": 6,
+          "beforeCount": 0,
+          "afterCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 8,
+          "currentSpanSeconds": 21.2,
+          "mergeForbidden": true,
+          "contextChars": 189
+        }
+      ],
+      "lines": [
+        {
+          "id": "a0",
+          "start": 0.4,
+          "end": 2.2,
+          "speaker": "A",
+          "overlap": false,
+          "src": "so what I want to do today",
+          "zh": "这是占位中文译文这是占",
+          "sourceIds": [
+            "a0"
+          ],
+          "audioSeconds": 2.895,
+          "fitRate": 1.12,
+          "unconstrainedRate": 1.6082,
+          "over112": true
+        },
+        {
+          "id": "a1",
+          "start": 2.2,
+          "end": 4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "is explain",
+          "zh": "这是占",
+          "sourceIds": [
+            "a1"
+          ],
+          "audioSeconds": 0.789,
+          "fitRate": 1,
+          "unconstrainedRate": 0.4386,
+          "over112": false
+        },
+        {
+          "id": "a2",
+          "start": 4,
+          "end": 6.2,
+          "speaker": "A",
+          "overlap": false,
+          "src": "how neural networks learn",
+          "zh": "这是占位中文",
+          "sourceIds": [
+            "a2"
+          ],
+          "audioSeconds": 1.579,
+          "fitRate": 1,
+          "unconstrainedRate": 0.7177,
+          "over112": false
+        },
+        {
+          "id": "a3",
+          "start": 6.2,
+          "end": 7.6,
+          "speaker": "A",
+          "overlap": false,
+          "src": "from messy product data",
+          "zh": "这是占位中文",
+          "sourceIds": [
+            "a3"
+          ],
+          "audioSeconds": 1.579,
+          "fitRate": 1.12,
+          "unconstrainedRate": 1.1278,
+          "over112": true
+        },
+        {
+          "id": "a4",
+          "start": 7.6,
+          "end": 9.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "and why that changes",
+          "zh": "这是占位中文",
+          "sourceIds": [
+            "a4"
+          ],
+          "audioSeconds": 1.579,
+          "fitRate": 1,
+          "unconstrainedRate": 0.8772,
+          "over112": false
+        },
+        {
+          "id": "a5",
+          "start": 9.4,
+          "end": 11.6,
+          "speaker": "A",
+          "overlap": false,
+          "src": "the way we ship models",
+          "zh": "这是占位中文译文",
+          "sourceIds": [
+            "a5"
+          ],
+          "audioSeconds": 2.105,
+          "fitRate": 1,
+          "unconstrainedRate": 0.9569,
+          "over112": false
+        },
+        {
+          "id": "a6",
+          "start": 12.2,
+          "end": 14.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "the first idea is",
+          "zh": "这是占位中文",
+          "sourceIds": [
+            "a6"
+          ],
+          "audioSeconds": 1.579,
+          "fitRate": 1,
+          "unconstrainedRate": 0.7177,
+          "over112": false
+        },
+        {
+          "id": "a7",
+          "start": 14.4,
+          "end": 16.8,
+          "speaker": "A",
+          "overlap": false,
+          "src": "backpropagation which is",
+          "zh": "这是占位中",
+          "sourceIds": [
+            "a7"
+          ],
+          "audioSeconds": 1.316,
+          "fitRate": 1,
+          "unconstrainedRate": 0.5482,
+          "over112": false
+        },
+        {
+          "id": "a8",
+          "start": 16.8,
+          "end": 19.2,
+          "speaker": "A",
+          "overlap": false,
+          "src": "just the chain rule",
+          "zh": "这是占位中文",
+          "sourceIds": [
+            "a8"
+          ],
+          "audioSeconds": 1.579,
+          "fitRate": 1,
+          "unconstrainedRate": 0.6579,
+          "over112": false
+        },
+        {
+          "id": "a9",
+          "start": 19.2,
+          "end": 21.6,
+          "speaker": "A",
+          "overlap": false,
+          "src": "applied many times",
+          "zh": "这是占位中",
+          "sourceIds": [
+            "a9"
+          ],
+          "audioSeconds": 1.316,
+          "fitRate": 1,
+          "unconstrainedRate": 0.5482,
+          "over112": false
+        },
+        {
+          "id": "a10",
+          "start": 21.6,
+          "end": 24.2,
+          "speaker": "A",
+          "overlap": false,
+          "src": "the second idea is that scale",
+          "zh": "这是占位中文译文这是",
+          "sourceIds": [
+            "a10"
+          ],
+          "audioSeconds": 2.632,
+          "fitRate": 1.0121457489878551,
+          "unconstrainedRate": 1.0121,
+          "over112": false
+        },
+        {
+          "id": "a11",
+          "start": 24.2,
+          "end": 26.8,
+          "speaker": "A",
+          "overlap": false,
+          "src": "changes what the model can represent",
+          "zh": "这是占位中文译文这是",
+          "sourceIds": [
+            "a11"
+          ],
+          "audioSeconds": 2.632,
+          "fitRate": 1.0121457489878538,
+          "unconstrainedRate": 1.0121,
+          "over112": false
+        },
+        {
+          "id": "a12",
+          "start": 27.2,
+          "end": 30,
+          "speaker": "A",
+          "overlap": false,
+          "src": "thanks for listening",
+          "zh": "这是占位中",
+          "sourceIds": [
+            "a12"
+          ],
+          "audioSeconds": 1.316,
+          "fitRate": 1,
+          "unconstrainedRate": 0.4699,
+          "over112": false
+        },
+        {
+          "id": "a13",
+          "start": 30,
+          "end": 33.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "see you next week",
+          "zh": "这是占位中文",
+          "sourceIds": [
+            "a13"
+          ],
+          "audioSeconds": 1.579,
+          "fitRate": 1,
+          "unconstrainedRate": 0.4644,
+          "over112": false
+        }
+      ]
+    },
+    {
+      "id": "human-captions",
+      "label": "人工字幕（完整句）",
+      "kind": "subtitle",
+      "windows": [
+        {
+          "start": 0,
+          "end": 12,
+          "cues": 2,
+          "lines": 2
+        },
+        {
+          "start": 12,
+          "end": 36,
+          "cues": 4,
+          "lines": 4
+        }
+      ],
+      "cueCount": 6,
+      "lineCount": 6,
+      "mergeRate": 0,
+      "mergedLineCount": 0,
+      "speakers": [
+        "A"
+      ],
+      "overlapLineCount": 0,
+      "requests": 2,
+      "translateRequests": 2,
+      "summaryRequests": 0,
+      "avgPromptChars": 1118.5,
+      "avgContextChars": 98,
+      "avgHistoryCount": 1,
+      "lookaheadEmpty": true,
+      "hasFullSummary": false,
+      "mergeForbidden": true,
+      "firstBatchCurrentCount": 2,
+      "firstBatchCurrentSeconds": 11.2,
+      "rateOver112": 2,
+      "rateOver112Ratio": 0.3333,
+      "requestsDetail": [
+        {
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "translate",
+          "systemChars": 434,
+          "userChars": 373,
+          "promptChars": 807,
+          "approxTokens": 404,
+          "hasFullSummary": false,
+          "historyCount": 0,
+          "beforeCount": 0,
+          "afterCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 2,
+          "currentSpanSeconds": 11.2,
+          "mergeForbidden": true,
+          "contextChars": 0
+        },
+        {
+          "windowStart": 12,
+          "windowEnd": 36,
+          "kind": "translate",
+          "systemChars": 434,
+          "userChars": 996,
+          "promptChars": 1430,
+          "approxTokens": 715,
+          "hasFullSummary": false,
+          "historyCount": 2,
+          "beforeCount": 0,
+          "afterCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 4,
+          "currentSpanSeconds": 23.3,
+          "mergeForbidden": true,
+          "contextChars": 196
+        }
+      ],
+      "lines": [
+        {
+          "id": "h0",
+          "start": 0.4,
+          "end": 6.2,
+          "speaker": "A",
+          "overlap": false,
+          "src": "Welcome everyone. Today we will discuss how neural networks learn from data.",
+          "zh": "这是占位中文译文这是占位中文译文这是占",
+          "sourceIds": [
+            "h0"
+          ],
+          "audioSeconds": 5,
+          "fitRate": 1,
+          "unconstrainedRate": 0.8621,
+          "over112": false
+        },
+        {
+          "id": "h1",
+          "start": 6.5,
+          "end": 11.6,
+          "speaker": "A",
+          "overlap": false,
+          "src": "I will keep each example concrete and tie it back to a product decision.",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中文",
+          "sourceIds": [
+            "h1"
+          ],
+          "audioSeconds": 5.789,
+          "fitRate": 1.12,
+          "unconstrainedRate": 1.1352,
+          "over112": true
+        },
+        {
+          "id": "h2",
+          "start": 12.3,
+          "end": 18.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "Backpropagation is the chain rule applied repeatedly so we can train deep models.",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中",
+          "sourceIds": [
+            "h2"
+          ],
+          "audioSeconds": 5.526,
+          "fitRate": 1,
+          "unconstrainedRate": 0.906,
+          "over112": false
+        },
+        {
+          "id": "h3",
+          "start": 18.8,
+          "end": 25.2,
+          "speaker": "A",
+          "overlap": false,
+          "src": "Scale changes what a model can represent, but it does not replace a clear objective.",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中文译文",
+          "sourceIds": [
+            "h3"
+          ],
+          "audioSeconds": 6.316,
+          "fitRate": 1,
+          "unconstrainedRate": 0.9868,
+          "over112": false
+        },
+        {
+          "id": "h4",
+          "start": 25.6,
+          "end": 31.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "When the objective is wrong, a larger model simply makes the same mistake faster.",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中文",
+          "sourceIds": [
+            "h4"
+          ],
+          "audioSeconds": 5.789,
+          "fitRate": 1,
+          "unconstrainedRate": 0.9982,
+          "over112": false
+        },
+        {
+          "id": "h5",
+          "start": 31.8,
+          "end": 35.6,
+          "speaker": "A",
+          "overlap": false,
+          "src": "Thank you for listening, and I hope this framing is useful next week.",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中",
+          "sourceIds": [
+            "h5"
+          ],
+          "audioSeconds": 5.526,
+          "fitRate": 1.12,
+          "unconstrainedRate": 1.4543,
+          "over112": true
+        }
+      ]
+    },
+    {
+      "id": "asr-only",
+      "label": "只有 ASR 片段",
+      "kind": "asr",
+      "windows": [
+        {
+          "start": 0,
+          "end": 12,
+          "cues": 4,
+          "lines": 4
+        },
+        {
+          "start": 12,
+          "end": 36,
+          "cues": 6,
+          "lines": 6
+        }
+      ],
+      "cueCount": 10,
+      "lineCount": 10,
+      "mergeRate": 0,
+      "mergedLineCount": 0,
+      "speakers": [
+        "A"
+      ],
+      "overlapLineCount": 0,
+      "requests": 2,
+      "translateRequests": 2,
+      "summaryRequests": 0,
+      "avgPromptChars": 1147,
+      "avgContextChars": 78,
+      "avgHistoryCount": 2,
+      "lookaheadEmpty": true,
+      "hasFullSummary": false,
+      "mergeForbidden": true,
+      "firstBatchCurrentCount": 4,
+      "firstBatchCurrentSeconds": 10.7,
+      "rateOver112": 1,
+      "rateOver112Ratio": 0.1,
+      "requestsDetail": [
+        {
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "translate",
+          "systemChars": 434,
+          "userChars": 467,
+          "promptChars": 901,
+          "approxTokens": 451,
+          "hasFullSummary": false,
+          "historyCount": 0,
+          "beforeCount": 0,
+          "afterCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 4,
+          "currentSpanSeconds": 10.7,
+          "mergeForbidden": true,
+          "contextChars": 0
+        },
+        {
+          "windowStart": 12,
+          "windowEnd": 36,
+          "kind": "translate",
+          "systemChars": 434,
+          "userChars": 959,
+          "promptChars": 1393,
+          "approxTokens": 697,
+          "hasFullSummary": false,
+          "historyCount": 4,
+          "beforeCount": 0,
+          "afterCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 6,
+          "currentSpanSeconds": 21.6,
+          "mergeForbidden": true,
+          "contextChars": 156
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:0",
+          "start": 0.3,
+          "end": 2.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "so uh what I want to do",
+          "zh": "这是占位中文译文这是占",
+          "sourceIds": [
+            "0:0"
+          ],
+          "audioSeconds": 2.895,
+          "fitRate": 1.12,
+          "unconstrainedRate": 1.3784,
+          "over112": true
+        },
+        {
+          "id": "0:1",
+          "start": 2.5,
+          "end": 4.6,
+          "speaker": "A",
+          "overlap": false,
+          "src": "today is talk about",
+          "zh": "这是占位中文",
+          "sourceIds": [
+            "0:1"
+          ],
+          "audioSeconds": 1.579,
+          "fitRate": 1,
+          "unconstrainedRate": 0.7519,
+          "over112": false
+        },
+        {
+          "id": "0:2",
+          "start": 4.7,
+          "end": 7.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "how neural networks actually learn",
+          "zh": "这是占位中文译文",
+          "sourceIds": [
+            "0:2"
+          ],
+          "audioSeconds": 2.105,
+          "fitRate": 1,
+          "unconstrainedRate": 0.7797,
+          "over112": false
+        },
+        {
+          "id": "0:3",
+          "start": 7.5,
+          "end": 11,
+          "speaker": "A",
+          "overlap": false,
+          "src": "from data and why that matters",
+          "zh": "这是占位中文译文这是",
+          "sourceIds": [
+            "0:3"
+          ],
+          "audioSeconds": 2.632,
+          "fitRate": 1,
+          "unconstrainedRate": 0.7519,
+          "over112": false
+        },
+        {
+          "id": "0:0",
+          "start": 12.4,
+          "end": 15.2,
+          "speaker": "A",
+          "overlap": false,
+          "src": "the first idea is backprop",
+          "zh": "这是占位中文译文",
+          "sourceIds": [
+            "0:0"
+          ],
+          "audioSeconds": 2.105,
+          "fitRate": 1,
+          "unconstrainedRate": 0.7519,
+          "over112": false
+        },
+        {
+          "id": "0:1",
+          "start": 15.3,
+          "end": 18.6,
+          "speaker": "A",
+          "overlap": false,
+          "src": "which is just the chain rule",
+          "zh": "这是占位中文译文这是",
+          "sourceIds": [
+            "0:1"
+          ],
+          "audioSeconds": 2.632,
+          "fitRate": 1,
+          "unconstrainedRate": 0.7974,
+          "over112": false
+        },
+        {
+          "id": "0:2",
+          "start": 18.8,
+          "end": 22.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "applied many times in a row",
+          "zh": "这是占位中文译文这是",
+          "sourceIds": [
+            "0:2"
+          ],
+          "audioSeconds": 2.632,
+          "fitRate": 1,
+          "unconstrainedRate": 0.731,
+          "over112": false
+        },
+        {
+          "id": "0:3",
+          "start": 22.6,
+          "end": 26.8,
+          "speaker": "A",
+          "overlap": false,
+          "src": "and the second idea is scale",
+          "zh": "这是占位中文译文这是",
+          "sourceIds": [
+            "0:3"
+          ],
+          "audioSeconds": 2.632,
+          "fitRate": 1,
+          "unconstrainedRate": 0.6266,
+          "over112": false
+        },
+        {
+          "id": "0:4",
+          "start": 27,
+          "end": 31.2,
+          "speaker": "A",
+          "overlap": false,
+          "src": "changes what the model can represent",
+          "zh": "这是占位中文译文这是",
+          "sourceIds": [
+            "0:4"
+          ],
+          "audioSeconds": 2.632,
+          "fitRate": 1,
+          "unconstrainedRate": 0.6266,
+          "over112": false
+        },
+        {
+          "id": "0:5",
+          "start": 31.5,
+          "end": 34,
+          "speaker": "A",
+          "overlap": false,
+          "src": "thanks for listening",
+          "zh": "这是占位中",
+          "sourceIds": [
+            "0:5"
+          ],
+          "audioSeconds": 1.316,
+          "fitRate": 1,
+          "unconstrainedRate": 0.5263,
+          "over112": false
+        }
+      ]
+    },
+    {
+      "id": "multi-speaker",
+      "label": "多人对话（不同 speaker / overlap）",
+      "kind": "asr",
+      "windows": [
+        {
+          "start": 0,
+          "end": 12,
+          "cues": 3,
+          "lines": 3
+        },
+        {
+          "start": 12,
+          "end": 32,
+          "cues": 5,
+          "lines": 5
+        }
+      ],
+      "cueCount": 8,
+      "lineCount": 8,
+      "mergeRate": 0,
+      "mergedLineCount": 0,
+      "speakers": [
+        "A",
+        "B"
+      ],
+      "overlapLineCount": 1,
+      "requests": 2,
+      "translateRequests": 2,
+      "summaryRequests": 0,
+      "avgPromptChars": 1087.5,
+      "avgContextChars": 86,
+      "avgHistoryCount": 1.5,
+      "lookaheadEmpty": true,
+      "hasFullSummary": false,
+      "mergeForbidden": true,
+      "firstBatchCurrentCount": 3,
+      "firstBatchCurrentSeconds": 11.3,
+      "rateOver112": 2,
+      "rateOver112Ratio": 0.25,
+      "requestsDetail": [
+        {
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "translate",
+          "systemChars": 434,
+          "userChars": 402,
+          "promptChars": 836,
+          "approxTokens": 418,
+          "hasFullSummary": false,
+          "historyCount": 0,
+          "beforeCount": 0,
+          "afterCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 3,
+          "currentSpanSeconds": 11.3,
+          "mergeForbidden": true,
+          "contextChars": 0
+        },
+        {
+          "windowStart": 12,
+          "windowEnd": 32,
+          "kind": "translate",
+          "systemChars": 434,
+          "userChars": 905,
+          "promptChars": 1339,
+          "approxTokens": 670,
+          "hasFullSummary": false,
+          "historyCount": 3,
+          "beforeCount": 0,
+          "afterCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 5,
+          "currentSpanSeconds": 19.2,
+          "mergeForbidden": true,
+          "contextChars": 172
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:0",
+          "start": 0.3,
+          "end": 3.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "I think we should ship the smaller model first",
+          "zh": "这是占位中文译文这是占位中文",
+          "sourceIds": [
+            "0:0"
+          ],
+          "audioSeconds": 3.684,
+          "fitRate": 1.12,
+          "unconstrainedRate": 1.1885,
+          "over112": true
+        },
+        {
+          "id": "0:1",
+          "start": 3.6,
+          "end": 7.3,
+          "speaker": "A",
+          "overlap": false,
+          "src": "and keep the larger one in the lab",
+          "zh": "这是占位中文译文这是占位中",
+          "sourceIds": [
+            "0:1"
+          ],
+          "audioSeconds": 3.421,
+          "fitRate": 1,
+          "unconstrainedRate": 0.9246,
+          "over112": false
+        },
+        {
+          "id": "1:0",
+          "start": 8.2,
+          "end": 11.6,
+          "speaker": "B",
+          "overlap": false,
+          "src": "the larger model already wins the benchmark",
+          "zh": "这是占位中文译文这是占",
+          "sourceIds": [
+            "1:0"
+          ],
+          "audioSeconds": 2.895,
+          "fitRate": 1,
+          "unconstrainedRate": 0.8514,
+          "over112": false
+        },
+        {
+          "id": "0:0",
+          "start": 12.2,
+          "end": 14.3,
+          "speaker": "B",
+          "overlap": false,
+          "src": "by a wide margin on the public set",
+          "zh": "这是占位中文译文这是占位中",
+          "sourceIds": [
+            "0:0"
+          ],
+          "audioSeconds": 3.421,
+          "fitRate": 1.12,
+          "unconstrainedRate": 1.6291,
+          "over112": true
+        },
+        {
+          "id": "1:0",
+          "start": 14.6,
+          "end": 16.8,
+          "speaker": "A",
+          "overlap": true,
+          "src": "wait that benchmark is contaminated",
+          "zh": "这是占位中文译文",
+          "sourceIds": [
+            "1:0"
+          ],
+          "audioSeconds": 2.105,
+          "fitRate": 1,
+          "unconstrainedRate": 0.9569,
+          "over112": false
+        },
+        {
+          "id": "2:0",
+          "start": 17.8,
+          "end": 21.6,
+          "speaker": "B",
+          "overlap": false,
+          "src": "even then the gap is still large",
+          "zh": "这是占位中文译文这是占",
+          "sourceIds": [
+            "2:0"
+          ],
+          "audioSeconds": 2.895,
+          "fitRate": 1,
+          "unconstrainedRate": 0.7618,
+          "over112": false
+        },
+        {
+          "id": "2:1",
+          "start": 21.8,
+          "end": 25.6,
+          "speaker": "B",
+          "overlap": false,
+          "src": "we should not hide the result",
+          "zh": "这是占位中文译文这是",
+          "sourceIds": [
+            "2:1"
+          ],
+          "audioSeconds": 2.632,
+          "fitRate": 1,
+          "unconstrainedRate": 0.6925,
+          "over112": false
+        },
+        {
+          "id": "3:0",
+          "start": 26.2,
+          "end": 31.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "then publish the caveat in the paper",
+          "zh": "这是占位中文译文这是占",
+          "sourceIds": [
+            "3:0"
+          ],
+          "audioSeconds": 2.895,
+          "fitRate": 1,
+          "unconstrainedRate": 0.5567,
+          "over112": false
+        }
+      ]
+    }
+  ]
+}

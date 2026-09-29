@@ -1,0 +1,17 @@
+{
+  "id": "human-captions",
+  "label": "人工字幕（完整句）",
+  "kind": "subtitle",
+  "duration": 36,
+  "spans": [
+    { "start": 0, "end": 36, "kind": "speech", "speaker": "A" }
+  ],
+  "subtitles": [
+    { "id": "h0", "start": 0.4, "end": 6.2, "src": "Welcome everyone. Today we will discuss how neural networks learn from data." },
+    { "id": "h1", "start": 6.5, "end": 11.6, "src": "I will keep each example concrete and tie it back to a product decision." },
+    { "id": "h2", "start": 12.3, "end": 18.4, "src": "Backpropagation is the chain rule applied repeatedly so we can train deep models." },
+    { "id": "h3", "start": 18.8, "end": 25.2, "src": "Scale changes what a model can represent, but it does not replace a clear objective." },
+    { "id": "h4", "start": 25.6, "end": 31.4, "src": "When the objective is wrong, a larger model simply makes the same mistake faster." },
+    { "id": "h5", "start": 31.8, "end": 35.6, "src": "Thank you for listening, and I hope this framing is useful next week." }
+  ]
+}

@@ -1,0 +1,736 @@
+{
+  "live": false,
+  "runs": [
+    {
+      "fixture": "auto-captions",
+      "mode": "cue",
+      "translationKind": "placeholder",
+      "audioTiming": "estimated-not-measured",
+      "requests": [
+        {
+          "current": [
+            "a0",
+            "a1",
+            "a2",
+            "a3",
+            "a4",
+            "a5"
+          ],
+          "history": 0,
+          "lookahead": 0,
+          "promptChars": 1177
+        },
+        {
+          "current": [
+            "a6",
+            "a7",
+            "a8",
+            "a9",
+            "a10",
+            "a11",
+            "a12",
+            "a13"
+          ],
+          "history": 0,
+          "lookahead": 0,
+          "promptChars": 1752
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:dub-v2:4a4035bdc9dc3df359c9cf6bfae6307a23cb69ce44cf43cdbe7962d36259dce1:a0",
+          "src": "so what I want to do today",
+          "zh": "占位译文。",
+          "start": 0.4,
+          "end": 2.2,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:4a4035bdc9dc3df359c9cf6bfae6307a23cb69ce44cf43cdbe7962d36259dce1:a1",
+          "src": "is explain",
+          "zh": "占位译文。",
+          "start": 2.2,
+          "end": 4,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:4a4035bdc9dc3df359c9cf6bfae6307a23cb69ce44cf43cdbe7962d36259dce1:a2",
+          "src": "how neural networks learn",
+          "zh": "占位译文。",
+          "start": 4,
+          "end": 6.2,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:4a4035bdc9dc3df359c9cf6bfae6307a23cb69ce44cf43cdbe7962d36259dce1:a3",
+          "src": "from messy product data",
+          "zh": "占位译文。",
+          "start": 6.2,
+          "end": 7.6,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:4a4035bdc9dc3df359c9cf6bfae6307a23cb69ce44cf43cdbe7962d36259dce1:a4",
+          "src": "and why that changes",
+          "zh": "占位译文。",
+          "start": 7.6,
+          "end": 9.4,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:4a4035bdc9dc3df359c9cf6bfae6307a23cb69ce44cf43cdbe7962d36259dce1:a5",
+          "src": "the way we ship models",
+          "zh": "占位译文。",
+          "start": 9.4,
+          "end": 11.6,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:d3e21ef446e49c3e3bcba6c721d8daa2c2c556834fd8058bef3b1fb0a8cf0bad:a6",
+          "src": "the first idea is",
+          "zh": "占位译文。",
+          "start": 12.2,
+          "end": 14.4,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:d3e21ef446e49c3e3bcba6c721d8daa2c2c556834fd8058bef3b1fb0a8cf0bad:a7",
+          "src": "backpropagation which is",
+          "zh": "占位译文。",
+          "start": 14.4,
+          "end": 16.8,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:d3e21ef446e49c3e3bcba6c721d8daa2c2c556834fd8058bef3b1fb0a8cf0bad:a8",
+          "src": "just the chain rule",
+          "zh": "占位译文。",
+          "start": 16.8,
+          "end": 19.2,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:d3e21ef446e49c3e3bcba6c721d8daa2c2c556834fd8058bef3b1fb0a8cf0bad:a9",
+          "src": "applied many times",
+          "zh": "占位译文。",
+          "start": 19.2,
+          "end": 21.6,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:d3e21ef446e49c3e3bcba6c721d8daa2c2c556834fd8058bef3b1fb0a8cf0bad:a10",
+          "src": "the second idea is that scale",
+          "zh": "占位译文。",
+          "start": 21.6,
+          "end": 24.2,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:d3e21ef446e49c3e3bcba6c721d8daa2c2c556834fd8058bef3b1fb0a8cf0bad:a11",
+          "src": "changes what the model can represent",
+          "zh": "占位译文。",
+          "start": 24.2,
+          "end": 26.8,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:d3e21ef446e49c3e3bcba6c721d8daa2c2c556834fd8058bef3b1fb0a8cf0bad:a12",
+          "src": "thanks for listening",
+          "zh": "占位译文。",
+          "start": 27.2,
+          "end": 30,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:d3e21ef446e49c3e3bcba6c721d8daa2c2c556834fd8058bef3b1fb0a8cf0bad:a13",
+          "src": "see you next week",
+          "zh": "占位译文。",
+          "start": 30,
+          "end": 33.4,
+          "speaker": "A"
+        }
+      ],
+      "generated": 14
+    },
+    {
+      "fixture": "auto-captions",
+      "mode": "sentence",
+      "translationKind": "placeholder",
+      "audioTiming": "estimated-not-measured",
+      "requests": [
+        {
+          "current": [
+            "a0+a1+a2+a3+a4+a5"
+          ],
+          "history": 0,
+          "lookahead": 2,
+          "promptChars": 1374
+        },
+        {
+          "current": [
+            "a6+a7+a8+a9+a10"
+          ],
+          "history": 1,
+          "lookahead": 2,
+          "promptChars": 1387
+        },
+        {
+          "current": [
+            "a11",
+            "a12+a13"
+          ],
+          "history": 2,
+          "lookahead": 0,
+          "promptChars": 1477
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:dub-v2:4a4035bdc9dc3df359c9cf6bfae6307a23cb69ce44cf43cdbe7962d36259dce1:a0+a1+a2+a3+a4+a5",
+          "src": "so what I want to do today is explain how neural networks learn from messy product data and why that changes the way we ship models",
+          "zh": "占位译文。",
+          "start": 0.4,
+          "end": 11.6,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:d3807cba39fa8f8f96b80481662dff8473def16fdaa6ba3de568da6cdc2f850c:a6+a7+a8+a9+a10",
+          "src": "the first idea is backpropagation which is just the chain rule applied many times the second idea is that scale",
+          "zh": "占位译文。",
+          "start": 12.2,
+          "end": 24.2,
+          "speaker": "A"
+        },
+        {
+          "id": "24.2:dub-v2:4b7e7a0a784a82740c6f45e8ddf2a56bd99b1b339327acb053e2763102fe63ed:a11",
+          "src": "changes what the model can represent",
+          "zh": "占位译文。",
+          "start": 24.2,
+          "end": 26.8,
+          "speaker": "A"
+        },
+        {
+          "id": "24.2:dub-v2:4b7e7a0a784a82740c6f45e8ddf2a56bd99b1b339327acb053e2763102fe63ed:a12+a13",
+          "src": "thanks for listening see you next week",
+          "zh": "占位译文。",
+          "start": 27.2,
+          "end": 33.4,
+          "speaker": "A"
+        }
+      ],
+      "generated": 4
+    },
+    {
+      "fixture": "human-captions",
+      "mode": "cue",
+      "translationKind": "placeholder",
+      "audioTiming": "estimated-not-measured",
+      "requests": [
+        {
+          "current": [
+            "h0",
+            "h1"
+          ],
+          "history": 0,
+          "lookahead": 0,
+          "promptChars": 807
+        },
+        {
+          "current": [
+            "h2",
+            "h3",
+            "h4",
+            "h5"
+          ],
+          "history": 0,
+          "lookahead": 0,
+          "promptChars": 1399
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:dub-v2:84567b9cdc0a5dd5e67c6864f00234a3d4f3fdc7ecc9f8c5ff17e3e7f7c0f946:h0",
+          "src": "Welcome everyone. Today we will discuss how neural networks learn from data.",
+          "zh": "占位译文。",
+          "start": 0.4,
+          "end": 6.2,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:84567b9cdc0a5dd5e67c6864f00234a3d4f3fdc7ecc9f8c5ff17e3e7f7c0f946:h1",
+          "src": "I will keep each example concrete and tie it back to a product decision.",
+          "zh": "占位译文。",
+          "start": 6.5,
+          "end": 11.6,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:aed977181e06568e3f1ef04ae061eae7611507221238b43846f3a6fab610c972:h2",
+          "src": "Backpropagation is the chain rule applied repeatedly so we can train deep models.",
+          "zh": "占位译文。",
+          "start": 12.3,
+          "end": 18.4,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:aed977181e06568e3f1ef04ae061eae7611507221238b43846f3a6fab610c972:h3",
+          "src": "Scale changes what a model can represent, but it does not replace a clear objective.",
+          "zh": "占位译文。",
+          "start": 18.8,
+          "end": 25.2,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:aed977181e06568e3f1ef04ae061eae7611507221238b43846f3a6fab610c972:h4",
+          "src": "When the objective is wrong, a larger model simply makes the same mistake faster.",
+          "zh": "占位译文。",
+          "start": 25.6,
+          "end": 31.4,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:aed977181e06568e3f1ef04ae061eae7611507221238b43846f3a6fab610c972:h5",
+          "src": "Thank you for listening, and I hope this framing is useful next week.",
+          "zh": "占位译文。",
+          "start": 31.8,
+          "end": 35.6,
+          "speaker": "A"
+        }
+      ],
+      "generated": 6
+    },
+    {
+      "fixture": "human-captions",
+      "mode": "sentence",
+      "translationKind": "placeholder",
+      "audioTiming": "estimated-not-measured",
+      "requests": [
+        {
+          "current": [
+            "h0",
+            "h1"
+          ],
+          "history": 0,
+          "lookahead": 4,
+          "promptChars": 1607
+        },
+        {
+          "current": [
+            "h2",
+            "h3"
+          ],
+          "history": 2,
+          "lookahead": 2,
+          "promptChars": 1683
+        },
+        {
+          "current": [
+            "h4",
+            "h5"
+          ],
+          "history": 4,
+          "lookahead": 0,
+          "promptChars": 1706
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:dub-v2:84567b9cdc0a5dd5e67c6864f00234a3d4f3fdc7ecc9f8c5ff17e3e7f7c0f946:h0",
+          "src": "Welcome everyone. Today we will discuss how neural networks learn from data.",
+          "zh": "占位译文。",
+          "start": 0.4,
+          "end": 6.2,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:84567b9cdc0a5dd5e67c6864f00234a3d4f3fdc7ecc9f8c5ff17e3e7f7c0f946:h1",
+          "src": "I will keep each example concrete and tie it back to a product decision.",
+          "zh": "占位译文。",
+          "start": 6.5,
+          "end": 11.6,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:f0f3328ad8717a5068d7c63734385f5f673725a374b152f673f6a35ef52104e7:h2",
+          "src": "Backpropagation is the chain rule applied repeatedly so we can train deep models.",
+          "zh": "占位译文。",
+          "start": 12.3,
+          "end": 18.4,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:f0f3328ad8717a5068d7c63734385f5f673725a374b152f673f6a35ef52104e7:h3",
+          "src": "Scale changes what a model can represent, but it does not replace a clear objective.",
+          "zh": "占位译文。",
+          "start": 18.8,
+          "end": 25.2,
+          "speaker": "A"
+        },
+        {
+          "id": "25.2:dub-v2:38e9c9d9ac15b0e44bd22e65bbb2f5c5366d737c980122600e2f1d27b7b35bba:h4",
+          "src": "When the objective is wrong, a larger model simply makes the same mistake faster.",
+          "zh": "占位译文。",
+          "start": 25.6,
+          "end": 31.4,
+          "speaker": "A"
+        },
+        {
+          "id": "25.2:dub-v2:38e9c9d9ac15b0e44bd22e65bbb2f5c5366d737c980122600e2f1d27b7b35bba:h5",
+          "src": "Thank you for listening, and I hope this framing is useful next week.",
+          "zh": "占位译文。",
+          "start": 31.8,
+          "end": 35.6,
+          "speaker": "A"
+        }
+      ],
+      "generated": 6
+    },
+    {
+      "fixture": "asr-only",
+      "mode": "cue",
+      "translationKind": "placeholder",
+      "audioTiming": "estimated-not-measured",
+      "requests": [
+        {
+          "current": [
+            "0:0",
+            "0:1",
+            "0:2",
+            "0:3"
+          ],
+          "history": 0,
+          "lookahead": 0,
+          "promptChars": 901
+        },
+        {
+          "current": [
+            "0:0",
+            "0:1",
+            "0:2",
+            "0:3",
+            "0:4",
+            "0:5"
+          ],
+          "history": 0,
+          "lookahead": 0,
+          "promptChars": 1378
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:0",
+          "src": "so uh what I want to do",
+          "zh": "占位译文。",
+          "start": 0.3,
+          "end": 2.4,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:1",
+          "src": "today is talk about",
+          "zh": "占位译文。",
+          "start": 2.5,
+          "end": 4.6,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:2",
+          "src": "how neural networks actually learn",
+          "zh": "占位译文。",
+          "start": 4.7,
+          "end": 7.4,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:3",
+          "src": "from data and why that matters",
+          "zh": "占位译文。",
+          "start": 7.5,
+          "end": 11,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:0",
+          "src": "the first idea is backprop",
+          "zh": "占位译文。",
+          "start": 12.4,
+          "end": 15.2,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:1",
+          "src": "which is just the chain rule",
+          "zh": "占位译文。",
+          "start": 15.3,
+          "end": 18.6,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:2",
+          "src": "applied many times in a row",
+          "zh": "占位译文。",
+          "start": 18.8,
+          "end": 22.4,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:3",
+          "src": "and the second idea is scale",
+          "zh": "占位译文。",
+          "start": 22.6,
+          "end": 26.8,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:4",
+          "src": "changes what the model can represent",
+          "zh": "占位译文。",
+          "start": 27,
+          "end": 31.2,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:5",
+          "src": "thanks for listening",
+          "zh": "占位译文。",
+          "start": 31.5,
+          "end": 34,
+          "speaker": "A"
+        }
+      ],
+      "generated": 10
+    },
+    {
+      "fixture": "asr-only",
+      "mode": "sentence",
+      "translationKind": "placeholder",
+      "audioTiming": "estimated-not-measured",
+      "requests": [
+        {
+          "current": [
+            "0:0+0:1+0:2+0:3"
+          ],
+          "history": 0,
+          "lookahead": 0,
+          "promptChars": 1093
+        },
+        {
+          "current": [
+            "0:0+0:1+0:2+0:3+0:4",
+            "0:5"
+          ],
+          "history": 1,
+          "lookahead": 0,
+          "promptChars": 1437
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:0+0:1+0:2+0:3",
+          "src": "so uh what I want to do today is talk about how neural networks actually learn from data and why that matters",
+          "zh": "占位译文。",
+          "start": 0.3,
+          "end": 11,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:0+0:1+0:2+0:3+0:4",
+          "src": "the first idea is backprop which is just the chain rule applied many times in a row and the second idea is scale changes what the model can represent",
+          "zh": "占位译文。",
+          "start": 12.4,
+          "end": 31.2,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:5",
+          "src": "thanks for listening",
+          "zh": "占位译文。",
+          "start": 31.5,
+          "end": 34,
+          "speaker": "A"
+        }
+      ],
+      "generated": 3
+    },
+    {
+      "fixture": "multi-speaker",
+      "mode": "cue",
+      "translationKind": "placeholder",
+      "audioTiming": "estimated-not-measured",
+      "requests": [
+        {
+          "current": [
+            "0:0",
+            "0:1",
+            "1:0"
+          ],
+          "history": 0,
+          "lookahead": 0,
+          "promptChars": 836
+        },
+        {
+          "current": [
+            "0:0",
+            "1:0",
+            "2:0",
+            "2:1",
+            "3:0"
+          ],
+          "history": 0,
+          "lookahead": 0,
+          "promptChars": 1316
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:0",
+          "src": "I think we should ship the smaller model first",
+          "zh": "占位译文。",
+          "start": 0.3,
+          "end": 3.4,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:1",
+          "src": "and keep the larger one in the lab",
+          "zh": "占位译文。",
+          "start": 3.6,
+          "end": 7.3,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:1:0",
+          "src": "the larger model already wins the benchmark",
+          "zh": "占位译文。",
+          "start": 8.2,
+          "end": 11.6,
+          "speaker": "B"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:0",
+          "src": "by a wide margin on the public set",
+          "zh": "占位译文。",
+          "start": 12.2,
+          "end": 14.3,
+          "speaker": "B"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:1:0",
+          "src": "wait that benchmark is contaminated",
+          "zh": "占位译文。",
+          "start": 14.6,
+          "end": 16.8,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:2:0",
+          "src": "even then the gap is still large",
+          "zh": "占位译文。",
+          "start": 17.8,
+          "end": 21.6,
+          "speaker": "B"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:2:1",
+          "src": "we should not hide the result",
+          "zh": "占位译文。",
+          "start": 21.8,
+          "end": 25.6,
+          "speaker": "B"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:3:0",
+          "src": "then publish the caveat in the paper",
+          "zh": "占位译文。",
+          "start": 26.2,
+          "end": 31.4,
+          "speaker": "A"
+        }
+      ],
+      "generated": 8
+    },
+    {
+      "fixture": "multi-speaker",
+      "mode": "sentence",
+      "translationKind": "placeholder",
+      "audioTiming": "estimated-not-measured",
+      "requests": [
+        {
+          "current": [
+            "0:0+0:1",
+            "1:0"
+          ],
+          "history": 0,
+          "lookahead": 0,
+          "promptChars": 1212
+        },
+        {
+          "current": [
+            "0:0",
+            "1:0",
+            "2:0+2:1",
+            "3:0"
+          ],
+          "history": 2,
+          "lookahead": 0,
+          "promptChars": 1777
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:0+0:1",
+          "src": "I think we should ship the smaller model first and keep the larger one in the lab",
+          "zh": "占位译文。",
+          "start": 0.3,
+          "end": 7.3,
+          "speaker": "A"
+        },
+        {
+          "id": "0:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:1:0",
+          "src": "the larger model already wins the benchmark",
+          "zh": "占位译文。",
+          "start": 8.2,
+          "end": 11.6,
+          "speaker": "B"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:0:0",
+          "src": "by a wide margin on the public set",
+          "zh": "占位译文。",
+          "start": 12.2,
+          "end": 14.3,
+          "speaker": "B"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:1:0",
+          "src": "wait that benchmark is contaminated",
+          "zh": "占位译文。",
+          "start": 14.6,
+          "end": 16.8,
+          "speaker": "A"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:2:0+2:1",
+          "src": "even then the gap is still large we should not hide the result",
+          "zh": "占位译文。",
+          "start": 17.8,
+          "end": 25.6,
+          "speaker": "B"
+        },
+        {
+          "id": "12:dub-v2:cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3:3:0",
+          "src": "then publish the caveat in the paper",
+          "zh": "占位译文。",
+          "start": 26.2,
+          "end": 31.4,
+          "speaker": "A"
+        }
+      ],
+      "generated": 6
+    }
+  ],
+  "scores": {
+    "skipped": true,
+    "reason": "Mock structure checks do not measure translation quality."
+  }
+}

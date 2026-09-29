@@ -19,6 +19,7 @@ const files = readdirSync(dir)
 
 const args = process.argv.slice(2);
 const quick = args.includes('--quick');
+const interpret = args.includes('--interpret');
 const filters = args.filter(a => !a.startsWith('--'));
 
 // Tests that take >5s — skipped in --quick mode
@@ -38,6 +39,8 @@ const start = Date.now();
 
 for (const file of files) {
   const name = basename(file, '.mjs');
+
+  if (interpret && !/interpret|dub|reference|subtitle|voice|speech|audio|playback|asr|tts/.test(name)) continue;
 
   // Filter by name substring if arguments given
   if (filters.length && !filters.some(f => name.includes(f))) {
@@ -62,7 +65,7 @@ for (const file of files) {
     console.log(`\x1b[32mPASS\x1b[0m ${ms > 2000 ? `(${(ms / 1000).toFixed(1)}s)` : ''}`);
   } catch (err) {
     failed++;
-    const stderr = err.stderr?.toString().slice(-800) || '';
+    const stderr = [err.stdout?.toString(), err.stderr?.toString(), err.signal ? `Terminated: ${err.signal}` : ''].filter(Boolean).join('\n').slice(-3000);
     failures.push({ name, stderr });
     console.log(`\x1b[31mFAIL\x1b[0m`);
   }

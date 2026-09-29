@@ -1,5 +1,5 @@
 /** Retry clean references without ever borrowing another/unknown speaker's voice. */
-export async function prepareSpeakerReference({ line, spans, source, voiceRef }) {
+export async function prepareSpeakerReference({ line, spans, source, voiceRef, signal }) {
   const known = line.speaker && !/^(unassigned|asr):/.test(line.speaker);
   const sameSpeaker = known ? spans.filter(s => s.speaker === line.speaker && s.kind === 'speech' && !s.overlap && Number(s.music || 0) <= .1)
     .sort((a, b) => (b.end - b.start) - (a.end - a.start)).slice(0, 3) : [];
@@ -16,8 +16,11 @@ export async function prepareSpeakerReference({ line, spans, source, voiceRef })
       const key = `${start.toFixed(3)}:${seconds.toFixed(3)}`;
       if (tried.has(key)) continue;
       tried.add(key);
+      signal?.throwIfAborted();
       const sample = await source.slice(start, seconds);
+      signal?.throwIfAborted();
       const ref = sample && await voiceRef(sample.blob);
+      signal?.throwIfAborted();
       if (ref) return ref;
     }
   }

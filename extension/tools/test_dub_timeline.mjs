@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { validateAnalysis, recognitionWindows, validateDubTranslation, fitDub, continuousReadySeconds, voiceCandidates, parseTolerantJson } from '../lib/dub-timeline.js';
+import { validateAnalysis, recognitionWindows, validateDubTranslation, fitDub, continuousReadySeconds, voiceCandidates, parseTolerantJson, subtitleLeadGap, knownQuietUntil } from '../lib/dub-timeline.js';
 const spans = [
   {start:0,end:3,kind:'music',speaker:null},
   {start:3,end:8,kind:'speech',speaker:'A'},
@@ -48,16 +48,39 @@ const validatedWithQuotes = validateDubTranslation(unescapedRaw, cues);
 assert.equal(validatedWithQuotes.length, 2);
 assert.equal(validatedWithQuotes[0].zh, '他说"没问题"');
 
-// 6. Single cue tolerance: mismatched / missing id automatically maps to single cue
+// Explicit wrong or missing IDs are not a recoverable JSON syntax error.
 const singleCue = [{id:'sub:99',start:0,end:5,src:'Test cue',speaker:'A'}];
-const singleRes = validateDubTranslation('{"lines":[{"ids":["0"],"zh":"单句容错测试"}]}', singleCue);
+assert.throws(() => validateDubTranslation({ lines: [{ ids: ['0'], zh: '错误绑定' }] }, singleCue));
+assert.throws(() => validateDubTranslation({ lines: [{ zh: '缺少 ID' }] }, singleCue));
+const singleRes = validateDubTranslation({ lines: [{ id: 'sub:99', zh: '正确绑定' }] }, singleCue);
 assert.equal(singleRes[0].id, 'sub:99');
-assert.equal(singleRes[0].zh, '单句容错测试');
 
 // 7. Raw array format tolerance
 const arrayRes = validateDubTranslation('[{"ids":["1"],"zh":"第一句"},{"ids":["2"],"zh":"第二句"}]', cues);
 assert.equal(arrayRes.length, 2);
 assert.equal(arrayRes[1].zh, '第二句');
 
+const lead = [
+  { start: 37.136, end: 41.364, src: '大家好。' },
+  { start: 41.364, end: 45, text: '下一句' },
+];
+assert.deepEqual(subtitleLeadGap(lead, 0, 1368.601, { subtitlesComplete: true }), { kind: 'gap', end: 37.136 });
+assert.equal(subtitleLeadGap(lead, 37.136, 1368.601), null);
+assert.deepEqual(subtitleLeadGap(lead, 50, 1368.601, { subtitlesComplete: true }), { kind: 'rest', end: 1368.601 });
+assert.equal(subtitleLeadGap([], 0, 10), null);
+assert.equal(knownQuietUntil(0, { subtitlesComplete: true, subtitles: [{ start: 37.1, end: 40, src: 'Hello.' }] }), 37.1);
+assert.equal(knownQuietUntil(37.2, { subtitles: [{ start: 37.1, end: 40, src: 'Hello.' }] }), null);
+assert.equal(knownQuietUntil(0, { spans: [{ start: 0, end: 2, kind: 'music' }] }), 2);
+assert.equal(knownQuietUntil(1.8, {
+  subtitles: [{ start: 37.1, end: 40, src: 'Hello.' }],
+  spans: [{ start: 0, end: 2, kind: 'music' }, { start: 2, end: 37.1, kind: 'silence' }]
+}), 37.1, 'contiguous quiet spans do not stall near internal span boundary');
+assert.equal(knownQuietUntil(1.8, {
+  spans: [{ start: 0, end: 2, kind: 'music' }, { start: 2, end: 10, kind: 'silence' }, { start: 10, end: 20, kind: 'speech' }]
+}), 10, 'contiguous quiet spans without subtitles extend until next speech span');
+assert.equal(knownQuietUntil(12, {}), null);
+
 console.log('PASS timeline: full coverage, music skip, speaker boundaries, overlap, references, source ID completeness, time buffering, bounded rate, tolerant JSON parsing & quote escaping');
 
+// Videos without subtitles (ASR path) pass null tracks; must not throw.
+assert.equal(knownQuietUntil(3, { lines: [], subtitles: null, spans: null }), null);

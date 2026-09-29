@@ -70,7 +70,9 @@ class FakeAudio {
 }
 const context = vm.createContext({
   console, Blob, URL, Audio: FakeAudio, setTimeout: fn => { fn(); return 1; }, setInterval: () => 1, clearInterval() {},
-  $: el, state: { tab: { id: 1 }, settings: { asr: {}, tts: {} }, pack: {} },
+  // The real entry point binds mediaTab before accepting audio events. Keep
+  // that source identity in this harness, which omits bindMediaSource itself.
+  $: el, state: { tab: { id: 1 }, mediaTab: { id: 1 }, settings: { asr: {}, tts: {} }, pack: {} },
   InterpretController: class { constructor() { this.running = false; }
     setAudioProviders() {} subscribe(fn) { this.listener = fn; } isRunning() { return this.running; }
     async start(options) { this.running = true; audioStarts++; startOptions.push(options); } async stop() { this.running = false; audioStops++; }
@@ -93,6 +95,10 @@ assert(audioStops > 0);
 // Another tab's events must never enter this player's queue.
 vm.runInContext('compactSessionOpen = true; compactController.listener({ type: "dub_segment", segment: { id: "wrong" } }, { tabId: 2 })', context);
 assert.equal(vm.runInContext('compactSegments.length', context), 0);
+vm.runInContext('compactController.listener({ type: "dub_partial" }, { tabId: 1 })', context);
+assert.equal(vm.runInContext('compactGenerationComplete', context), false);
+vm.runInContext('compactController.listener({ type: "stopped", result: { complete: false } }, { tabId: 1 })', context);
+assert.equal(vm.runInContext('compactGenerationComplete', context), false, 'partial audio never becomes complete on stop');
 await vm.runInContext('startCompactArchivePlayback(new Blob(["audio"]), {})', context);
 vm.runInContext('compactPlayerAudio.currentTime = 42', context);
 await vm.runInContext('toggleCompactPlayback()', context);

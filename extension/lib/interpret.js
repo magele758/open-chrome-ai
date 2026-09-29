@@ -17,6 +17,7 @@ import { assessVoiceQuality, isQuietBlob, recordSlice } from "./tab-audio-record
 import { createInterpretPipeline } from "./interpret-pipeline.js";
 import { createSemanticBuffer, withInterpretDeadline, unfinishedSpeech, validateSemanticTranslation } from "./interpret-semantic.js";
 import { createInterpretContext } from "./interpret-context.js";
+import { splitZhProportional } from "./dub-sentences.js";
 import { blobToWav, synthesizeTts } from "./tts.js";
 import { videoIdentity } from "./library.js";
 import { interpretSourceUrls } from "./media-url.js";
@@ -395,20 +396,40 @@ export function voiceRefForTime(bank, t, fallback) {
   return best?.blob || fallback || null;
 }
 
+function captionPieces(line) {
+  const sources = Array.isArray(line?.captionSources) ? line.captionSources : [];
+  if (sources.length < 2) return null;
+  const zh = String(line.zh || "").replace(/\s+/g, " ").trim();
+  if (!zh) return null;
+  const provided = Array.isArray(line.zhParts) ? line.zhParts : Array.isArray(line.zh_parts) ? line.zh_parts : null;
+  const parts = provided && provided.length === sources.length && provided.every(part => typeof part === "string") && provided.join("").replace(/\s+/g, "") === zh.replace(/\s+/g, "")
+    ? provided.map(part => String(part).trim())
+    : splitZhProportional(zh, sources);
+  if (parts.length !== sources.length) return null;
+  return sources.map((source, index) => ({
+    start: Number(source.start),
+    end: Number(source.end),
+    text: parts[index],
+    src: String(source.src || "").trim(),
+  })).filter(cue => cue.text);
+}
+
 export function linesToCaptions(lines) {
   const cues = (lines || [])
-    .map((line, i) => {
+    .flatMap((line, i) => {
+      const pieces = captionPieces(line);
+      if (pieces) return pieces;
       const start = Number(line.start);
       const text = String(line.zh || line.src || "").replace(/\s+/g, " ").trim();
-      if (!text) return null;
+      if (!text) return [];
       const next = Number(lines[i + 1]?.start);
       const end = Number(line.end);
-      return {
+      return [{
         start: Number.isFinite(start) ? start : i * CHUNK_SECONDS,
         end: Number.isFinite(end) && end > start ? end : Number.isFinite(next) ? next : undefined,
         text,
         src: String(line.src || "").trim(),
-      };
+      }];
     })
     .filter(Boolean);
   const text = cues
@@ -566,7 +587,7 @@ export async function runInterpret(opts) {
 
   // Internal session switch for comparing/rolling back the semantic path.
   const semanticEnabled = opts.semanticTranslation !== false;
-  const translationContext = createInterpretContext();
+  const translationContext = createInterpretContext({ maxSentences: 8 });
   const semantic = createSemanticBuffer({ modelBoundaries: true, onEvent: event => {
     if (event.type === 'semantic.gap') translationContext.reset();
     debugLog(event.type, { runId, ...event });

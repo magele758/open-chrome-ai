@@ -4,6 +4,7 @@
  * Interpretation continues in background when switching tabs until the specific tab is closed or stopped.
  */
 
+import { debugLog } from "../lib/debug-log.js";
 import { injectVideo } from "../lib/chrome.js";
 import { runPlannedInterpret as runInterpret } from "../lib/planned-interpret.js";
 import { abortRecording, discardCapture } from "../lib/tab-audio.js";
@@ -301,6 +302,10 @@ export class InterpretController {
             this.notify({ ...ev, tabId: tab.id }, tab.id);
           } else if (ev.type === "dub_segment") {
             this.notify({ type: "dub_segment", segment: ev.segment, tabId: tab.id }, tab.id);
+          } else if (ev.type === "metric") {
+            debugLog('interpret.metric', { ...ev, tabId: tab.id });
+          } else if (ev.type === "dub_gap" || ev.type === "dub_partial") {
+            this.notify({ ...ev, tabId: tab.id }, tab.id);
           } else if (ev.type === "dub_complete") {
             this.notify({ type: "dub_complete", totalLines: ev.totalLines, duration: ev.duration, tabId: tab.id }, tab.id);
           } else if (ev.type === "archive_saved") {

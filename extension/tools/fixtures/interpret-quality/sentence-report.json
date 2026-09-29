@@ -1,0 +1,823 @@
+{
+  "version": 1,
+  "generatedAt": "2026-09-28T12:13:08.409Z",
+  "mode": "sentence",
+  "description": "sentence 模式对照。同一批 fixture，mock chat。首窗约 12 秒，其后字幕按大批次、ASR 仍按约 24 秒。请求带 brief、history、lookahead。不覆盖 baseline.json。",
+  "llmScores": {
+    "skipped": true,
+    "reason": "未配置文本模型。设置 INTERPRET_EVAL_TEXT_BASE_URL、INTERPRET_EVAL_TEXT_MODEL、INTERPRET_EVAL_TEXT_API_KEY（或同名 PAGELENS_TEXT_*）后才会请求评分。"
+  },
+  "cueTotals": {
+    "requests": 8,
+    "translateRequests": 8,
+    "summaryRequests": 0,
+    "avgPromptChars": 1205.6,
+    "avgSystemChars": 434,
+    "avgUserChars": 771.6,
+    "avgApproxTokens": 603.1,
+    "avgContextChars": 89.1,
+    "avgHistoryCount": 1.88,
+    "cueCount": 38,
+    "lineCount": 38,
+    "mergeRate": 0,
+    "lookaheadEmpty": true,
+    "hasFullSummary": false,
+    "mergeForbidden": true,
+    "firstBatchCurrentSeconds": {
+      "auto-captions": 11.2,
+      "human-captions": 11.2,
+      "asr-only": 10.7,
+      "multi-speaker": 11.3
+    },
+    "rateOver112Ratio": 0.1842
+  },
+  "totals": {
+    "cueCount": 38,
+    "lineCount": 18,
+    "mergeRate": 0.5263,
+    "lookaheadEmpty": false,
+    "hasBriefField": true,
+    "hasHistoryField": true,
+    "historySeen": true,
+    "lookaheadSeen": true,
+    "briefSeen": true,
+    "mergeForbidden": false
+  },
+  "fixtures": [
+    {
+      "id": "auto-captions",
+      "label": "自动字幕（少标点碎片）",
+      "kind": "subtitle",
+      "windows": [
+        {
+          "start": 0,
+          "end": 12,
+          "cues": 6,
+          "lines": 1
+        },
+        {
+          "start": 12,
+          "end": 36,
+          "cues": 8,
+          "lines": 2
+        }
+      ],
+      "cueCount": 14,
+      "lineCount": 3,
+      "mergeRate": 0.7857,
+      "mergedLineCount": 3,
+      "lookaheadEmpty": false,
+      "hasBriefField": true,
+      "hasHistoryField": true,
+      "historySeen": true,
+      "lookaheadSeen": true,
+      "briefSeen": true,
+      "mergeForbidden": false,
+      "requests": 4,
+      "translateRequests": 2,
+      "requestsDetail": [
+        {
+          "fixtureId": "auto-captions",
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "summary",
+          "systemChars": 126,
+          "userChars": 133,
+          "promptChars": 259,
+          "approxTokens": 130,
+          "hasBrief": false,
+          "hasHistory": false,
+          "briefChars": 0,
+          "historyCount": 0,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 0,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": false
+        },
+        {
+          "fixtureId": "auto-captions",
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "translate",
+          "systemChars": 816,
+          "userChars": 610,
+          "promptChars": 1426,
+          "approxTokens": 713,
+          "hasBrief": true,
+          "hasHistory": true,
+          "briefChars": 14,
+          "historyCount": 0,
+          "lookaheadCount": 2,
+          "lookaheadEmpty": false,
+          "currentCount": 1,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": true
+        },
+        {
+          "fixtureId": "auto-captions",
+          "windowStart": 12,
+          "windowEnd": 36,
+          "kind": "summary",
+          "systemChars": 126,
+          "userChars": 189,
+          "promptChars": 315,
+          "approxTokens": 158,
+          "hasBrief": false,
+          "hasHistory": false,
+          "briefChars": 0,
+          "historyCount": 0,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 0,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": false
+        },
+        {
+          "fixtureId": "auto-captions",
+          "windowStart": 12,
+          "windowEnd": 36,
+          "kind": "translate",
+          "systemChars": 816,
+          "userChars": 776,
+          "promptChars": 1592,
+          "approxTokens": 796,
+          "hasBrief": true,
+          "hasHistory": true,
+          "briefChars": 14,
+          "historyCount": 1,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 2,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": true
+        }
+      ],
+      "lines": [
+        {
+          "id": "a0+a1+a2+a3+a4+a5",
+          "start": 0.4,
+          "end": 11.6,
+          "speaker": "A",
+          "overlap": false,
+          "src": "so what I want to do today is explain how neural networks learn from messy product data and why that changes the way we ship models",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中文译文这是占位中文译文这是占位中文译文这是",
+          "sourceIds": [
+            "a0",
+            "a1",
+            "a2",
+            "a3",
+            "a4",
+            "a5"
+          ],
+          "audioSeconds": 11.053,
+          "fitRate": 1,
+          "unconstrainedRate": 0.9868,
+          "over112": false
+        },
+        {
+          "id": "a6+a7+a8+a9+a10+a11",
+          "start": 12.2,
+          "end": 26.8,
+          "speaker": "A",
+          "overlap": false,
+          "src": "the first idea is backpropagation which is just the chain rule applied many times the second idea is that scale changes what the model can represent",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中文译文这是占位中文译文这是占位中文译文这是",
+          "sourceIds": [
+            "a6",
+            "a7",
+            "a8",
+            "a9",
+            "a10",
+            "a11"
+          ],
+          "audioSeconds": 11.053,
+          "fitRate": 1,
+          "unconstrainedRate": 0.757,
+          "over112": false
+        },
+        {
+          "id": "a12+a13",
+          "start": 27.2,
+          "end": 33.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "thanks for listening see you next week",
+          "zh": "这是占位中文译文这是占",
+          "sourceIds": [
+            "a12",
+            "a13"
+          ],
+          "audioSeconds": 2.895,
+          "fitRate": 1,
+          "unconstrainedRate": 0.4669,
+          "over112": false
+        }
+      ]
+    },
+    {
+      "id": "human-captions",
+      "label": "人工字幕（完整句）",
+      "kind": "subtitle",
+      "windows": [
+        {
+          "start": 0,
+          "end": 12,
+          "cues": 2,
+          "lines": 2
+        },
+        {
+          "start": 12,
+          "end": 36,
+          "cues": 4,
+          "lines": 4
+        }
+      ],
+      "cueCount": 6,
+      "lineCount": 6,
+      "mergeRate": 0,
+      "mergedLineCount": 0,
+      "lookaheadEmpty": false,
+      "hasBriefField": true,
+      "hasHistoryField": true,
+      "historySeen": true,
+      "lookaheadSeen": true,
+      "briefSeen": true,
+      "mergeForbidden": false,
+      "requests": 4,
+      "translateRequests": 2,
+      "requestsDetail": [
+        {
+          "fixtureId": "human-captions",
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "translate",
+          "systemChars": 816,
+          "userChars": 843,
+          "promptChars": 1659,
+          "approxTokens": 830,
+          "hasBrief": true,
+          "hasHistory": true,
+          "briefChars": 14,
+          "historyCount": 0,
+          "lookaheadCount": 4,
+          "lookaheadEmpty": false,
+          "currentCount": 2,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": true
+        },
+        {
+          "fixtureId": "human-captions",
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "compress",
+          "systemChars": 56,
+          "userChars": 129,
+          "promptChars": 185,
+          "approxTokens": 93,
+          "hasBrief": false,
+          "hasHistory": false,
+          "briefChars": 0,
+          "historyCount": 0,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 0,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": false
+        },
+        {
+          "fixtureId": "human-captions",
+          "windowStart": 12,
+          "windowEnd": 36,
+          "kind": "translate",
+          "systemChars": 816,
+          "userChars": 1169,
+          "promptChars": 1985,
+          "approxTokens": 993,
+          "hasBrief": true,
+          "hasHistory": true,
+          "briefChars": 14,
+          "historyCount": 2,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 4,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": true
+        },
+        {
+          "fixtureId": "human-captions",
+          "windowStart": 12,
+          "windowEnd": 36,
+          "kind": "compress",
+          "systemChars": 56,
+          "userChars": 125,
+          "promptChars": 181,
+          "approxTokens": 91,
+          "hasBrief": false,
+          "hasHistory": false,
+          "briefChars": 0,
+          "historyCount": 0,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 0,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": false
+        }
+      ],
+      "lines": [
+        {
+          "id": "h0",
+          "start": 0.4,
+          "end": 6.2,
+          "speaker": "A",
+          "overlap": false,
+          "src": "Welcome everyone. Today we will discuss how neural networks learn from data.",
+          "zh": "这是占位中文译文这是占位中文译文这是占",
+          "sourceIds": [
+            "h0"
+          ],
+          "audioSeconds": 5,
+          "fitRate": 1,
+          "unconstrainedRate": 0.8621,
+          "over112": false
+        },
+        {
+          "id": "h1",
+          "start": 6.5,
+          "end": 11.6,
+          "speaker": "A",
+          "overlap": false,
+          "src": "I will keep each example concrete and tie it back to a product decision.",
+          "zh": "这是占位中文译文这是占位中文译文这是占",
+          "sourceIds": [
+            "h1"
+          ],
+          "audioSeconds": 5,
+          "fitRate": 1,
+          "unconstrainedRate": 0.9804,
+          "over112": false
+        },
+        {
+          "id": "h2",
+          "start": 12.3,
+          "end": 18.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "Backpropagation is the chain rule applied repeatedly so we can train deep models.",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中",
+          "sourceIds": [
+            "h2"
+          ],
+          "audioSeconds": 5.526,
+          "fitRate": 1,
+          "unconstrainedRate": 0.906,
+          "over112": false
+        },
+        {
+          "id": "h3",
+          "start": 18.8,
+          "end": 25.2,
+          "speaker": "A",
+          "overlap": false,
+          "src": "Scale changes what a model can represent, but it does not replace a clear objective.",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中文译文",
+          "sourceIds": [
+            "h3"
+          ],
+          "audioSeconds": 6.316,
+          "fitRate": 1,
+          "unconstrainedRate": 0.9868,
+          "over112": false
+        },
+        {
+          "id": "h4",
+          "start": 25.6,
+          "end": 31.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "When the objective is wrong, a larger model simply makes the same mistake faster.",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中文",
+          "sourceIds": [
+            "h4"
+          ],
+          "audioSeconds": 5.789,
+          "fitRate": 1,
+          "unconstrainedRate": 0.9982,
+          "over112": false
+        },
+        {
+          "id": "h5",
+          "start": 31.8,
+          "end": 35.6,
+          "speaker": "A",
+          "overlap": false,
+          "src": "Thank you for listening, and I hope this framing is useful next week.",
+          "zh": "这是占位中文译文这是占位中文",
+          "sourceIds": [
+            "h5"
+          ],
+          "audioSeconds": 3.684,
+          "fitRate": 1,
+          "unconstrainedRate": 0.9695,
+          "over112": false
+        }
+      ]
+    },
+    {
+      "id": "asr-only",
+      "label": "只有 ASR 片段",
+      "kind": "asr",
+      "windows": [
+        {
+          "start": 0,
+          "end": 12,
+          "cues": 4,
+          "lines": 1
+        },
+        {
+          "start": 12,
+          "end": 36,
+          "cues": 6,
+          "lines": 2
+        }
+      ],
+      "cueCount": 10,
+      "lineCount": 3,
+      "mergeRate": 0.7,
+      "mergedLineCount": 2,
+      "lookaheadEmpty": true,
+      "hasBriefField": true,
+      "hasHistoryField": true,
+      "historySeen": true,
+      "lookaheadSeen": false,
+      "briefSeen": true,
+      "mergeForbidden": false,
+      "requests": 4,
+      "translateRequests": 2,
+      "requestsDetail": [
+        {
+          "fixtureId": "asr-only",
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "summary",
+          "systemChars": 126,
+          "userChars": 111,
+          "promptChars": 237,
+          "approxTokens": 119,
+          "hasBrief": false,
+          "hasHistory": false,
+          "briefChars": 0,
+          "historyCount": 0,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 0,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": false
+        },
+        {
+          "fixtureId": "asr-only",
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "translate",
+          "systemChars": 816,
+          "userChars": 329,
+          "promptChars": 1145,
+          "approxTokens": 573,
+          "hasBrief": true,
+          "hasHistory": true,
+          "briefChars": 14,
+          "historyCount": 0,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 1,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": true
+        },
+        {
+          "fixtureId": "asr-only",
+          "windowStart": 12,
+          "windowEnd": 36,
+          "kind": "summary",
+          "systemChars": 126,
+          "userChars": 172,
+          "promptChars": 298,
+          "approxTokens": 149,
+          "hasBrief": false,
+          "hasHistory": false,
+          "briefChars": 0,
+          "historyCount": 0,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 0,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": false
+        },
+        {
+          "fixtureId": "asr-only",
+          "windowStart": 12,
+          "windowEnd": 36,
+          "kind": "translate",
+          "systemChars": 816,
+          "userChars": 703,
+          "promptChars": 1519,
+          "approxTokens": 760,
+          "hasBrief": true,
+          "hasHistory": true,
+          "briefChars": 14,
+          "historyCount": 1,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 2,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": true
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:0+0:1+0:2+0:3",
+          "start": 0.3,
+          "end": 11,
+          "speaker": "A",
+          "overlap": false,
+          "src": "so uh what I want to do today is talk about how neural networks actually learn from data and why that matters",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中文译文这是占位中文译文这是占",
+          "sourceIds": [
+            "0:0",
+            "0:1",
+            "0:2",
+            "0:3"
+          ],
+          "audioSeconds": 9.211,
+          "fitRate": 1,
+          "unconstrainedRate": 0.8608,
+          "over112": false
+        },
+        {
+          "id": "0:0+0:1+0:2+0:3+0:4",
+          "start": 12.4,
+          "end": 31.2,
+          "speaker": "A",
+          "overlap": false,
+          "src": "the first idea is backprop which is just the chain rule applied many times in a row and the second idea is scale changes what the model can represent",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中文译文这是占位中文译文这是占位中文译文这是占位中文",
+          "sourceIds": [
+            "0:0",
+            "0:1",
+            "0:2",
+            "0:3",
+            "0:4"
+          ],
+          "audioSeconds": 12.105,
+          "fitRate": 1,
+          "unconstrainedRate": 0.6439,
+          "over112": false
+        },
+        {
+          "id": "0:5",
+          "start": 31.5,
+          "end": 34,
+          "speaker": "A",
+          "overlap": false,
+          "src": "thanks for listening",
+          "zh": "这是占位中",
+          "sourceIds": [
+            "0:5"
+          ],
+          "audioSeconds": 1.316,
+          "fitRate": 1,
+          "unconstrainedRate": 0.5263,
+          "over112": false
+        }
+      ]
+    },
+    {
+      "id": "multi-speaker",
+      "label": "多人对话（不同 speaker / overlap）",
+      "kind": "asr",
+      "windows": [
+        {
+          "start": 0,
+          "end": 12,
+          "cues": 3,
+          "lines": 2
+        },
+        {
+          "start": 12,
+          "end": 32,
+          "cues": 5,
+          "lines": 4
+        }
+      ],
+      "cueCount": 8,
+      "lineCount": 6,
+      "mergeRate": 0.25,
+      "mergedLineCount": 2,
+      "lookaheadEmpty": true,
+      "hasBriefField": true,
+      "hasHistoryField": true,
+      "historySeen": true,
+      "lookaheadSeen": false,
+      "briefSeen": true,
+      "mergeForbidden": false,
+      "requests": 5,
+      "translateRequests": 2,
+      "requestsDetail": [
+        {
+          "fixtureId": "multi-speaker",
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "summary",
+          "systemChars": 126,
+          "userChars": 127,
+          "promptChars": 253,
+          "approxTokens": 127,
+          "hasBrief": false,
+          "hasHistory": false,
+          "briefChars": 0,
+          "historyCount": 0,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 0,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": false
+        },
+        {
+          "fixtureId": "multi-speaker",
+          "windowStart": 0,
+          "windowEnd": 12,
+          "kind": "translate",
+          "systemChars": 816,
+          "userChars": 448,
+          "promptChars": 1264,
+          "approxTokens": 632,
+          "hasBrief": true,
+          "hasHistory": true,
+          "briefChars": 14,
+          "historyCount": 0,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 2,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": true
+        },
+        {
+          "fixtureId": "multi-speaker",
+          "windowStart": 12,
+          "windowEnd": 32,
+          "kind": "summary",
+          "systemChars": 126,
+          "userChars": 172,
+          "promptChars": 298,
+          "approxTokens": 149,
+          "hasBrief": false,
+          "hasHistory": false,
+          "briefChars": 0,
+          "historyCount": 0,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 0,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": false
+        },
+        {
+          "fixtureId": "multi-speaker",
+          "windowStart": 12,
+          "windowEnd": 32,
+          "kind": "translate",
+          "systemChars": 816,
+          "userChars": 1041,
+          "promptChars": 1857,
+          "approxTokens": 929,
+          "hasBrief": true,
+          "hasHistory": true,
+          "briefChars": 14,
+          "historyCount": 2,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 4,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": true
+        },
+        {
+          "fixtureId": "multi-speaker",
+          "windowStart": 12,
+          "windowEnd": 32,
+          "kind": "compress",
+          "systemChars": 56,
+          "userChars": 81,
+          "promptChars": 137,
+          "approxTokens": 69,
+          "hasBrief": false,
+          "hasHistory": false,
+          "briefChars": 0,
+          "historyCount": 0,
+          "lookaheadCount": 0,
+          "lookaheadEmpty": true,
+          "currentCount": 0,
+          "mergeForbidden": false,
+          "systemStartsWithBrief": false
+        }
+      ],
+      "lines": [
+        {
+          "id": "0:0+0:1",
+          "start": 0.3,
+          "end": 7.3,
+          "speaker": "A",
+          "overlap": false,
+          "src": "I think we should ship the smaller model first and keep the larger one in the lab",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中文译文这是占",
+          "sourceIds": [
+            "0:0",
+            "0:1"
+          ],
+          "audioSeconds": 7.105,
+          "fitRate": 1.0150375939849625,
+          "unconstrainedRate": 1.015,
+          "over112": false
+        },
+        {
+          "id": "1:0",
+          "start": 8.2,
+          "end": 11.6,
+          "speaker": "B",
+          "overlap": false,
+          "src": "the larger model already wins the benchmark",
+          "zh": "这是占位中文译文这是占",
+          "sourceIds": [
+            "1:0"
+          ],
+          "audioSeconds": 2.895,
+          "fitRate": 1,
+          "unconstrainedRate": 0.8514,
+          "over112": false
+        },
+        {
+          "id": "0:0",
+          "start": 12.2,
+          "end": 14.3,
+          "speaker": "B",
+          "overlap": false,
+          "src": "by a wide margin on the public set",
+          "zh": "这是占位中文译文",
+          "sourceIds": [
+            "0:0"
+          ],
+          "audioSeconds": 2.105,
+          "fitRate": 1.0025062656641597,
+          "unconstrainedRate": 1.0025,
+          "over112": false
+        },
+        {
+          "id": "1:0",
+          "start": 14.6,
+          "end": 16.8,
+          "speaker": "A",
+          "overlap": true,
+          "src": "wait that benchmark is contaminated",
+          "zh": "这是占位中文译文",
+          "sourceIds": [
+            "1:0"
+          ],
+          "audioSeconds": 2.105,
+          "fitRate": 1,
+          "unconstrainedRate": 0.9569,
+          "over112": false
+        },
+        {
+          "id": "2:0+2:1",
+          "start": 17.8,
+          "end": 25.6,
+          "speaker": "B",
+          "overlap": false,
+          "src": "even then the gap is still large we should not hide the result",
+          "zh": "这是占位中文译文这是占位中文译文这是占位中",
+          "sourceIds": [
+            "2:0",
+            "2:1"
+          ],
+          "audioSeconds": 5.526,
+          "fitRate": 1,
+          "unconstrainedRate": 0.7085,
+          "over112": false
+        },
+        {
+          "id": "3:0",
+          "start": 26.2,
+          "end": 31.4,
+          "speaker": "A",
+          "overlap": false,
+          "src": "then publish the caveat in the paper",
+          "zh": "这是占位中文译文这是占",
+          "sourceIds": [
+            "3:0"
+          ],
+          "audioSeconds": 2.895,
+          "fitRate": 1,
+          "unconstrainedRate": 0.5567,
+          "over112": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+<!doctype html><meta charset="utf-8"><title>同传实际播放回归</title>
+<style>body{font:16px system-ui;max-width:900px;margin:40px auto}button{padding:12px;margin:8px}video{width:640px;height:100px;background:#222}pre{white-space:pre-wrap}</style>
+<h1>同传实际播放回归</h1><p>本地合成测试音，不调用外部服务。使用生产调度、视频监听及浏览器真实音频元素。</p>
+<video controls></video><div><button id="cold">测试冷启动</button><button id="warm">测试缓存计划</button><button id="stop">停止</button></div><pre id="result">等待运行</pre>
+<script>
+window.addEventListener('error',e=>document.querySelector('#result').textContent='ERROR: '+e.message);
+window.addEventListener('unhandledrejection',e=>document.querySelector('#result').textContent='ERROR: '+e.reason);
+</script>
+<script type="module">
+const { runPlannedInterpret } = await import('../lib/planned-interpret.js');
+import { plVideo } from '../lib/video-pick.js';
+function wav(seconds, frequency) {
+  const rate=16000, count=rate*seconds, bytes=new ArrayBuffer(44+count*2), v=new DataView(bytes);
+  const tag=(i,t)=>[...t].forEach((c,n)=>v.setUint8(i+n,c.charCodeAt(0)));
+  tag(0,'RIFF');v.setUint32(4,36+count*2,true);tag(8,'WAVE');tag(12,'fmt ');v.setUint32(16,16,true);
+  v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);
+  v.setUint16(32,2,true);v.setUint16(34,16,true);tag(36,'data');v.setUint32(40,count*2,true);
+  for(let i=0;i<count;i++)v.setInt16(44+i*2,Math.sin(2*Math.PI*frequency*i/rate)*1200,true);
+  return new Blob([bytes],{type:'audio/wav'});
+}
+const video=document.querySelector('video'), result=document.querySelector('#result');
+const sourceBlob=wav(6,150), dubBlob=wav(2.5,400);
+video.src=URL.createObjectURL(sourceBlob);let controller;
+async function run(warm) {
+  if(controller)return;
+  controller=new AbortController(); const signal=controller.signal;
+  video.pause();video.currentTime=0;await new Promise(r=>setTimeout(r,100));
+  let played=0, ended=0, extra=0;const started=performance.now();let firstMs;
+  const logs=[];const render=()=>result.textContent=logs.join('\n');
+  const cues=Array.from({length:3},(_,i)=>({id:'s'+i,start:i*2,end:i*2+2,src:'Sentence '+i+'.'}));
+  const lines=cues.map(c=>({...c,zh:'这是一句测试译音。',speaker:'A'}));
+  const log=s=>{logs.push(s);render();};log((warm?'缓存计划':'冷启动')+'：原视频初始暂停');
+  try {
+    const outcome=await runPlannedInterpret({tabId:1, signal, video:async(cmd,arg)=>plVideo(cmd,arg),
+      settings:{text:{baseUrl:'https://unused.test',model:'test'},tts:{baseUrl:'https://unused.test',preparationMode:'progressive',contextMode:'sentence'}},
+      ...(warm?{plan:{lines,spans:[],sourceKey:'browser',background:false}}:{}),
+      openSource:async()=>({duration:6,subtitles:cues,subtitlesComplete:true,close:async()=>{},analyze:()=>new Promise(()=>{}),slice:async()=>({blob:sourceBlob})}),
+      cacheGet:async()=>null,cacheSet:async()=>{},getTtsRef:async()=>null,voiceRef:async()=>null,
+      chat:async(_, {messages})=>{const x=JSON.parse(messages[1].content);if(!x.current){extra++;return '';}return JSON.stringify({lines:x.current.map(c=>({ids:[c.id],zh:'这是一句测试译音。'}))});},
+      synthesizeTts:async()=>({blob:dubBlob}), audioDuration:async()=>2.5,
+      createAudio:url=>{const audio=new Audio(url);audio.volume=.15;
+        audio.addEventListener('playing',()=>{if(!audio.delivered){audio.delivered=true;played++;firstMs??=Math.round(performance.now()-started);log('真实 playing '+played+' / 3');}});
+        audio.addEventListener('ended',()=>{ended++;log('真实 ended '+ended+' / 3');});return audio;},
+      onEvent:e=>{if(e.type==='warn')log('提示：'+e.message);}
+    });
+    log(`${played===3&&ended===3&&extra===0&&outcome.complete?'PASS':'FAIL'}：播放 ${played}/3，结束 ${ended}/3，额外改写 ${extra}，首声 ${firstMs} ms，完成 ${outcome.complete}`);
+  }catch(e){log('FAIL：'+e.name+' '+e.message);}finally{controller=null;}
+}
+document.querySelector('#cold').onclick=()=>run(false);document.querySelector('#warm').onclick=()=>run(true);
+document.querySelector('#stop').onclick=()=>controller?.abort();
+</script>

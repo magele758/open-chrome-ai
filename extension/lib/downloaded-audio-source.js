@@ -30,14 +30,16 @@ export function pcmWav(pieces) {
 
 // Independent audio source: no tab recording, player play(), or browser cookies.
 export async function openInterpretSource({ url, mediaUrl, signal, onProgress = () => {}, fetchImpl = fetch }) {
-  let id;
+  let id, closed = false;
   const request = async (path, options = {}) => {
     signal?.throwIfAborted();
+    if (closed) throw new DOMException('Closed', 'AbortError');
     const r = await fetchImpl(MEDIA_HELPER + path, helperRequestInit({ ...options, signal }));
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || (path.endsWith('/analysis') && r.status === 404 ? '本机媒体服务版本过旧，请重启媒体服务后重试。' : `媒体服务错误 ${r.status}`));
     return r;
   };
   const close = async () => {
+    closed = true;
     if (id) await fetchImpl(`${MEDIA_HELPER}/jobs/${id}`, helperRequestInit({ method: 'DELETE', signal: AbortSignal.timeout(5000) })).catch(() => {});
   };
   try {
@@ -45,28 +47,44 @@ export async function openInterpretSource({ url, mediaUrl, signal, onProgress = 
     id = (await (await request('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, mediaUrl }) })).json()).id;
     if (!/^[a-f0-9]{32}$/.test(id || '')) { id = null; throw new Error('媒体服务返回无效任务'); }
     let job;
-    for (;;) {
+    const wait = () => new Promise((resolve, reject) => {
+      const stop = () => { clearTimeout(timer); signal?.removeEventListener('abort', stop); reject(signal.reason || new DOMException('Aborted', 'AbortError')); };
+      const timer = setTimeout(() => { signal?.removeEventListener('abort', stop); resolve(); }, 100);
+      signal?.addEventListener('abort', stop, { once: true });
+      if (signal?.aborted) stop();
+    });
+    const openedAt = Date.now();
+    const poll = async () => {
+      if (Date.now() - openedAt > 180000) throw new Error('音轨准备超时，请稍后重试');
       job = await (await request(`/jobs/${id}`)).json();
       if (job.status === 'error') throw new Error(job.error || '音轨下载失败');
-      if (job.status === 'ready') break;
-      onProgress({ hint: '正在下载独立音轨，播放器保持暂停…' });
-      await new Promise((resolve, reject) => {
-        const stop = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
-        const timer = setTimeout(() => { signal?.removeEventListener('abort', stop); resolve(); }, 500);
-        signal?.addEventListener('abort', stop, { once: true });
-      });
+    };
+    for (;;) {
+      await poll();
+      if (job.status === 'ready' || job.duration > 0 && job.subtitles?.length) break;
+      onProgress({ hint: '正在读取字幕与独立音轨…' });
+      await wait();
     }
-    if (!job.parts?.length || !(job.duration > 0)) throw new Error('未取得可用音轨');
-    let covered = 0;
-    for (const p of job.parts) {
-      if (Math.abs(p.start - covered) > .1 || !(p.duration > 0)) throw new Error('音轨分段不连续');
-      covered += p.duration;
-    }
-    if (Math.abs(covered - job.duration) > 1) throw new Error('音轨不完整');
+    const expectedDuration = job.duration;
+    let readyJob;
+    const ensureReady = () => readyJob ||= (async () => {
+      while (job.status !== 'ready') { await wait(); await poll(); }
+      if (!job.parts?.length || !(job.duration > 0)) throw new Error('未取得可用音轨');
+      if (Math.abs(job.duration - expectedDuration) > 3) throw new Error('音轨与字幕时长不一致');
+      let covered = 0;
+      for (const p of job.parts) {
+        if (Math.abs(p.start - covered) > .1 || !(p.duration > 0)) throw new Error('音轨分段不连续');
+        covered += p.duration;
+      }
+      if (Math.abs(covered - job.duration) > 1) throw new Error('音轨不完整');
+    })();
+    if (job.status === 'ready') await ensureReady();
     const cache = new Map();
     return {
-      duration: job.duration, close, subtitles: job.subtitles || null,
+      duration: job.duration, close, subtitles: job.subtitles || null, subtitlesComplete: job.subtitlesComplete === true,
+      audioReady: ensureReady,
       async analyze() {
+        await ensureReady();
         await request(`/jobs/${id}/analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
         for (;;) {
           signal?.throwIfAborted();
@@ -78,6 +96,7 @@ export async function openInterpretSource({ url, mediaUrl, signal, onProgress = 
       },
       async slice(start, seconds = 5, track = 'audio') {
         signal?.throwIfAborted();
+        await ensureReady();
         if (!['audio', 'background'].includes(track)) throw new Error('未知音轨');
         const end = Math.min(job.duration, start + seconds), pieces = [];
         if (!(end > start)) return null;

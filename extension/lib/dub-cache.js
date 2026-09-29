@@ -6,6 +6,10 @@ export async function dubKey(value) {
   const hash = await crypto.subtle.digest('SHA-256', bytes);
   return PREFIX + [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
+export async function dubBlobKey(blob) {
+  const hash = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return PREFIX + [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
 function repairIfCorruptedArray(obj) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
   const keys = Object.keys(obj).filter(k => /^\d+$/.test(k));

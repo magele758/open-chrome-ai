@@ -141,6 +141,21 @@ class TranscriptTest(unittest.TestCase):
             self.assertTrue(cues)
             self.assertEqual(run.call_count, 1)
 
+    def test_throttled_auto_translation_falls_back_to_original_captions(self):
+        with tempfile.TemporaryDirectory() as root:
+            job = {'cancel': threading.Event()}
+            info = {'language': 'en', 'automatic_captions': {
+                'zh-Hans': [{'ext': 'json3', 'url': 'https://fixture.test/zh'}],
+                'en-orig': [{'ext': 'json3', 'url': 'https://fixture.test/en'}]}}
+            body = json.dumps({'events': [{'tStartMs': 0, 'dDurationMs': 2000, 'segs': [{'utf8': 'Hello'}, {'utf8': ' world.', 'tOffsetMs': 500}]}]})
+            def urlopen(req, timeout=0):
+                if req.full_url.endswith('/zh'):
+                    raise TimeoutError()
+                return io.BytesIO(body.encode())
+            with patch.object(helper.urllib.request, 'urlopen', side_effect=urlopen), patch.object(helper, 'downloader_args', return_value=['yt-dlp']), patch.object(helper, 'run', side_effect=RuntimeError('429')):
+                cues = helper.fetch_subtitles(job, 'https://fixture.test/video', info, Path(root))
+            self.assertEqual([c['src'] for c in cues], ['Hello world.'])
+
     def test_no_tracks_avoids_repeated_metadata_lookup(self):
         with patch.object(helper, 'run') as run:
             self.assertEqual(helper.fetch_subtitles({'cancel': threading.Event()}, 'https://fixture.test', {}, Path('/unused')), [])
@@ -153,6 +168,9 @@ class TranscriptTest(unittest.TestCase):
                 helper.extract(job, 'https://fixture.test/dub', None)
             self.assertEqual(run.call_count, 2)
             self.assertIn('download reached', job['error'])
+            self.assertEqual(job['duration'], 5)
+            self.assertTrue(job['subtitlesComplete'])
+            self.assertEqual(job['subtitles'], [{'src': 'subtitle'}], 'subtitle readiness survives a later audio download failure')
 
     def test_pick_sub_track_list_prefix_matching(self):
         # Test YouTube custom suffix keys like en-j3PyPqV-e1s
@@ -199,6 +217,36 @@ class TranscriptTest(unittest.TestCase):
             helper.resolve_download_target('https://www.youtube.com/watch?v=abcdefghijk', 'https://rr1.googlevideo.com/videoplayback'),
             'https://www.youtube.com/watch?v=abcdefghijk',
         )
+
+
+class SubtitleParseTest(unittest.TestCase):
+    def test_rolling_vtt_keeps_only_new_text(self):
+        vtt = ('WEBVTT\n\n00:00:03.200 --> 00:00:03.210\n例如，如果你使用 Chat、GPT 或\n\n'
+               '00:00:03.210 --> 00:00:04.959\n例如，如果你使用 Chat、GPT 或\n类似的模型，它们的\n\n'
+               '00:00:04.959 --> 00:00:04.969\n类似的模型，它们的\n\n'
+               '00:00:04.969 --> 00:00:07.080\n类似的模型，它们的\n架构从未公开\n')
+        cues = helper.parse_vtt_srt_cues(vtt)
+        self.assertEqual([c['src'] for c in cues], ['例如，如果你使用 Chat、GPT 或 类似的模型，它们的', '架构从未公开'])
+        self.assertTrue(all(c['end'] - c['start'] >= 0.05 for c in cues))
+
+    def test_rolling_json3_window_is_deduplicated(self):
+        events = [
+            {'tStartMs': 2270, 'dDurationMs': 10, 'segs': [{'utf8': '大家好，最近我做了一个'}]},
+            {'tStartMs': 2280, 'dDurationMs': 1950, 'segs': [{'utf8': '大家好，最近我做了一个\n关于大型语言模型的30分钟演讲，'}]},
+            {'tStartMs': 4230, 'dDurationMs': 10, 'segs': [{'utf8': '关于大型语言模型的30分钟演讲，'}]},
+            {'tStartMs': 4240, 'dDurationMs': 2150, 'segs': [{'utf8': '关于大型语言模型的30分钟演讲，\n算是入门介绍。'}]},
+            {'tStartMs': 6390, 'dDurationMs': 10, 'segs': [{'utf8': '算是入门介绍。'}]},
+            {'tStartMs': 6400, 'dDurationMs': 2070, 'segs': [{'utf8': '算是入门介绍。\n可惜的是，那次演讲没有录制下来。'}]},
+        ]
+        text = ''.join(c['src'] for c in helper.parse_json3_cues({'events': events})).replace(' ', '')
+        self.assertEqual(text, '大家好，最近我做了一个关于大型语言模型的30分钟演讲，算是入门介绍。可惜的是，那次演讲没有录制下来。')
+
+    def test_cjk_json3_lines_split_by_punctuation_and_duration(self):
+        events = [{'tStartMs': i * 4000, 'dDurationMs': 4000, 'segs': [{'utf8': f'第{i}行内容，没有英文句号' + ('。' if i % 3 == 2 else '')}]}
+                  for i in range(15)]
+        cues = helper.parse_json3_cues({'events': events})
+        self.assertGreaterEqual(len(cues), 5)
+        self.assertTrue(all(c['end'] - c['start'] <= 16 for c in cues))
 
 
 if __name__ == '__main__':

@@ -1,0 +1,24 @@
+{
+  "id": "asr-only",
+  "label": "只有 ASR 片段",
+  "kind": "asr",
+  "duration": 36,
+  "spans": [
+    { "start": 0, "end": 11.2, "kind": "speech", "speaker": "A" },
+    { "start": 11.2, "end": 12.0, "kind": "silence", "speaker": null },
+    { "start": 12.0, "end": 34.2, "kind": "speech", "speaker": "A" },
+    { "start": 34.2, "end": 36.0, "kind": "silence", "speaker": null }
+  ],
+  "asr": [
+    { "start": 0.3, "end": 2.4, "text": "so uh what I want to do", "speaker": "0" },
+    { "start": 2.5, "end": 4.6, "text": "today is talk about", "speaker": "0" },
+    { "start": 4.7, "end": 7.4, "text": "how neural networks actually learn", "speaker": "0" },
+    { "start": 7.5, "end": 11.0, "text": "from data and why that matters", "speaker": "0" },
+    { "start": 12.4, "end": 15.2, "text": "the first idea is backprop", "speaker": "0" },
+    { "start": 15.3, "end": 18.6, "text": "which is just the chain rule", "speaker": "0" },
+    { "start": 18.8, "end": 22.4, "text": "applied many times in a row", "speaker": "0" },
+    { "start": 22.6, "end": 26.8, "text": "and the second idea is scale", "speaker": "0" },
+    { "start": 27.0, "end": 31.2, "text": "changes what the model can represent", "speaker": "0" },
+    { "start": 31.5, "end": 34.0, "text": "thanks for listening", "speaker": "0" }
+  ]
+}

@@ -41,11 +41,12 @@ try {
  assert.deepEqual(requests.slice(0,4).map(r=>r.ref),['A','B','A','B'],'unlabeled subtitles must not share the first reference');
  // Speech can finish before the source interval: late analysis must not replay it.
  state.currentTime=2;audios[0].onended();releaseAnalysis();
- await until(()=>requests.length>=7);
+ await sleep(100);
+ assert.equal(requests.length,4,'analysis must preserve the four prepared utterances');
  state.currentTime=4;
  await until(()=>audios.length>=2&&!audios[1].paused);
  assert.equal(audios[1].dubItem.zh,'sentence 1');
- assert.equal(audios[1].dubItem.speaker,'B');
+ assert.equal(requests[1].ref,'B','preserved provisional audio still has the correct actual reference');
  assert.equal(requests.filter(r=>r.text==='sentence 0').length,1);
  assert.ok(requests.filter(r=>r.text==='sentence 1').every(r=>r.ref==='B'));
 } finally {abort.abort();releaseAnalysis();const result=await outcome;assert.equal(result.error?.name,'AbortError');}

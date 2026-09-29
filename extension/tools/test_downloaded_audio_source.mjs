@@ -31,3 +31,40 @@ await source.close();
 assert(calls.some(([, method]) => method === 'DELETE'));
 assert.throws(() => readPcmWav(new ArrayBuffer(20)));
 console.log('PASS downloaded audio: cross-part timing, exact samples, short tail, cache, cleanup');
+
+// Subtitles are delivered before audio download. A single shared readiness poll
+// gates slice/analyze; early text planning must not depend on audio bytes.
+{
+  let ready = false, audioReads = 0, deleted = false;
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/health')) return Response.json({ service: 'pagelens-media' });
+    if (options.method === 'DELETE') { deleted = true; return Response.json({ ok: true }); }
+    if (url.endsWith('/jobs')) return Response.json({ id });
+    if (url.includes('/audio/')) { audioReads++; return new Response(pcmWav([a])); }
+    return Response.json({ status: ready ? 'ready' : 'downloading', duration: 1,
+      subtitles: [{ id: 's', start: 0, end: 1, src: 'Hello.' }], subtitlesComplete: true,
+      ...(ready ? { parts: [{ index: 0, start: 0, duration: 1 }] } : {}) });
+  };
+  const source = await openInterpretSource({ url: 'https://fixture.test/staged', fetchImpl });
+  assert.equal(source.subtitles[0].src, 'Hello.'); assert.equal(source.subtitlesComplete, true);
+  assert.equal(audioReads, 0); assert.equal(ready, false, 'open returns while media is downloading');
+  const pending = source.slice(0, .5);
+  ready = true;
+  assert.equal((await pending).seconds, .5); assert.equal(audioReads, 1);
+  await source.close(); assert(deleted);
+}
+
+// Cancel a slice waiting for download without waiting for readiness or timeout.
+{
+  const abort = new AbortController();
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/health')) return Response.json({ service: 'pagelens-media' });
+    if (options.method === 'DELETE') return Response.json({ ok: true });
+    if (url.endsWith('/jobs')) return Response.json({ id });
+    return Response.json({ status: 'downloading', duration: 1, subtitles: [{ start: 0, end: 1, src: 'Hello.' }] });
+  };
+  const source = await openInterpretSource({ url: 'https://fixture.test/cancel', fetchImpl, signal: abort.signal });
+  const pending = source.slice(0, 1); abort.abort();
+  await assert.rejects(pending, { name: 'AbortError' }); await source.close();
+}
+console.log('PASS staged subtitle readiness and abort while audio is downloading');

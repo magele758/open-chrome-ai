@@ -139,7 +139,7 @@ for (const race of ['ended-during-resume', 'error-during-background-read']) {
  console.log(`PASS audio lifetime race: ${race}`);
 }
 
-// Fixed user references must not override A/B/A, and late diarization must replace queued voices.
+// Fixed user references must not override A/B/A; late analysis preserves committed voices.
 {
  const state={ok:true,currentTime:0,duration:24,paused:false,userPaused:false,seekRevision:0,readyState:4,playbackRate:1};
  const abort=new AbortController(),audios=[],requests=[];
@@ -149,7 +149,7 @@ for (const race of ['ended-during-resume', 'error-during-background-read']) {
  const labeled=[{start:0,end:4,speaker:'A'},{start:4,end:8,speaker:'B'},{start:8,end:12,speaker:'A'},{start:12,end:24,speaker:'B'}].map(s=>({...s,kind:'speech'}));
  class A{constructor(){this.paused=true;audios.push(this);}pause(){this.paused=true;}async play(){this.paused=false;}removeAttribute(){}load(){}}
  const src={duration:24,close:async()=>{},analyze:async()=>{await analysisGate;return {duration:24,spans:labeled};},slice:async(start,seconds)=>({start,end:start+seconds,seconds,blob:new Blob([speakerAt(start)],{type:'audio/wav'})})};
- const running=runPlannedInterpret({tabId:1,sourceUrl:'https://fixture.test/speakers',settings:{...settings,tts:{...settings.tts,preparationMode:'progressive'}},signal:abort.signal,openSource:async()=>src,
+ const running=runPlannedInterpret({tabId:1,sourceUrl:'https://fixture.test/speakers',settings:{...settings,tts:{...settings.tts,preparationMode:'progressive',contextMode:'cue'}},signal:abort.signal,openSource:async()=>src,
   video:async(cmd,arg={})=>{if(cmd==='control')state.paused=arg.action==='pause';return {...state};},
   getTtsRef:async()=>({buffer:new TextEncoder().encode('fixed'),type:'audio/wav'}),
   transcribe:async(_m,slice)=>slice.start===0&&slice.seconds===12?[{start:0,end:4,text:'First A',speaker:'0'},{start:4,end:8,text:'Then B',speaker:'1'},{start:8,end:12,text:'Again A',speaker:'0'}]:[{start:0,end:slice.seconds,text:speakerAt(slice.start),speaker:'0'}],
@@ -161,11 +161,13 @@ for (const race of ['ended-during-resume', 'error-during-background-read']) {
   assert.deepEqual(requests.slice(0,3).map(r=>r.ref),['A','B','A'],'current speakers beat the saved fixed voice');
   assert.equal(requests[3].ref,'B','provider ID 0 in a new window must not reuse previous window speaker A');
   releaseAnalysis();
-  await until(()=>requests.filter(r=>r.text==='B').length>=3);
+  await sleep(100);
+  assert.equal(requests.length,4,'late analysis must not regenerate ready audio');
   assert(!audios[0].paused,'late analysis must not interrupt the current utterance');
   audios[0].onended();state.currentTime=4;
   await until(()=>audios.length>=2&&!audios[1].paused);
-  assert.equal(audios[1].dubItem.speaker,'B','queued provisional audio must be replaced with the detected speaker');
+  assert.equal(audios[1].dubItem.zh,'Then B','committed text and voice remain playable');
+  assert.equal(requests[1].ref,'B');
   assert.equal(audios[1].dubItem.start,4);
   assert(requests.filter(r=>r.text==='B').every(r=>r.ref==='B'),'all B utterances use B reference');
  }finally{abort.abort();releaseAnalysis();const result=await outcome;assert.equal(result.error?.name,'AbortError');}
@@ -175,7 +177,7 @@ for (const race of ['ended-during-resume', 'error-during-background-read']) {
 // A model that merges different speakers must recover without dropping speech or aborting the session.
 {
  const recoveredCache=new Map(),calls=[];
- const args={source,settings,signal:new AbortController().signal,transcribe,incrementalContext:'交替问答',cacheGet:async k=>recoveredCache.get(k),cacheSet:async(k,v)=>{recoveredCache.set(k,v);},
+ const args={source,settings:{...settings,tts:{...settings.tts,contextMode:'cue'}},signal:new AbortController().signal,transcribe,incrementalContext:'交替问答',cacheGet:async k=>recoveredCache.get(k),cacheSet:async(k,v)=>{recoveredCache.set(k,v);},
   chat:async(_m,{messages})=>{const input=JSON.parse(messages[1].content);calls.push(input);return JSON.stringify({lines:[{ids:input.current.map(c=>c.id),zh:input.current.length>1?'错误地合并的译文':input.current[0].src==='No.'?'不。':'问题？'}]});}};
  const result=await prepareDubPlan(args);
  assert.deepEqual(result.lines.map(l=>[l.speaker,l.start,l.end,l.zh]),[['A',2,6,'问题？'],['B',7,10,'不。']]);
@@ -246,4 +248,202 @@ for (const race of ['ended-during-resume', 'error-during-background-read']) {
  await prepareDubPlan(options);
  assert.equal(requests, 3, 'retry missing window and reuse successful window');
  console.log('PASS partial ASR continues with later speech and preserves retryable gaps');
+}
+
+{
+  const sentenceSettings = { ...settings, tts: { ...settings.tts, contextMode: 'sentence', preparationMode: 'progressive' } };
+  const subs = {
+    duration: 8,
+    subtitles: [
+      { id: '1', start: 0.2, end: 1.2, src: 'Hello', speaker: 'A' },
+      { id: '2', start: 1.3, end: 2.4, src: 'there', speaker: 'A' },
+      { id: '3', start: 3.2, end: 4.8, src: 'Next point.', speaker: 'A' },
+    ],
+    analyze: async () => ({ duration: 8, fingerprint: 'sentence-merge', spans: [{ start: 0, end: 8, kind: 'speech', speaker: 'A' }] }),
+    slice: async (start, seconds) => ({ start, end: start + seconds, seconds, blob }),
+  };
+  const seen = [];
+  const merged = await prepareDubPlan({
+    source: subs, settings: sentenceSettings, signal: new AbortController().signal,
+    windowed: true, skipBrief: true, getBrief: () => '神经网络入门', extraLookahead: [{ id: 'later', src: 'See you tomorrow.' }],
+    priorLines: [{ src: 'Earlier point.', zh: '前面说过。' }],
+    chat: async (_m, { messages }) => {
+      const system = messages[0].content;
+      const input = JSON.parse(messages[1].content);
+      if (!Array.isArray(input?.current)) return '简报';
+      seen.push(input);
+      assert.equal(typeof input.brief, 'string');
+      assert.ok(Array.isArray(input.history));
+      assert.ok(Array.isArray(input.lookahead));
+      assert.equal(system.startsWith('全文简报'), true);
+      assert.doesNotMatch(system, /禁止跨句合并/);
+      return JSON.stringify({ lines: input.current.map(item => ({ ids: [item.id], zh: item.src === 'Hello there' ? '你好' : '下一点。', terms: [{ source: 'Hello', target: '你好' }] })) });
+    },
+    cacheGet: async () => null, cacheSet: async () => true,
+  });
+  assert.equal(merged.lines.length, 2);
+  assert.deepEqual(merged.lines[0].sourceIds, ['1', '2']);
+  assert.equal(merged.lines[0].id, '1+2');
+  assert.equal(seen[0].brief, '神经网络入门');
+  assert.equal(seen[0].history.length, 1);
+  assert.equal(seen[0].lookahead[0].src, 'See you tomorrow.');
+  assert.ok(seen[0].current[0].budgetChars > 0);
+  const cueSettings = { ...settings, tts: { ...settings.tts, contextMode: 'cue' } };
+  let cueSystem = '';
+  const split = await prepareDubPlan({
+    source: subs, settings: cueSettings, signal: new AbortController().signal,
+    chat: async (_m, { messages }) => {
+      cueSystem = messages[0].content;
+      const input = JSON.parse(messages[1].content);
+      if (!Array.isArray(input?.current)) return '笔记';
+      return JSON.stringify({ lines: input.current.map(item => ({ ids: [item.id], zh: '逐条' })) });
+    },
+    cacheGet: async () => null, cacheSet: async () => true,
+  });
+  assert.equal(split.lines.length, 3);
+  assert.match(cueSystem, /禁止跨句合并/);
+  const open = await prepareDubPlan({
+    source: {
+      duration: 12,
+      analyze: async () => ({ duration: 12, fingerprint: 'open-tail', spans: [{ start: 0, end: 12, kind: 'speech', speaker: 'A' }] }),
+      slice: async (start, seconds) => ({ start, end: start + seconds, seconds, blob }),
+    },
+    settings: sentenceSettings, signal: new AbortController().signal, deferUnfinished: true, windowed: true, skipBrief: true,
+    transcribe: async () => [{ start: 0, end: 12, text: 'because I' }],
+    chat: async () => { throw new Error('open tail must stay untranslated'); },
+    cacheGet: async () => null, cacheSet: async () => true,
+  });
+  assert.equal(open.lines.length, 0);
+  assert.equal(open.deferredCues.length, 1);
+  assert.equal(open.deferredCues[0].src, 'because I');
+  let compressed = 0;
+  const tight = await prepareDubPlan({
+    source: {
+      duration: 1,
+      subtitles: [{ id: 'short', start: 0, end: 1, src: 'A fairly long English remark for one second.', speaker: 'A' }],
+      analyze: async () => ({ duration: 1, fingerprint: 'budget', spans: [{ start: 0, end: 1, kind: 'speech', speaker: 'A' }] }),
+      slice: async () => ({ blob }),
+    },
+    settings: sentenceSettings, signal: new AbortController().signal, windowed: true, skipBrief: true,
+    chat: async (_m, { messages }) => {
+      const system = messages[0].content;
+      const input = JSON.parse(messages[1].content);
+      if (system.includes('压缩')) { compressed++; return '短'; }
+      return JSON.stringify({ lines: [{ ids: [input.current[0].id], zh: '这是一段明显超过一秒预算的中文口播' }] });
+    },
+    cacheGet: async () => null, cacheSet: async () => true,
+  });
+  assert.equal(compressed, 0, 'real-time delivery must not add serial compression calls');
+  assert.equal(tight.lines[0].zh, '这是一段明显超过一秒预算的中文口播', 'deliver confirmed translation without waiting for budget rewriting');
+  console.log('PASS sentence context: merge, lookahead, cue fallback, unfinished tail, no realtime budget rewrite');
+}
+
+{
+  const state = { ok: true, currentTime: 0, duration: 100, paused: true, userPaused: false, seekRevision: 0, readyState: 4, playbackRate: 1 };
+  const commands = [];
+  const abort = new AbortController();
+  let asr = 0;
+  const running = runPlannedInterpret({
+    tabId: 1,
+    settings: { ...settings, tts: { ...settings.tts, preparationMode: 'progressive', contextMode: 'sentence' } },
+    signal: abort.signal,
+    video: async (cmd, arg = {}) => {
+      commands.push(cmd);
+      if (cmd === 'control') state.paused = arg.action === 'pause';
+      return { ...state };
+    },
+    openSource: async () => ({
+      duration: 100,
+      close: async () => {},
+      subtitlesComplete: true,
+      subtitles: [{ id: 'a', start: 37.1, end: 40, src: 'Hello there.' }],
+      analyze: async () => new Promise(() => {}),
+      slice: async (start, seconds) => ({ start, end: start + seconds, seconds, blob }),
+    }),
+    transcribe: async () => { asr++; return []; },
+    chat: async () => new Promise(() => {}),
+    cacheGet: async () => null,
+    cacheSet: async () => true,
+    voiceRef: async item => item,
+    audioDuration: async () => 1,
+    createAudio: () => ({ pause() {}, async play() {} }),
+    synthesizeTts: async () => ({ blob }),
+  });
+  try {
+    await until(() => !state.paused);
+    assert(!commands.includes('silence'), 'quiet lead keeps the original audio on');
+    assert.equal(asr, 0, 'a subtitle gap is not sent to ASR');
+  } finally {
+    abort.abort();
+    await running.catch(error => { if (error?.name !== 'AbortError') throw error; });
+  }
+  console.log('PASS quiet subtitle lead plays original audio without waiting');
+}
+
+{
+  const state = { ok: true, currentTime: 0, duration: 200, paused: true, userPaused: false, seekRevision: 0, readyState: 4, playbackRate: 1 };
+  const commands = [], events = [];
+  const abort = new AbortController();
+  let analyzeResolve, sliceCalls = 0;
+  const analyzePromise = new Promise(resolve => { analyzeResolve = resolve; });
+  const subtitles = Array.from({ length: 40 }, (_, i) => ({
+    id: `sub:${i}`, start: 37.136 + i * 4, end: 41.136 + i * 4,
+    src: `Subtitle cue number ${i}`, speaker: null,
+  }));
+  const running = runPlannedInterpret({
+    tabId: 1,
+    settings: { ...settings, tts: { ...settings.tts, preparationMode: 'progressive', contextMode: 'sentence' } },
+    signal: abort.signal,
+    onEvent: e => events.push(e),
+    video: async (cmd, arg = {}) => {
+      commands.push(cmd);
+      if (cmd === 'control') state.paused = arg.action === 'pause';
+      return { ...state };
+    },
+    openSource: async () => ({
+      duration: 200,
+      close: async () => {},
+      subtitles, subtitlesComplete: true,
+      analyze: async () => analyzePromise,
+      slice: async (start, seconds) => {
+        sliceCalls++;
+        return { start, end: start + seconds, seconds, blob };
+      },
+    }),
+    chat: async (_, { messages }) => {
+      const input = JSON.parse(messages[1].content);
+      return input.current ? JSON.stringify({ lines: input.current.map(c => ({ ids: [c.id], zh: '本句翻译。' })) }) : '';
+    },
+    cacheGet: async () => null,
+    cacheSet: async () => true,
+    voiceRef: async () => null,
+    audioDuration: async () => 1,
+    createAudio: () => ({ pause() {}, async play() {} }),
+    synthesizeTts: async () => ({ blob }),
+  });
+  try {
+    await until(() => !state.paused);
+    state.currentTime = 5;
+    analyzeResolve({
+      duration: 200,
+      fingerprint: 'bg-diarization',
+      background: false,
+      spans: [
+        { start: 0, end: 10, kind: 'music' },
+        { start: 10, end: 37.136, kind: 'silence' },
+        { start: 37.136, end: 200, kind: 'speech', speaker: 'A' },
+      ],
+    });
+    for (let t = 6; t <= 36.5; t += 3) {
+      state.currentTime = t;
+      await sleep(15);
+      assert(!state.paused, `video must not pause during quiet intro at t=${t}`);
+    }
+    await until(() => events.some(e => e.type === 'dub_segment'));
+    assert(sliceCalls <= 50, `candidate reference search must be bounded, got ${sliceCalls} slices`);
+  } finally {
+    abort.abort();
+    await running.catch(error => { if (error?.name !== 'AbortError') throw error; });
+  }
+  console.log('PASS quiet intro playback persists through background analyze and bounds reference search');
 }
