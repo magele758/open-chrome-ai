@@ -129,6 +129,7 @@ async function runKernelLoop(host, userText, options) {
       signal,
       onEvent: emitChrome,
       traceSteps,
+      turn: turnsUsed,
     });
 
   if (repaired.pending.length) {
@@ -211,6 +212,7 @@ async function runKernelLoop(host, userText, options) {
             stripTools,
             lastTurnNudge: stripTools ? CHROME_LAST_TURN_NUDGE : "",
           });
+          const modelStart = Date.now();
           const result = await host.model.runTurn({
             messages,
             tools: toOpenAITools(input.tools || []),
@@ -225,10 +227,25 @@ async function runKernelLoop(host, userText, options) {
             },
           });
           const mapped = fromChromeModelResult(result);
+          const durationMs = Date.now() - modelStart;
           if (mapped.usage) {
             totalInputTokens += mapped.usage.inputTokens;
             totalOutputTokens += mapped.usage.outputTokens;
           }
+          const turnIdx = turnsUsed;
+          traceSteps.push({
+            type: "model_turn",
+            turn: turnIdx,
+            durationMs,
+            messages,
+            tools: (input.tools || []).map((t) => ({ name: t.name, description: t.description })),
+            content: result?.content || (mapped.assistant?.parts || []).filter((p) => p.type === "text").map((p) => p.text).join("") || "",
+            reasoning: result?.reasoning || (mapped.assistant?.parts || []).filter((p) => p.type === "reasoning").map((p) => p.text).join("") || "",
+            toolCalls: (result?.toolCalls || []).map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })),
+            finishReason: result?.finishReason || mapped.stopReason || (result?.toolCalls?.length ? "tool_calls" : "stop"),
+            usage: result?.usage || (mapped.usage ? { promptTokens: mapped.usage.inputTokens, completionTokens: mapped.usage.outputTokens, totalTokens: mapped.usage.inputTokens + mapped.usage.outputTokens } : { promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
+            timestamp: Date.now(),
+          });
           return mapped;
         },
       },
@@ -314,6 +331,13 @@ async function runKernelLoop(host, userText, options) {
           checkpoint();
         } else if (ev.type === "compacted") {
           emitChrome({ type: "compressed", before: ev.replaced?.startSeq, after: ev.replaced?.endSeq });
+          traceSteps.push({
+            type: "compressed",
+            turn: turnsUsed,
+            before: ev.replaced?.startSeq,
+            after: ev.replaced?.endSeq,
+            timestamp: Date.now(),
+          });
         } else if (ev.type === "abort") {
           emitChrome({ type: "abort" });
         } else if (ev.type === "ended") {

@@ -60,6 +60,7 @@ export async function executeChromeToolCalls({
   signal,
   onEvent,
   traceSteps,
+  turn = 0,
 }) {
   const history = foldedToChromeHistory(foldMessages);
   const results = [];
@@ -103,6 +104,7 @@ export async function executeChromeToolCalls({
             }
             traceSteps.push({
               type: "tool_intercepted",
+              turn,
               name: call.name,
               args,
               reason: content,
@@ -189,11 +191,13 @@ export async function executeChromeToolCalls({
     content = String(content ?? "").slice(0, TOOL_RESULT_CHARS);
     traceSteps.push({
       type: "tool_exec",
+      turn,
       name: call.name,
       args,
       ok,
       durationMs,
-      resultPreview: String(content).slice(0, 500),
+      result: String(content ?? ""),
+      resultPreview: String(content ?? "").slice(0, 4000),
       timestamp: Date.now(),
     });
     emitToolsDone(onEvent, { name: call.name, ok, args, content, durationMs });

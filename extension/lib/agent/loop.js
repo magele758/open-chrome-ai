@@ -133,6 +133,7 @@ async function runLoop(host, userText, options) {
     ] : packed;
 
     let result;
+    let activeTools = [];
     const modelStart = Date.now();
     try {
       const allHostTools = host.allTools || host.tools || [];
@@ -150,7 +151,7 @@ async function runLoop(host, userText, options) {
           }
         }
       }
-      const activeTools = finalTurn ? [] : Array.from(toolMap.values());
+      activeTools = finalTurn ? [] : Array.from(toolMap.values());
       if (turnsUsed === 0) console.info("[pagelens] model first-turn", activeTools.length, "tools");
       result = await host.model.runTurn({
         messages: modelMessages,
@@ -163,6 +164,7 @@ async function runLoop(host, userText, options) {
       const msg = String(err?.message || err);
       if (!finalTurn && /tools|tool_choice|functions/i.test(msg) && host.tools?.length) {
         console.warn("[pagelens] model tools rejected, retrying with sanitized messages", msg);
+        activeTools = [];
         const fallbackMessages = withoutToolCalls(packed);
         result = await host.model.runTurn({
           messages: fallbackMessages,
@@ -190,6 +192,10 @@ async function runLoop(host, userText, options) {
       type: "model_turn",
       turn: turnsUsed,
       durationMs: Date.now() - modelStart,
+      messages: modelMessages,
+      tools: activeTools.map((t) => ({ name: t.name, description: t.description })),
+      content: result.content || "",
+      reasoning: result.reasoning || "",
       finishReason,
       usage: result.usage || { promptTokens: turnInput, completionTokens: turnOutput, totalTokens: turnInput + turnOutput },
       toolCalls: (result.toolCalls || []).map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })),
@@ -246,7 +252,7 @@ async function runLoop(host, userText, options) {
     }
 
     checkpoint();
-    const aborted = await appendToolResults(host, calls, history, signal, onEvent, checkpoint, sessionId, traceSteps, gate);
+    const aborted = await appendToolResults(host, calls, history, signal, onEvent, checkpoint, sessionId, traceSteps, gate, turnsUsed);
     if (aborted) {
       onEvent({ type: "abort" });
       debugLog("agent.end", { reason: "abort", turnsUsed, sessionId });
@@ -268,10 +274,10 @@ function withoutToolCalls(messages) {
   });
 }
 
-async function appendToolResults(host, calls, history, signal, onEvent, checkpoint, sessionId = "default", traceSteps = [], gate = null) {
+async function appendToolResults(host, calls, history, signal, onEvent, checkpoint, sessionId = "default", traceSteps = [], gate = null, turn = 0) {
   for (const call of calls) {
     if (signal?.aborted) return true;
-    const drained = await runToolList(host, [call], signal, onEvent, sessionId, traceSteps, history, gate);
+    const drained = await runToolList(host, [call], signal, onEvent, sessionId, traceSteps, history, gate, turn);
     history.push(...drained.results);
     checkpoint();
     if (drained.aborted) return true;
@@ -279,7 +285,7 @@ async function appendToolResults(host, calls, history, signal, onEvent, checkpoi
   return false;
 }
 
-async function runToolList(host, calls, signal, onEvent, sessionId = "default", traceSteps = [], history = [], gate = null) {
+async function runToolList(host, calls, signal, onEvent, sessionId = "default", traceSteps = [], history = [], gate = null, turn = 0) {
   const results = [];
   const allHostTools = host.allTools || host.tools || [];
   for (const call of calls) {
@@ -320,6 +326,7 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
             }
             traceSteps.push({
               type: "tool_intercepted",
+              turn,
               name: call.name,
               args,
               reason: content,
@@ -407,11 +414,13 @@ async function runToolList(host, calls, signal, onEvent, sessionId = "default", 
     const durationMs = Date.now() - t0;
     traceSteps.push({
       type: "tool_exec",
+      turn,
       name: call.name,
       args,
       ok,
       durationMs,
-      resultPreview: String(content ?? "").slice(0, 500),
+      result: String(content ?? ""),
+      resultPreview: String(content ?? "").slice(0, 4000),
       timestamp: Date.now(),
     });
     content = String(content ?? "").slice(0, TOOL_RESULT_CHARS);
