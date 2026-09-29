@@ -1,9 +1,12 @@
+import { createSettingsPage } from "./settings-page.js";
+let settingsPage;
 import { toolCardOpen, bindToolCardState } from "./tool-card-state.js";
 import { applyUiTheme, bindThemeEditor } from "./theme.js";
 import { debugLog, exportDebugLogFresh, DEBUG_BUILD, hydrateDebugLog } from "../lib/debug-log.js";
 hydrateDebugLog();
 debugLog("panel.loaded", { build: DEBUG_BUILD, source: "sidepanel" });
 import { defaultSettings, loadSettings, saveSettings, applyOptionalLocalSettings, resolveModel, isModelReady, isAsrReady, isTtsReady, isSkillsEnabled, presetsFor } from "../lib/storage.js";
+import { sendTraceToLangfuse, testLangfuseConnection, isLangfuseConfigured } from "../lib/langfuse.js";
 import { streamTurn, testConnection, listRemoteModels, multimodalUserContent, estimateTokens } from "../lib/openai.js";
 import {
   addProviderModel,
@@ -240,6 +243,12 @@ compactController.subscribe((event, taskState) => {
     renderCompactPlayer();
     renderTranscribeAction();
   }
+  if (event?.type === "dub_partial") {
+    compactGenerationComplete = false;
+    compactFullGenerating = false;
+    compactGenerationMessage = "部分片段未能生成，可播放已完成内容；重试会复用已完成缓存。";
+    compactStreamPlayer?.closeStream();
+  }
   if (event?.type === "dub_complete") {
     compactGenerationComplete = true;
     if (compactStreamPlayer) {
@@ -269,7 +278,7 @@ compactController.subscribe((event, taskState) => {
         compactGenerationMessage = event?.type === "error" ? event.error : "尚未保存完整音频，请重试；已完成的分段缓存会复用。";
       }
       compactFullGenerating = false;
-      compactGenerationComplete = event?.type === "stopped";
+      compactGenerationComplete = event?.type === "stopped" && event.result?.complete !== false;
       compactStreamPlayer?.closeStream();
       if (event?.type === "error") pushError("纯享音频：" + event.error);
     }
@@ -1001,6 +1010,7 @@ function renderModelLine() {
     pick.value = ref ? `${ref.providerId}::${ref.modelId}` : "";
   }
   setModelLineMeta(modelSummary());
+  settingsPage?.refreshModels();
 }
 
 function syncComposerHints() {
@@ -1998,6 +2008,25 @@ function downloadMessageTrace(msg) {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }, 1000);
+}
+
+function maybeUploadTraceToLangfuse(traceLog) {
+  try {
+    if (!traceLog) return;
+    const cfg = state?.settings?.langfuse;
+    if (!isLangfuseConfigured(cfg)) return;
+    const pageInfo = state.tab ? { url: state.tab.url, title: state.tab.title } : null;
+    const enriched = {
+      ...traceLog,
+      page: pageInfo,
+      sessionTitle: state.sessionTitle || undefined,
+    };
+    sendTraceToLangfuse(enriched, cfg).catch(() => {
+      // Background telemetry: never disturb user workflow on network failure
+    });
+  } catch {
+    // Fail-safe
+  }
 }
 
 function renderMessages() {
@@ -3160,7 +3189,9 @@ async function startGenerateReview() {
   const model = resolveModel(state.settings, "text");
   if (!isModelReady(model)) {
     alert("请先在设置中添加文本服务商并勾选模型。");
+    renderSettingsForm();
     setView("settings");
+    settingsPage?.reveal("block-text");
     return;
   }
 
@@ -3612,18 +3643,10 @@ function renderTextProviders() {
       </div>
     </div>` : ""}
     ${cards || `<p class="muted">还没有服务商。点「新增服务商」加入 OpenAI / OpenRouter / 本地 Ollama 等。</p>`}
-    <label class="field">视频总结：单次正文上限（token）
-      <input data-k="text.summaryInputTokens" type="number" min="1000" max="2000000" step="1000" value="${Number(state.settings.text?.summaryInputTokens) || 200000}" />
-      <small>默认 200,000；超过才分段。按中英文估算，不含提示词和输出。</small>
-    </label>
   `;
   const draftPreset = root.querySelector("[data-tp-draft=preset]");
   if (draftPreset && ui.draftPreset) draftPreset.value = ui.draftPreset;
-  const token = root.querySelector("[data-k='text.summaryInputTokens']");
-  if (token) {
-    token.addEventListener("change", () => writeField(token));
-    token.addEventListener("input", () => writeField(token));
-  }
+  settingsPage?.refreshModels();
 }
 
 function bindTextProvidersOnce() {
@@ -3838,6 +3861,16 @@ function renderSettingsForm() {
   if ($("loop-engine-label")) $("loop-engine-label").textContent = LOOP_ENGINE_ID;
   if ($("skills-enabled")) $("skills-enabled").checked = skillsOn();
   if ($("daily-notes-folder")) $("daily-notes-folder").value = state.settings.dailyNotesFolder ?? "Daily";
+  const lf = state.settings.langfuse || {};
+  if ($("langfuse-enabled")) $("langfuse-enabled").checked = lf.enabled === true;
+  if ($("langfuse-url")) $("langfuse-url").value = lf.baseUrl || "http://localhost:3000";
+  if ($("langfuse-pk")) $("langfuse-pk").value = lf.publicKey || "";
+  if ($("langfuse-sk")) $("langfuse-sk").value = lf.secretKey || "";
+  if ($("langfuse-env")) $("langfuse-env").value = lf.environment || "development";
+  if ($("langfuse-status")) {
+    $("langfuse-status").textContent = "";
+    $("langfuse-status").className = "status";
+  }
   syncSkillFolderControls();
   renderLibraryStatus();
   renderSkillFolderStatus();
@@ -3846,10 +3879,21 @@ function renderSettingsForm() {
   renderShortcutList();
   bindSettingFields();
   bindTtsRefControls();
+  settingsPage?.render();
 }
 
 function paintLibraryStatus(info, extra = "") {
   const el = $("library-status");
+  const displayName = $("library-display-name");
+  const descEl = $("library-status-desc");
+  if (displayName) {
+    displayName.textContent = info?.name || info?.path || "Obsidian / Notes";
+  }
+  if (descEl) {
+    descEl.textContent = info?.configured
+      ? (info.granted ? "用于剪藏和对话笔记 · 已授权" : "用于剪藏和对话笔记 · 需要重新授权")
+      : "用于剪藏和对话笔记";
+  }
   if (!el) return;
   const reauth = $("btn-library-reauth");
   const input = $("library-path");
@@ -4327,7 +4371,7 @@ function renderShortcutList() {
 function openShortcutSettings() {
   renderSettingsForm();
   setView("settings");
-  $("block-shortcuts")?.scrollIntoView({ block: "start" });
+  settingsPage?.reveal("block-shortcuts");
 }
 
 function asrExtraFields(asr) {
@@ -4368,6 +4412,12 @@ function ttsFields(tts) {
         <option value="progressive" ${tts.preparationMode === 'progressive' ? 'selected' : ''}>快速起播，后台持续翻译与配音（推荐）</option>
         <option value="full" ${tts.preparationMode === 'full' ? 'selected' : ''}>完整配音后播放（播放时无需等待生成）</option>
         <option value="buffered" ${tts.preparationMode === 'buffered' ? 'selected' : ''}>全文翻译后，边准备配音边播放</option>
+      </select>
+    </label>
+    <label class="field">翻译上下文
+      <select data-k="tts.contextMode">
+        <option value="sentence" ${tts.contextMode === 'sentence' ? 'selected' : ''}>按语义句翻译，并带上下文</option>
+        <option value="cue" ${tts.contextMode !== 'sentence' ? 'selected' : ''}>按字幕条翻译（默认）</option>
       </select>
     </label>
     <label class="field">连续配音预缓存（秒，快速模式中途缓冲时也使用）
@@ -4500,10 +4550,14 @@ async function previewTts() {
 
 function bindSettingFields() {
   document.querySelectorAll("[data-k]").forEach((el) => {
+    if (el.dataset.settingBound) return;
+    el.dataset.settingBound = "true";
     el.addEventListener("change", () => writeField(el));
     el.addEventListener("input", () => writeField(el));
   });
   document.querySelectorAll("[data-test]").forEach((btn) => {
+    if (btn.dataset.settingBound) return;
+    btn.dataset.settingBound = "true";
     btn.addEventListener("click", () => runTest(btn.dataset.test));
   });
 }
@@ -5192,6 +5246,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           trace: botMsg.trace ? [...botMsg.trace] : [],
           steps: result.traceSteps || [],
         };
+        maybeUploadTraceToLangfuse(botMsg.traceLog);
       }
       renderMessages();
     }
@@ -5227,6 +5282,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       steps: [],
       error: err?.message || String(err),
     };
+    maybeUploadTraceToLangfuse(botMsg.traceLog);
     renderMessages();
   } finally {
     const userStop = state.stopIntent === "user";
@@ -5460,7 +5516,7 @@ function needAsrSettings(message) {
   setView("settings");
   $("save-status").textContent = message || "先配置语音转写（ASR）的 base_url";
   $("save-status").className = "status bad";
-  $("block-asr")?.scrollIntoView({ block: "start" });
+  settingsPage?.reveal("block-asr");
 }
 
 async function startTranscribe({ force = false } = {}) {
@@ -5574,6 +5630,7 @@ async function startSummarizeVideo() {
       trace: [{ name: "总结文稿", ok: true }],
       steps: [{ type: "summarize_transcript", durationMs: durMs, timestamp: Date.now() }],
     };
+    if (typeof maybeUploadTraceToLangfuse === "function") maybeUploadTraceToLangfuse(botMsg.traceLog);
     state.videoSummary = { title, text: botMsg.text, metrics: botMsg.metrics, error: false };
     if (typeof paintVideoSummary === "function") paintVideoSummary();
   } catch (error) {
@@ -5600,6 +5657,7 @@ async function startSummarizeVideo() {
       steps: [],
       error: error?.message || String(error),
     };
+    if (typeof maybeUploadTraceToLangfuse === "function") maybeUploadTraceToLangfuse(botMsg.traceLog);
     state.videoSummary = { title, text: botMsg.text, metrics: botMsg.metrics, error: botMsg.error };
     if (typeof paintVideoSummary === "function") paintVideoSummary();
   } finally {
@@ -5774,6 +5832,15 @@ function bindComposer() {
 }
 
 function wire() {
+  settingsPage ||= createSettingsPage({
+    root: $("view-settings"),
+    getSettings: () => state.settings,
+    onModelChange: (value) => {
+      const select = $("text-model-pick");
+      select.value = value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    },
+  });
   messageScroll ||= createMessageScroll($("msgs"), $("btn-messages-bottom"));
   $("btn-debug-export")?.addEventListener("click", async () => {
     const json = await exportDebugLogFresh();
@@ -6103,22 +6170,75 @@ function wire() {
     paintSkillFolderStatus(state.skillFolder);
     renderModelLine();
   });
+  $("daily-notes-folder")?.addEventListener("input", (event) => {
+    state.settings.dailyNotesFolder = event.target.value;
+  });
   on("btn-save", "click", async () => {
-    if ($("daily-notes-folder")) {
-      state.settings.dailyNotesFolder = $("daily-notes-folder").value.trim();
-    }
-    const pathErrors = await applyFolderPathsFromInputs();
-    state.settings = await saveSettings(state.settings);
-    applyUiFont(state.settings.uiFont);
-    renderModelLine();
-    renderShortcutList();
-    if (pathErrors.length) {
-      $("save-status").textContent = `设置已保存，路径未生效：${pathErrors.join(" ")}`;
+    const button = $("btn-save");
+    button.disabled = true;
+    try {
+      if ($("daily-notes-folder")) {
+        state.settings.dailyNotesFolder = $("daily-notes-folder").value.trim();
+      }
+      if ($("langfuse-enabled")) {
+        if (!state.settings.langfuse) state.settings.langfuse = {};
+        state.settings.langfuse.enabled = $("langfuse-enabled").checked;
+        if ($("langfuse-url")) state.settings.langfuse.baseUrl = $("langfuse-url").value.trim();
+        if ($("langfuse-pk")) state.settings.langfuse.publicKey = $("langfuse-pk").value.trim();
+        if ($("langfuse-sk")) state.settings.langfuse.secretKey = $("langfuse-sk").value.trim();
+        if ($("langfuse-env")) state.settings.langfuse.environment = $("langfuse-env").value.trim();
+      }
+      const pathErrors = await applyFolderPathsFromInputs();
+      state.settings = await saveSettings(state.settings);
+      applyUiFont(state.settings.uiFont);
+      renderModelLine();
+      renderShortcutList();
+      if (pathErrors.length) {
+        $("save-status").textContent = `设置已保存，路径未生效：${pathErrors.join(" ")}`;
+        $("save-status").className = "status bad";
+        return;
+      }
+      $("save-status").textContent = "已保存到本机";
+      $("save-status").className = "status ok";
+      settingsPage?.refreshSummary();
+    } catch (error) {
+      $("save-status").textContent = "保存失败，请重试：" + (error.message || String(error));
       $("save-status").className = "status bad";
-      return;
-    }
-    $("save-status").textContent = "已保存到本机";
-    $("save-status").className = "status ok";
+    } finally { button.disabled = false; }
+  });
+  $("langfuse-enabled")?.addEventListener("change", (e) => {
+    if (!state.settings.langfuse) state.settings.langfuse = {};
+    state.settings.langfuse.enabled = e.target.checked;
+  });
+  $("langfuse-url")?.addEventListener("input", (e) => {
+    if (!state.settings.langfuse) state.settings.langfuse = {};
+    state.settings.langfuse.baseUrl = e.target.value.trim();
+  });
+  $("langfuse-pk")?.addEventListener("input", (e) => {
+    if (!state.settings.langfuse) state.settings.langfuse = {};
+    state.settings.langfuse.publicKey = e.target.value.trim();
+  });
+  $("langfuse-sk")?.addEventListener("input", (e) => {
+    if (!state.settings.langfuse) state.settings.langfuse = {};
+    state.settings.langfuse.secretKey = e.target.value.trim();
+  });
+  $("langfuse-env")?.addEventListener("input", (e) => {
+    if (!state.settings.langfuse) state.settings.langfuse = {};
+    state.settings.langfuse.environment = e.target.value.trim();
+  });
+  $("btn-langfuse-test")?.addEventListener("click", async () => {
+    const status = $("langfuse-status");
+    if (!status) return;
+    status.textContent = "连接测试中…";
+    status.className = "status";
+    const cfg = {
+      baseUrl: $("langfuse-url")?.value?.trim() || state.settings?.langfuse?.baseUrl,
+      publicKey: $("langfuse-pk")?.value?.trim() || state.settings?.langfuse?.publicKey,
+      secretKey: $("langfuse-sk")?.value?.trim() || state.settings?.langfuse?.secretKey,
+    };
+    const res = await testLangfuseConnection(cfg);
+    status.textContent = res.message;
+    status.className = res.ok ? "status ok" : "status bad";
   });
   on("mm-same", "change", (e) => {
     state.settings.multimodalSameAsText = e.target.checked;

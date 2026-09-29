@@ -6,6 +6,7 @@
   <title>PageLens</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="themes.css" />
+  <link rel="stylesheet" href="settings.css" />
   <link rel="stylesheet" href="../vendor/katex/katex.min.css" />
 </head>
 <body>
@@ -34,6 +35,12 @@
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
     <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="currentColor"/><circle cx="15" cy="17" r="2" fill="currentColor"/></symbol>
+    <symbol id="i-audio" viewBox="0 0 24 24"><path d="M4 14v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="12" width="4" height="8" rx="2"/><rect x="17" y="12" width="4" height="8" rx="2"/></symbol>
+    <symbol id="i-puzzle" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 17h6m-3-3v6"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/></symbol>
+    <symbol id="i-palette" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="8" r="1"/><circle cx="15" cy="8" r="1"/><circle cx="7" cy="13" r="1"/><path d="M14 21v-6h7"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></symbol>
   </svg>
 
   <div id="app">
@@ -350,163 +357,369 @@
       </section>
 
       <section id="view-settings" class="settings hidden">
-        <div class="panel-head">
-          <h2>设置</h2>
-          <button class="secondary" type="button" id="btn-back">
-            <svg class="ico tiny"><use href="#i-back"/></svg>返回对话
-          </button>
-        </div>
-        <p class="lead">文本、多模态必填才能聊天。语音转写和配音是高级功能，不填不影响读页、问答、点选。密钥只存在本机。打开设置不会中断音视频任务。</p>
-
-        <div class="block" id="block-appearance">
-          <h3>界面主题</h3>
-          <p class="lead">点击即生效并自动保存，不中断对话或播放。</p>
-          <div class="theme-picker" role="group" aria-label="界面主题">
-            <button type="button" class="theme-option" data-ui-theme="default" aria-pressed="true"><span class="theme-colors" aria-hidden="true"><i style="background:#f7f6f2"></i><i style="background:#c45c26"></i><i style="background:#1c1917"></i></span><strong>默认</strong><small>原始简洁外观</small></button>
-            <button type="button" class="theme-option" data-ui-theme="cyber" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i style="background:#100c25"></i><i style="background:#b47bff"></i><i style="background:#71baff"></i></span><strong>赛博朋克</strong><small>紫蓝霓虹 · 故障边框</small></button>
-            <button type="button" class="theme-option" data-ui-theme="terminal" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i style="background:#141413"></i><i style="background:#f3a66a"></i><i style="background:#abbf87"></i></span><strong>Terminal</strong><small>炭黑控制台 · 橙色提示</small></button>
-            <button type="button" class="theme-option" data-ui-theme="warm" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i style="background:#f4ecdf"></i><i style="background:#9b5638"></i><i style="background:#887040"></i></span><strong>暖纸阅读</strong><small>米杏纸色 · 宋体正文</small></button>
-            <button type="button" class="theme-option" data-ui-theme="mint" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i style="background:#f5f7df"></i><i style="background:#687e24"></i><i style="background:#d3df86"></i></span><strong>青柠小径</strong><small>奶油黄绿 · 清新圆角</small></button>
+        <div class="settings-heading">
+          <div class="panel-head">
+            <h2>设置</h2>
+            <button class="secondary link" type="button" id="btn-back">← 返回对话</button>
           </div>
-          <div class="theme-editor">
-            <h4>自定义当前主题</h4>
-            <p class="lead">4 个基础色，其他层次自动搭配。每套主题分别记住你的配色。</p>
-            <div class="theme-color-grid">
-              <div class="theme-color-field"><label for="theme-color-surface">背景色</label><div><input id="theme-color-surface" type="color" data-theme-color="surface" aria-label="背景色" /><input type="text" data-theme-color="surface" aria-label="背景色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
-              <div class="theme-color-field"><label for="theme-color-ink">正文色</label><div><input id="theme-color-ink" type="color" data-theme-color="ink" aria-label="正文色" /><input type="text" data-theme-color="ink" aria-label="正文色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
-              <div class="theme-color-field"><label for="theme-color-accent">主题主色</label><div><input id="theme-color-accent" type="color" data-theme-color="accent" aria-label="主题主色" /><input type="text" data-theme-color="accent" aria-label="主题主色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
-              <div class="theme-color-field"><label for="theme-color-teal">辅助色</label><div><input id="theme-color-teal" type="color" data-theme-color="teal" aria-label="辅助色" /><input type="text" data-theme-color="teal" aria-label="辅助色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+          <p class="subtitle">按你的习惯，让 PageLens 更顺手。</p>
+          <div class="settings-tabs" role="tablist" aria-label="设置分类">
+            <button type="button" id="settings-tab-basic" role="tab" aria-selected="true" aria-controls="settings-basic" data-settings-tab="basic">基础配置</button>
+            <button type="button" id="settings-tab-advanced" role="tab" aria-selected="false" aria-controls="settings-advanced" tabindex="-1" data-settings-tab="advanced">高级配置</button>
+          </div>
+        </div>
+
+        <div class="settings-scroll" id="settings-scroll">
+          <div id="settings-basic" role="tabpanel" aria-labelledby="settings-tab-basic">
+            <h3 class="section-label">模型连接 <span class="badge" id="settings-model-state">未配置</span></h3>
+            <div class="card settings-basic-card" id="block-text">
+              <div class="model-top">
+                <div class="model-icon" aria-hidden="true">✳</div>
+                <div class="model-info">
+                  <strong id="settings-provider-name">我的模型服务</strong>
+                  <small id="settings-provider-type">OpenAI 兼容服务</small>
+                </div>
+                <button class="compact secondary edit-model" id="btn-toggle-provider-manager" type="button" aria-expanded="false">管理</button>
+              </div>
+              <label class="field">当前文本模型
+                <select id="settings-text-model" aria-label="当前文本模型"></select>
+              </label>
+              <label class="check">
+                <input type="checkbox" id="mm-same" checked />
+                图片理解使用同一模型
+              </label>
+              <p class="hint" id="mm-hint">用于截图和视频画面，需要模型支持图片输入。</p>
+              <div id="mm-fields" hidden></div>
+              <details class="plain-detail" id="settings-provider-manager">
+                <summary>管理服务商与模型</summary>
+                <div id="text-providers" style="margin-top:10px"></div>
+              </details>
             </div>
-            <h4>错误框配色</h4>
-            <p class="lead">用于失败的工具调用和对话错误提示。</p>
-            <div class="theme-color-grid">
-              <div class="theme-color-field"><label for="theme-color-danger-bg">错误背景</label><div><input id="theme-color-danger-bg" type="color" data-theme-color="danger-bg" aria-label="错误背景" /><input type="text" data-theme-color="danger-bg" aria-label="错误背景十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
-              <div class="theme-color-field"><label for="theme-color-danger">错误文字</label><div><input id="theme-color-danger" type="color" data-theme-color="danger" aria-label="错误文字" /><input type="text" data-theme-color="danger" aria-label="错误文字十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
-              <div class="theme-color-field"><label for="theme-color-danger-line">错误边框</label><div><input id="theme-color-danger-line" type="color" data-theme-color="danger-line" aria-label="错误边框" /><input type="text" data-theme-color="danger-line" aria-label="错误边框十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+
+            <h3 class="section-label">回答与外观</h3>
+            <div class="card settings-basic-card" id="block-answer">
+              <div class="two">
+                <label class="field">回答语言
+                  <select id="answer-lang">
+                    <option value="zh-CN">简体中文</option>
+                    <option value="en">English</option>
+                    <option value="page">跟随页面</option>
+                  </select>
+                </label>
+                <label class="field">字体大小
+                  <select id="ui-font">
+                    <option value="md">默认</option>
+                    <option value="lg">较大</option>
+                    <option value="xl">更大</option>
+                  </select>
+                </label>
+              </div>
+              <div class="field" style="margin-bottom:0">界面主题
+                <div class="themes theme-picker" role="group" aria-label="界面主题">
+                  <button type="button" class="theme theme-option" data-ui-theme="default" style="--swatch:linear-gradient(90deg,#f7f6f2 60%,#c45c26 60%)" aria-pressed="true"><span class="theme-colors" aria-hidden="true"><i></i></span><strong>默认</strong><small>原始简洁外观</small></button>
+                  <button type="button" class="theme theme-option" data-ui-theme="cyber" style="--swatch:linear-gradient(90deg,#100c25 60%,#b47bff 60%)" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i></i></span><strong>赛博</strong><small>紫蓝霓虹 · 故障边框</small></button>
+                  <button type="button" class="theme theme-option" data-ui-theme="terminal" style="--swatch:linear-gradient(90deg,#141413 60%,#f3a66a 60%)" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i></i></span><strong>终端</strong><small>炭黑控制台 · 橙色提示</small></button>
+                  <button type="button" class="theme theme-option" data-ui-theme="warm" style="--swatch:linear-gradient(90deg,#f4ecdf 60%,#9b5638 60%)" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i></i></span><strong>暖纸</strong><small>米杏纸色 · 宋体正文</small></button>
+                  <button type="button" class="theme theme-option" data-ui-theme="mint" style="--swatch:linear-gradient(90deg,#f5f7df 60%,#687e24 60%)" aria-pressed="false"><span class="theme-colors" aria-hidden="true"><i></i></span><strong>青柠</strong><small>奶油黄绿 · 清新圆角</small></button>
+                </div>
+              </div>
+              <div class="row" style="margin-top:6px">
+                <p class="hint" style="margin:0">精细配色在「高级配置 → 自定义外观」。</p>
+                <button type="button" class="settings-text-button" data-settings-link="settings-group-colors">自定义配色 →</button>
+              </div>
+              <p class="status" id="theme-status" role="status" aria-live="polite"></p>
             </div>
-            <p id="theme-contrast" class="lead" role="status"></p>
-            <button id="btn-theme-reset" class="secondary" type="button">重置当前主题配色</button>
+
+            <h3 class="section-label">文稿保存 <span class="muted">可选</span></h3>
+            <div class="card settings-basic-card" id="block-library">
+              <div class="row">
+                <div class="folder">
+                  <span id="library-display-name">Obsidian / Notes</span>
+                  <small id="library-status-desc">用于剪藏和对话笔记</small>
+                </div>
+                <div class="row-btns" style="margin:0">
+                  <button class="compact secondary" type="button" id="btn-library-pick">更换</button>
+                  <button class="compact secondary hidden" type="button" id="btn-library-reauth">重新授权</button>
+                  <button class="compact secondary" type="button" id="btn-library-clear">清除</button>
+                </div>
+              </div>
+              <span class="status hidden" id="library-status"></span>
+              <details class="plain-detail">
+                <summary>目录与日记选项</summary>
+                <label class="field" style="margin-top:8px">文稿文件夹路径
+                  <div class="path-row" style="margin-top:4px">
+                    <input id="library-path" type="text" spellcheck="false" placeholder="/Users/…/Notes 或 ~/Obsidian" />
+                    <button class="compact secondary" type="button" id="btn-library-path">使用路径</button>
+                  </div>
+                </label>
+                <label class="field">日记子目录
+                  <input id="daily-notes-folder" type="text" spellcheck="false" placeholder="例如 Daily 或 日记，留空表示保存在根目录" />
+                </label>
+                <p class="hint">手动路径需要本机服务；转写缓存另存于缓存目录。</p>
+              </details>
+            </div>
+
+            <details class="card shortcut-card accordion" id="settings-group-shortcuts">
+              <summary>
+                <span style="font-weight:600">快捷问题</span>
+                <span class="muted" id="settings-state-shortcuts">3 条　›</span>
+              </summary>
+              <div class="inner" style="border:0;padding:12px 0 2px">
+                <p class="hint" style="margin-top:0">出现在输入框上方。点一下就把这段话发给模型。</p>
+                <div id="shortcut-list"></div>
+                <button class="compact secondary" type="button" id="btn-add-shortcut" style="margin-top:8px">＋ 添加问题</button>
+              </div>
+            </details>
           </div>
-          <p class="status" id="theme-status" role="status" aria-live="polite"></p>
-        </div>
 
-        <div class="block" id="block-text">
-          <h3>文本模型</h3>
-          <p class="lead" style="margin-top:-4px">可添加多个 OpenAI 兼容服务商，扫描或手填模型，勾选后出现在对话底部列表。摘要、问答、文稿理解走当前选中的那条。</p>
-          <div id="text-providers"></div>
-        </div>
+          <div id="settings-advanced" role="tabpanel" aria-labelledby="settings-tab-advanced" hidden>
+            <p class="intro-tip">按需启用扩展能力。保持默认也能阅读网页、提问和使用截图。</p>
 
-        <div class="block" id="block-mm">
-          <h3>多模态模型</h3>
-          <label class="check">
-            <input type="checkbox" id="mm-same" />
-            与文本模型相同
-          </label>
-          <p class="lead" id="mm-hint" style="margin-top:-4px">截图、当前视频画面走这条。需要能接受 image_url 的模型。</p>
-          <div id="mm-fields"></div>
-        </div>
+            <div class="group-label">Agent 决策</div>
+            <section class="jev-card" id="block-jev" aria-label="JEV 决策模型">
+              <div class="row">
+                <div class="jev-heading">
+                  <span class="group-icon">
+                    <svg class="ico"><use href="#i-sliders"/></svg>
+                  </span>
+                  <span class="group-text">
+                    <strong>JEV 决策模型</strong>
+                    <small>新 agent-loop 的结构化决策能力</small>
+                  </span>
+                </div>
+                <label class="jev-switch settings-switch">
+                  <span class="switch-state" id="jev-toggle-label">已关闭</span>
+                  <input class="jev-enabled" id="jev-enabled" type="checkbox" role="switch" aria-label="启用 JEV 决策模型" />
+                </label>
+              </div>
+              <p class="hint">为 Agent 提供结构化判断。关闭后保留连接配置。</p>
+              <details class="plain-detail jev-config" id="jev-connection">
+                <summary>连接配置 <span class="connection-state settings-state" id="settings-state-jev">· 待配置</span></summary>
+                <label class="field">模型名称<input id="jev-model" type="text" spellcheck="false" placeholder="jev-latest" /></label>
+                <label class="field">TypeSafe API Key<input id="jev-api-key" type="password" autocomplete="off" placeholder="输入 TypeSafe API Key" /></label>
+                <label class="field">服务地址<input id="jev-url" type="url" spellcheck="false" placeholder="https://api.typesafe.ai/v1/systemone" /></label>
+                <p class="hint">启用后，参与判断的上下文会发送至配置的服务。</p>
+                <div class="row" style="margin-top:8px">
+                  <button class="compact secondary" type="button" id="btn-jev-test">测试连接</button>
+                  <span class="status" id="jev-test-status" role="status"></span>
+                </div>
+              </details>
+            </section>
 
-        <div class="block" id="block-asr">
-          <h3>语音转写（ASR）</h3>
-          <p class="lead" style="margin-top:-4px">视频总结和同声传译需要。自建服务选预设「自建 /v1/transcribe」，<code>POST {host}/v1/transcribe</code>；也可填 Groq / OpenAI 的 <code>/audio/transcriptions</code>。扩展不内置 Whisper。详见仓库 <code>docs/advanced-asr-tts.md</code>。</p>
-        </div>
+            <div class="group-label">模型与音视频</div>
+            <details class="accordion settings-group" id="settings-group-audio">
+              <summary>
+                <span class="group-icon">
+                  <svg class="ico"><use href="#i-audio"/></svg>
+                </span>
+                <span class="group-text">
+                  <strong>语音与配音</strong>
+                  <small>语音转写 · 中文配音 · 参考声音</small>
+                </span>
+                <span class="state settings-state" id="settings-state-audio">未配置</span>
+                <span class="chev">›</span>
+              </summary>
+              <div class="inner">
+                <div class="block" id="block-asr">
+                  <h4>语音转写（ASR）</h4>
+                  <p>无字幕视频转写和同声传译时使用。</p>
+                  <details class="plain-detail"><summary>使用说明</summary><p class="lead">视频总结和同声传译需要。自建服务选预设「自建 /v1/transcribe」，<code>POST {host}/v1/transcribe</code>；也可填 Groq / OpenAI 的 <code>/audio/transcriptions</code>。扩展不内置 Whisper。详见仓库 <code>docs/advanced-asr-tts.md</code>。</p></details>
+                </div>
+                <div class="divider"></div>
+                <div class="block" id="block-tts">
+                  <h4>中文配音（TTS）</h4>
+                  <p>为译文生成中文配音；不配置也可显示中文字幕。</p>
+                  <details class="plain-detail"><summary>使用说明</summary><p class="lead">Index-TTS 2.5 Gradio：<code>/gen_single</code>，用参考 wav 克隆同一把声音。不配时「同声传译」仍出中文字幕。参考音可上传或从当前视频截取；同传时关掉原片声音，只播中文配音。</p></details>
+                </div>
+              </div>
+            </details>
 
-        <div class="block" id="block-tts">
-          <h3>配音（高级，可选）</h3>
-          <p class="lead" style="margin-top:-4px">Index-TTS 2.5 Gradio：<code>/gen_single</code>，用参考 wav 克隆同一把声音。不配时「同声传译」仍出中文字幕。参考音可上传或从当前视频截取；同传时关掉原片声音，只播中文配音。</p>
-        </div>
+            <details class="accordion settings-group" id="settings-group-parameters">
+              <summary>
+                <span class="group-icon">
+                  <svg class="ico"><use href="#i-sliders"/></svg>
+                </span>
+                <span class="group-text">
+                  <strong>模型参数</strong>
+                  <small>视频总结的正文长度上限</small>
+                </span>
+                <span class="state settings-state" id="settings-state-parameters">默认</span>
+                <span class="chev">›</span>
+              </summary>
+              <div class="inner">
+                <div id="block-model-parameters">
+                  <label class="field">单次正文上限（Token）
+                    <input data-k="text.summaryInputTokens" type="number" min="1000" max="2000000" step="1000" value="200000" />
+                  </label>
+                  <p class="hint">默认 200,000；超过才分段总结。按中英文估算，不含提示词和输出。</p>
+                </div>
+              </div>
+            </details>
 
-        <div class="block" id="block-library">
-          <h3>文稿文件夹</h3>
-          <p class="lead" style="margin-top:-4px">选一个本机目录，或填绝对路径（需 Native Host，可用 <code>~</code>）。填完点「使用路径」，或点底部「保存」/「返回对话」也会应用。可直接是 Obsidian 库，只放剪藏和对话笔记（<code>PageLens/sessions/</code>）。下载的字幕和转写稿在 <code>~/.cache/pagelens-docs</code>，不会写入这个目录。密钥不会写进去。和下面的 Skill 目录分开，互不影响。用系统选目录时浏览器只显示文件夹名。</p>
-          <div class="row-btns">
-            <button class="secondary" type="button" id="btn-library-pick">选择文件夹</button>
-            <button class="secondary hidden" type="button" id="btn-library-reauth">重新授权</button>
-            <button class="secondary" type="button" id="btn-library-clear">清除</button>
-            <span class="status" id="library-status"></span>
+            <div class="group-label">扩展与本机能力</div>
+            <details class="accordion settings-group" id="settings-group-skills">
+              <summary>
+                <span class="group-icon">
+                  <svg class="ico"><use href="#i-puzzle"/></svg>
+                </span>
+                <span class="group-text">
+                  <strong>Skill 扩展</strong>
+                  <small>启用开关 · Skill 目录</small>
+                </span>
+                <span class="state settings-state" id="settings-state-skills">未启用</span>
+                <span class="chev">›</span>
+              </summary>
+              <div class="inner">
+                <div id="block-skill-folder">
+                  <label class="check">
+                    <input type="checkbox" id="skills-enabled" />
+                    启用 Skill
+                  </label>
+                  <p class="hint">输入 / 或点名 Skill 时读取。关闭后保留目录。</p>
+                  <div id="skill-body" style="margin-top:8px">
+                    <label class="field">Skill 目录
+                      <input id="skill-path" type="text" spellcheck="false" placeholder="~/.cursor/skills 或 /Users/…/skills" />
+                    </label>
+                    <div class="row-btns" style="margin-top:6px">
+                      <button class="compact secondary" type="button" id="btn-skills-pick">选择目录</button>
+                      <button class="compact secondary" type="button" id="btn-skills-path">使用路径</button>
+                      <button class="compact secondary hidden" type="button" id="btn-skills-reauth">重新授权</button>
+                      <button class="compact secondary hidden" type="button" id="btn-skills-refresh">重新扫描</button>
+                      <button class="compact secondary" type="button" id="btn-skills-clear">清除</button>
+                      <span class="status" id="skill-folder-status"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
+
+            <details class="accordion settings-group" id="settings-group-native">
+              <summary>
+                <span class="group-icon">
+                  <svg class="ico"><use href="#i-terminal"/></svg>
+                </span>
+                <span class="group-text">
+                  <strong>本机命令与授权</strong>
+                  <small>命令执行 · 安全授权 · 本机服务</small>
+                </span>
+                <span class="state settings-state" id="settings-state-native">智能审查</span>
+                <span class="chev">›</span>
+              </summary>
+              <div class="inner">
+                <div id="block-native-host">
+                  <label class="check">
+                    <input type="checkbox" id="native-shell" />
+                    允许执行本机命令
+                  </label>
+                  <label class="field">安全授权模式
+                    <select id="hitl-mode">
+                      <option value="balanced">智能审查（推荐）：只读直接放行，AI 审查安全意图放行，仅异常时弹窗</option>
+                      <option value="strict">严格模式：任何特权与 Shell 命令 100% 物理弹窗确认</option>
+                      <option value="autonomous">全自动模式：所有命令自动静默执行，零弹窗中断</option>
+                    </select>
+                  </label>
+                  <p class="hint">智能审查会自动放行只读操作，异常操作请求确认。</p>
+                  <details class="plain-detail">
+                    <summary>安装与诊断</summary>
+                    <p class="hint">Agent 循环：<code id="loop-engine-label">@mage-ai-lab/agent-loop/mini</code>（npm）</p>
+                    <p class="hint" id="native-host-id" style="margin-top:6px"></p>
+                    <div class="row-btns" style="margin-top:6px">
+                      <button class="compact secondary" type="button" id="btn-native-copy-id">复制扩展 ID</button>
+                      <button class="compact secondary" type="button" id="btn-native-copy-install">复制安装命令</button>
+                      <button class="compact secondary" type="button" id="btn-native-test">测试 host</button>
+                      <span class="status" id="native-host-status"></span>
+                    </div>
+                  </details>
+                </div>
+              </div>
+            </details>
+
+            <div class="group-label">个性化与诊断</div>
+            <details class="accordion settings-group" id="settings-group-colors">
+              <summary>
+                <span class="group-icon">
+                  <svg class="ico"><use href="#i-palette"/></svg>
+                </span>
+                <span class="group-text">
+                  <strong>自定义外观</strong>
+                  <small>基础配色 · 错误提示配色</small>
+                </span>
+                <span class="state settings-state" id="settings-state-colors">默认</span>
+                <span class="chev">›</span>
+              </summary>
+              <div class="inner">
+                <div class="theme-editor" id="block-custom-appearance">
+                  <h4>当前主题的配色</h4>
+                  <p class="hint">4 个基础色，其他层次自动搭配。每套主题单独保留配色。</p>
+                  <div class="theme-color-grid">
+                    <div class="theme-color-field"><label for="theme-color-surface">背景色</label><div><input id="theme-color-surface" type="color" data-theme-color="surface" aria-label="背景色" /><input type="text" data-theme-color="surface" aria-label="背景色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+                    <div class="theme-color-field"><label for="theme-color-ink">正文色</label><div><input id="theme-color-ink" type="color" data-theme-color="ink" aria-label="正文色" /><input type="text" data-theme-color="ink" aria-label="正文色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+                    <div class="theme-color-field"><label for="theme-color-accent">主题主色</label><div><input id="theme-color-accent" type="color" data-theme-color="accent" aria-label="主题主色" /><input type="text" data-theme-color="accent" aria-label="主题主色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+                    <div class="theme-color-field"><label for="theme-color-teal">辅助色</label><div><input id="theme-color-teal" type="color" data-theme-color="teal" aria-label="辅助色" /><input type="text" data-theme-color="teal" aria-label="辅助色十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+                  </div>
+                  <div class="divider"></div>
+                  <h4>错误框配色</h4>
+                  <p class="hint">用于失败的工具调用和对话错误提示。</p>
+                  <div class="theme-color-grid">
+                    <div class="theme-color-field"><label for="theme-color-danger-bg">错误背景</label><div><input id="theme-color-danger-bg" type="color" data-theme-color="danger-bg" aria-label="错误背景" /><input type="text" data-theme-color="danger-bg" aria-label="错误背景十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+                    <div class="theme-color-field"><label for="theme-color-danger">错误文字</label><div><input id="theme-color-danger" type="color" data-theme-color="danger" aria-label="错误文字" /><input type="text" data-theme-color="danger" aria-label="错误文字十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+                    <div class="theme-color-field"><label for="theme-color-danger-line">错误边框</label><div><input id="theme-color-danger-line" type="color" data-theme-color="danger-line" aria-label="错误边框" /><input type="text" data-theme-color="danger-line" aria-label="错误边框十六进制值" spellcheck="false" maxlength="7" pattern="#[0-9a-fA-F]{6}" /></div></div>
+                  </div>
+                  <p id="theme-editor-status" class="status" role="status"></p><p id="theme-contrast" class="lead" role="status"></p>
+                  <button id="btn-theme-reset" class="compact secondary" type="button" style="margin-top:8px">重置当前主题配色</button>
+                </div>
+              </div>
+            </details>
+
+            <details class="accordion settings-group" id="settings-group-trace">
+              <summary>
+                <span class="group-icon">
+                  <svg class="ico"><use href="#i-activity"/></svg>
+                </span>
+                <span class="group-text">
+                  <strong>运行追踪</strong>
+                  <small>Langfuse · 调用、耗时与用量</small>
+                </span>
+                <span class="state settings-state" id="settings-state-trace">未启用</span>
+                <span class="chev">›</span>
+              </summary>
+              <div class="inner">
+                <div id="block-langfuse">
+                  <label class="check">
+                    <input type="checkbox" id="langfuse-enabled" />
+                    启用 Langfuse 追踪
+                  </label>
+                  <p class="hint">启用后，对话和工具调用会发送至你配置的服务。</p>
+                  <div id="langfuse-fields" style="margin-top:8px">
+                    <label class="field">Host 地址
+                      <input id="langfuse-url" type="text" spellcheck="false" placeholder="http://localhost:3000" />
+                    </label>
+                    <label class="field">Public Key
+                      <input id="langfuse-pk" type="text" spellcheck="false" placeholder="pk-lf-…" />
+                    </label>
+                    <label class="field">Secret Key
+                      <input id="langfuse-sk" type="password" spellcheck="false" placeholder="sk-lf-…" />
+                    </label>
+                    <label class="field">环境标识
+                      <input id="langfuse-env" type="text" spellcheck="false" placeholder="development" />
+                    </label>
+                    <div class="row" style="margin-top:8px">
+                      <button type="button" class="compact secondary" id="btn-langfuse-test">测试连接</button>
+                      <span class="status" id="langfuse-status" role="status"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
           </div>
-          <div class="path-row">
-            <input id="library-path" type="text" spellcheck="false" placeholder="/Users/…/Notes 或 ~/Obsidian" />
-            <button class="secondary" type="button" id="btn-library-path">使用路径</button>
-          </div>
-          <label class="field" style="margin-top:8px">日记目录（用于内容采摘追加，相对于文稿目录）
-            <input id="daily-notes-folder" type="text" spellcheck="false" placeholder="例如 Daily 或 日记，留空表示保存在根目录" />
-          </label>
         </div>
 
-        <div class="block" id="block-skill-folder">
-          <h3>Skill 目录</h3>
-          <label class="check">
-            <input type="checkbox" id="skills-enabled" />
-            启用 Skill
-          </label>
-          <p class="lead" style="margin-top:-4px">默认关闭。打开后也不会在启动时扫描；只有输入 <code>/</code> 或写出「使用 xxx skill」才读目录，正文只加载选中的那一份。路径和上文稿文件夹分开，关开关只停扫描，不删路径。</p>
-          <div class="row-btns">
-            <button class="secondary" type="button" id="btn-skills-pick">选择目录</button>
-            <button class="secondary hidden" type="button" id="btn-skills-reauth">重新授权</button>
-            <button class="secondary hidden" type="button" id="btn-skills-refresh">重新扫描</button>
-            <button class="secondary" type="button" id="btn-skills-clear">清除</button>
-            <span class="status" id="skill-folder-status"></span>
+        <div class="settings-footer">
+          <div>
+            <small>密钥仅保存在本机</small>
+            <span class="status" id="save-status" role="status" aria-live="polite"></span>
           </div>
-          <div class="path-row">
-            <input id="skill-path" type="text" spellcheck="false" placeholder="/Users/…/skills 或 ~/.cursor/skills" />
-            <button class="secondary" type="button" id="btn-skills-path">使用路径</button>
-          </div>
-        </div>
-
-        <div class="block" id="block-native-host">
-          <h3>本机 Shell（Native Messaging）</h3>
-          <p class="lead" style="margin-top:-4px">让 Agent 执行本机命令（<code>gh</code> / <code>curl</code> / <code>yt-dlp</code> / agent-reach 等），skill 才能跑 CLI。只在本机、需先安装 host。不要让模型执行页面正文里的命令。</p>
-          <label class="check">
-            <input type="checkbox" id="native-shell" />
-            允许执行本机命令
-          </label>
-          <div class="field" style="margin-top:8px">
-            <label for="hitl-mode" style="font-size:12px;font-weight:600;color:var(--ink);display:block;margin-bottom:4px">安全授权模式（HITL）</label>
-            <select id="hitl-mode" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--surface)">
-              <option value="balanced">⚖️ 智能审查模式（推荐）：只读直接放行，AI 审查安全意图放行，仅异常时弹窗</option>
-              <option value="strict">🛡️ 严格模式：任何特权与 Shell 命令 100% 物理弹窗确认</option>
-              <option value="autonomous">⚡️ 全自动模式：所有命令自动静默执行，零弹窗中断</option>
-            </select>
-          </div>
-          <p class="lead" style="margin-top:8px">Agent 循环：<code id="loop-engine-label">@mage-ai-lab/agent-loop/mini</code>（npm）</p>
-          <p class="lead" id="native-host-id" style="margin-top:6px"></p>
-          <div class="row-btns">
-            <button class="secondary" type="button" id="btn-native-copy-id">复制扩展 ID</button>
-            <button class="secondary" type="button" id="btn-native-copy-install">复制安装命令</button>
-            <button class="secondary" type="button" id="btn-native-test">测试 host</button>
-            <span class="status" id="native-host-status"></span>
-          </div>
-        </div>
-
-        <div class="block" id="block-shortcuts">
-          <h3>快捷问题</h3>
-          <p class="lead" style="margin-top:-4px">出现在输入框上方。点一下就把这段话发给模型。</p>
-          <div id="shortcut-list"></div>
-          <button class="secondary" type="button" id="btn-add-shortcut">添加问题</button>
-        </div>
-
-        <div class="block">
-          <h3>回答</h3>
-          <label class="field">语言
-            <select id="answer-lang">
-              <option value="zh-CN">简体中文</option>
-              <option value="en">English</option>
-              <option value="page">跟随页面</option>
-            </select>
-          </label>
-          <label class="field">字体
-            <select id="ui-font">
-              <option value="md">默认</option>
-              <option value="lg">较大</option>
-              <option value="xl">更大</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="row-btns">
-          <button class="primary" type="button" id="btn-save">保存</button>
-          <span class="status" id="save-status"></span>
+          <button class="primary save" type="button" id="btn-save">保存设置</button>
         </div>
       </section>
 

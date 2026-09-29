@@ -1,5 +1,6 @@
 import { normalizeUiTheme, normalizeThemeColors } from "./ui-theme.js";
 import { hydrateTextCatalog } from "./text-providers.js";
+import { normalizeJevSettings } from "./jev.js";
 
 export const PRESETS = [
   { id: "custom", name: "自定义", baseUrl: "" },
@@ -56,9 +57,22 @@ function emptyTts() {
     durationFactor: 1,
     bufferSegments: 5,
     preparationMode: "progressive",
+    contextMode: "cue",
+    translateAheadSeconds: 600,
     bufferSeconds: 30,
     playbackMode: "sync",
     gapMs: 0,
+  };
+}
+
+function emptyLangfuse() {
+  return {
+    enabled: false,
+    baseUrl: "http://localhost:3000",
+    publicKey: "",
+    secretKey: "",
+    environment: "development",
+    release: "0.12.0",
   };
 }
 
@@ -75,6 +89,8 @@ export function defaultSettings() {
     multimodal: emptyModel(),
     asr: emptyAsr(),
     tts: emptyTts(),
+    langfuse: emptyLangfuse(),
+    jev: normalizeJevSettings(),
     multimodalSameAsText: false,
     answerLanguage: "zh-CN",
     uiFont: "md",
@@ -96,6 +112,7 @@ export function defaultSettings() {
 export function normalizeSettings(raw) {
   const base = defaultSettings();
   const merged = { ...base, ...(raw || {}) };
+  merged.jev = normalizeJevSettings(raw?.jev);
   merged.dailyNotesFolder = typeof raw?.dailyNotesFolder === "string"
     ? raw.dailyNotesFolder.trim().replace(/^\/+|\/+$/g, "")
     : (base.dailyNotesFolder || "Daily");
@@ -114,6 +131,9 @@ export function normalizeSettings(raw) {
   const bufSegs = Number(merged.tts.bufferSegments);
   merged.tts.bufferSegments = Number.isFinite(bufSegs) && bufSegs >= 1 ? Math.min(10, Math.max(1, Math.round(bufSegs))) : 5;
   merged.tts.preparationMode = ['full', 'buffered', 'progressive'].includes(merged.tts.preparationMode) ? merged.tts.preparationMode : 'progressive';
+  merged.tts.contextMode = merged.tts.contextMode === 'sentence' ? 'sentence' : 'cue';
+  const ahead = Number(merged.tts.translateAheadSeconds);
+  merged.tts.translateAheadSeconds = Number.isFinite(ahead) && ahead >= 30 ? Math.min(7200, Math.round(ahead)) : 600;
   // The previous full mode was an implicit default, not a deliberate long-wait preference.
   if (!merged.tts.preparationVersion) merged.tts.preparationMode = 'progressive';
   merged.tts.preparationVersion = 1;
@@ -131,6 +151,14 @@ export function normalizeSettings(raw) {
   const timeout = Number(raw?.hitlTimeoutSeconds);
   merged.hitlTimeoutSeconds = Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.max(timeout, 5), 300) : 30;
   merged.skillsEnabled = raw?.skillsEnabled === true;
+  merged.langfuse = {
+    enabled: raw?.langfuse?.enabled === true,
+    baseUrl: String(raw?.langfuse?.baseUrl || "http://localhost:3000").trim().replace(/\/+$/, ""),
+    publicKey: String(raw?.langfuse?.publicKey || "").trim(),
+    secretKey: String(raw?.langfuse?.secretKey || "").trim(),
+    environment: String(raw?.langfuse?.environment || "development").trim(),
+    release: String(raw?.langfuse?.release || "0.12.0").trim(),
+  };
   delete merged.interpretUseCaptions;
   merged.shortcuts = Array.isArray(raw?.shortcuts)
     ? raw.shortcuts.map((s) => ({
@@ -160,6 +188,7 @@ export async function applyOptionalLocalSettings() {
     const next = { ...cur };
     if (extra.asr && typeof extra.asr === "object") next.asr = { ...cur.asr, ...extra.asr };
     if (extra.tts && typeof extra.tts === "object") next.tts = { ...cur.tts, ...extra.tts };
+    if (extra.langfuse && typeof extra.langfuse === "object") next.langfuse = { ...cur.langfuse, ...extra.langfuse };
     const saved = await saveSettings(next);
     await chrome.storage.local.set({ plLocalApplied: extra.rev });
     return saved;

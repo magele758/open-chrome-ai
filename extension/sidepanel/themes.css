@@ -105,3 +105,14 @@ html[data-custom-colors][data-theme="cyber"] .header::after{background:linear-gr
 html[data-custom-colors][data-theme="cyber"] .brand{text-shadow:-1px 0 var(--accent),1px 1px var(--teal)}
 html[data-custom-colors][data-theme="cyber"] .mark{box-shadow:-3px 2px var(--accent),3px -2px var(--teal)}
 html[data-custom-colors][data-theme="cyber"] .send{box-shadow:2px 2px var(--teal)}
+html[data-theme] .input-box textarea:focus,
+html[data-theme] .input-box textarea:focus-visible,
+html[data-custom-colors] .input-box textarea:focus,
+html[data-custom-colors] .input-box textarea:focus-visible,
+.input-box textarea:focus,
+.input-box textarea:focus-visible,
+#input:focus,
+#input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}

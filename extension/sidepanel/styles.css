@@ -993,7 +993,22 @@ textarea {
   line-height: 1.4;
   background: transparent;
 }
-textarea:focus { border-color: transparent; }
+textarea:focus,
+textarea:focus-visible {
+  border-color: transparent;
+  outline: none;
+  box-shadow: none;
+}
+.input-box textarea,
+.input-box textarea:focus,
+.input-box textarea:focus-visible,
+#input,
+#input:focus,
+#input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  border: 0 !important;
+}
 .compose-tools {
   display: flex;
   justify-content: flex-end;

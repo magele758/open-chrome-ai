@@ -49,16 +49,20 @@ export async function saveUiTheme(value, customColors) {
 }
 
 export function bindThemeEditor(state) {
-  const block = document.getElementById('block-appearance');
+  const block = document.getElementById('view-settings');
   if (!block) return;
   let saved = { theme: state.settings.uiTheme, colors: structuredClone(state.settings.uiThemeColors || {}) };
   let saving = false;
   const render = () => applyUiTheme(state.settings.uiTheme, state.settings.uiThemeColors);
-  const status = document.getElementById('theme-status');
+  const statusNodes = ['theme-status', 'theme-editor-status'].map(id => document.getElementById(id)).filter(Boolean);
+  const status = {
+    set textContent(value) { statusNodes.forEach(node => { node.textContent = value; }); },
+    set className(value) { statusNodes.forEach(node => { node.className = value; }); },
+  };
   async function commit() {
     if (state.settings.uiTheme === saved.theme && JSON.stringify(state.settings.uiThemeColors || {}) === JSON.stringify(saved.colors)) return;
     saving = true;
-    const controls = block.querySelectorAll('button,input');
+    const controls = block.querySelectorAll('[data-ui-theme],[data-theme-color],#btn-theme-reset');
     controls.forEach(el => { el.disabled = true; });
     status.textContent = '正在保存主题…';
     status.className = 'status';
