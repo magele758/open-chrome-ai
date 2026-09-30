@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { extractMathSegments, looksLikeLatex, formatAnswer, decorateInlines } from "../lib/markdown.js";
 
 const require = createRequire(import.meta.url);
-const { JSDOM } = require("../../.tmp/x-article-tests/node_modules/jsdom");
+const { JSDOM } = require("jsdom");
 
 assert.equal(looksLikeLatex("E=mc^2"), true);
 assert.equal(looksLikeLatex("\\frac{1}{2}"), true);

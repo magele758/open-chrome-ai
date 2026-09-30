@@ -1,4 +1,4 @@
-// Setup: npm install --prefix .tmp/x-article-tests --no-audit --no-fund jsdom
+// Requires devDependency jsdom (npm ci)
 // Run: node extension/tools/test_x_article.mjs
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -6,7 +6,7 @@ import { extractPage } from '../lib/extract.js';
 import { packToContext } from '../lib/prompts.js';
 import { createAgentTools } from '../lib/agent/tools.js';
 const require = createRequire(import.meta.url);
-const { JSDOM } = require('../../.tmp/x-article-tests/node_modules/jsdom');
+const { JSDOM } = require('jsdom');
 const url = 'https://x.com/marfinxx/status/2094016175617241109';
 async function extract(html, setup = () => {}) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });

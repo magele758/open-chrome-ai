@@ -1,10 +1,10 @@
-// Uses the existing DOM test runtime: npm install --prefix .tmp/x-article-tests jsdom
+// Requires devDependency jsdom (npm ci)
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { formatAnswer, decorateInlines } from '../lib/markdown.js';
 const require = createRequire(import.meta.url);
-const { JSDOM } = require('../../.tmp/x-article-tests/node_modules/jsdom');
+const { JSDOM } = require('jsdom');
 const dom = new JSDOM('<main></main>', { runScripts: 'outside-only' });
 for (const file of ['marked.min.js', 'purify.min.js']) {
   dom.window.eval(readFileSync(new URL('../vendor/' + file, import.meta.url), 'utf8'));
