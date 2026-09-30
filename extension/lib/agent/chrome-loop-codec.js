@@ -75,6 +75,7 @@ export function foldedToChromeHistory(messages) {
     if (m.role === "assistant") {
       const text = textOf(m.parts);
       const calls = (m.parts || []).filter((p) => p.type === "tool_call");
+      if (!text.trim() && !calls.length) continue;
       const row = { role: "assistant", content: text };
       if (calls.length) {
         row.tool_calls = calls.map((c) => ({
@@ -138,10 +139,24 @@ export function toOpenAITools(tools) {
   }));
 }
 
+// The SDK retries empty/truncated replies by appending `[recovery]` system notes.
+// History conversion drops system rows, so replay only the trailing ones (the
+// retry in flight) as user turns; providers reject or ignore mid-history system.
+export function pendingRecoveryNudges(messages) {
+  const tail = [];
+  for (let i = (messages || []).length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== "system") break;
+    const text = textOf(m.parts).trim();
+    if (text.startsWith("[recovery]") && !/^\[recovery\] Stopped:/.test(text)) tail.unshift({ role: "user", content: text });
+  }
+  return tail;
+}
+
 export function toOpenAIMessages(systemPrompt, sessionMessages, { stripTools = false, lastTurnNudge = "" } = {}) {
   let history = foldedToChromeHistory(sessionMessages);
   if (stripTools) history = withoutToolCalls(history);
-  const msgs = [{ role: "system", content: systemPrompt || "" }, ...history];
+  const msgs = [{ role: "system", content: systemPrompt || "" }, ...history, ...pendingRecoveryNudges(sessionMessages)];
   if (stripTools && lastTurnNudge) {
     msgs.push({ role: "system", content: lastTurnNudge });
   }

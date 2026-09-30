@@ -236,3 +236,35 @@ const legacy = await distillStillWorks.run("hi");
 assert.equal(legacy.text, "legacy");
 assert.equal(legacy.engine, undefined);
 console.log("PASS original distill loop still available");
+
+// Empty replies: SDK retries with a [recovery] note that must reach the model,
+// and recovers without surfacing an error once the model answers.
+{
+  const seen = [];
+  const recovering = createKernelAgentLoop({
+    maxTurns: 4, systemPrompt: "test", tools: [{ name: "noop", description: "noop", parameters: { type: "object", properties: {} }, execute: async () => "" }],
+    model: { async runTurn({ messages }) {
+      seen.push(messages);
+      return seen.length < 3 ? { content: "", toolCalls: [], finishReason: "stop" } : { content: "OK_AFTER_RETRY", toolCalls: [], finishReason: "stop" };
+    } },
+  });
+  const recovered = await recovering.run("hi");
+  assert.equal(recovered.text, "OK_AFTER_RETRY");
+  assert.equal(recovered.reason, "stop");
+  assert.ok(!seen[0].some((m) => /\[recovery\]/.test(String(m.content))));
+  const last = seen[1][seen[1].length - 1];
+  assert.equal(last.role, "user");
+  assert.match(last.content, /^\[recovery\]/);
+  assert.ok(!seen[2].some((m) => m.role === "assistant" && !m.content), "empty assistant rows are not replayed");
+  assert.ok(!recovered.history.some((m) => /\[recovery\]/.test(String(m.content))), "nudges are not persisted into chat history");
+
+  let calls = 0;
+  const dead = await createKernelAgentLoop({
+    maxTurns: 6, systemPrompt: "test", tools: [],
+    model: { async runTurn() { calls++; return { content: "", toolCalls: [], finishReason: "stop" }; } },
+  }).run("hi");
+  assert.equal(dead.reason, "empty_assistant");
+  assert.equal(dead.text, "");
+  assert.equal(calls, 3, "one call plus two automatic retries");
+  console.log("PASS empty-reply recovery reaches the model and ends as empty_assistant");
+}

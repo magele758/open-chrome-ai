@@ -5231,7 +5231,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       else if (isPlaceholderBotText(botMsg.text)) {
         botMsg.text = result?.reason === "abort"
           ? "已停止。"
-          : (botMsg.thinking ? "（已完成思考，未输出进一步正文）" : "模型未返回正文，请重试或检查模型服务。");
+          : (botMsg.thinking ? "（已完成思考，未输出进一步正文）" : (result?.reason === "empty_assistant" ? "模型连续多次未返回内容（已自动重试），请重试或检查模型服务。" : "模型未返回正文，请重试或检查模型服务。"));
         botMsg.error = result?.reason !== "abort" && !botMsg.thinking;
       }
       if (result?.metrics) {
@@ -5289,7 +5289,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     renderMessages();
   } finally {
     const userStop = state.stopIntent === "user";
-    const finished = result?.reason === "stop" || result?.reason === "max_turns";
+    const finished = ["stop", "max_turns", "empty_assistant"].includes(result?.reason);
     if (userStop || finished || failed) state.run = null;
     state.busy = false;
     state.abort = null;
