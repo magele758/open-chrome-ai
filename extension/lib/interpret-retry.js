@@ -33,3 +33,37 @@ export async function retryInterpretRequest(operation, { signal, onRetry = () =>
     }
   }
 }
+
+// A provider that answers in 3-8 s occasionally holds one request for 30 s+.
+// After delayMs a second identical request races the first; whichever succeeds
+// first wins and the other is aborted. A fast failure before the hedge is
+// returned immediately so the retry layer keeps its normal behaviour.
+export function hedgeInterpretRequest(operation, { signal, delayMs = 15000, onHedge = () => {} } = {}) {
+  if (!Number.isFinite(delayMs)) return operation(signal);
+  return new Promise((resolve, reject) => {
+    const runs = [];
+    let settled = false, failures = 0, timer;
+    const cancelRuns = () => { for (const run of runs) run.abort(); };
+    const onAbort = () => finish(reject, signal.reason);
+    const finish = (settle, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      cancelRuns();
+      settle(value);
+    };
+    const launch = () => {
+      const controller = new AbortController();
+      runs.push(controller);
+      Promise.resolve().then(() => operation(controller.signal)).then(
+        value => finish(resolve, value),
+        error => { if (!settled && ++failures === runs.length) finish(reject, error); },
+      );
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) return finish(reject, signal.reason);
+    launch();
+    timer = setTimeout(() => { if (!settled) { onHedge(); launch(); } }, delayMs);
+  });
+}

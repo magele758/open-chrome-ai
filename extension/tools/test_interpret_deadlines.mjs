@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { withInterpretDeadline } from '../lib/interpret-semantic.js';
-import { retryInterpretRequest } from '../lib/interpret-retry.js';
+import { retryInterpretRequest, hedgeInterpretRequest } from '../lib/interpret-retry.js';
 import { transcribeInterpretSlice } from '../lib/interpret-asr.js';
 import { prepareDubPlan } from '../lib/planned-interpret.js';
 import { mock } from 'node:test';
@@ -61,7 +61,7 @@ mock.timers.enable({ apis: ['setTimeout'] });
 const slowController = new AbortController();
 let slowSignal, slowCalls = 0;
 const planPromise = prepareDubPlan({
-  signal: slowController.signal, windowed: true, incrementalContext: '',
+  signal: slowController.signal, windowed: true, incrementalContext: '', hedgeMs: Infinity,
   settings: { text: { baseUrl: 'https://text.test', model: 'test' }, tts: { contextMode: 'cue' } },
   source: {
     duration: 5, subtitles: [{ id: 'slow', start: 0, end: 5, src: 'Hello world.' }],
@@ -93,4 +93,42 @@ try {
   mock.timers.reset();
   await outcome;
 }
+
+// Hedging: a stalled first request is raced by a second one; the winner cancels the loser.
+mock.timers.enable({ apis: ['setTimeout'] });
+try {
+  const runs = [];
+  let hedged = 0;
+  const p = hedgeInterpretRequest(signal => new Promise((resolve, reject) => {
+    const run = { signal, index: runs.length };
+    runs.push(run);
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    if (run.index === 1) resolve('fast');
+  }), { delayMs: 15000, onHedge: () => hedged++ });
+  await new Promise(setImmediate);
+  assert.equal(runs.length, 1, 'no duplicate before the hedge delay');
+  mock.timers.tick(15000);
+  assert.equal(await p, 'fast');
+  assert.equal(hedged, 1);
+  assert(runs[0].signal.aborted, 'the stalled loser is cancelled');
+
+  await assert.rejects(hedgeInterpretRequest(async () => { throw new Error('boom'); }, { delayMs: 15000 }), /boom/);
+  const rejecters = [];
+  const failing = hedgeInterpretRequest(() => new Promise((_, reject) => rejecters.push(reject)), { delayMs: 15000 });
+  const failed = failing.then(() => 'resolved', error => error.message);
+  await new Promise(setImmediate);
+  mock.timers.tick(15000);
+  await new Promise(setImmediate);
+  assert.equal(rejecters.length, 2);
+  rejecters[0](new Error('first'));
+  await new Promise(setImmediate);
+  rejecters[1](new Error('second'));
+  assert.equal(await failed, 'second', 'rejects only after both requests fail');
+
+  const stop = new AbortController();
+  const pending = hedgeInterpretRequest(signal => abortAware(signal), { signal: stop.signal, delayMs: 15000 });
+  stop.abort(new DOMException('stop', 'AbortError'));
+  await assert.rejects(pending, { name: 'AbortError' });
+} finally { mock.timers.reset(); }
+
 console.log('PASS stage-specific deadlines, abort reasons, ASR recovery, TTS retry and user cancellation');

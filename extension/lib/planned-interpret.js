@@ -16,7 +16,7 @@ import { videoIdentity } from './library.js';
 import { interpretSourceUrls } from './media-url.js';
 import { prepareSpeakerReference } from './interpret-reference.js';
 import { stripSubtitleDirections } from './subtitle-text.js';
-import { retryInterpretRequest } from './interpret-retry.js';
+import { retryInterpretRequest, hedgeInterpretRequest } from './interpret-retry.js';
 import { INTERPRET_VERSION, DUB_ARCHIVE_VERSION, speechUnits, safeBudgetRewrite, failedTranslation, bufferingTarget, stableAudioIdentity, ttsAudioIdentity } from './interpret-policy.js';
 
 const modelIdentity = model => ({ baseUrl: model?.baseUrl, model: model?.model, language: model?.language, preset: model?.preset });
@@ -28,6 +28,12 @@ const translateAheadSeconds = settings => {
   const ahead = Number(settings?.tts?.translateAheadSeconds);
   return Number.isFinite(ahead) && ahead >= 30 ? ahead : 600;
 };
+const REQUEST_FAILED = 'translation-request-failed';
+const MAX_WINDOW_RETRIES = 3;
+const isRequestFailure = line => line?.translationStatus === 'failed' && line.failureReason === REQUEST_FAILED;
+const recentTranslationMs = [];
+const hedgeDelayMs = () => recentTranslationMs.length
+  ? Math.max(12000, 2 * recentTranslationMs.reduce((a, b) => a + b, 0) / recentTranslationMs.length) : 15000;
 const clipBrief = text => [...String(text || '')].slice(0, 800).join('').trim();
 
 function sentenceSystem(brief) {
@@ -374,7 +380,7 @@ async function runSentenceTranslation({ cues, settings, signal, status, ask, ask
 
 export async function prepareDubPlan({ source, settings, signal, status = () => {}, recoveryStatus = status,
   transcribe = transcribeInterpretSlice, chat = completeChat, cacheGet = readDubCache, cacheSet = writeDubCache, incrementalContext, sourceOffset = 0,
-  prefixCues, priorLines, deferUnfinished = false, extraLookahead, windowed = false, skipBrief = false, getBrief, setBrief, translationContext, onLines = () => {}, onMetric = () => {} }) {
+  prefixCues, priorLines, deferUnfinished = false, extraLookahead, windowed = false, skipBrief = false, getBrief, setBrief, translationContext, onLines = () => {}, onMetric = () => {}, hedgeMs }) {
   if (!windowed) status('正在分析说话人、停顿与音乐，画面保持暂停…');
   const analysis = await source.analyze();
   const spans = validateAnalysis(analysis, source.duration);
@@ -484,10 +490,13 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
     // at 30 s, while retaining a bounded retry count.
     if (remaining < 8000 || ++requests > (windowed ? 12 : Infinity)) throw Object.assign(new Error('翻译预算耗尽'), { requestFailure: true });
     const began = Date.now();
-    return retryInterpretRequest(s => chat(model, {
+    const send = s => chat(model, {
       messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(input) }],
       signal: s, temperature: .1, maxTokens, rejectTruncated: true, lowLatency: true,
-    }), { signal, stage: '文本模型：口播翻译', trace: { sourceOffset }, attempts: 2, timeoutMs: Math.min(remaining - 500, 45000),
+    });
+    return retryInterpretRequest(s => windowed
+      ? hedgeInterpretRequest(send, { signal: s, delayMs: hedgeMs ?? hedgeDelayMs(), onHedge: () => onMetric({ stage: 'translation-hedge', sourceOffset }) })
+      : send(s), { signal, stage: '文本模型：口播翻译', trace: { sourceOffset }, attempts: 2, timeoutMs: Math.min(remaining - 500, 45000),
       onRetry: ({ error }) => recoveryStatus(/timeout|超时/i.test(`${error?.name} ${error?.message}`)
         ? '翻译响应较慢，正在重试当前段，已完成内容保留…'
         : '翻译连接暂时中断，正在重试当前段，已完成内容保留…') }).catch(error => {
@@ -496,6 +505,7 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
         error.requestFailure = true;
         throw error;
       })
+      .then(out => { recentTranslationMs.push(Date.now() - began); if (recentTranslationMs.length > 8) recentTranslationMs.shift(); return out; })
       .finally(() => onMetric({ stage: 'translation', durationMs: Date.now() - began, sourceOffset }));
   };
   let repairRemaining = windowed ? 2500 : 20000;
@@ -831,9 +841,15 @@ export async function runPlannedInterpret(opts) {
       coverage.splice(0, coverage.length, ...revised.sort((a, b) => a.start - b.start));
       emit({ type: 'metric', stage: 'analysis', revision: analysisRevision, invalidated: 0 });
     };
-    const publishLines = async (incoming, start, fingerprint) => {
+    // A window whose translation request stalled or died is retried from the
+    // last committed line while the picture waits; only exhausted retries publish
+    // failed lines. Later batches never cover an unpublished earlier batch.
+    let windowRetries = 0;
+    const publishLines = async (incoming, start, fingerprint, gate) => {
       signal.throwIfAborted();
+      if (gate?.blocked) return;
       for (const original of incoming) {
+        if (gate && isRequestFailure(original) && windowRetries < MAX_WINDOW_RETRIES) { gate.blocked = true; break; }
         const line = shiftPlannedLine(original, start, fingerprint);
         if (lines.some(existing => existing.id === line.id)) continue;
         const edited = resolveSentenceEdit(line, edits, [...lines, line]);
@@ -848,6 +864,14 @@ export async function runPlannedInterpret(opts) {
       }
       lines.sort((a, b) => a.start - b.start);
       coverage.sort((a, b) => a.start - b.start);
+    };
+    const retryStalledWindow = async gate => {
+      if (!gate.blocked) return false;
+      if (windowRetries >= MAX_WINDOW_RETRIES) { gate.blocked = false; return false; }
+      windowRetries++;
+      status(`翻译服务暂时无响应，画面保持等待并重试（${windowRetries}/${MAX_WINDOW_RETRIES}）…`);
+      await sleep(opts.windowRetryDelayMs ?? 1500);
+      return true;
     };
     if (progressive) planning = (async () => {
       const sentenceMode = dubContextMode(settings) === 'sentence';
@@ -904,16 +928,19 @@ export async function runPlannedInterpret(opts) {
           const context = lines.filter(l => l.end <= start).slice(-12).map(l => `${l.src} → ${l.zh}`).join('\n').slice(-6000);
           status(hasSubtitles ? `正在准备 ${Math.floor(start)}–${Math.ceil(end)} 秒的口播翻译与配音…` : `正在后台准备 ${Math.floor(start)}–${Math.ceil(end)} 秒的中文配音…`);
           const partSubtitles = source.subtitles ? source.subtitles.filter(c => c.end > start && c.start < end) : null;
+          const gate = { blocked: false };
           const part = await prepareDubPlan({ source: {
             duration: end - start,
             subtitles: partSubtitles ? partSubtitles.map(c => ({ ...c, start: Math.max(0, c.start - start), end: Math.min(end - start, c.end - start) })) : null,
             analyze: async () => ({ duration: end - start, fingerprint, spans }),
             slice: (offset, seconds) => source.slice(start + offset, seconds),
-          }, settings, signal, status: () => {}, recoveryStatus: status, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat, incrementalContext: context, sourceOffset: start, windowed: true, onMetric: metric => emit({ type: 'metric', ...metric }), onLines: incoming => publishLines(incoming, start, fingerprint) });
+          }, settings, signal, status: () => {}, recoveryStatus: status, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat, incrementalContext: context, sourceOffset: start, windowed: true, hedgeMs: opts.hedgeMs, onMetric: metric => emit({ type: 'metric', ...metric }), onLines: incoming => publishLines(incoming, start, fingerprint, gate) });
           signal.throwIfAborted();
+          if (await retryStalledWindow(gate)) continue;
           plan.incompleteRecognition ||= part.incompleteRecognition;
           plan.incompleteTranslation ||= part.incompleteTranslation;
-          await publishLines(part.lines, start, fingerprint);
+          await publishLines(part.lines, start, fingerprint, gate);
+          windowRetries = 0;
           coverage.push({ start, end }); coverage.sort((a, b) => a.start - b.start);
           continue;
         }
@@ -957,14 +984,15 @@ export async function runPlannedInterpret(opts) {
           : [];
         status(hasSubtitles ? `正在准备 ${Math.floor(newStart)}–${Math.ceil(end)} 秒的口播翻译与配音…` : `正在后台准备 ${Math.floor(newStart)}–${Math.ceil(end)} 秒的中文配音…`);
         const partSubtitles = hasSubtitles ? source.subtitles.filter(cue => cue.end > newStart && cue.start < end) : null;
+        const gate = { blocked: false };
         const part = await prepareDubPlan({ source: {
           duration: end - newStart,
           subtitles: partSubtitles ? partSubtitles.map(cue => ({ ...cue, start: Math.max(0, cue.start - newStart), end: Math.min(end - newStart, cue.end - newStart) })) : null,
           analyze: async () => ({ duration: end - newStart, fingerprint, spans }),
           slice: (offset, seconds) => source.slice(newStart + offset, seconds),
-        }, settings, signal, status: () => {}, recoveryStatus: status, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat, sourceOffset: newStart,
+        }, settings, signal, status: () => {}, recoveryStatus: status, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat, sourceOffset: newStart, hedgeMs: opts.hedgeMs,
           onMetric: metric => emit({ type: 'metric', ...metric }),
-          translationContext, onLines: incoming => publishLines(incoming, newStart, fingerprint),
+          translationContext, onLines: incoming => publishLines(incoming, newStart, fingerprint, gate),
           prefixCues: carried.map(cue => ({ ...cue, start: cue.start - newStart, end: cue.end - newStart })),
           priorLines: lines.filter(line => line.end <= newStart + 0.001).slice(-12),
           deferUnfinished: !hasSubtitles && end < source.duration - 0.05,
@@ -972,9 +1000,11 @@ export async function runPlannedInterpret(opts) {
           setBrief: text => { if (text && !briefBox.full) briefBox.text = text; },
         });
         signal.throwIfAborted();
+        if (await retryStalledWindow(gate)) continue;
         plan.incompleteRecognition ||= part.incompleteRecognition;
         plan.incompleteTranslation ||= part.incompleteTranslation;
-        await publishLines(part.lines || [], newStart, fingerprint);
+        await publishLines(part.lines || [], newStart, fingerprint, gate);
+        windowRetries = 0;
         const deferred = (part.deferredCues || []).map(cue => ({ ...cue, start: cue.start + newStart, end: cue.end + newStart }));
         if (!hasSubtitles) {
           const coverFrom = carried[0]?.start ?? newStart;

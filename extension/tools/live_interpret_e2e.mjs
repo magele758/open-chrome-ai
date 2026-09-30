@@ -38,6 +38,10 @@ const clock = setInterval(() => {
   }
   if (!state.paused) state.currentTime += dt / 1000 * state.playbackRate;
   else if (firstPlayAt) pausedMs += dt;
+  if (!audioOnly && !state.paused && subtitleCues) {
+    const t = state.currentTime, cue = subtitleCues.find(c => t >= c.start + .8 && t < c.end - .5);
+    if (cue && !lineRanges.some(l => l.start < cue.end && l.end > cue.start)) { undubbedMs += dt; if (undubbed.length < 8 && !undubbed.includes(cue.id)) undubbed.push(cue.id); }
+  }
   if (state.duration && state.currentTime >= state.duration) { state.currentTime = state.duration; state.ended = true; }
 }, 20);
 const setPaused = paused => {
@@ -48,6 +52,9 @@ const setPaused = paused => {
 };
 
 const played = [], events = [], metrics = [], references = new Set();
+// Video advancing through speech that has no dub line yet = desync with the source.
+let subtitleCues = null, undubbedMs = 0; const undubbed = [], lineRanges = [];
+let chatCalls = 0; const [stallCall, injectedStallMs] = (process.env.E2E_STALL || '').split(':').map(Number);
 let emotions = 0, saved = 0, noReference = 0;
 // Pure-audio mode: the side-panel player consumes dub segments back to back.
 const audioOnly = process.env.E2E_AUDIO_ONLY === '1';
@@ -97,6 +104,7 @@ const running = runPlannedInterpret({ tabId: 1, sourceUrl: url, settings, signal
   },
   chat: async (model, request) => {
     const began = Date.now();
+    if (++chatCalls === stallCall) { console.log(`[${el()}s v=${state.currentTime.toFixed(1)}] injected stall on chat #${chatCalls}: ${injectedStallMs}ms`); await new Promise(r => setTimeout(r, injectedStallMs)); }
     const log = extra => process.env.E2E_CHAT_LOG && appendFileSync(process.env.E2E_CHAT_LOG, JSON.stringify({ ms: Date.now() - began,
       system: request.messages[0].content.slice(0, 120), input: request.messages[1].content, ...extra }) + '\n');
     try {
@@ -120,12 +128,14 @@ const running = runPlannedInterpret({ tabId: 1, sourceUrl: url, settings, signal
   openSource: async args => {
     const source = await openInterpretSource(args);
     state.duration = source.duration;
+    subtitleCues = source.subtitles?.filter(c => (c.src || c.text || '').trim()) || null;
     console.log(`[${el()}s] source ready: duration=${source.duration}s subtitles=${source.subtitles?.length || 0} complete=${source.subtitlesComplete}`);
     return source;
   },
   onEvent: ev => {
     events.push({ at: el(), ...ev, blob: undefined, segment: undefined });
     if (ev.type === 'metric') metrics.push(ev);
+    if (ev.type === 'line') lineRanges.push({ start: ev.start, end: ev.end });
     if (ev.type === 'dub_segment') { segments++; segmentEnd = Math.max(segmentEnd, ev.segment.end); firstSegmentAt ||= Date.now(); }
     if (ev.type === 'status' && ev.message !== lastStatus) { lastStatus = ev.message; console.log(`[${el()}s v=${state.currentTime.toFixed(1)}] ${ev.message}`); }
     if (ev.type === 'warn' || ev.type === 'dub_gap') console.log(`[${el()}s v=${state.currentTime.toFixed(1)}] ${ev.type}: ${ev.message || ev.reason}`);
@@ -152,6 +162,9 @@ const longPauses = pauses.filter(p => p.seconds >= 1);
 console.log('\n===== REPORT =====');
 console.log(`first dub audio: ${firstPlayAt ? ((firstPlayAt - t0) / 1000).toFixed(1) + 's' : 'NEVER'}`);
 console.log(`video advanced: ${(state.currentTime - startAt).toFixed(1)}s in ${wall.toFixed(1)}s after first play; paused ${(pausedMs / 1000).toFixed(1)}s (${wall ? (pausedMs / 10 / wall).toFixed(1) : 0}%)`);
+console.log(`video played through undubbed speech: ${(undubbedMs / 1000).toFixed(1)}s${undubbed.length ? ' cues ' + undubbed.join(',') : ''}`);
+const late = played.filter(p => p.item && Number(p.video) - p.item.start > 1);
+console.log(`dub audio started >1s after its source time: ${late.length}/${played.length}${late.length ? ' worst ' + Math.max(...late.map(p => Number(p.video) - p.item.start)).toFixed(1) + 's' : ''}`);
 console.log(`pauses>=1s: ${longPauses.length}, longest ${Math.max(0, ...pauses.map(p => p.seconds)).toFixed(1)}s`);
 if (audioOnly) console.log(`pure audio: first segment ${firstSegmentAt ? ((firstSegmentAt - t0) / 1000).toFixed(1) + 's' : 'NEVER'}, segments ${segments}, listened to ${(audioHead - startAt).toFixed(1)}s, stalled ${(stallMs / 1000).toFixed(1)}s`);
 console.log(`distinct TTS voice references: ${references.size}, requests WITHOUT reference: ${noReference}, lines with own-audio emotion reference: ${emotions}`);

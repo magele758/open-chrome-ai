@@ -5,7 +5,7 @@ import { knownQuietUntil, subtitleLeadGap, validateDubTranslation, fitDub } from
 import { stableAudioIdentity, safeBudgetRewrite, speechUnits, bufferingTarget } from '../lib/interpret-policy.js';
 import { dubKey } from '../lib/dub-cache.js';
 import { createInterpretContext } from '../lib/interpret-context.js';
-import { session, source, settings, blob, gate, until, sleep, chat } from './interpret-test-harness.mjs';
+import { session, source, settings, blob, gate, until, sleep, chat, continuousPlayback } from './interpret-test-harness.mjs';
 import { runLive, runOffline } from './test_interpret_functional.mjs';
 
 const noCache = { cacheGet: async () => null, cacheSet: async () => {} };
@@ -136,6 +136,28 @@ assert.equal(bufferingTarget({ refill: true, remaining: 2, playbackRate: 2 }), 1
     assert(s.events.some(e => e.type === 'dub_gap'));
     assert.equal(s.state.paused, true); assert.equal(s.audios.length, 0);
     assert(!s.events.some(e => e.type === 'dub_complete' || e.type === 'archive_saved'));
+  } finally { s.abort.abort(); await s.outcome; }
+}
+
+// A translation window that fails both attempts is retried with the picture
+// held; it must neither end the session nor let speech play undubbed.
+{
+  const flaky = failing => { let calls = 0; return async (model, options) => {
+    if (!JSON.parse(options.messages[1].content).current) return '';
+    if (failing(++calls)) throw Object.assign(new Error('503 upstream'), { status: 503 });
+    return chat(model, options);
+  }; };
+  const recovered = await continuousPlayback({ override: { chat: flaky(n => n === 3 || n === 4), hedgeMs: Infinity, windowRetryDelayMs: 5 } });
+  assert(recovered, 'session survives a fully failed translation window');
+}
+{
+  const s = session({ openSource: async () => source(subs, 12), hedgeMs: Infinity, windowRetryDelayMs: 5,
+    chat: async () => { throw Object.assign(new Error('503 upstream'), { status: 503 }); } });
+  try {
+    const result = await s.outcome;
+    assert.match(result.error?.message || '', /翻译失败/);
+    assert(s.events.some(e => e.type === 'dub_gap'));
+    assert.equal(s.state.paused, true); assert.equal(s.audios.length, 0);
   } finally { s.abort.abort(); await s.outcome; }
 }
 
