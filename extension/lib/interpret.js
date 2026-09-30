@@ -13,12 +13,12 @@ import { collapseRollingCues } from "./asr.js";
 import { completeChat } from "./openai.js";
 import { checkSpeechText, isWeakSpeechText, isWhisperHallucination } from "./speech-quality.js";
 import { isAsrReady, isModelReady, isTtsReady, resolveModel } from "./storage.js";
-import { assessVoiceQuality, isQuietBlob, recordSlice } from "./tab-audio-record.js";
+import { isQuietBlob, recordSlice, voiceSample } from "./tab-audio-record.js";
 import { createInterpretPipeline } from "./interpret-pipeline.js";
 import { createSemanticBuffer, withInterpretDeadline, unfinishedSpeech, validateSemanticTranslation } from "./interpret-semantic.js";
 import { createInterpretContext } from "./interpret-context.js";
 import { splitZhProportional } from "./dub-sentences.js";
-import { blobToWav, synthesizeTts } from "./tts.js";
+import { blobToWav, encodeMonoWav, synthesizeTts } from "./tts.js";
 import { videoIdentity } from "./library.js";
 import { interpretSourceUrls } from "./media-url.js";
 import { composeFullDubTrack, saveFullMediaArchive } from "./audio-composer.js";
@@ -355,11 +355,11 @@ export async function voiceRefFromBlob(blob, options = {}) {
         const ctx = new AC();
         try {
           const audio = await ctx.decodeAudioData(await wav.arrayBuffer());
-          const ch = audio.getChannelData(0);
-          const assessment = assessVoiceQuality(ch, audio.sampleRate);
+          const assessment = voiceSample(audio.getChannelData(0), audio.sampleRate);
           if (!assessment.ok) {
             return null; // Reject low SNR / pure noise / insufficient speech
           }
+          if (assessment.gain > 1) wav = encodeMonoWav(assessment.samples, audio.sampleRate);
         } finally {
           ctx.close?.().catch(() => {});
         }

@@ -13,8 +13,20 @@ export const TTS_LANGS = ["ZH", "EN", "JA", "AR", "ES"];
 export const VOICE_REF_SECONDS = 7;
 /** IndexTTS 2.5 Gradio /gen_single emo_control_method — clone speaker from prompt wav. */
 export const TTS_EMO_SAME_AS_REF = "Same as the voice reference";
+/** Timbre from the prompt, emotion/prosody from a separate clip (the original line). */
+export const TTS_EMO_FROM_AUDIO = "Use emotion reference audio";
+export const TTS_EMO_WEIGHT = 0.8;
 
 let promptCache = { origin: "", key: "", file: null };
+// A shared per-speaker voice is reused for every line; upload each blob once.
+const segmentUploads = new WeakMap();
+async function uploadSegmentRef(origin, blob, filename, signal, fresh = false) {
+  const hit = segmentUploads.get(blob);
+  if (!fresh && hit?.origin === origin) return hit.file;
+  const file = asFileData(await gradioUpload(origin, blob, filename, signal), filename, blob.type);
+  segmentUploads.set(blob, { origin, file });
+  return file;
+}
 
 export function encodeMonoWav(samples, sampleRate) {
   const n = samples.length;
@@ -81,15 +93,15 @@ export function isTtsConfigured(tts) {
   return Boolean(String(tts?.baseUrl || "").trim());
 }
 
-export function buildGenSingleData({ promptFile, text, lang = "ZH", durationFactor = 1 }) {
+export function buildGenSingleData({ promptFile, text, lang = "ZH", durationFactor = 1, emotionFile = null }) {
   const factor = Number(durationFactor);
   return [
-    TTS_EMO_SAME_AS_REF,
+    emotionFile ? TTS_EMO_FROM_AUDIO : TTS_EMO_SAME_AS_REF,
     promptFile,
     String(text || ""),
     TTS_LANGS.includes(lang) ? lang : "ZH",
-    null,
-    0.65,
+    emotionFile,
+    emotionFile ? TTS_EMO_WEIGHT : 0.65,
     0, 0, 0, 0, 0, 0, 0, 0,
     "",
     false,
@@ -336,7 +348,7 @@ export async function testTts(tts, { signal } = {}) {
   return { ok: true, ms: Date.now() - started };
 }
 
-export async function synthesizeTts(tts, text, { signal, lang, durationFactor, referenceBlob } = {}) {
+export async function synthesizeTts(tts, text, { signal, lang, durationFactor, referenceBlob, emotionBlob } = {}) {
   const origin = ttsOrigin(tts.baseUrl);
   if (!origin) throw new Error("未配置配音。到设置填写 Index-TTS 的地址并上传参考音。");
   const line = String(text || "").trim();
@@ -354,11 +366,13 @@ export async function synthesizeTts(tts, text, { signal, lang, durationFactor, r
     !temporary && promptCache.origin === origin && promptCache.key === cacheKey && promptCache.file
       ? promptCache.file
       : null;
+  if (!promptFile && temporary) promptFile = await uploadSegmentRef(origin, blob, filename, signal);
   if (!promptFile) {
     const uploaded = await gradioUpload(origin, blob, filename, signal);
     promptFile = asFileData(uploaded, filename, ref.type);
-    if (!temporary) promptCache = { origin, key: cacheKey, file: promptFile };
+    promptCache = { origin, key: cacheKey, file: promptFile };
   }
+  const emotionFile = emotionBlob ? asFileData(await gradioUpload(origin, emotionBlob, "emotion-ref.wav", signal), "emotion-ref.wav", emotionBlob.type) : null;
   const callOnce = async (dataFile) => {
     const call = await fetch(`${origin}/gradio_api/call/gen_single`, {
       method: "POST",
@@ -369,6 +383,7 @@ export async function synthesizeTts(tts, text, { signal, lang, durationFactor, r
           text: line,
           lang: lang || tts.lang || "ZH",
           durationFactor: durationFactor ?? tts.durationFactor ?? 1,
+          emotionFile,
         }),
         // The simple /call API reads results by event_id. In Gradio 5.45,
         // a custom session_hash stores them in a different queue and the
@@ -391,10 +406,12 @@ export async function synthesizeTts(tts, text, { signal, lang, durationFactor, r
     // Re-upload only for an expired reference/queue file. Network recovery is
     // bounded by the caller; auth and server errors cannot repair a reference.
     if (!/\b404\b|file.*(?:not found|does not exist)|参考.*(?:失效|不存在)/i.test(err?.message || '')) throw err;
-    if (!temporary) promptCache = { origin: "", key: "", file: null };
-    const uploaded = await gradioUpload(origin, blob, filename, signal);
-    promptFile = asFileData(uploaded, filename, ref.type);
-    if (!temporary) promptCache = { origin, key: cacheKey, file: promptFile };
+    if (temporary) promptFile = await uploadSegmentRef(origin, blob, filename, signal, true);
+    else {
+      promptCache = { origin: "", key: "", file: null };
+      promptFile = asFileData(await gradioUpload(origin, blob, filename, signal), filename, ref.type);
+      promptCache = { origin, key: cacheKey, file: promptFile };
+    }
     result = await callOnce(promptFile);
   }
   const file = unwrapFile(result);

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { runPlannedInterpret } from '../lib/planned-interpret.js';
 import { InterpretController } from '../sidepanel/interpret-controller.js';
+import { DUB_ARCHIVE_VERSION } from '../lib/interpret-policy.js';
 
 // A paused page must not govern audio production, even beyond the planning window.
 const blob = new Blob(['audio']);
@@ -79,7 +80,7 @@ const context = vm.createContext({
   },
   renderContext() {}, renderTranscribeAction() {}, formatTime: n => String(n), pushError: err => { throw Error(err); },
   getSharedAudioContext: () => null, injectVideo: async () => ({ ok: true }),
-  isAsrReady: () => true, isTtsReady: () => true, requireModel: () => true,
+  isAsrReady: () => true, isTtsReady: () => true, requireModel: () => true, DUB_ARCHIVE_VERSION,
   startInterpret: () => { videoStarts++; },
   stopDubPlayback() {}, loadFullMediaArchive: async () => savedArchive, videoIdentity: () => "test-video",
 });
@@ -136,7 +137,12 @@ assert.equal(vm.runInContext('compactPendingAutoplay', context), false);
 assert.equal(vm.runInContext('compactFullGenerating', context), true);
 await vm.runInContext('generateFullCompactAudio()', context);
 assert.equal(vm.runInContext('compactFullGenerating', context), false);
-savedArchive = { complete: true, compactAudioBlob: blob };
+savedArchive = { complete: true, compactAudioBlob: blob, processingVersion: 'planned-v2' };
+const staleStarts = audioStarts;
+await vm.runInContext('generateFullCompactAudio()', context);
+assert.equal(audioStarts, staleStarts + 1, 'an archive from older voice/segmentation logic is regenerated');
+await vm.runInContext('generateFullCompactAudio()', context);
+savedArchive = { complete: true, compactAudioBlob: blob, processingVersion: DUB_ARCHIVE_VERSION };
 const startsBefore = audioStarts;
 await vm.runInContext('generateFullCompactAudio()', context);
 assert.equal(audioStarts, startsBefore);

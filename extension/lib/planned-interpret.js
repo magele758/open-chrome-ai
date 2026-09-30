@@ -17,10 +17,12 @@ import { interpretSourceUrls } from './media-url.js';
 import { prepareSpeakerReference } from './interpret-reference.js';
 import { stripSubtitleDirections } from './subtitle-text.js';
 import { retryInterpretRequest } from './interpret-retry.js';
-import { INTERPRET_VERSION, speechUnits, safeBudgetRewrite, failedTranslation, bufferingTarget, stableAudioIdentity, ttsAudioIdentity } from './interpret-policy.js';
+import { INTERPRET_VERSION, DUB_ARCHIVE_VERSION, speechUnits, safeBudgetRewrite, failedTranslation, bufferingTarget, stableAudioIdentity, ttsAudioIdentity } from './interpret-policy.js';
 
 const modelIdentity = model => ({ baseUrl: model?.baseUrl, model: model?.model, language: model?.language, preset: model?.preset });
 const parseJson = text => parseTolerantJson(text);
+// Punctuation-only cues ("。") carry no speech; models return empty text for them.
+const hasSpeech = text => /[\p{L}\p{N}]/u.test(String(text || ''));
 const dubContextMode = settings => settings?.tts?.contextMode === 'sentence' ? 'sentence' : 'cue';
 const translateAheadSeconds = settings => {
   const ahead = Number(settings?.tts?.translateAheadSeconds);
@@ -393,7 +395,7 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
         speaker: c.speaker,
         overlap: c.overlap,
         timingQuality: 'segment'
-      })).filter(c => c.src && c.end > c.start);
+      })).filter(c => hasSpeech(c.src) && c.end > c.start);
       if (!incompleteRecognition) await cacheSet(recognitionKey, cues);
     } else {
       if (!isAsrReady(settings.asr)) {
@@ -477,13 +479,18 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
     // a normal slow LLM response (two attempts), not only the fast path.
     if (!requestDeadline || !windowed) requestDeadline = Date.now() + 90000;
     const remaining = requestDeadline - Date.now();
-    if (remaining <= 0 || ++requests > (windowed ? 12 : Infinity)) throw Object.assign(new Error('翻译预算耗尽'), { requestFailure: true });
+    // Each attempt gets a fair fixed timeout (normal replies take 3–10 s; the
+    // provider occasionally stalls one request). Splitting the remaining budget
+    // shrank later timeouts to a few seconds and aborted healthy requests.
+    if (remaining < 8000 || ++requests > (windowed ? 12 : Infinity)) throw Object.assign(new Error('翻译预算耗尽'), { requestFailure: true });
     const began = Date.now();
     return retryInterpretRequest(s => chat(model, {
       messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(input) }],
       signal: s, temperature: .1, maxTokens, rejectTruncated: true,
-    }), { signal, attempts: 2, timeoutMs: Math.max(1, Math.min((remaining - 800) / 2, windowed ? 30000 : 45000)),
-      onRetry: () => recoveryStatus('翻译连接暂时中断，正在重试当前段，已完成内容保留…') }).catch(error => { error.requestFailure = true; throw error; })
+    }), { signal, attempts: 2, timeoutMs: Math.min(remaining - 500, windowed ? 30000 : 45000),
+      onRetry: ({ error }) => recoveryStatus(/timeout|超时/i.test(`${error?.name} ${error?.message}`)
+        ? '翻译响应较慢，正在重试当前段，已完成内容保留…'
+        : '翻译连接暂时中断，正在重试当前段，已完成内容保留…') }).catch(error => { error.requestFailure = true; throw error; })
       .finally(() => onMetric({ stage: 'translation', durationMs: Date.now() - began, sourceOffset }));
   };
   let repairRemaining = windowed ? 2500 : 20000;
@@ -1002,7 +1009,7 @@ export async function runPlannedInterpret(opts) {
     };
     // One worker preserves voice-service capacity, while playback is independent.
     const failedSpeakers = new Set();
-    let unknownReferenceFailures = 0, lastValidReference = null, fallbackSearched = false;
+    let sharedVoice = null, sharedVoiceSearched = false, sharedVoiceRounds = 0;
     const extractReference = async line => {
       // Download time is not extraction time: slices block until the audio track is ready.
       await source.audioReady?.();
@@ -1011,18 +1018,40 @@ export async function runPlannedInterpret(opts) {
           source, signal: s, voiceRef: opts.voiceRef || voiceRefFromBlob }), signal, opts.referenceTimeoutMs ?? 8000);
       } catch { signal.throwIfAborted(); return null; }
     };
-    // Voice-clone TTS rejects requests without a reference. Without a configured
-    // voice, reuse a clean sample from this video rather than going silent.
-    const fallbackReference = async () => {
-      if (lastValidReference || fallbackSearched) return lastValidReference;
-      fallbackSearched = true;
-      const pool = lines.length ? lines : (source.subtitles || []);
-      const longer = pool.filter(c => c.end - c.start >= 3);
-      for (const cand of (longer.length ? longer : pool).slice(0, 4)) {
+    // Without diarization every cue is an unknown speaker. Sampling each cue's own
+    // audio makes the cloned timbre drift line by line, so pick one clean, long
+    // sample for the whole video and keep it. Voice-clone TTS also rejects
+    // requests without any reference.
+    const videoVoice = async current => {
+      if (sharedVoice || sharedVoiceSearched) return sharedVoice;
+      // First round ranks the longest early cues; later rounds only try the
+      // current line, and give up after a few so failures stay cheap.
+      let candidates = current ? [current] : [];
+      if (!sharedVoiceRounds) {
+        // Rank by speech density, not length: long cues often span intro music,
+        // applause or pauses, and the clone then imitates the slow delivery.
+        const density = c => speechUnits(c.src || c.text || '') / Math.max(.1, c.end - c.start);
+        const pool = (source.subtitles?.length ? source.subtitles : lines).filter(c => c.end - c.start >= 3 && c.end - c.start <= 12);
+        const early = pool.filter(c => c.start < 300);
+        candidates = [...(early.length ? early : pool).slice().sort((a, b) => density(b) - density(a)).slice(0, 4), ...candidates];
+      }
+      if (++sharedVoiceRounds >= 3) sharedVoiceSearched = true;
+      for (const cand of candidates) {
         const ref = await extractReference(cand);
-        if (ref) return (lastValidReference = ref);
+        if (ref) { sharedVoiceSearched = true; return (sharedVoice = ref); }
       }
       return null;
+    };
+    // Timbre stays per speaker; tone and pacing follow each line's own original audio.
+    const lineEmotion = async line => {
+      if (opts.emotionReference === false || !(line.end - line.start >= 1)) return null;
+      await source.audioReady?.();
+      try {
+        return await withInterpretDeadline(async () => {
+          const sample = await source.slice(line.start, Math.min(10, line.end - line.start));
+          return sample?.blob ? await (opts.voiceRef || voiceRefFromBlob)(sample.blob) : null;
+        }, signal, opts.referenceTimeoutMs ?? 8000);
+      } catch { signal.throwIfAborted(); return null; }
     };
     production = (async () => {
       while (!signal.aborted) {
@@ -1059,26 +1088,29 @@ export async function runPlannedInterpret(opts) {
           try { await value.blob.slice(0, 16).arrayBuffer(); return value; } catch { return null; }
         };
         let prepared = await readable(await cacheGet(stableAudioKey));
-        let referenceBlob, refKey = configuredKey, key;
+        let referenceBlob, refKey = configuredKey, key, emotionBlob = null, emotionKey = 'none';
         if (!prepared) {
-          referenceBlob = references.get(line.speaker);
           const unknownVoice = !line.speaker || line.speaker.startsWith('unassigned:');
-          if (!referenceBlob && !failedSpeakers.has(line.speaker) && !(unknownVoice && unknownReferenceFailures >= 2)) {
-            const referenceStart = Date.now();
-            referenceBlob = await extractReference(line);
-            emit({ type: 'metric', stage: 'reference', durationMs: Date.now() - referenceStart });
-            if (referenceBlob) {
-              references.set(line.speaker, referenceBlob);
-              lastValidReference = referenceBlob;
-              if (unknownVoice) unknownReferenceFailures = 0;
-            } else { failedSpeakers.add(line.speaker); if (unknownVoice) unknownReferenceFailures++; }
+          const referenceStart = Date.now();
+          if (unknownVoice) {
+            referenceBlob = await videoVoice(line);
+          } else {
+            referenceBlob = references.get(line.speaker);
+            if (!referenceBlob && !failedSpeakers.has(line.speaker)) {
+              referenceBlob = await extractReference(line);
+              if (referenceBlob) references.set(line.speaker, referenceBlob);
+              else failedSpeakers.add(line.speaker);
+            }
           }
-          referenceBlob ||= configuredBlob || await fallbackReference();
+          emit({ type: 'metric', stage: 'reference', durationMs: Date.now() - referenceStart });
+          referenceBlob ||= configuredBlob || (unknownVoice ? null : await videoVoice());
           if (referenceBlob) {
             if (!refKeys.has(referenceBlob)) refKeys.set(referenceBlob, await dubBlobKey(referenceBlob));
             refKey = refKeys.get(referenceBlob);
           }
-          key = await dubKey({ source: plan.sourceKey, line, tts: ttsAudioIdentity(settings.tts), reference: refKey,
+          emotionBlob = await lineEmotion(line);
+          if (emotionBlob) emotionKey = await dubBlobKey(emotionBlob);
+          key = await dubKey({ source: plan.sourceKey, line, tts: ttsAudioIdentity(settings.tts), reference: refKey, emotion: emotionKey,
             background: Boolean(plan.background), version: INTERPRET_VERSION });
           prepared = await readable(await cacheGet(key));
         }
@@ -1088,6 +1120,7 @@ export async function runPlannedInterpret(opts) {
           zh: String(line.zh || '').trim(),
           tts: ttsAudioIdentity(settings.tts),
           reference: refKey,
+          emotion: emotionKey,
           version: `${INTERPRET_VERSION}:tts-content`,
         });
 
@@ -1119,7 +1152,7 @@ export async function runPlannedInterpret(opts) {
           generated++;
           status(`正在准备中文配音 ${ready.size + 1}/${lines.length}…`);
           try {
-            const output = await retryInterpretRequest(s => (opts.synthesizeTts || synthesizeTts)(settings.tts, line.zh, { signal: s, referenceBlob, lang: settings.tts.lang || 'ZH' }), {
+            const output = await retryInterpretRequest(s => (opts.synthesizeTts || synthesizeTts)(settings.tts, line.zh, { signal: s, referenceBlob, emotionBlob, lang: settings.tts.lang || 'ZH' }), {
               signal, attempts: realtime ? 2 : 3, timeoutMs: opts.ttsTimeoutMs ?? 90000,
               onRetry: () => status('正在重试当前句配音，已完成内容保留…'),
             });
@@ -1408,7 +1441,7 @@ export async function runPlannedInterpret(opts) {
           compactCues: compactAudio.cues,
           audioBlob: fullAudio,
           compactAudioBlob: compactAudio.blob,
-          processingVersion: INTERPRET_VERSION,
+          processingVersion: DUB_ARCHIVE_VERSION,
           complete: true,
         });
         if (!opts.signal?.aborted) opts.onEvent?.({ type: 'archive_saved', mode: 'audio', archive });

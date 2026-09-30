@@ -34,11 +34,14 @@ const running=runPlannedInterpret({tabId:1,sourceUrl:'https://fixture.test/subti
  getTtsRef:async()=>({buffer:new TextEncoder().encode('fixed'),type:'audio/wav'}),
  chat,...noCache,transcribe:async()=>{throw Error('ordinary subtitle cues need no ASR');},
  voiceRef:async b=>b,audioDuration:async()=>2,createAudio:()=>new AudioMock(),
- synthesizeTts:async(_m,text,{referenceBlob})=>{requests.push({text,ref:await referenceBlob.text()});return {blob:new Blob(['dub'])};}});
+ synthesizeTts:async(_m,text,{referenceBlob,emotionBlob})=>{requests.push({text,ref:await referenceBlob.text(),emo:await emotionBlob?.text()});return {blob:new Blob(['dub'])};}});
 const outcome=running.then(value=>({value}),error=>({error}));
 try {
  await until(()=>requests.length>=4&&audios.length===1&&!audios[0].paused);
- assert.deepEqual(requests.slice(0,4).map(r=>r.ref),['A','B','A','B'],'unlabeled subtitles must not share the first reference');
+ // Without diarization, per-cue samples make the cloned timbre drift line by line;
+ // unlabeled cues share one voice sampled once from a speech-dense cue.
+ assert.equal(new Set(requests.slice(0,4).map(r=>r.ref)).size,1,'unlabeled subtitles share one consistent video voice');
+ assert.deepEqual(requests.slice(0,4).map(r=>r.emo),['A','B','A','B'],'tone follows each line\'s own original audio');
  // Speech can finish before the source interval: late analysis must not replay it.
  state.currentTime=2;audios[0].onended();releaseAnalysis();
  await sleep(100);
@@ -46,11 +49,11 @@ try {
  state.currentTime=4;
  await until(()=>audios.length>=2&&!audios[1].paused);
  assert.equal(audios[1].dubItem.zh,'sentence 1');
- assert.equal(requests[1].ref,'B','preserved provisional audio still has the correct actual reference');
+ assert.equal(requests[1].ref,requests[0].ref,'preserved provisional audio keeps the shared voice');
  assert.equal(requests.filter(r=>r.text==='sentence 0').length,1);
- assert.ok(requests.filter(r=>r.text==='sentence 1').every(r=>r.ref==='B'));
+ assert.ok(requests.filter(r=>r.text==='sentence 1').every(r=>r.ref===requests[0].ref));
 } finally {abort.abort();releaseAnalysis();const result=await outcome;assert.equal(result.error?.name,'AbortError');}
-console.log('PASS subtitle A/B/A, legacy spk:0 cache, per-cue provisional references, late-analysis playback, cross-speaker ASR');
+console.log('PASS subtitle A/B/A, legacy spk:0 cache, shared voice for unlabeled cues, late-analysis playback, cross-speaker ASR');
 
 if(process.argv[2]) {
  const cues=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));

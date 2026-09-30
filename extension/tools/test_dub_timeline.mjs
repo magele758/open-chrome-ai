@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { stripSubtitleDirections } from '../lib/subtitle-text.js';
 import { validateAnalysis, recognitionWindows, validateDubTranslation, fitDub, continuousReadySeconds, voiceCandidates, parseTolerantJson, subtitleLeadGap, knownQuietUntil } from '../lib/dub-timeline.js';
 const spans = [
   {start:0,end:3,kind:'music',speaker:null},
@@ -84,3 +85,22 @@ console.log('PASS timeline: full coverage, music skip, speaker boundaries, overl
 
 // Videos without subtitles (ASR path) pass null tracks; must not throw.
 assert.equal(knownQuietUntil(3, { lines: [], subtitles: null, spans: null }), null);
+// Subtitle-team credits are not speech (and stall the translation model).
+{
+  assert.equal(stripSubtitleDirections('翻译人员: Shane Wang\n校对人员: Gao Begon 在我27岁的时候，'), '在我27岁的时候，');
+  assert.equal(stripSubtitleDirections('Translator: Joseph Geni Reviewer: Morton Bast So I was'), 'So I was');
+  assert.equal(stripSubtitleDirections('我需要翻译：这句话很重要'), '我需要翻译：这句话很重要');
+}
+// A fragment folded into the previous line (empty zh) is a bounded merge, not a failure.
+{
+  const frag = [
+    { id: 'sub:36', start: 10.08, end: 14.17, src: '我给它一个序列的开头', speaker: 'unassigned:subtitle:4' },
+    { id: 'sub:37', start: 14.17, end: 15.17, src: '它用结果完成序列', speaker: 'unassigned:subtitle:5' },
+  ];
+  const folded = validateDubTranslation({ lines: [{ ids: ['sub:36'], zh: '我给它开头，它把序列补完。' }, { ids: ['sub:37'], zh: '' }] }, frag);
+  assert.deepEqual(folded.map(l => l.sourceIds), [['sub:36', 'sub:37']]);
+  assert.equal(folded[0].end, 15.17);
+  assert.throws(() => validateDubTranslation({ lines: [{ ids: ['sub:36'], zh: '' }, { ids: ['sub:37'], zh: '' }] }, frag), /为空/);
+  const known = frag.map((c, i) => ({ ...c, speaker: i ? 'B' : 'A' }));
+  assert.throws(() => validateDubTranslation({ lines: [{ ids: ['sub:36'], zh: '一句' }, { ids: ['sub:37'], zh: '' }] }, known), /不同说话人/);
+}

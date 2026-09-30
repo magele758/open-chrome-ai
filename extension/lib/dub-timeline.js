@@ -200,10 +200,18 @@ export function validateDubTranslation(raw, cues) {
 
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('口播稿遗漏、重复或调换了原文');
   const byId = new Map(cues.map(c => [String(c.id), c]));
-  return lines.map(line => {
+  // Mid-sentence cue splits: models fold a fragment into the previous line and
+  // leave it empty. That is a merge, still bound by the speaker/gap rules below.
+  const folded = [];
+  for (const line of lines) {
+    if (folded.length && line.ids.length && !String(line.zh || '').trim()) folded.at(-1).ids.push(...line.ids);
+    else folded.push({ ...line, ids: [...line.ids] });
+  }
+  const unknown = c => !c.speaker || String(c.speaker).startsWith('unassigned:');
+  return folded.map(line => {
     if (!line.ids?.length || typeof line.zh !== 'string' || !line.zh.trim() || line.zh.length > 500) throw new Error('口播稿为空');
     const source = line.ids.map(id => byId.get(id));
-    if (source.some(c => c.speaker !== source[0].speaker) || source.length > 1 && source.some(c => c.overlap)) throw new Error('口播稿合并了不同说话人');
+    if (source.some(c => c.speaker !== source[0].speaker && !(unknown(c) && unknown(source[0]))) || source.length > 1 && source.some(c => c.overlap)) throw new Error('口播稿合并了不同说话人');
     // Limits merges only: one long source cue is the input's shape, not a model error.
     if (source.length > 1 && source.at(-1).end - source[0].start > 30.1 || source.slice(1).some((c, i) => c.start - source[i].end > .35)) throw new Error('口播段过长或跨越了原声空档');
     return { id: line.ids.join('+'), sourceIds: line.ids, start: source[0].start, end: source.at(-1).end,

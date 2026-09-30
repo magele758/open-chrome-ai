@@ -5,6 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { writeFileSync, unlinkSync, appendFileSync } from 'node:fs';
 import { completeChat } from '../lib/openai.js';
+import { synthesizeTts, encodeMonoWav } from '../lib/tts.js';
+import { voiceSample } from '../lib/tab-audio-record.js';
 import { runPlannedInterpret } from '../lib/planned-interpret.js';
 import { normalizeSettings } from '../lib/storage.js';
 import { openInterpretSource } from '../lib/downloaded-audio-source.js';
@@ -31,6 +33,9 @@ const state = { ok: true, currentTime: startAt, paused: true, readyState: 4, pla
 let lastTick = Date.now(), pausedMs = 0, firstPlayAt = null, pauses = [], pauseStart = null;
 const clock = setInterval(() => {
   const now = Date.now(), dt = now - lastTick; lastTick = now;
+  if (audioOnly && firstSegmentAt) {
+    if (audioHead < segmentEnd) audioHead = Math.min(segmentEnd, audioHead + dt / 1000); else stallMs += dt;
+  }
   if (!state.paused) state.currentTime += dt / 1000 * state.playbackRate;
   else if (firstPlayAt) pausedMs += dt;
   if (state.duration && state.currentTime >= state.duration) { state.currentTime = state.duration; state.ended = true; }
@@ -42,7 +47,11 @@ const setPaused = paused => {
   if (!paused && pauseStart) { pauses.push({ seconds: (Date.now() - pauseStart.at) / 1000, video: pauseStart.video }); pauseStart = null; }
 };
 
-const played = [], events = [], metrics = [];
+const played = [], events = [], metrics = [], references = new Set();
+let emotions = 0, saved = 0, noReference = 0;
+// Pure-audio mode: the side-panel player consumes dub segments back to back.
+const audioOnly = process.env.E2E_AUDIO_ONLY === '1';
+let audioHead = startAt, segmentEnd = 0, firstSegmentAt = null, stallMs = 0, segments = 0;
 const createAudio = () => {
   const audio = { paused: true, currentTime: 0, playbackRate: 1, timer: null, startedAt: 0,
     pause() { if (this.paused) return; this.paused = true; clearTimeout(this.timer);
@@ -72,14 +81,41 @@ let lastStatus = '';
 const running = runPlannedInterpret({ tabId: 1, sourceUrl: url, settings, signal: abort.signal, startAt, video,
   cacheGet: async k => memory.get(k), cacheSet: async (k, v) => { memory.set(k, v); },
   getTtsRef: async () => null,
-  chat: async (model, request) => {
-    const began = Date.now();
-    const out = await completeChat(model, request);
-    if (process.env.E2E_CHAT_LOG) appendFileSync(process.env.E2E_CHAT_LOG, JSON.stringify({ ms: Date.now() - began,
-      system: request.messages[0].content.slice(0, 120), input: request.messages[1].content, output: out }) + '\n');
+  audioOnly,
+  getAudioPlayhead: () => audioOnly ? audioHead : 0,
+  synthesizeTts: async (tts, text, options) => {
+    if (options.referenceBlob) {
+      const bytes = new Uint8Array(await options.referenceBlob.arrayBuffer());
+      let h = 0; for (let i = 0; i < bytes.length; i += 97) h = (h * 31 + bytes[i]) >>> 0;
+      references.add(`${bytes.length}:${h}`);
+    } else noReference++;
+    console.log(`[${el()}s] tts ref=${options.referenceBlob ? 'yes' : 'NO'} emo=${options.emotionBlob ? 'yes' : 'no'}`);
+    if (options.emotionBlob) emotions++;
+    const out = await synthesizeTts(tts, text, options);
+    if (process.env.E2E_SAVE_DIR && saved < 6) writeFileSync(`${process.env.E2E_SAVE_DIR}/${String(++saved).padStart(2, '0')}.wav`, Buffer.from(await out.blob.arrayBuffer()));
     return out;
   },
-  voiceRef: async blob => blob && blob.size > 32000 * 2 ? blob : null,
+  chat: async (model, request) => {
+    const began = Date.now();
+    const log = extra => process.env.E2E_CHAT_LOG && appendFileSync(process.env.E2E_CHAT_LOG, JSON.stringify({ ms: Date.now() - began,
+      system: request.messages[0].content.slice(0, 120), input: request.messages[1].content, ...extra }) + '\n');
+    try {
+      const out = await completeChat(model, request);
+      log({ output: out });
+      return out;
+    } catch (error) {
+      log({ error: `${error.name}: ${String(error.message).slice(0, 200)}`, aborted: Boolean(request.signal?.aborted) });
+      throw error;
+    }
+  },
+  // Same quality gate as the extension (it decodes with AudioContext, absent in Node).
+  voiceRef: async blob => {
+    if (!blob || blob.size <= 44) return null;
+    const pcm = new Int16Array((await blob.arrayBuffer()).slice(44));
+    const samples = Float32Array.from(pcm, v => v / 32768);
+    const checked = voiceSample(samples, 16000);
+    return checked.ok ? (checked.gain > 1 ? encodeMonoWav(checked.samples, 16000) : blob) : null;
+  },
   audioDuration: duration, createAudio,
   openSource: async args => {
     const source = await openInterpretSource(args);
@@ -90,16 +126,19 @@ const running = runPlannedInterpret({ tabId: 1, sourceUrl: url, settings, signal
   onEvent: ev => {
     events.push({ at: el(), ...ev, blob: undefined, segment: undefined });
     if (ev.type === 'metric') metrics.push(ev);
+    if (ev.type === 'dub_segment') { segments++; segmentEnd = Math.max(segmentEnd, ev.segment.end); firstSegmentAt ||= Date.now(); }
     if (ev.type === 'status' && ev.message !== lastStatus) { lastStatus = ev.message; console.log(`[${el()}s v=${state.currentTime.toFixed(1)}] ${ev.message}`); }
     if (ev.type === 'warn' || ev.type === 'dub_gap') console.log(`[${el()}s v=${state.currentTime.toFixed(1)}] ${ev.type}: ${ev.message || ev.reason}`);
   },
 });
 const outcome = running.then(value => ({ value }), error => ({ error }));
-const deadline = Date.now() + (watch + 600) * 1000;
+// Ends on media progress, not on first dub audio: a run where nothing plays must stop too.
+const deadline = Date.now() + (watch * 2 + 120) * 1000;
 while (Date.now() < deadline) {
   const done = await Promise.race([outcome, new Promise(r => setTimeout(() => r(null), 500))]);
   if (done) { if (done.error) console.log('RUN ERROR:', done.error.message); break; }
-  if (firstPlayAt && state.currentTime - startAt >= watch) break;
+  if (!audioOnly && state.currentTime - startAt >= watch) break;
+  if (audioOnly && firstSegmentAt && audioHead - startAt >= watch) break;
 }
 abort.abort(); await outcome; clearInterval(clock);
 
@@ -114,6 +153,8 @@ console.log('\n===== REPORT =====');
 console.log(`first dub audio: ${firstPlayAt ? ((firstPlayAt - t0) / 1000).toFixed(1) + 's' : 'NEVER'}`);
 console.log(`video advanced: ${(state.currentTime - startAt).toFixed(1)}s in ${wall.toFixed(1)}s after first play; paused ${(pausedMs / 1000).toFixed(1)}s (${wall ? (pausedMs / 10 / wall).toFixed(1) : 0}%)`);
 console.log(`pauses>=1s: ${longPauses.length}, longest ${Math.max(0, ...pauses.map(p => p.seconds)).toFixed(1)}s`);
+if (audioOnly) console.log(`pure audio: first segment ${firstSegmentAt ? ((firstSegmentAt - t0) / 1000).toFixed(1) + 's' : 'NEVER'}, segments ${segments}, listened to ${(audioHead - startAt).toFixed(1)}s, stalled ${(stallMs / 1000).toFixed(1)}s`);
+console.log(`distinct TTS voice references: ${references.size}, requests WITHOUT reference: ${noReference}, lines with own-audio emotion reference: ${emotions}`);
 console.log(`lines shown: ${lines.length}, dub audio played: ${played.length}, original-audio fallback: ${fallback.length}`);
 for (const [stage, arr] of Object.entries(byStage)) console.log(`  ${stage}: ${stat(arr)}`);
 const gaps = events.filter(e => e.type === 'dub_gap');

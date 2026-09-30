@@ -36,6 +36,7 @@ let messageScroll;
 const thinkingScrolls = new WeakMap();
 import { loadFullMediaArchive, cleanExpiredMediaArchives, deleteMediaArchive } from "../lib/audio-composer.js";
 import { clearVideoDubCache } from "../lib/dub-cache.js";
+import { DUB_ARCHIVE_VERSION } from "../lib/interpret-policy.js";
 import { StreamingAudioPlayer, getSharedAudioContext } from "../lib/streaming-audio-player.js";
 import {
   libraryStatus,
@@ -687,7 +688,9 @@ async function performCompactToggle() {
   }
 
   const archive = ((typeof packForMedia === "function" && packForMedia()) || state.pack)?.archive;
-  let audioBlob = archive?.compactAudioBlob || archive?.audioBlob;
+  // Older archives keep the previous voice/segmentation; regenerate (segment caches are reused).
+  const currentArchive = archive?.processingVersion === DUB_ARCHIVE_VERSION ? archive : null;
+  let audioBlob = currentArchive?.compactAudioBlob || currentArchive?.audioBlob;
   if (audioBlob) {
     try {
       const buf = await audioBlob.slice(0, 16).arrayBuffer();
@@ -825,7 +828,7 @@ async function generateFullCompactAudio() {
     if (revision !== compactRevision) return;
     compactSessionOpen = true;
     $("compact-player-bar")?.classList.remove("hidden");
-    if (archive?.complete && archive.compactAudioBlob) {
+    if (archive?.complete && archive.compactAudioBlob && archive.processingVersion === DUB_ARCHIVE_VERSION) {
       const pack = typeof packForMediaWrite === "function" ? packForMediaWrite(tab.id) : (state.pack ||= {});
       if (pack) pack.archive = archive;
       compactGenerationMessage = "已复用完整音频，无需重新翻译或合成；可直接播放或下载。";

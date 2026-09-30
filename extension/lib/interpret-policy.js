@@ -1,5 +1,7 @@
 // Shared, deterministic policy for planning, production and the offline harness.
 export const INTERPRET_VERSION = 'planned-v3';
+// Saved full-audio archives from older voice/segmentation logic are regenerated, not replayed.
+export const DUB_ARCHIVE_VERSION = `${INTERPRET_VERSION}:shared-voice:line-emotion`;
 export function speechUnits(text) {
   const value = String(text || '');
   return (value.match(/\p{Script=Han}/gu) || []).length
@@ -26,7 +28,7 @@ export function bufferingTarget({ refill, configured = 30, latencySeconds = 0, p
 }
 
 export function stableAudioIdentity({ source, line, tts, configuredKey, background }) {
-  return { source, line, tts: ttsAudioIdentity(tts), configuredKey, background: Boolean(background), version: `${INTERPRET_VERSION}:audio` };
+  return { source, line, tts: ttsAudioIdentity(tts), configuredKey, background: Boolean(background), version: `${INTERPRET_VERSION}:audio:shared-voice:line-emotion` };
 }
 
 export function ttsAudioIdentity(tts = {}) {
