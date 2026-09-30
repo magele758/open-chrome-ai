@@ -241,6 +241,12 @@ class SubtitleParseTest(unittest.TestCase):
         text = ''.join(c['src'] for c in helper.parse_json3_cues({'events': events})).replace(' ', '')
         self.assertEqual(text, '大家好，最近我做了一个关于大型语言模型的30分钟演讲，算是入门介绍。可惜的是，那次演讲没有录制下来。')
 
+    def test_punctuation_only_token_joins_previous_cue(self):
+        segs = [{'utf8': w, 'tOffsetMs': i * 300} for i, w in enumerate(['我', '给', '它', '一个', '序列', '的', '开头', '，', '它', '用', '结果', '完成', '序列'])]
+        events = [{'tStartMs': 0, 'dDurationMs': 4000, 'segs': segs}, {'tStartMs': 4200, 'dDurationMs': 800, 'segs': [{'utf8': '。'}, {'utf8': '好', 'tOffsetMs': 400}]}]
+        cues = helper.parse_json3_cues({'events': events})
+        self.assertTrue(all(any(ch.isalnum() for ch in c['src']) for c in cues), cues)
+
     def test_cjk_json3_lines_split_by_punctuation_and_duration(self):
         events = [{'tStartMs': i * 4000, 'dDurationMs': 4000, 'segs': [{'utf8': f'第{i}行内容，没有英文句号' + ('。' if i % 3 == 2 else '')}]}
                   for i in range(15)]

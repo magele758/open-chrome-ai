@@ -24,7 +24,7 @@ JOBS = {}
 LOCK = threading.RLock()
 PART_SECONDS = 300
 # Bump when cue segmentation changes; cached cues from older parsers are refetched.
-SUBTITLE_VERSION = 3
+SUBTITLE_VERSION = 5
 DEFAULT_PORT = 18789
 SERVICE = 'pagelens-media'
 CONDA_ENV = 'pagelens-media'
@@ -296,10 +296,15 @@ SUBTITLE_DIRECTION = re.compile(
     r'laughter and applause|微笑|叹气|叹息|笑声|笑|轻笑|大笑|苦笑|掌声|鼓掌|音乐|背景音乐|喘气|呼吸|咳嗽|清嗓|沉默|静音)[.!。！…]*$', re.I)
 
 
+SUBTITLE_CREDIT = re.compile(r"(?:翻译人员|校对人员|译者|审校|校对|Translator|Reviewer)\s*[:：]\s*(?:[A-Za-z][\w.'-]*(?:[ \t]+(?!Translator|Reviewer)[A-Z][\w.'-]*)?|[\u4e00-\u9fff·]{2,6})")
+
+
 def strip_subtitle_directions(text):
     def replace(match):
         label = next(g for g in match.groups() if g is not None).strip()
         return ' ' if SUBTITLE_DIRECTION.fullmatch(label) else match.group(0)
+    # Subtitle-team credits (common on TED tracks) are not speech.
+    text = SUBTITLE_CREDIT.sub(' ', str(text or ''))
     text = re.sub(r'\[([^\[\]]*)\]|\(([^()]*)\)|（([^（）]*)）|【([^【】]*)】', replace, str(text or ''))
     return re.sub(r'[ \t]{2,}', ' ', text).strip(' \t\r\n>♪♫')
 
@@ -392,6 +397,13 @@ def parse_json3_cues(data):
                 end_ms = curr_start + 1000
             start_s = round(curr_start / 1000.0, 3)
             end_s = round(end_ms / 1000.0, 3)
+            # A lone punctuation token ("。") is not a line; models return an
+            # empty translation for it, which fails validation for the batch.
+            if cues and not re.search(r'\w', clean_text):
+                cues[-1]['src'] = join_words([cues[-1]['src'], clean_text])
+                cues[-1]['end'] = max(cues[-1]['end'], end_s)
+                curr_words = []
+                continue
             cues.append({
                 'id': f'sub:{len(cues)}',
                 'start': start_s,
@@ -434,6 +446,10 @@ def parse_vtt_srt_cues(text):
                         cues[-1]['end'] = round(end, 3)
                     break
                 content = strip_subtitle_directions(' '.join(fresh))
+                if content and cues and not re.search(r'\w', content):
+                    cues[-1]['src'] += content
+                    cues[-1]['end'] = round(max(cues[-1]['end'], end), 3)
+                    break
                 if content and end > start:
                     cues.append({
                         'id': f'sub:{len(cues)}',
