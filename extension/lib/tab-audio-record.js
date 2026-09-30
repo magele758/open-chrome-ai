@@ -180,6 +180,21 @@ export function assessVoiceQuality(samples, sampleRate = 44100) {
 }
 
 /**
+ * Quality gate for a voice-clone sample. Quiet but clean recordings are
+ * peak-normalized first: absolute loudness thresholds otherwise reject every
+ * sample of a low-level talk, leaving TTS without any reference. Near-silence
+ * is never amplified into a "voice".
+ */
+export function voiceSample(samples, sampleRate) {
+  let peak = 0;
+  for (let i = 0; i < (samples?.length || 0); i += 1) peak = Math.max(peak, Math.abs(samples[i]));
+  const gain = peak >= 0.02 ? Math.min(20, 0.9 / peak) : 1;
+  const normalized = gain > 1 ? Float32Array.from(samples, v => v * gain) : samples;
+  const assessment = assessVoiceQuality(normalized, sampleRate);
+  return { ...assessment, gain, samples: assessment.ok ? normalized : null };
+}
+
+/**
  * Creates a lightweight VAD analyzer tapping a MediaStream via WebAudio.
  * Tracks speaking state, speech onset, and silence pause durations.
  */
