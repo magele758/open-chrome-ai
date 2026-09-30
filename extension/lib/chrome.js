@@ -243,14 +243,82 @@ export function toToolText(value) {
   }
 }
 
-export async function inject(tabId, func, args = [], { world } = {}) {
+async function assertInjectable(tabId) {
   if (!tabId) throw new Error("没有可操作的标签");
   const tab = await chrome.tabs.get(tabId);
   if (restrictedUrl(tab?.url)) throw new Error(`受限页，无法注入：${tab?.url || ""}`);
-  const opts = { target: { tabId }, func, args };
+}
+
+export async function inject(tabId, func, args = [], { world, frameId } = {}) {
+  await assertInjectable(tabId);
+  const target = Number.isInteger(frameId) && frameId > 0 ? { tabId, frameIds: [frameId] } : { tabId };
+  const opts = { target, func, args };
   if (world) opts.world = world;
   const [entry] = await chrome.scripting.executeScript(opts);
   return entry?.result;
+}
+
+/** 在标签的所有 frame（含跨域 iframe）里各执行一次，返回 [{ frameId, result }]。 */
+export async function injectFrames(tabId, func, args = [], { world } = {}) {
+  await assertInjectable(tabId);
+  const opts = { target: { tabId, allFrames: true }, func, args };
+  if (world) opts.world = world;
+  const entries = (await chrome.scripting.executeScript(opts)) || [];
+  return entries.map((e) => ({ frameId: Number.isInteger(e.frameId) ? e.frameId : 0, result: e.result }));
+}
+
+export const CSP_HINT =
+  "页面 CSP 禁止执行动态脚本。改用 snapshot_controls / list_controls / query_dom / find_in_page / click / fill 这类结构化工具（不受 CSP 影响）；" +
+  "确实需要执行 JS 时，在 chrome://extensions 打开本扩展的「允许用户脚本」后重试。";
+
+function userScriptSource(code) {
+  const body = /^\s*return\b/.test(code) || /[;{}]/.test(code) ? code : `return (${code})`;
+  return `(async () => {
+  const safe = (v) => {
+    try {
+      return JSON.parse(JSON.stringify(v, (k, x) => {
+        if (typeof x === "bigint") return String(x);
+        if (typeof x === "function") return "[Function " + (x.name || "") + "]";
+        if (typeof Element !== "undefined" && x instanceof Element) return { tag: x.tagName, id: x.id, text: (x.innerText || "").slice(0, 200) };
+        if (typeof x === "string" && x.length > 4000) return x.slice(0, 4000) + "…";
+        return x;
+      }) ?? null);
+    } catch { return String(v); }
+  };
+  try {
+    const value = await (async () => { ${body}
+    })();
+    return { ok: true, result: safe(value), via: "userScripts" };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err), via: "userScripts" };
+  }
+})()`;
+}
+
+/**
+ * 在页面里执行 JS。页面 CSP 禁 eval 时，退到 userScripts（USER_SCRIPT 世界不受页面 CSP 限制）。
+ * 依次尝试：隔离世界 -> MAIN 世界 -> userScripts。
+ */
+export async function runJsInTab(tabId, runJsFn, code) {
+  let last = await inject(tabId, runJsFn, [code]);
+  if (!last?.cspBlocked) return last;
+  last = await inject(tabId, runJsFn, [code], { world: "MAIN" });
+  if (!last?.cspBlocked) return last;
+
+  if (typeof chrome.userScripts?.execute !== "function") {
+    return { ok: false, cspBlocked: true, error: `${last.error || "CSP 拦截"}。${CSP_HINT}` };
+  }
+  try {
+    const [entry] = await chrome.userScripts.execute({
+      target: { tabId },
+      js: [{ code: userScriptSource(String(code || "")) }],
+      world: "USER_SCRIPT",
+    });
+    if (entry?.error) return { ok: false, error: String(entry.error), via: "userScripts" };
+    return entry?.result ?? { ok: false, error: "userScripts 未返回结果" };
+  } catch (err) {
+    return { ok: false, cspBlocked: true, error: `${err?.message || err}。${CSP_HINT}` };
+  }
 }
 
 export async function injectVideo(tabId, cmd, arg = {}) {

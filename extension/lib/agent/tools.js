@@ -21,10 +21,12 @@ import {
   ensureTaskGroup,
   extensionUrl,
   inject,
+  injectFrames,
   injectMain,
   injectVideo,
   isHttpUrl,
   restrictedUrl,
+  runJsInTab,
   toToolText,
   waitForTabNavigation,
 } from "../chrome.js";
@@ -39,6 +41,9 @@ import {
   runJs,
   scrollPage,
 } from "./page-fns.js";
+import { actOnRef, scrollViewport, snapshotControls } from "./page-snapshot.js";
+import { askJev, isJevActive } from "../jev.js";
+import { buildJevRequest, formatSnapshot, interpretJevAnswers, mergeFrameSnapshots } from "../jev-actions.js";
 import { findSkill } from "./skills.js";
 import { ensureSkillBody } from "../skill-folder.js";
 import { execNativeShell, formatExecResult, nativeFs } from "../native-host.js";
@@ -166,7 +171,49 @@ async function loadNotes() {
   return notes && typeof notes === "object" ? notes : {};
 }
 
+/** 先在顶层 frame 找；找不到再探测所有 frame（含跨域 iframe），只在命中的 frame 里执行。 */
+async function actInFrames(tabId, kind, spec) {
+  const first = await injectMain(tabId, pageAct, [kind, spec]);
+  if (!first || first.ok !== false || !first.notFound) return first;
+  let probes = [];
+  try {
+    probes = await injectFrames(tabId, pageAct, ["probe", spec], { world: "MAIN" });
+  } catch {
+    return first;
+  }
+  const hit = probes.find((p) => p.frameId > 0 && p.result?.ok);
+  if (!hit) return { ...first, framesChecked: probes.length };
+  const res = await inject(tabId, pageAct, [kind, spec], { world: "MAIN", frameId: hit.frameId });
+  return { ...res, frameId: hit.frameId };
+}
+
+const MAX_JEV_HISTORY = 10;
+
 export function createAgentTools(ctx) {
+  const snapshots = new Map();
+  const jevHistory = new Map();
+  const noteAction = (tabId, entry) => {
+    const list = jevHistory.get(tabId) || [];
+    list.push(entry);
+    jevHistory.set(tabId, list.slice(-MAX_JEV_HISTORY));
+  };
+  const takeSnapshot = async (tabId, args) => {
+    const frames = await injectFrames(tabId, snapshotControls, [
+      { limit: args?.limit, textLimit: args?.textLimit },
+    ]);
+    const snap = mergeFrameSnapshots(frames);
+    snapshots.set(tabId, snap);
+    return snap;
+  };
+  const runRefAction = async (tabId, item, action, value, submit) => {
+    if (action === "scroll_down" || action === "scroll_up") {
+      return inject(tabId, scrollViewport, [action === "scroll_up" ? "up" : "down"]);
+    }
+    const kind = action === "select" ? "select" : action;
+    return inject(tabId, actOnRef, [kind, { node: item.node, label: item.label, value, submit }], {
+      frameId: item.frameId,
+    });
+  };
   const tools = [
     {
       name: "extract_page",
@@ -306,13 +353,17 @@ export function createAgentTools(ctx) {
     },
     {
       name: "list_controls",
-      description: "列出当前页可见的按钮、链接、输入框，带建议选择器。要点击或填写前先看这个。",
+      description: "列出当前页可见的按钮、链接、输入框，带建议选择器（含 shadow DOM）。要点击或填写前先看这个。找不到元素时加 allFrames=true 一并查 iframe。",
       parameters: obj({
         tabId: tabIdProp(),
         limit: { type: "integer", description: "默认 40" },
+        allFrames: { type: "boolean", description: "同时列出所有 iframe（含跨域）里的控件" },
       }),
       async execute(args) {
-        return toToolText(await inject(await resolveTabId(ctx, args), listControls, [args?.limit]));
+        const tabId = await resolveTabId(ctx, args);
+        if (!args?.allFrames) return toToolText(await inject(tabId, listControls, [args?.limit]));
+        const frames = await injectFrames(tabId, listControls, [args?.limit]);
+        return toToolText(frames.filter((f) => f.result?.length).map((f) => ({ frameId: f.frameId, controls: f.result })));
       },
     },
     {
@@ -328,10 +379,7 @@ export function createAgentTools(ctx) {
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
         return toToolText(
-          await injectMain(tabId, pageAct, [
-            "click",
-            { selector: args.selector, text: args.text, nth: args.nth },
-          ]),
+          await actInFrames(tabId, "click", { selector: args.selector, text: args.text, nth: args.nth }),
         );
       },
     },
@@ -353,16 +401,13 @@ export function createAgentTools(ctx) {
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
         return toToolText(
-          await injectMain(tabId, pageAct, [
-            "fill",
-            {
-              selector: args.selector,
-              text: args.text,
-              value: args.value,
-              submit: args.submit,
-              nth: args.nth,
-            },
-          ]),
+          await actInFrames(tabId, "fill", {
+            selector: args.selector,
+            text: args.text,
+            value: args.value,
+            submit: args.submit,
+            nth: args.nth,
+          }),
         );
       },
     },
@@ -382,10 +427,7 @@ export function createAgentTools(ctx) {
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
         return toToolText(
-          await injectMain(tabId, pageAct, [
-            "select",
-            { selector: args.selector, value: args.value, nth: args.nth },
-          ]),
+          await actInFrames(tabId, "select", { selector: args.selector, value: args.value, nth: args.nth }),
         );
       },
     },
@@ -592,7 +634,7 @@ export function createAgentTools(ctx) {
     {
       name: "run_js",
       description:
-        "在目标标签执行 JavaScript，返回 JSON 可序列化结果。读 DOM 用 return。点击/填表请优先用 click、fill。登录、支付、下单只在用户明确要求时做。",
+        "在目标标签执行 JavaScript，返回 JSON 可序列化结果。读 DOM 用 return。点击/填表请优先用 click、fill。页面 CSP 禁 eval 时会自动退到 userScripts（需在扩展详情页打开「允许用户脚本」）；仍失败就改用结构化工具。登录、支付、下单只在用户明确要求时做。",
       parameters: obj(
         {
           code: { type: "string", description: "JS 源码，例如 return document.title" },
@@ -601,7 +643,7 @@ export function createAgentTools(ctx) {
         ["code"],
       ),
       async execute(args) {
-        return toToolText(await inject(await resolveTabId(ctx, args), runJs, [String(args.code || "")]));
+        return toToolText(await runJsInTab(await resolveTabId(ctx, args), runJs, String(args.code || "")));
       },
     },
     {
@@ -1317,10 +1359,152 @@ export function createAgentTools(ctx) {
       },
     },
   ];
+  if (isJevActive(ctx.settings)) tools.push(...createJevTools());
   if (ctx.enableSkills === false || ctx.settings?.skillsEnabled === false) {
     return tools.filter((t) => t.name !== "load_skill");
   }
   return tools;
+
+  function createJevTools() {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const findItem = (tabId, index) => {
+      const snap = snapshots.get(tabId);
+      if (!snap) return { error: "还没有控件快照，先调用 snapshot_controls。" };
+      const item = snap.items.find((x) => x.index === Number(index));
+      if (!item) return { error: `快照里没有编号 ${index}，重新调用 snapshot_controls。` };
+      return { item };
+    };
+    const perform = async (tabId, item, action, value, submit) => {
+      const res = await runRefAction(tabId, item, action, value, submit);
+      if (res?.stale) snapshots.delete(tabId);
+      noteAction(tabId, { action, text: item?.label || "", ok: res?.ok !== false });
+      return res;
+    };
+
+    return [
+      {
+        name: "snapshot_controls",
+        description:
+          "读取当前视口内所有可操作控件，返回带编号的表 [1] button 登录 …（含 shadow DOM 与跨域 iframe，附控件状态和视口文字）。点击/填写前先调它，再用 act_element 按编号操作，比 CSS 选择器稳。翻页、弹窗出现、页面刷新后编号会变，需要重新调用。",
+        parameters: obj({
+          tabId: tabIdProp(),
+          limit: { type: "integer", description: "最多列多少个控件，默认 120，最大 250" },
+        }),
+        async execute(args) {
+          const tabId = await resolveTabId(ctx, args);
+          await attachTabToTask(ctx, tabId);
+          return formatSnapshot(await takeSnapshot(tabId, args));
+        },
+      },
+      {
+        name: "act_element",
+        description:
+          "按 snapshot_controls 的编号操作控件。action: click | fill（需 value）| select（需 value，<select> 的选项文字或值）| scroll_down | scroll_up。执行前会校验目标未过期、未被弹窗遮挡；返回 stale/covered 时按提示重新快照或先处理遮挡物。",
+        parameters: obj(
+          {
+            tabId: tabIdProp(),
+            index: { type: "integer", minimum: 1, description: "snapshot_controls 里的编号；scroll 时可省略" },
+            action: { type: "string", enum: ["click", "fill", "select", "scroll_down", "scroll_up"] },
+            value: { type: "string", description: "fill/select 用" },
+            submit: { type: "boolean", description: "fill 后是否提交" },
+          },
+          ["action"],
+        ),
+        async execute(args) {
+          const tabId = await resolveTabId(ctx, args);
+          await attachTabToTask(ctx, tabId);
+          const action = String(args.action);
+          if (action === "scroll_down" || action === "scroll_up") {
+            return toToolText(await perform(tabId, null, action));
+          }
+          const { item, error } = findItem(tabId, args.index);
+          if (error) return error;
+          if (action === "fill" && item.kind !== "fill") return `[${item.index}] 不是可输入控件，请用 click。`;
+          if (action === "select" && item.kind !== "select") return `[${item.index}] 不是下拉框，请用 click。`;
+          if ((action === "fill" || action === "select") && args.value == null) return `${action} 需要 value。`;
+          return toToolText(await perform(tabId, item, action, args.value, args.submit));
+        },
+      },
+      {
+        name: "jev_next_action",
+        description:
+          "让 JEV 看当前页面控件表，一次请求同时判断下一步操作（CLICK/TYPE_TEXT/SELECT/SCROLL/WAIT/DONE/BLOCKED）和目标编号，返回建议与置信度。execute=true 且置信度够高时直接执行 CLICK/SELECT/SCROLL/WAIT 并返回新快照；TYPE_TEXT 需要你提供 value（JEV 只选目标，不写文字）。DONE/BLOCKED 只是参考，要自己核对页面再下结论。适合流程性网页操作（搜索、筛选、选日期、填表）。",
+        parameters: obj(
+          {
+            tabId: tabIdProp(),
+            goal: { type: "string", description: "要在当前页完成的完整目标" },
+            execute: { type: "boolean", description: "是否直接执行建议，默认 false" },
+            value: { type: "string", description: "JEV 选中输入框时要填的文字" },
+            minConfidence: { type: "number", description: "自动执行的最低置信度 0-1，默认 0.6" },
+          },
+          ["goal"],
+        ),
+        async execute(args) {
+          const tabId = await resolveTabId(ctx, args);
+          await attachTabToTask(ctx, tabId);
+          const snap = await takeSnapshot(tabId, {});
+          if (!snap) return "页面没有可读内容。";
+          const history = jevHistory.get(tabId) || [];
+          const req = buildJevRequest(snap, String(args.goal || ""), history);
+          const started = Date.now();
+          const answers = await askJev(ctx.settings.jev, { state: req.state, questions: req.questions });
+          const d = interpretJevAnswers(answers, req.space);
+          const out = {
+            operation: d.operation,
+            confidence: d.confidence,
+            jevMs: Date.now() - started,
+          };
+          if (d.item) {
+            Object.assign(out, {
+              index: d.item.index,
+              label: d.option ? `${d.item.label} → ${d.option.label}` : d.item.label,
+              targetConfidence: d.targetConfidence,
+              alternatives: d.alternatives,
+            });
+          }
+          if (d.operation === "DONE" || d.operation === "BLOCKED") {
+            out.note = "JEV 的判断仅供参考，请对照页面确认后再回复用户。";
+            return toToolText(out);
+          }
+          const threshold = Number.isFinite(Number(args.minConfidence)) ? Number(args.minConfidence) : 0.6;
+          const sure = d.confidence >= threshold && (d.targetConfidence ?? 1) >= threshold;
+          if (!args.execute || !sure) {
+            out.executed = false;
+            if (args.execute && !sure) out.note = `置信度低于 ${threshold}，未自动执行，请自行判断。`;
+            if (d.operation === "TYPE_TEXT") out.needsValue = "用 act_element(action=fill, index, value) 填写。";
+            return toToolText(out);
+          }
+          if (d.operation === "TYPE_TEXT" && args.value == null) {
+            out.executed = false;
+            out.needsValue = "JEV 选中了输入框，请带上 value 再调用，或用 act_element(action=fill)。";
+            return toToolText(out);
+          }
+          let result;
+          if (d.operation === "WAIT") {
+            await sleep(500);
+            result = { ok: true, action: "wait" };
+          } else {
+            const action = { CLICK: "click", TYPE_TEXT: "fill", SELECT: "select", SCROLL_DOWN: "scroll_down", SCROLL_UP: "scroll_up" }[
+              d.operation
+            ];
+            const value = d.operation === "SELECT" ? d.option?.value : args.value;
+            result = await perform(tabId, d.item || null, action, value);
+          }
+          out.executed = result?.ok !== false;
+          out.result = result;
+          if (out.executed) {
+            try {
+              await sleep(150);
+              out.page = formatSnapshot(await takeSnapshot(tabId, { limit: 60, textLimit: 1500 }));
+            } catch {
+              out.page = "页面正在跳转，稍后调用 snapshot_controls 读取。";
+            }
+          }
+          return toToolText(out);
+        },
+      },
+    ];
+  }
 }
 
 /** 50+ 工具领域分类表 */
@@ -1347,6 +1531,9 @@ export const TOOL_DOMAINS = {
     "wait_for",
     "wait_for_navigation",
     "scroll_page",
+    "snapshot_controls",
+    "act_element",
+    "jev_next_action",
     "run_js",
   ],
   browser_mgmt: [

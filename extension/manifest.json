@@ -29,6 +29,7 @@
     "sidePanel",
     "storage",
     "scripting",
+    "userScripts",
     "tabs",
     "tabGroups",
     "contextMenus",

@@ -53,3 +53,43 @@ export async function testJevConnection(config, { fetchImpl = fetch, timeoutMs =
     throw error;
   } finally { clearTimeout(timer); }
 }
+
+export function isJevActive(settings) {
+  const jev = settings?.jev;
+  return Boolean(jev?.enabled) && isJevConfigured(jev);
+}
+
+const RETRY_STATUS = new Set([429, 503, 529]);
+
+/** 发一次 Jev 请求，返回 answers。失败时不回显响应体（可能含回显的密钥）。 */
+export async function askJev(config, { state, questions }, { fetchImpl = fetch, timeoutMs = 15000, retries = 2 } = {}) {
+  const settings = normalizeJevSettings(config);
+  if (!isJevConfigured(settings)) throw new Error("JEV 未配置：请填写模型、API Key 和服务地址。");
+  for (let attempt = 0; ; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(settings.baseUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+        redirect: "error",
+        signal: controller.signal,
+        body: JSON.stringify({ model: settings.model, state, questions }),
+      });
+      if (RETRY_STATUS.has(response.status) && attempt < retries) {
+        await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
+        continue;
+      }
+      if (!response.ok) throw new Error(`JEV 请求失败（HTTP ${response.status}）。`);
+      const data = await response.json();
+      if (!data?.answers || typeof data.answers !== "object") throw new Error("JEV 返回了无效数据。");
+      return data.answers;
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error("JEV 请求超时。");
+      if (error instanceof TypeError) throw new Error("无法连接 JEV 服务。");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}

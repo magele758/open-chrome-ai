@@ -87,7 +87,18 @@ export function queryDom(selector, limit) {
   const max = Math.min(Number(limit) || 20, 50);
   let nodes;
   try {
-    nodes = [...document.querySelectorAll(String(selector || ""))].slice(0, max);
+    nodes = [...document.querySelectorAll(String(selector || ""))];
+    if (!nodes.length) {
+      const walk = (root) => {
+        for (const host of root.querySelectorAll("*")) {
+          if (!host.shadowRoot) continue;
+          nodes.push(...host.shadowRoot.querySelectorAll(String(selector || "")));
+          walk(host.shadowRoot);
+        }
+      };
+      walk(document);
+    }
+    nodes = nodes.slice(0, max);
   } catch (err) {
     return { error: err?.message || String(err) };
   }
@@ -121,11 +132,15 @@ export function listControls(limit) {
     if (testid) return `[data-testid="${testid}"]`;
     return el.tagName.toLowerCase();
   };
-  const nodes = [
-    ...document.querySelectorAll(
-      "a[href], button, [role='button'], input, textarea, select, [role='tab'], [role='menuitem'], [role='link']",
-    ),
-  ].filter(visible);
+  const controlSelector =
+    "a[href], button, [role='button'], input, textarea, select, [role='tab'], [role='menuitem'], [role='link']";
+  const all = [];
+  const gather = (root) => {
+    all.push(...root.querySelectorAll(controlSelector));
+    for (const host of root.querySelectorAll("*")) if (host.shadowRoot) gather(host.shadowRoot);
+  };
+  gather(document);
+  const nodes = all.filter(visible);
   return nodes.slice(0, max).map((el, i) => ({
     i,
     tag: el.tagName.toLowerCase(),
@@ -141,7 +156,7 @@ export function listControls(limit) {
 
 /**
  * Operate the page. Must stay self-contained.
- * kind: click | fill | press | select | wait
+ * kind: click | fill | press | select | wait | probe（只查找不操作，用于跨 frame 定位）
  */
 export async function pageAct(kind, spec) {
   const o = spec || {};
@@ -161,35 +176,48 @@ export async function pageAct(kind, spec) {
     type: el.getAttribute("type") || "",
   });
 
+  const CONTROLS =
+    "a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem']";
+  const collect = (selector, deep) => {
+    const out = [...document.querySelectorAll(selector)];
+    if (!deep) return out;
+    const walk = (root) => {
+      for (const host of root.querySelectorAll("*")) {
+        if (!host.shadowRoot) continue;
+        out.push(...host.shadowRoot.querySelectorAll(selector));
+        walk(host.shadowRoot);
+      }
+    };
+    walk(document);
+    return out;
+  };
+
   const find = () => {
     const nth = Math.max(0, Number(o.nth) || 0);
     if (o.selector) {
       let nodes;
       try {
-        nodes = [...document.querySelectorAll(String(o.selector))].filter(visible);
+        nodes = collect(String(o.selector), false).filter(visible);
+        if (!nodes.length) nodes = collect(String(o.selector), true).filter(visible);
       } catch (err) {
         return { error: err?.message || String(err) };
       }
-      if (!nodes.length) return { error: `没有可见元素：${o.selector}` };
+      if (!nodes.length) return { error: `没有可见元素：${o.selector}`, notFound: true };
       return { el: nodes[Math.min(nth, nodes.length - 1)], count: nodes.length };
     }
     const needle = String(o.text || "").trim();
     if (!needle) return { error: "需要 selector 或 text" };
     const lower = needle.toLowerCase();
-    const nodes = [
-      ...document.querySelectorAll(
-        "a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem']",
-      ),
-    ]
-      .filter(visible)
-      .filter((el) => {
-        const t = `${el.innerText || ""} ${el.value || ""} ${el.getAttribute("aria-label") || ""} ${el.getAttribute("placeholder") || ""}`
-          .replace(/\s+/g, " ")
-          .trim()
-          .toLowerCase();
-        return t === lower || t.includes(lower);
-      });
-    if (!nodes.length) return { error: `没有匹配「${needle}」的可见控件` };
+    const matches = (el) => {
+      const t = `${el.innerText || ""} ${el.value || ""} ${el.getAttribute("aria-label") || ""} ${el.getAttribute("placeholder") || ""}`
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      return t === lower || t.includes(lower);
+    };
+    let nodes = collect(CONTROLS, false).filter(visible).filter(matches);
+    if (!nodes.length) nodes = collect(CONTROLS, true).filter(visible).filter(matches);
+    if (!nodes.length) return { error: `没有匹配「${needle}」的可见控件`, notFound: true };
     return { el: nodes[Math.min(nth, nodes.length - 1)], count: nodes.length };
   };
 
@@ -213,13 +241,15 @@ export async function pageAct(kind, spec) {
       await sleep(160);
       hit = find();
     }
-    if (hit.error) return { ok: false, error: hit.error, waitedMs: Date.now() - t0 };
+    if (hit.error) return { ok: false, error: hit.error, notFound: hit.notFound === true, waitedMs: Date.now() - t0 };
     hit.el.scrollIntoView({ block: "center", behavior: "auto" });
     return { ok: true, waitedMs: Date.now() - t0, match: describe(hit.el), count: hit.count };
   }
 
   const hit = find();
-  if (hit.error) return { ok: false, error: hit.error };
+  if (hit.error) return { ok: false, error: hit.error, notFound: hit.notFound === true };
+
+  if (kind === "probe") return { ok: true, count: hit.count, match: describe(hit.el) };
 
   const el = hit.el;
   el.scrollIntoView({ block: "center", behavior: "auto" });
@@ -375,13 +405,15 @@ export function runJs(code) {
   if (raw.length > 8000) return { ok: false, error: "代码过长" };
   const wrapped = /^\s*return\b/.test(raw) || /[;{}]/.test(raw) ? raw : `return (${raw})`;
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const failure = (err) => {
+    const message = err?.message || String(err);
+    const csp = err instanceof EvalError || /unsafe-eval|Content Security Policy|Trusted ?Script/i.test(message);
+    return csp ? { ok: false, cspBlocked: true, error: message } : { ok: false, error: message };
+  };
   try {
     const result = new AsyncFunction(wrapped)();
-    return Promise.resolve(result).then(
-      (value) => ({ ok: true, result: dump(value) }),
-      (err) => ({ ok: false, error: err?.message || String(err) }),
-    );
+    return Promise.resolve(result).then((value) => ({ ok: true, result: dump(value) }), failure);
   } catch (err) {
-    return { ok: false, error: err?.message || String(err) };
+    return failure(err);
   }
 }
