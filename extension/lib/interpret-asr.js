@@ -7,7 +7,7 @@ import { debugLog } from './debug-log.js';
 // Keep the original slice until recognition succeeds. A shorter decoding window
 // can recover a looping model without guessing which repeated words were spoken.
 export async function transcribeInterpretSlice(model, item, { signal, trace,
-  transcribe = transcribeAudio, onUnrecognized } = {}) {
+  transcribe = transcribeAudio, onUnrecognized, timeoutMs = 60000 } = {}) {
   signal?.throwIfAborted();
   let pcm;
   try { pcm = readPcmWav(await item.blob.arrayBuffer()); } catch { /* encoded tab capture */ }
@@ -27,7 +27,7 @@ export async function transcribeInterpretSlice(model, item, { signal, trace,
   }
   const request = blob => withInterpretDeadline(requestSignal => transcribe(model, blob, {
     filename: filenameForMime(blob.type || item.mime), signal: requestSignal, allowEmpty: true, trace,
-  }), signal);
+  }), signal, timeoutMs, { stage: 'ASR 语音识别', trace });
   const validate = segments => {
     if (hasRunawayRepetition(segments.map(s => s.text || '').join(' '))) {
       const error = new Error('语音识别出现异常重复，重试后仍无法确认本段内容。');

@@ -79,7 +79,21 @@ export async function openInterpretSource({ url, mediaUrl, signal, onProgress = 
       if (Math.abs(covered - job.duration) > 1) throw new Error('音轨不完整');
     })();
     if (job.status === 'ready') await ensureReady();
-    const cache = new Map();
+    const cache = new Map(), loading = new Map();
+    const loadPart = async (track, index) => {
+      const key = `${track}:${index}`;
+      if (cache.has(key)) return cache.get(key);
+      if (!loading.has(key)) {
+        const task = (async () => {
+          const pcm = readPcmWav(await (await request(`/jobs/${id}/${track}/${index}`)).arrayBuffer());
+          cache.set(key, pcm);
+          while (cache.size > 2) cache.delete(cache.keys().next().value);
+          return pcm;
+        })().finally(() => loading.delete(key));
+        loading.set(key, task);
+      }
+      return loading.get(key);
+    };
     return {
       duration: job.duration, close, subtitles: job.subtitles || null, subtitlesComplete: job.subtitlesComplete === true,
       audioReady: ensureReady,
@@ -102,13 +116,7 @@ export async function openInterpretSource({ url, mediaUrl, signal, onProgress = 
         if (!(end > start)) return null;
         for (const p of job.parts) {
           if (p.start >= end || p.start + p.duration <= start) continue;
-          const cacheKey = `${track}:${p.index}`;
-          if (!cache.has(cacheKey)) {
-            const pcm = readPcmWav(await (await request(`/jobs/${id}/${track}/${p.index}`)).arrayBuffer());
-            cache.set(cacheKey, pcm);
-            while (cache.size > 2) cache.delete(cache.keys().next().value);
-          }
-          const pcm = cache.get(cacheKey);
+          const pcm = await loadPart(track, p.index);
           const from = Math.round(Math.max(0, start - p.start) * 16000) * 2;
           const to = Math.min(pcm.length, Math.round(Math.min(p.duration, end - p.start) * 16000) * 2);
           pieces.push(pcm.subarray(from, to));

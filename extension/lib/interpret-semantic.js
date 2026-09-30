@@ -1,3 +1,5 @@
+import { debugLog } from './debug-log.js';
+
 /** Ordered, bounded text assembly. Audio chunks are not sentence boundaries. */
 const DANGLING = /\b(?:a|an|the|to|of|for|with|from|about|because|although|if|unless|and|or|but|than|which|whose|my|your|our|their|is|are|was|were|be|been|being|not|only)\s*[.!?,;:]*$/i;
 const EXPECTS_COMPLEMENT = /\b(?:(?:don['’]t|doesn['’]t|didn['’]t|do not|does not|did not)\s+(?:think|believe|know|mean)|(?:I|we|they|you)\s+(?:think|believe|know|mean))\s*[.!?,;:]*$/i;
@@ -214,7 +216,7 @@ export function createSemanticBuffer({ maxSeconds = 15, maxChars = 1600, modelBo
 }
 
 /** A deadline must release the queue even when a transport ignores abort. */
-export async function withInterpretDeadline(operation, signal, timeoutMs = 20000) {
+export async function withInterpretDeadline(operation, signal, timeoutMs = 20000, { stage = '同传请求', trace = {} } = {}) {
   const controller = new AbortController();
   let timer;
   let rejectCancel;
@@ -223,8 +225,14 @@ export async function withInterpretDeadline(operation, signal, timeoutMs = 20000
   signal?.addEventListener('abort', abort, { once: true });
   if (signal?.aborted) abort();
   timer = setTimeout(() => {
-    controller.abort();
-    rejectCancel(new Error('同传请求超时，已跳过本段并继续。'));
+    const error = Object.assign(new Error(`${stage}超时（等待 ${timeoutMs / 1000} 秒，已由扩展中止）。`), {
+      name: 'TimeoutError', code: 'INTERPRET_TIMEOUT', stage, timeoutMs,
+    });
+    debugLog('interpret.timeout', { ...trace, stage, timeoutMs, code: error.code });
+    // Settle the deadline first: an abort-aware transport may reject immediately.
+    // Otherwise a local timeout can masquerade as user cancellation and skip retries.
+    rejectCancel(error);
+    controller.abort(error);
   }, timeoutMs);
   try {
     return await Promise.race([Promise.resolve().then(() => {

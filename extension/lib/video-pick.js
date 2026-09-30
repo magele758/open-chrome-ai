@@ -260,7 +260,11 @@ export function plVideo(cmd, arg) {
         tap.speaker.gain.cancelScheduledValues(now);
         tap.speaker.gain.setValueAtTime(tap.speaker.gain.value, now);
         tap.speaker.gain.linearRampToValueAtTime(0, now + Math.min(.2, o.fadeSeconds));
-      } else tap.speaker.gain.value = 0;
+      } else {
+        // Cancel a previous restore ramp before closing the original track.
+        tap.speaker.gain.cancelScheduledValues?.(tap.ctx.currentTime);
+        tap.speaker.gain.value = 0;
+      }
     } else if (live && tap.fallback && tap.el) {
       tap.el.muted = true;
       tap.el.volume = 0;

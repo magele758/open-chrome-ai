@@ -20,11 +20,11 @@ function waitForRetry(ms, signal) {
 
 // Retry only the failed request, keeping previously translated batches and audio.
 export async function retryInterpretRequest(operation, { signal, onRetry = () => {},
-  attempts = 3, delayMs = 800, timeoutMs = 90000 } = {}) {
+  attempts = 3, delayMs = 800, timeoutMs = 90000, stage, trace } = {}) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     signal?.throwIfAborted();
     try {
-      return await withInterpretDeadline(operation, signal, timeoutMs);
+      return await withInterpretDeadline(operation, signal, timeoutMs, { stage, trace });
     } catch (error) {
       signal?.throwIfAborted();
       if (attempt === attempts || !isTransientInterpretError(error)) throw error;

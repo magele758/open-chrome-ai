@@ -366,13 +366,20 @@ export async function synthesizeTts(tts, text, { signal, lang, durationFactor, r
     !temporary && promptCache.origin === origin && promptCache.key === cacheKey && promptCache.file
       ? promptCache.file
       : null;
-  if (!promptFile && temporary) promptFile = await uploadSegmentRef(origin, blob, filename, signal);
-  if (!promptFile) {
+  const promptUpload = (async () => {
+    if (promptFile) return promptFile;
+    if (temporary) return uploadSegmentRef(origin, blob, filename, signal);
     const uploaded = await gradioUpload(origin, blob, filename, signal);
-    promptFile = asFileData(uploaded, filename, ref.type);
-    promptCache = { origin, key: cacheKey, file: promptFile };
-  }
-  const emotionFile = emotionBlob ? asFileData(await gradioUpload(origin, emotionBlob, "emotion-ref.wav", signal), "emotion-ref.wav", emotionBlob.type) : null;
+    const file = asFileData(uploaded, filename, ref.type);
+    promptCache = { origin, key: cacheKey, file };
+    return file;
+  })();
+  const emotionUpload = emotionBlob
+    ? gradioUpload(origin, emotionBlob, "emotion-ref.wav", signal).then(file => asFileData(file, "emotion-ref.wav", emotionBlob.type))
+    : Promise.resolve(null);
+  const uploaded = await Promise.all([promptUpload, emotionUpload]);
+  promptFile = uploaded[0];
+  const emotionFile = uploaded[1];
   const callOnce = async (dataFile) => {
     const call = await fetch(`${origin}/gradio_api/call/gen_single`, {
       method: "POST",

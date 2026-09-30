@@ -477,9 +477,9 @@ export async function translateToZh(model, text, signal, trace = {}, context = [
     ],
     temperature: 0.15,
     maxTokens: Math.min(8192, Math.max(4096, Math.ceil(src.length * 4))),
-    rejectTruncated: true,
+    rejectTruncated: true, lowLatency: true,
     signal: requestSignal,
-  }), signal);
+  }), signal, 45000, { stage: "文本模型：翻译", trace });
   debugLog("translation.raw", { ...trace, text: raw });
   const result = cleanTranslation(raw, src);
   debugLog("translation.result", { ...trace, text: result });
@@ -498,8 +498,8 @@ export async function translateSemanticPrefix(model, src, signal, context = [], 
         { role: 'user', content: src },
       ],
       temperature: 0.1, maxTokens: Math.min(8192, Math.max(4096, Math.ceil(src.length * 4))),
-      rejectTruncated: true, signal: requestSignal,
-    }), signal);
+      rejectTruncated: true, lowLatency: true, signal: requestSignal,
+    }), signal, 45000, { stage: '文本模型：语义分句翻译', trace });
     signal?.throwIfAborted();
     debugLog('translation.raw', { ...trace, text: raw, semantic: true, attempt });
     try {
@@ -697,7 +697,7 @@ export async function runInterpret(opts) {
           signal: requestSignal,
           lang: settings.tts.lang || "ZH",
           ...(referenceBlob ? { referenceBlob } : {}),
-        }), s, 30000);
+        }), s, 90000, { stage: 'Index-TTS 配音', trace: line.trace });
         debugLog("tts.ready", { ...line.trace, bytes: out.blob?.size });
         return { ...ready, blob: out.blob, dubbed: true, referenceBlob };
       } catch (err) {

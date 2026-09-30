@@ -99,6 +99,12 @@ assert(cleanTranslation("<think>plan</think>\n你好世界", "x") === "你好世
   assert(a.via === "webaudio", "silence uses webaudio");
   assert(gains[0].gain.value === 0, "speaker gain is 0");
   assert(plVideo("state").silenced === true, "state reports silenced");
+  let cancelledRamp = false;
+  gains[0].gain.value = .5;
+  gains[0].gain.cancelScheduledValues = () => { cancelledRamp = true; };
+  plVideo('silence', { fadeSeconds: 0 });
+  assert(cancelledRamp, 'immediate mute cancels a pending original-audio restore ramp');
+  assert(gains[0].gain.value === 0, 'mute closes the original track immediately');
   first.isConnected = false;
   current = second;
   const b = plVideo("silence");

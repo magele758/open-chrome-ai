@@ -216,7 +216,7 @@ async function postChat(model, body, signal) {
   return response;
 }
 
-function chatBody(model, { messages, temperature, maxTokens, stream }) {
+function chatBody(model, { messages, temperature, maxTokens, stream, lowLatency }) {
   const body = {
     model: String(model.model || "").trim(),
     stream: stream === true,
@@ -224,6 +224,12 @@ function chatBody(model, { messages, temperature, maxTokens, stream }) {
     messages: messages || [],
   };
   if (maxTokens) body.max_tokens = maxTokens;
+  // DeepSeek V4 defaults to thinking, which can take longer than a dubbing
+  // window. Only latency-sensitive jobs opt out; ordinary chat keeps its mode.
+  // Other providers must not receive a provider-specific request field.
+  if (lowLatency && /(?:^|\/)deepseek-(?:v4|flash)(?:-|$)/i.test(body.model)) {
+    body.thinking = { type: 'disabled' };
+  }
   return body;
 }
 
@@ -242,9 +248,9 @@ export function expandChatTokens(maxTokens) {
  * Thinking models can spend max_tokens on reasoning and return empty content;
  * retry with a larger budget, then the same streaming path as sidepanel chat.
  */
-export async function completeChat(model, { messages, temperature = 0.2, maxTokens = 400, signal, rejectTruncated = false } = {}) {
+export async function completeChat(model, { messages, temperature = 0.2, maxTokens = 400, signal, rejectTruncated = false, lowLatency = false } = {}) {
   const once = async (tokens) => {
-    const response = await postChat(model, chatBody(model, { messages, temperature, maxTokens: tokens, stream: false }), signal);
+    const response = await postChat(model, chatBody(model, { messages, temperature, maxTokens: tokens, stream: false, lowLatency }), signal);
     return response.json();
   };
   let json = await once(maxTokens);
@@ -259,7 +265,7 @@ export async function completeChat(model, { messages, temperature = 0.2, maxToke
     }
   }
   if (!text) {
-    text = String(await streamChat(model, { messages, temperature, signal }, () => {}) || "").trim();
+    text = String(await streamChat(model, { messages, temperature, signal, lowLatency }, () => {}) || "").trim();
   }
   return text;
 }
@@ -337,6 +343,7 @@ export async function streamChat(model, input, onDelta) {
     temperature: input.temperature ?? 0.3,
     maxTokens: input.maxTokens,
     stream: true,
+    lowLatency: input.lowLatency,
   }), input.signal);
 
   if (!response.body || /application\/json/i.test(response.headers.get('content-type') || '')) {

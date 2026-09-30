@@ -124,18 +124,19 @@ assert.equal(bufferingTarget({ refill: true, remaining: 2, playbackRate: 2 }), 1
   } finally { analysis.release({ duration: 12, spans: [] }); await s.stop(); }
 }
 
-// All failed audio resolves to original sound and partial completion; never an
-// archiveable success. Abort and user pause are still respected.
+// Exhausted TTS retries pause the video and report failure; they must not
+// silently advance with original speech or publish an archiveable success.
 {
   const s = session({ openSource: async () => source(subs, 12), ttsTimeoutMs: 40,
     synthesizeTts: async () => new Promise(() => {}),
   });
   try {
-    await until(() => s.events.filter(e => e.type === 'dub_gap').length === 3);
-    await until(() => !s.state.paused);
-    assert.equal(s.state.silenced, false); assert.equal(s.audios.length, 0);
+    const result = await s.outcome;
+    assert.match(result.error?.message || '', /配音.*失败/);
+    assert(s.events.some(e => e.type === 'dub_gap'));
+    assert.equal(s.state.paused, true); assert.equal(s.audios.length, 0);
     assert(!s.events.some(e => e.type === 'dub_complete' || e.type === 'archive_saved'));
-  } finally { await s.stop(); }
+  } finally { s.abort.abort(); await s.outcome; }
 }
 
 // Long audio must be delivered in both cold and cached-plan playback.
@@ -160,4 +161,4 @@ for (const warm of [false, true]) {
 }
 // Mutation gate: TTS that never resolves must NOT pass continuous-playback acceptance.
 await assert.rejects(runOffline({ ttsTimeoutMs: 30, playbackWaitMs: 50, synthesizeTts: async () => new Promise(() => {}) }));
-console.log('PASS regression gates: incremental readiness, cache-first, provenance, strict IDs, quiet evidence, glossary, forward analysis, timeout fallback and long-audio playback, live failures and dead-TTS mutation');
+console.log('PASS regression gates: incremental readiness, cache-first, provenance, strict IDs, quiet evidence, glossary, forward analysis, timeout hold and long-audio playback, live failures and dead-TTS mutation');

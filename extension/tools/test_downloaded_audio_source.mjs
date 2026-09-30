@@ -68,3 +68,20 @@ console.log('PASS downloaded audio: cross-part timing, exact samples, short tail
   await assert.rejects(pending, { name: 'AbortError' }); await source.close();
 }
 console.log('PASS staged subtitle readiness and abort while audio is downloading');
+
+// Voice and emotion slices share an in-flight download, not just a completed cache.
+{
+  let release, reads = 0;
+  const gate = new Promise(r => { release = r; });
+  const concurrent = await openInterpretSource({ url: 'https://fixture.test/concurrent', fetchImpl: async (url, opts) => {
+    if (url.includes('/audio/')) { reads++; await gate; }
+    return fetchImpl(url, opts);
+  } });
+  const first = concurrent.slice(0, .25), second = concurrent.slice(.5, .25);
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(reads, 1, 'same PCM part downloads once while in flight');
+  release();
+  const parts = await Promise.all([first, second]);
+  for (const p of parts) assert(readPcmWav(await p.blob.arrayBuffer()).every(v => v === 11));
+  await concurrent.close();
+}
