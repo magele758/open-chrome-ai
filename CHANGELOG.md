@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 同传译文 `max_tokens` 提到 4096–8192；碰到输出上限先加大预算重试，仍截断才跳段。
 
 ### Added
+- 可信输入（`chrome.debugger`，设置里可关）：`trusted_click`（左/右键、双击）、`hover`、`trusted_type`、`press_keys`（含 Ctrl/Meta+A/C/V/X/Z 真实编辑命令）、`drag_drop`（原生 HTML5 拖放）、`upload_file`（`<input type=file>` 或自定义上传按钮）、`handle_dialog`；`click`/`fill` 等遇到 alert/confirm 不再卡死，会提示并交给 `handle_dialog`；`screenshot` 支持 `fullPage` 与 `selector`。空闲 20 秒自动分离调试器以收起横幅。
+- 下载与会话：`download_file`、`list_downloads`、`save_page_mhtml`、`recently_closed_tabs`、`restore_closed_tab`、`web_search`（默认搜索引擎）；`download_file` / `upload_file` 属特权操作，按授权模式确认。
+- `act_element` 带编号滚动时滚动控件所在的内部滚动容器。
+- manifest 新增权限：`debugger`、`downloads`、`sessions`、`search`、`pageCapture`。
 - 剪贴板支持富文本和图片：`clipboard_read` 读 text/html/图片（图片附到对话），`clipboard_write` 可写 html/图片，新增 `copy_selection`（带格式复制页面选区）与 `paste_into_page`（向输入框/富文本编辑器粘贴，优先派发 paste 事件）；`get_selection` 加 `rich`；侧栏「复制回答」同时写入 HTML 与 Markdown。
 - 配置并启用 JEV 后，Agent 多出 `snapshot_controls`（带编号的控件表，含 shadow DOM 与跨域 iframe）、`act_element`（按编号操作，执行前校验过期与遮挡）、`jev_next_action`（JEV 一次请求选出操作与目标，可自动执行）。
 - `click` / `fill` / `select_option` 顶层找不到时自动探测所有 iframe（含跨域）并只在命中的 frame 执行；选择器与文字匹配、`list_controls`、`query_dom` 支持 open shadow DOM；`list_controls` 新增 `allFrames`。

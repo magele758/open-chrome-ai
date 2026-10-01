@@ -43,7 +43,10 @@ import {
   runJs,
   scrollPage,
 } from "./page-fns.js";
-import { actOnRef, scrollViewport, snapshotControls } from "./page-snapshot.js";
+import { actOnRef, scrollContainerOf, scrollViewport, snapshotControls } from "./page-snapshot.js";
+import { cdpAvailable, getCdp } from "../cdp.js";
+import { cdpScreenshot, createCdpTools, withDialogGuard } from "./cdp-tools.js";
+import { createBrowserApiTools } from "./browser-api-tools.js";
 import { askJev, isJevActive } from "../jev.js";
 import { readClipboardRich, writeClipboardRich } from "../clipboard.js";
 import { buildJevRequest, formatSnapshot, interpretJevAnswers, mergeFrameSnapshots } from "../jev-actions.js";
@@ -193,6 +196,8 @@ async function actInFrames(tabId, kind, spec) {
 const MAX_JEV_HISTORY = 10;
 
 export function createAgentTools(ctx) {
+  const cdp = ctx.cdp || (cdpAvailable() ? getCdp() : null);
+  const cdpEnabled = Boolean(cdp) && ctx.settings?.cdpInput !== false;
   const snapshots = new Map();
   const jevHistory = new Map();
   const noteAction = (tabId, entry) => {
@@ -210,7 +215,9 @@ export function createAgentTools(ctx) {
   };
   const runRefAction = async (tabId, item, action, value, submit) => {
     if (action === "scroll_down" || action === "scroll_up") {
-      return inject(tabId, scrollViewport, [action === "scroll_up" ? "up" : "down"]);
+      const dir = action === "scroll_up" ? "up" : "down";
+      if (item) return inject(tabId, scrollContainerOf, [item.node, dir], { frameId: item.frameId });
+      return inject(tabId, scrollViewport, [dir]);
     }
     const kind = action === "select" ? "select" : action;
     return inject(tabId, actOnRef, [kind, { node: item.node, label: item.label, value, submit }], {
@@ -284,11 +291,21 @@ export function createAgentTools(ctx) {
     },
     {
       name: "screenshot",
-      description: "截取标签页可见画面，附加到本轮对话。非当前可见标签会先切过去再截。适合图、报错、视频画面。",
-      parameters: obj({ tabId: tabIdProp() }),
+      description:
+        "截取标签页画面并附加到本轮对话。默认截可见区域（非当前可见标签会先切过去）。fullPage=true 截整页长图，selector 只截某个元素（二者走调试器，不用切标签）。适合图、报错、视频画面。",
+      parameters: obj({
+        tabId: tabIdProp(),
+        fullPage: { type: "boolean", description: "截整页长图（最高 16000px）" },
+        selector: { type: "string", description: "只截这个元素" },
+      }),
       async execute(args) {
         const tabId = args?.tabId != null ? Number(args.tabId) : ctx.getTabId?.();
         try {
+          if ((args?.fullPage || args?.selector) && cdpEnabled) {
+            const { dataUrl, clip } = await cdpScreenshot(cdp, tabId, { fullPage: args.fullPage, selector: args.selector });
+            ctx.setImage?.(dataUrl);
+            return `已截取${args.selector ? "元素" : "整页"}画面（${clip?.width}×${clip?.height}），已附加到本轮对话。请描述关键信息，或继续回答用户。`;
+          }
           const dataUrl = ctx.capture
             ? await ctx.capture(tabId)
             : await captureTab(tabId, ctx.getWindowId?.());
@@ -1444,10 +1461,28 @@ export function createAgentTools(ctx) {
     },
   ];
   if (isJevActive(ctx.settings)) tools.push(...createJevTools());
-  if (ctx.enableSkills === false || ctx.settings?.skillsEnabled === false) {
-    return tools.filter((t) => t.name !== "load_skill");
+  const resolveForGuard = (args) => resolveTabId(ctx, args);
+  if (cdpEnabled) {
+    tools.push(
+      ...createCdpTools(ctx, {
+        cdp,
+        resolveTabId: resolveForGuard,
+        attachTabToTask: (tabId) => attachTabToTask(ctx, tabId),
+        getRefItem: (tabId, index) => {
+          const snap = snapshots.get(tabId);
+          if (!snap) return { error: "还没有控件快照；用 selector / text / x,y 指定目标。" };
+          const item = snap.items.find((x) => x.index === Number(index));
+          return item ? { item } : { error: `快照里没有编号 ${index}。` };
+        },
+      }),
+    );
   }
-  return tools;
+  tools.push(...createBrowserApiTools(ctx, { resolveTabId: resolveForGuard }));
+  const guarded = withDialogGuard(tools, { cdp, resolveTabId: resolveForGuard, enabled: cdpEnabled });
+  if (ctx.enableSkills === false || ctx.settings?.skillsEnabled === false) {
+    return guarded.filter((t) => t.name !== "load_skill");
+  }
+  return guarded;
 
   function createJevTools() {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1483,11 +1518,11 @@ export function createAgentTools(ctx) {
       {
         name: "act_element",
         description:
-          "按 snapshot_controls 的编号操作控件。action: click | fill（需 value）| select（需 value，<select> 的选项文字或值）| scroll_down | scroll_up。执行前会校验目标未过期、未被弹窗遮挡；返回 stale/covered 时按提示重新快照或先处理遮挡物。",
+          "按 snapshot_controls 的编号操作控件。action: click | fill（需 value）| select（需 value，<select> 的选项文字或值）| scroll_down | scroll_up（带 index 时滚动该控件所在的内部滚动容器）。执行前会校验目标未过期、未被弹窗遮挡；返回 stale/covered 时按提示重新快照或先处理遮挡物。",
         parameters: obj(
           {
             tabId: tabIdProp(),
-            index: { type: "integer", minimum: 1, description: "snapshot_controls 里的编号；scroll 时可省略" },
+            index: { type: "integer", minimum: 1, description: "snapshot_controls 里的编号；scroll 时可省略（省略则滚动整页）" },
             action: { type: "string", enum: ["click", "fill", "select", "scroll_down", "scroll_up"] },
             value: { type: "string", description: "fill/select 用" },
             submit: { type: "boolean", description: "fill 后是否提交" },
@@ -1499,7 +1534,10 @@ export function createAgentTools(ctx) {
           await attachTabToTask(ctx, tabId);
           const action = String(args.action);
           if (action === "scroll_down" || action === "scroll_up") {
-            return toToolText(await perform(tabId, null, action));
+            if (args.index == null) return toToolText(await perform(tabId, null, action));
+            const found = findItem(tabId, args.index);
+            if (found.error) return found.error;
+            return toToolText(await perform(tabId, found.item, action));
           }
           const { item, error } = findItem(tabId, args.index);
           if (error) return error;
@@ -1621,6 +1659,13 @@ export const TOOL_DOMAINS = {
     "snapshot_controls",
     "act_element",
     "jev_next_action",
+    "trusted_click",
+    "hover",
+    "trusted_type",
+    "press_keys",
+    "drag_drop",
+    "upload_file",
+    "handle_dialog",
     "run_js",
   ],
   browser_mgmt: [
@@ -1636,6 +1681,12 @@ export const TOOL_DOMAINS = {
     "add_bookmark",
     "bookmark_open_tabs",
     "search_history",
+    "download_file",
+    "list_downloads",
+    "save_page_mhtml",
+    "recently_closed_tabs",
+    "restore_closed_tab",
+    "web_search",
   ],
   system_ops: [
     "list_directory",
@@ -1703,6 +1754,7 @@ export function isToolPrivileged(toolName, args = {}) {
   if (toolName === "close_tab" || toolName === "close_task_group") return true;
   if (toolName === "write_library") return true;
   if (toolName === "automa_execute") return true;
+  if (toolName === "download_file" || toolName === "upload_file") return true;
   if (toolName === "chrome_call") {
     const method = String(args?.method || "");
     if (/remove|delete|update/i.test(method)) return true;
@@ -1778,7 +1830,7 @@ export function resolveActiveTools({
 
   // DOM 页面交互意图
   if (
-    /点击|填写|输入|按键|滚动|选择|登录|提交|按钮|控件|下拉|粘贴|复制|剪贴|click|fill|submit|input|button|scroll|paste|copy|clipboard/i.test(
+    /点击|填写|输入|按键|滚动|选择|登录|提交|按钮|控件|下拉|粘贴|复制|剪贴|悬停|拖|上传|对话框|弹窗|右键|双击|快捷键|组合键|整页|长图|click|fill|submit|input|button|scroll|paste|copy|clipboard|hover|drag|upload|dialog|shortcut/i.test(
       text,
     )
   ) {
@@ -1787,7 +1839,7 @@ export function resolveActiveTools({
 
   // 标签管理意图
   if (
-    /标签|窗口|书签|历史|关闭|切到|刷新|导航|tab|bookmark|history|window/i.test(
+    /标签|窗口|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|tab|bookmark|history|window|download|restore|search/i.test(
       text,
     )
   ) {

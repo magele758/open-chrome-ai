@@ -98,6 +98,7 @@ export function defaultSettings() {
     uiThemeColors: {},
     shareActiveTab: true,
     nativeShell: true,
+    cdpInput: true,
     hitlMode: "balanced",
     loopEngine: "kernel",
     hitlTimeoutSeconds: 30,
@@ -146,6 +147,7 @@ export function normalizeSettings(raw) {
   merged.uiTheme = normalizeUiTheme(raw?.uiTheme);
   merged.uiThemeColors = normalizeThemeColors(raw?.uiThemeColors);
   merged.nativeShell = raw?.nativeShell !== false;
+  merged.cdpInput = raw?.cdpInput !== false;
   merged.hitlMode = ["strict", "balanced", "autonomous"].includes(raw?.hitlMode) ? raw.hitlMode : "balanced";
   merged.loopEngine = "kernel";
   const timeout = Number(raw?.hitlTimeoutSeconds);

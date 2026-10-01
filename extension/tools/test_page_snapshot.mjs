@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { snapshotControls, actOnRef, scrollViewport } from "../lib/agent/page-snapshot.js";
+import { snapshotControls, actOnRef, scrollViewport, locateElement, scrollContainerOf, iframeRect } from "../lib/agent/page-snapshot.js";
 import { pageAct, queryDom, listControls, runJs } from "../lib/agent/page-fns.js";
 
 const require = createRequire(import.meta.url);
@@ -171,5 +171,42 @@ const evalBlocked = await (async () => {
 })();
 assert.equal(evalBlocked.ok, false);
 assert.equal(evalBlocked.cspBlocked, true, "CSP-blocked eval is flagged so the caller can fall back");
+
+// locateElement：给 CDP 可信输入算坐标
+const loc = locateElement({ selector: "#go" });
+assert.equal(loc.ok, true);
+assert.deepEqual([loc.x, loc.y], [50, 115], "center of the button rect");
+assert.equal(locateElement({ text: "登录" }).ok, true);
+assert.equal(locateElement({ selector: "#deep" }).ok, true, "locates inside shadow DOM");
+assert.equal(locateElement({ selector: "#nope" }).notFound, true);
+assert.equal(locateElement({ node: 424242 }).stale, true);
+const fresh = snapshotControls({});
+const goRef = fresh.items.find((i) => i.label === "登录");
+assert.equal(locateElement({ node: goRef.node }).ok, true, "locate by snapshot ref");
+cover.setAttribute("data-r", "0,90,300,60");
+const hidden = locateElement({ selector: "#go" });
+assert.equal(hidden.covered, true);
+assert.equal(hidden.blocker.tag, "div");
+cover.setAttribute("data-r", "0,0,0,0");
+
+// 页面内部滚动容器
+document.body.insertAdjacentHTML(
+  "beforeend",
+  '<div id="pane" style="overflow-y:auto"><button id="inpane" data-r="300,300,60,20">面板内</button></div>',
+);
+const pane = document.getElementById("pane");
+Object.defineProperty(pane, "scrollHeight", { value: 900 });
+Object.defineProperty(pane, "clientHeight", { value: 300 });
+pane.scrollBy = (_x, dy) => (pane.scrollTop += dy);
+const paneRef = snapshotControls({}).items.find((i) => i.label === "面板内");
+const scrolled = scrollContainerOf(paneRef.node, "down");
+assert.equal(scrolled.ok, true);
+assert.equal(scrolled.moved, true);
+assert.equal(scrolled.container, "div");
+assert.equal(scrollContainerOf(goRef.node, "down").ok, false, "page-level controls report no container");
+
+document.body.insertAdjacentHTML("beforeend", '<iframe src="https://pay.example/frame" data-r="40,500,300,200"></iframe>');
+assert.deepEqual(iframeRect("https://pay.example/frame"), { x: 40, y: 500, ambiguous: false });
+assert.equal(iframeRect("https://other.example/").ambiguous, true, "single iframe is used as a fallback");
 
 console.log("test_page_snapshot ok");

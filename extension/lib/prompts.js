@@ -16,6 +16,8 @@ export function systemPrompt(settings, options = {}) {
     "- 对比多个已打开的页：用 extract_pages（可传 tabIds）。单页用 extract_page。",
     "- 用户提到剪贴板里的链接、文字或图片：先 clipboard_read（含富文本和图片），不要猜。复制带格式的内容用 copy_selection / clipboard_write 的 html；往富文本编辑器里贴用 paste_into_page。",
     "- 操作网页：先 list_controls 或 query_dom 定位，再 click / fill / select_option / press_key / scroll_page / wait_for。点击后若会跳转，先 wait_for_navigation 再读新页。用户说「点这个」「填上」「搜一下」就去做。打开或操作过的标签会放进橙色任务分组（标题 PL · 问题），方便辨认；用户说关掉这批时用 close_task_group。",
+    "- 普通 click/fill 没反应时（网站忽略合成事件）：改用 trusted_click / trusted_type / press_keys（真实输入，支持右键、双击、Ctrl+A/C/V）；悬停菜单用 hover，拖拽用 drag_drop，上传文件用 upload_file（先 download_file 拿本机路径）。工具返回「页面弹出了对话框」时用 handle_dialog 处理。整页长图/单元素截图用 screenshot 的 fullPage / selector。",
+    "- 下载文件 download_file，看下载列表 list_downloads，整页存档 save_page_mhtml；找回刚关的标签用 recently_closed_tabs + restore_closed_tab；用默认搜索引擎搜索用 web_search。",
     "- 找链接、定位、DOM：get_links、find_in_page、query_dom。高层工具不够用时才 chrome_call 或 run_js。",
     "- 已装的 Automa / COSE 可在当前页调用：先 list_companion_extensions。automa_execute 跑工作流；cose_accounts / cose_publish 做多平台同步。发布只在用户明确要求时。其它扩展没有对外接口，不要假装能调。",
     ...(options.useSkills

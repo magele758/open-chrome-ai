@@ -3861,6 +3861,7 @@ function renderSettingsForm() {
   $("ui-font").value = state.settings.uiFont || "md";
   applyUiTheme(state.settings.uiTheme, state.settings.uiThemeColors);
   if ($("native-shell")) $("native-shell").checked = state.settings.nativeShell !== false;
+  if ($("cdp-input")) $("cdp-input").checked = state.settings.cdpInput !== false;
   if ($("hitl-mode")) $("hitl-mode").value = state.settings.hitlMode || "balanced";
   if ($("loop-engine-label")) $("loop-engine-label").textContent = LOOP_ENGINE_ID;
   if ($("skills-enabled")) $("skills-enabled").checked = skillsOn();
@@ -6260,6 +6261,9 @@ function wire() {
     state.settings.nativeShell = e.target.checked;
     paintNativeHostStatus(state.nativeHost);
     renderModelLine();
+  });
+  $("cdp-input")?.addEventListener("change", (e) => {
+    state.settings.cdpInput = e.target.checked;
   });
   $("hitl-mode")?.addEventListener("change", (e) => {
     state.settings.hitlMode = e.target.value;

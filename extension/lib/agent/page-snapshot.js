@@ -334,3 +334,140 @@ export function scrollViewport(dir, amount) {
     scrollY: Math.round(y),
   };
 }
+
+/**
+ * 找到目标并滚到视口中央，返回它在本 frame 视口里的中心坐标（供 CDP 可信输入使用）。
+ * spec: { node } 用 snapshotControls 的引用；或 { selector | text, nth }。必须自包含。
+ */
+export function locateElement(spec) {
+  const o = spec || {};
+  const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
+  const visible = (el) => {
+    const st = getComputedStyle(el);
+    if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const collect = (selector) => {
+    const out = [...document.querySelectorAll(selector)];
+    if (out.some(visible)) return out;
+    const walk = (root) => {
+      for (const host of root.querySelectorAll("*")) {
+        if (!host.shadowRoot) continue;
+        out.push(...host.shadowRoot.querySelectorAll(selector));
+        walk(host.shadowRoot);
+      }
+    };
+    walk(document);
+    return out;
+  };
+
+  let el = null;
+  let count = 1;
+  if (o.node != null) {
+    el = window.__pagelensSnap?.nodes.get(Number(o.node)) || null;
+    if (!el || !el.isConnected) return { ok: false, stale: true, error: "目标元素已不在页面上，请重新 snapshot_controls" };
+  } else {
+    const nth = Math.max(0, Number(o.nth) || 0);
+    let nodes;
+    if (o.selector) {
+      try {
+        nodes = collect(String(o.selector)).filter(visible);
+      } catch (err) {
+        return { ok: false, error: err?.message || String(err) };
+      }
+      if (!nodes.length) return { ok: false, notFound: true, error: `没有可见元素：${o.selector}` };
+    } else {
+      const needle = clean(o.text).toLowerCase();
+      if (!needle) return { ok: false, error: "需要 node、selector 或 text" };
+      nodes = collect("a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem'], [onclick]")
+        .filter(visible)
+        .filter((n) => {
+          const t = clean(`${n.innerText || ""} ${n.value || ""} ${n.getAttribute("aria-label") || ""} ${n.getAttribute("placeholder") || ""}`).toLowerCase();
+          return t === needle || t.includes(needle);
+        });
+      if (!nodes.length) return { ok: false, notFound: true, error: `没有匹配「${o.text}」的可见控件` };
+    }
+    count = nodes.length;
+    el = nodes[Math.min(nth, nodes.length - 1)];
+  }
+
+  el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  const r = el.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) return { ok: false, error: "目标没有可点击区域" };
+  const x = Math.round(r.x + r.width / 2);
+  const y = Math.round(r.y + r.height / 2);
+  if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) {
+    return { ok: false, error: "目标在视口外（可能在内部滚动容器里）" };
+  }
+  const composedContains = (a, b) => {
+    for (let n = b; n; n = n.parentNode || n.host) if (n === a) return true;
+    return false;
+  };
+  let hit = document.elementFromPoint(x, y);
+  while (hit?.shadowRoot && typeof hit.shadowRoot.elementFromPoint === "function") {
+    const inner = hit.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === hit) break;
+    hit = inner;
+  }
+  if (hit && !composedContains(el, hit) && !composedContains(hit, el)) {
+    return {
+      ok: false,
+      covered: true,
+      error: "目标被其他元素遮挡（弹窗/遮罩/悬浮层），先处理遮挡物",
+      blocker: { tag: hit.tagName.toLowerCase(), text: clean(hit.innerText || "").slice(0, 60) },
+    };
+  }
+  return {
+    ok: true,
+    x,
+    y,
+    page: {
+      x: Math.round(r.x + window.scrollX),
+      y: Math.round(r.y + window.scrollY),
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+    },
+    tag: el.tagName.toLowerCase(),
+    text: clean(el.innerText || el.value || el.getAttribute("aria-label")).slice(0, 60),
+    count,
+  };
+}
+
+/** 顶层 frame 里找到承载某个 iframe 的元素，返回它内容区左上角在顶层视口的坐标。 */
+export function iframeRect(url) {
+  const frames = [...document.querySelectorAll("iframe, frame")].filter((f) => {
+    const r = f.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  });
+  const exact = frames.filter((f) => f.src === url || f.getAttribute("src") === url);
+  const pick = exact[0] || (frames.length === 1 ? frames[0] : null);
+  if (!pick) return null;
+  const r = pick.getBoundingClientRect();
+  return { x: Math.round(r.x + pick.clientLeft), y: Math.round(r.y + pick.clientTop), ambiguous: !exact.length };
+}
+
+/** 滚动某个控件所在的最近可滚动容器（用于页面内部的滚动区域）。 */
+export function scrollContainerOf(node, dir, amount) {
+  const el = window.__pagelensSnap?.nodes.get(Number(node));
+  if (!el || !el.isConnected) return { ok: false, stale: true, error: "目标元素已不在页面上，请重新 snapshot_controls" };
+  let box = el.parentElement;
+  while (box && box !== document.body && box !== document.documentElement) {
+    const st = getComputedStyle(box);
+    if (/(auto|scroll)/.test(st.overflowY) && box.scrollHeight > box.clientHeight + 2) break;
+    box = box.parentElement;
+  }
+  if (!box || box === document.body || box === document.documentElement) {
+    return { ok: false, error: "该控件不在内部滚动容器里，请用不带编号的 scroll_down / scroll_up" };
+  }
+  const step = Math.round(box.clientHeight * Math.min(Math.max(Number(amount) || 0.8, 0.1), 1));
+  const before = box.scrollTop;
+  box.scrollBy(0, dir === "up" ? -step : step);
+  return {
+    ok: true,
+    action: dir === "up" ? "scroll_up" : "scroll_down",
+    container: box.tagName.toLowerCase(),
+    moved: box.scrollTop !== before,
+    atEnd: box.scrollTop + box.clientHeight >= box.scrollHeight - 2,
+  };
+}
