@@ -47,6 +47,81 @@ export function getSelectionText() {
   return (window.getSelection?.().toString() || "").trim();
 }
 
+export function getSelectionRich(maxChars) {
+  const max = Math.min(Math.max(Number(maxChars) || 50000, 1000), 200000);
+  const sel = window.getSelection?.();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return { text: "", html: "" };
+  const box = document.createElement("div");
+  for (let i = 0; i < sel.rangeCount; i += 1) box.appendChild(sel.getRangeAt(i).cloneContents());
+  for (const el of box.querySelectorAll("script, style, noscript")) el.remove();
+  for (const a of box.querySelectorAll("a[href]")) a.setAttribute("href", a.href || a.getAttribute("href"));
+  for (const img of box.querySelectorAll("img[src]")) img.setAttribute("src", img.src || img.getAttribute("src"));
+  const html = box.innerHTML;
+  return {
+    text: sel.toString(),
+    html: html.length > max ? html.slice(0, max) : html,
+    truncated: html.length > max,
+  };
+}
+
+/**
+ * 把文字/富文本粘贴进页面：先派发 paste 事件（ProseMirror、Slate、Draft 等编辑器自己处理），
+ * 没人拦截再退到 insertHTML / insertText；普通输入框直接写 value。必须自包含。
+ */
+export function pasteIntoPage(spec) {
+  const o = spec || {};
+  const text = String(o.text ?? "");
+  const html = String(o.html ?? "");
+  if (!text && !html) return { ok: false, error: "没有可粘贴的内容" };
+  let el = null;
+  if (o.selector) {
+    try {
+      el = document.querySelector(String(o.selector));
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) };
+    }
+    if (!el) return { ok: false, error: `没有元素：${o.selector}`, notFound: true };
+  } else {
+    el = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+    if (!el) return { ok: false, error: "页面没有焦点元素，请传 selector" };
+  }
+  el.scrollIntoView?.({ block: "center", behavior: "auto" });
+  el.focus?.();
+  const plain = text || html.replace(/<[^>]+>/g, "");
+
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, "value");
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    const next = o.replace ? plain : el.value.slice(0, start) + plain + el.value.slice(end);
+    if (desc?.set) desc.set.call(el, next);
+    else el.value = next;
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, data: plain, inputType: "insertFromPaste" }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true, method: "value", length: plain.length };
+  }
+
+  if (!el.isContentEditable) return { ok: false, error: "目标不是输入框或可编辑区域" };
+  if (o.replace) document.execCommand?.("selectAll", false);
+
+  if (typeof DataTransfer === "function" && typeof ClipboardEvent === "function") {
+    const dt = new DataTransfer();
+    if (plain) dt.setData("text/plain", plain);
+    if (html) dt.setData("text/html", html);
+    const event = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
+    el.dispatchEvent(event);
+    if (event.defaultPrevented) return { ok: true, method: "paste-event", length: plain.length };
+  }
+  if (html && document.execCommand?.("insertHTML", false, html)) {
+    return { ok: true, method: "insertHTML", length: plain.length };
+  }
+  if (document.execCommand?.("insertText", false, plain)) {
+    return { ok: true, method: "insertText", length: plain.length };
+  }
+  return { ok: false, error: "编辑器拒绝了粘贴，可改用 fill 或手动 Ctrl+V" };
+}
+
 export function getLinks(limit) {
   const max = Math.min(Number(limit) || 40, 80);
   const seen = new Set();

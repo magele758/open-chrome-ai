@@ -34,8 +34,10 @@ import {
   findInPage,
   getLinks,
   getPageInfo,
+  getSelectionRich,
   getSelectionText,
   listControls,
+  pasteIntoPage,
   pageAct,
   queryDom,
   runJs,
@@ -43,6 +45,7 @@ import {
 } from "./page-fns.js";
 import { actOnRef, scrollViewport, snapshotControls } from "./page-snapshot.js";
 import { askJev, isJevActive } from "../jev.js";
+import { readClipboardRich, writeClipboardRich } from "../clipboard.js";
 import { buildJevRequest, formatSnapshot, interpretJevAnswers, mergeFrameSnapshots } from "../jev-actions.js";
 import { findSkill } from "./skills.js";
 import { ensureSkillBody } from "../skill-folder.js";
@@ -299,10 +302,18 @@ export function createAgentTools(ctx) {
     },
     {
       name: "get_selection",
-      description: "读取页面当前选中的文字。",
-      parameters: obj({ tabId: tabIdProp() }),
+      description: "读取页面当前选中的文字；rich=true 时同时返回选区的 HTML（保留链接、列表、表格）。",
+      parameters: obj({
+        tabId: tabIdProp(),
+        rich: { type: "boolean", description: "同时返回 HTML" },
+      }),
       async execute(args) {
-        const text = await inject(await resolveTabId(ctx, args), getSelectionText);
+        const tabId = await resolveTabId(ctx, args);
+        if (args?.rich) {
+          const picked = await inject(tabId, getSelectionRich);
+          return picked?.text || picked?.html ? toToolText(picked) : "没有选区。";
+        }
+        const text = await inject(tabId, getSelectionText);
         return text ? String(text) : "没有选区。";
       },
     },
@@ -957,31 +968,104 @@ export function createAgentTools(ctx) {
     },
     {
       name: "clipboard_write",
-      description: "把文本写入系统剪贴板。",
-      parameters: obj({ text: { type: "string", description: "要复制的文本" } }, ["text"]),
+      description:
+        "写入系统剪贴板。text 纯文本；html 富文本（保留格式、链接、表格，粘贴到 Word/Notion/邮件会保持样式，同时自动带上纯文本）；image 图片（data: URL 或 http(s) 链接）。至少给一个。",
+      parameters: obj({
+        text: { type: "string", description: "要复制的纯文本" },
+        html: { type: "string", description: "要复制的 HTML 片段" },
+        image: { type: "string", description: "要复制的图片：data: URL 或 http(s) 链接" },
+      }),
       async execute(args) {
-        const text = String(args.text || "");
-        if (!text) return "没有可复制的文本。";
-        if (navigator?.clipboard?.writeText) {
-          await navigator.clipboard.writeText(text);
-          return `已复制 ${text.length} 字。`;
+        try {
+          const image = String(args?.image || "");
+          if (image && !/^(data:image\/|https?:\/\/)/i.test(image)) return "image 只支持 data:image/ 或 http(s) 链接。";
+          const res = await writeClipboardRich({
+            text: String(args?.text || ""),
+            html: String(args?.html || ""),
+            image,
+          });
+          const parts = [res.text ? `${res.text} 字文本` : "", res.html ? "富文本" : "", res.image ? "图片" : ""].filter(Boolean);
+          return `已复制：${parts.join("、")}${res.downgraded ? "（环境不支持富文本，已降级为纯文本）" : ""}。`;
+        } catch (err) {
+          return `复制失败：${err?.message || err}`;
         }
-        return "当前环境无法写剪贴板。";
       },
     },
     {
       name: "clipboard_read",
-      description: "读取系统剪贴板文本。用户说「剪贴板里的链接/这段」时用。不要猜测剪贴板内容。",
+      description:
+        "读取系统剪贴板：纯文本、富文本 HTML、图片（图片会附加到本轮对话）。用户说「剪贴板里的链接/这段/这张图」时用。不要猜测剪贴板内容。",
       parameters: obj({}),
       async execute() {
-        if (!navigator?.clipboard?.readText) return "当前环境无法读剪贴板。";
         try {
-          const text = String(await navigator.clipboard.readText() || "").trim();
-          if (!text) return "剪贴板是空的。";
-          return text.length > 8000 ? `${text.slice(0, 8000)}\n【已截断】` : text;
+          const clip = await readClipboardRich();
+          if (!clip.text && !clip.html && !clip.image) return "剪贴板是空的。";
+          if (clip.text && !clip.html && !clip.image) {
+            const text = clip.text.trim();
+            return text.length > 8000 ? `${text.slice(0, 8000)}\n【已截断】` : text;
+          }
+          const lines = [];
+          if (clip.text) {
+            const text = clip.text.trim();
+            lines.push(text.length > 8000 ? `【文本】\n${text.slice(0, 8000)}\n【已截断】` : `【文本】\n${text}`);
+          }
+          if (clip.html) lines.push(`【富文本 HTML${clip.htmlTruncated ? "（已截断）" : ""}】\n${clip.html}`);
+          if (clip.image) {
+            ctx.setImage?.(clip.image);
+            lines.push("【图片】已附加到本轮对话，请直接看图回答。");
+          }
+          return lines.join("\n\n");
         } catch (err) {
           return `无法读取剪贴板：${err?.message || err}`;
         }
+      },
+    },
+    {
+      name: "copy_selection",
+      description: "把页面上当前选中的内容连同格式（链接、列表、表格、图片）复制到系统剪贴板，可再用 paste_into_page 粘贴到别处。",
+      parameters: obj({ tabId: tabIdProp() }),
+      async execute(args) {
+        const picked = await inject(await resolveTabId(ctx, args), getSelectionRich);
+        if (!picked?.text && !picked?.html) return "页面没有选区。";
+        try {
+          await writeClipboardRich({ text: picked.text, html: picked.html });
+        } catch (err) {
+          return `复制失败：${err?.message || err}`;
+        }
+        return `已复制选区：${picked.text.length} 字${picked.html ? "，含富文本格式" : ""}${picked.truncated ? "（HTML 已截断）" : ""}。`;
+      },
+    },
+    {
+      name: "paste_into_page",
+      description:
+        "把文字或富文本粘贴进页面的输入框/可编辑区域（Notion、Gmail、飞书等富文本编辑器会保留格式）。fromClipboard=true 时用系统剪贴板内容；否则传 text 和/或 html。selector 省略则粘贴到当前焦点。replace=true 先清空再粘贴。",
+      parameters: obj({
+        tabId: tabIdProp(),
+        selector: { type: "string", description: "目标输入框/编辑区的 CSS 选择器" },
+        text: { type: "string" },
+        html: { type: "string" },
+        fromClipboard: { type: "boolean", description: "使用系统剪贴板内容" },
+        replace: { type: "boolean", description: "替换现有内容，默认插入到光标处" },
+      }),
+      async execute(args) {
+        const tabId = await resolveTabId(ctx, args);
+        await attachTabToTask(ctx, tabId);
+        let text = args?.text;
+        let html = args?.html;
+        if (args?.fromClipboard) {
+          try {
+            const clip = await readClipboardRich();
+            text = clip.text;
+            html = clip.html;
+          } catch (err) {
+            return `无法读取剪贴板：${err?.message || err}`;
+          }
+        }
+        return toToolText(
+          await injectMain(tabId, pasteIntoPage, [
+            { selector: args?.selector, text, html, replace: args?.replace === true },
+          ]),
+        );
       },
     },
     {
@@ -1523,6 +1607,9 @@ export const TOOL_DOMAINS = {
     "clipboard_read",
   ],
   dom_interact: [
+    "paste_into_page",
+    "clipboard_write",
+    "copy_selection",
     "list_controls",
     "click",
     "fill",
@@ -1567,7 +1654,6 @@ export const TOOL_DOMAINS = {
     "remember",
     "recall",
     "notify",
-    "clipboard_write",
     "list_companion_extensions",
     "chrome_call",
   ],
@@ -1692,7 +1778,7 @@ export function resolveActiveTools({
 
   // DOM 页面交互意图
   if (
-    /点击|填写|输入|按键|滚动|选择|登录|提交|按钮|控件|下拉|click|fill|submit|input|button|scroll/i.test(
+    /点击|填写|输入|按键|滚动|选择|登录|提交|按钮|控件|下拉|粘贴|复制|剪贴|click|fill|submit|input|button|scroll|paste|copy|clipboard/i.test(
       text,
     )
   ) {

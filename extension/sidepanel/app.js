@@ -71,6 +71,7 @@ import {
 } from "../lib/reviews.js";
 import { initMarkdown, formatAnswer, splitThinking, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createKernelAgentLoop, LOOP_ENGINE_ID } from "../lib/agent/loop-kernel.js";
+import { writeClipboardRich } from "../lib/clipboard.js";
 import { createAgentTools, resolveActiveTools, checkHitlRequirement } from "../lib/agent/tools.js";
 import { deleteSessionArtifacts } from "../lib/agent/artifact-store.js";
 import { auditToolCall } from "../lib/agent/guardrail.js";
@@ -1932,7 +1933,7 @@ function createMessageFooter(msg) {
     copyBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       try {
-        await copyText(msg.text);
+        await writeClipboardRich({ text: msg.text, html: formatAnswer(msg.text) });
         copyBtn.querySelector("span").textContent = "已复制";
         setTimeout(() => { copyBtn.querySelector("span").textContent = "复制"; }, 1200);
       } catch (err) {

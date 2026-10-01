@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 同传译文 `max_tokens` 提到 4096–8192；碰到输出上限先加大预算重试，仍截断才跳段。
 
 ### Added
+- 剪贴板支持富文本和图片：`clipboard_read` 读 text/html/图片（图片附到对话），`clipboard_write` 可写 html/图片，新增 `copy_selection`（带格式复制页面选区）与 `paste_into_page`（向输入框/富文本编辑器粘贴，优先派发 paste 事件）；`get_selection` 加 `rich`；侧栏「复制回答」同时写入 HTML 与 Markdown。
 - 配置并启用 JEV 后，Agent 多出 `snapshot_controls`（带编号的控件表，含 shadow DOM 与跨域 iframe）、`act_element`（按编号操作，执行前校验过期与遮挡）、`jev_next_action`（JEV 一次请求选出操作与目标，可自动执行）。
 - `click` / `fill` / `select_option` 顶层找不到时自动探测所有 iframe（含跨域）并只在命中的 frame 执行；选择器与文字匹配、`list_controls`、`query_dom` 支持 open shadow DOM；`list_controls` 新增 `allFrames`。
 - `run_js` 遇页面 CSP 禁 eval 时依次退到 MAIN 世界、`chrome.userScripts`（需在扩展详情页开启「允许用户脚本」），仍失败会明确提示 CSP 并建议改用结构化工具。

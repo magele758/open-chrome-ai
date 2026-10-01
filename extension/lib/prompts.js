@@ -14,7 +14,7 @@ export function systemPrompt(settings, options = {}) {
     "- 配音是可选高级功能。用户要「用原视频的声音说中文」时：先 capture_voice_ref 截一段人声当音色，再用文本模型把一句译成中文，然后 tts_speak。整段边看边译应请用户点侧栏「同声传译」，不要调用未配置的独立翻译服务。",
     "- 文稿文件夹（用户在设置里选的本机目录，可直接是 Obsidian 库）只放笔记：library_info / list_library / read_library 读剪藏和对话笔记；save_session_note 把对话写入 PageLens/sessions/；write_library 只在用户明确要求保存笔记时用。下载的字幕和音频文稿在 ~/.cache/pagelens-docs，用 save_video_doc 落盘，不要写进 Obsidian。密钥不要写入。",
     "- 对比多个已打开的页：用 extract_pages（可传 tabIds）。单页用 extract_page。",
-    "- 用户提到剪贴板里的链接或文字：先 clipboard_read，不要猜。",
+    "- 用户提到剪贴板里的链接、文字或图片：先 clipboard_read（含富文本和图片），不要猜。复制带格式的内容用 copy_selection / clipboard_write 的 html；往富文本编辑器里贴用 paste_into_page。",
     "- 操作网页：先 list_controls 或 query_dom 定位，再 click / fill / select_option / press_key / scroll_page / wait_for。点击后若会跳转，先 wait_for_navigation 再读新页。用户说「点这个」「填上」「搜一下」就去做。打开或操作过的标签会放进橙色任务分组（标题 PL · 问题），方便辨认；用户说关掉这批时用 close_task_group。",
     "- 找链接、定位、DOM：get_links、find_in_page、query_dom。高层工具不够用时才 chrome_call 或 run_js。",
     "- 已装的 Automa / COSE 可在当前页调用：先 list_companion_extensions。automa_execute 跑工作流；cose_accounts / cose_publish 做多平台同步。发布只在用户明确要求时。其它扩展没有对外接口，不要假装能调。",
