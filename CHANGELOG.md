@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 同传译文 `max_tokens` 提到 4096–8192；碰到输出上限先加大预算重试，仍截断才跳段。
 
 ### Added
+- **外部 Agent 控制入口（bridge，默认关闭）**: CDP → Service Worker `__pl.call()`（另有扩展页消息、inbox `bridge_call`）；握手/能力发现、幂等、async 任务、结构化错误码、origin 白名单、`DEBUGGER_BUSY` 重试策略；新增确定性工具 `read_rendered_html`（内联样式）、`pick_rich_editor` / `wechat_pick_body_editor`、`verify_editor_content`、`copy_selection_trusted`、`paste_rich_trusted`（可信粘贴 + 回读校验 + 重试，无 innerHTML/合成事件兜底）、`set_input_value`；剪贴板在 SW 里经 offscreen `execCommand("copy")` 写入；参考客户端 `tools/pl-bridge.mjs`，规范见 `docs/agent-interop.md`，e2e 见 `extension/tools/e2e_bridge.mjs`。inbox 改用共享的 `getCdp()`，避免与 bridge 对同一标签重复 attach。
+- **Agent file inbox（外部 Agent ↔ PageLens）**: `~/.pagelens/agent-inbox` / `agent-outbox` 协议；SW 用 `chrome.alarms` 轮询；支持 `clipboard_write` / `paste_html`（优先 CDP 可信 Meta+V，禁止仅 insertHTML 冒充成功）/ `wechat_fill_draft` / `cose_publish`；CLI `tools/agent-inbox.mjs`；说明见 `docs/agent-inbox.md`。
+
 - 可信输入（`chrome.debugger`，设置里可关）：`trusted_click`（左/右键、双击）、`hover`、`trusted_type`、`press_keys`（含 Ctrl/Meta+A/C/V/X/Z 真实编辑命令）、`drag_drop`（原生 HTML5 拖放）、`upload_file`（`<input type=file>` 或自定义上传按钮）、`handle_dialog`；`click`/`fill` 等遇到 alert/confirm 不再卡死，会提示并交给 `handle_dialog`；`screenshot` 支持 `fullPage` 与 `selector`。空闲 20 秒自动分离调试器以收起横幅。
 - 下载与会话：`download_file`、`list_downloads`、`save_page_mhtml`、`recently_closed_tabs`、`restore_closed_tab`、`web_search`（默认搜索引擎）；`download_file` / `upload_file` 属特权操作，按授权模式确认。
 - `act_element` 带编号滚动时滚动控件所在的内部滚动容器。

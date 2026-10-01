@@ -1,6 +1,7 @@
 import { normalizeUiTheme, normalizeThemeColors } from "./ui-theme.js";
 import { hydrateTextCatalog } from "./text-providers.js";
 import { normalizeJevSettings } from "./jev.js";
+import { normalizeBridgeSettings } from "./bridge/policy.js";
 
 export const PRESETS = [
   { id: "custom", name: "自定义", baseUrl: "" },
@@ -99,6 +100,8 @@ export function defaultSettings() {
     shareActiveTab: true,
     nativeShell: true,
     cdpInput: true,
+    agentInboxEnabled: true,
+    ...normalizeBridgeSettings(),
     hitlMode: "balanced",
     loopEngine: "kernel",
     hitlTimeoutSeconds: 30,
@@ -148,6 +151,8 @@ export function normalizeSettings(raw) {
   merged.uiThemeColors = normalizeThemeColors(raw?.uiThemeColors);
   merged.nativeShell = raw?.nativeShell !== false;
   merged.cdpInput = raw?.cdpInput !== false;
+  merged.agentInboxEnabled = raw?.agentInboxEnabled !== false;
+  Object.assign(merged, normalizeBridgeSettings(raw));
   merged.hitlMode = ["strict", "balanced", "autonomous"].includes(raw?.hitlMode) ? raw.hitlMode : "balanced";
   merged.loopEngine = "kernel";
   const timeout = Number(raw?.hitlTimeoutSeconds);

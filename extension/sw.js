@@ -1,10 +1,24 @@
 import { handleAudioMessage } from "./lib/tab-audio-sw.js";
 import { applyOptionalLocalSettings } from "./lib/storage.js";
+import { installBridge } from "./lib/bridge/index.js";
+import {
+  setupAgentInboxAlarm,
+  wireAgentInboxAlarm,
+  pollAgentInboxOnce,
+} from "./lib/agent/inbox.js";
 
 applyOptionalLocalSettings().catch(() => {});
+installBridge();
+wireAgentInboxAlarm();
+setupAgentInboxAlarm().catch(() => {});
+// Kick once shortly after SW starts so agents do not wait a full alarm period.
+setTimeout(() => {
+  pollAgentInboxOnce().catch(() => {});
+}, 1500);
 
 chrome.runtime.onInstalled.addListener(() => {
   applyOptionalLocalSettings().catch(() => {});
+  setupAgentInboxAlarm().catch(() => {});
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
@@ -22,10 +36,17 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onStartup.addListener(() => {
   applyOptionalLocalSettings().catch(() => {});
+  setupAgentInboxAlarm().catch(() => {});
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === "pl.agentInbox.poll") {
+    pollAgentInboxOnce()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
+    return true;
+  }
   if (!msg?.type?.startsWith("pl.audio.")) return;
   handleAudioMessage(msg)
     .then(sendResponse)

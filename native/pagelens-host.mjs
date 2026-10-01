@@ -26,7 +26,7 @@ import {
 } from "../extension/lib/fs-path.js";
 
 export const HOST_NAME = "com.pagelens.host";
-export const HOST_VERSION = "1.3.0";
+export const HOST_VERSION = "1.3.1";
 export const DEFAULT_TIMEOUT_MS = 60_000;
 export const MAX_TIMEOUT_MS = 300_000;
 export const MAX_OUTPUT = 200_000;
@@ -452,6 +452,51 @@ export async function handleRequest(req) {
   if (op === "fs") {
     return handleFs(req);
   }
+  if (op === "clipboard_write") {
+    const textIn = String(req.text ?? "");
+    const htmlIn = String(req.html ?? "");
+    if (!textIn && !htmlIn) return { ok: false, op: "clipboard_write", error: "需要 text 或 html。" };
+    const b64 = (s) => Buffer.from(String(s), "utf8").toString("base64");
+    const plainB64 = b64(textIn || htmlIn.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+    const htmlB64 = b64(htmlIn || "");
+    const script =
+      "ObjC.import('AppKit');\n" +
+      "function fromB64(b64) {\n" +
+      "  if (!b64) return '';\n" +
+      "  const data = $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0);\n" +
+      "  return ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding));\n" +
+      "}\n" +
+      `const plain = fromB64(${JSON.stringify(plainB64)});\n` +
+      `const html = fromB64(${JSON.stringify(htmlB64)});\n` +
+      "const pb = $.NSPasteboard.generalPasteboard;\n" +
+      "pb.clearContents;\n" +
+      "const types = html ? $([$.NSPasteboardTypeString, $.NSPasteboardTypeHTML]) : $([$.NSPasteboardTypeString]);\n" +
+      "pb.declareTypesOwner(types, null);\n" +
+      "pb.setStringForType($(plain), $.NSPasteboardTypeString);\n" +
+      "if (html) pb.setStringForType($(html), $.NSPasteboardTypeHTML);\n" +
+      "'ok';\n";
+    const tmp = path.join(os.tmpdir(), `pagelens-clip-${process.pid}-${Date.now()}.js`);
+    try {
+      fs.writeFileSync(tmp, script, "utf8");
+      const out = await execCommand({
+        command: `osascript -l JavaScript ${JSON.stringify(tmp)}`,
+        timeoutMs: 12000,
+      });
+      if (out.code !== 0) {
+        return { ok: false, op: "clipboard_write", error: out.stderr || out.stdout || `exit ${out.code}` };
+      }
+      return { ok: true, op: "clipboard_write", text: textIn.length, html: htmlIn.length };
+    } catch (err) {
+      return { ok: false, op: "clipboard_write", error: err?.message || String(err) };
+    } finally {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   return { ok: false, error: `未知 op：${op || "(空)"}` };
 }
 

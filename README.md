@@ -493,7 +493,7 @@ flowchart TB
   候选（未拍板）：
 
   1. 只留在扩展里（`externally_connectable`）— 仅其他扩展 / 网页能调  
-  2. 文稿目录 inbox — 零新进程，Agent 写文件、扩展扫目录，秒级延迟  
+  2. 文稿目录 inbox — **已落地**（见 `docs/agent-inbox.md`，CLI `tools/agent-inbox.mjs`）— 零新进程，Agent 写文件、扩展扫目录，秒级延迟  
   3. 扩展当 WebSocket **客户端**，MCP 由对方 Agent 会话里拉起 — 标准工具调用，不算 PageLens 服务  
   4. 同一 Native Host 上再挂 MCP 小垫片，给其他 Agent 调 PageLens  
 

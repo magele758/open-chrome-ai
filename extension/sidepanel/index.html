@@ -615,6 +615,10 @@
                     <input type="checkbox" id="cdp-input" />
                     允许调试器接管页面（真实点击/拖拽/组合键、文件上传、弹窗处理、整页截图；使用时 Chrome 会显示「正在调试此浏览器」横幅）
                   </label>
+                  <label class="check">
+                    <input type="checkbox" id="agent-bridge" />
+                    允许外部 Agent 控制本扩展（默认关闭；仅在专用 Chrome profile 中开启；只作用于白名单 origin 的标签）
+                  </label>
                   <label class="field">安全授权模式
                     <select id="hitl-mode">
                       <option value="balanced">智能审查（推荐）：只读直接放行，AI 审查安全意图放行，仅异常时弹窗</option>

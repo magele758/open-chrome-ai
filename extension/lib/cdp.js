@@ -45,7 +45,9 @@ export function createCdp({
       } catch (err) {
         const message = err?.message || String(err);
         if (/already attached/i.test(message)) {
-          throw new Error("该标签已被 DevTools 或其他调试器占用，请先关闭它的开发者工具。");
+          const busy = new Error("该标签已被 DevTools 或其他调试器占用，请先关闭它的开发者工具。");
+          busy.code = "DEBUGGER_BUSY";
+          throw busy;
         }
         throw new Error(`无法附加调试器：${message}`);
       }
