@@ -624,7 +624,7 @@ export async function callLocalMcpTool(name, args = {}) {
   return null;
 }
 
-function mcpInitialize(id, name) {
+function mcpInitialize(id, name, capabilities = {}) {
   return {
     jsonrpc: "2.0",
     id,
@@ -632,6 +632,7 @@ function mcpInitialize(id, name) {
       protocolVersion: "2024-11-05",
       capabilities: {
         tools: {},
+        ...capabilities,
       },
       serverInfo: {
         name,
@@ -736,18 +737,45 @@ export function bridgeResponseToMcp(res) {
   return { content, isError: !res?.ok };
 }
 
+export const MCP_LOG_LEVELS = Object.freeze(["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"]);
+export const PAGELENS_EVENT_CAPABILITY = "pagelens/events";
+
+/** 扩展推送的事件 → MCP 通知：logging 风格的 notifications/message（level info），声明了实验能力的客户端另收 notifications/pagelens/event。 */
+export function eventNotifications(event, { logLevel = "info", custom = false } = {}) {
+  const out = [];
+  if (MCP_LOG_LEVELS.indexOf(logLevel) <= MCP_LOG_LEVELS.indexOf("info")) {
+    out.push({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", logger: "pagelens", data: event } });
+  }
+  if (custom) out.push({ jsonrpc: "2.0", method: "notifications/pagelens/event", params: { event } });
+  return out;
+}
+
 /**
  * 带 token 的 MCP 模式：tools/list 来自扩展的会话工具（按 token scope 过滤），
  * 本机 shell/fs 工具只在 token 有 host:shell / host:fs 时出现。
+ * notify：把服务端主动通知（事件）写给 MCP 客户端。
  */
-export function createGatewayMcpHandler({ token, socketPath = defaultSocketPath(), agentName = "", connect = connectGateway, connectTimeoutMs = 5000 } = {}) {
+export function createGatewayMcpHandler({
+  token,
+  socketPath = defaultSocketPath(),
+  agentName = "",
+  connect = connectGateway,
+  connectTimeoutMs = 5000,
+  notify = () => {},
+} = {}) {
   let client = null;
   let connecting = null;
   let clientName = "";
+  let logLevel = "info";
+  let customEvents = false;
+
+  function onEvent(event) {
+    for (const msg of eventNotifications(event, { logLevel, custom: customEvents })) notify(msg);
+  }
 
   async function ensure() {
     if (client && !client.closed) return client;
-    connecting ||= connect({ socketPath, token, agentName: agentName || clientName || "mcp", timeoutMs: connectTimeoutMs })
+    connecting ||= connect({ socketPath, token, agentName: agentName || clientName || "mcp", timeoutMs: connectTimeoutMs, onEvent })
       .then((c) => {
         client = c;
         return c;
@@ -774,7 +802,14 @@ export function createGatewayMcpHandler({ token, socketPath = defaultSocketPath(
     if (method === "notifications/initialized" || (typeof method === "string" && method.startsWith("notifications/"))) return null;
     if (method === "initialize") {
       clientName = String(params?.clientInfo?.name || "").slice(0, 60);
-      return mcpInitialize(id, "pagelens");
+      customEvents = Boolean(params?.capabilities?.experimental?.[PAGELENS_EVENT_CAPABILITY]);
+      return mcpInitialize(id, "pagelens", { logging: {}, experimental: { [PAGELENS_EVENT_CAPABILITY]: {} } });
+    }
+    if (method === "logging/setLevel") {
+      const level = String(params?.level || "");
+      if (!MCP_LOG_LEVELS.includes(level)) return { jsonrpc: "2.0", id, error: { code: -32602, message: `未知日志级别：${level}` } };
+      logLevel = level;
+      return { jsonrpc: "2.0", id, result: {} };
     }
     if (method === "ping") return { jsonrpc: "2.0", id, result: {} };
     if (method === "tools/list") {
@@ -960,7 +995,11 @@ function startMcp() {
   }
   const nameIdx = process.argv.indexOf("--agent-name");
   const agentName = nameIdx >= 0 ? String(process.argv[nameIdx + 1] || "") : String(process.env.PAGELENS_AGENT_NAME || "");
-  const gateway = createGatewayMcpHandler({ token: resolved.token, agentName });
+  const gateway = createGatewayMcpHandler({
+    token: resolved.token,
+    agentName,
+    notify: (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`),
+  });
   attachMcpStdio(process.stdin, process.stdout, (req) => gateway.handle(req));
 }
 

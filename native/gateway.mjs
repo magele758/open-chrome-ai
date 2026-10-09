@@ -9,8 +9,9 @@
  * socket 帧（每行一个 JSON）：
  *   → {type:"hello", token, agentName}        ← {type:"welcome", sessionId, protocol:2, tools, agent} | {type:"error", error}
  *   → {type:"call", callId?, request}          ← {type:"result", callId, response}
- *   ← {type:"event", event}                    （P3 预留）
+ *   ← {type:"event", event}                    （订阅后由扩展推送，见 extension/lib/bridge/events.js）
  * port 消息：{type:"bridge.call", sessionId, callId, token, agentName, request} ↔ {type:"bridge.result", sessionId, callId, response}
+ *            ← {type:"bridge.event", sessionId|null, event}；→ {type:"bridge.session.closed", sessionId}（socket 断开）
  * broker 不校验 token：每次调用都把 token 交给扩展，由扩展按 token 记录判定 scope / origin。
  */
 
@@ -175,6 +176,13 @@ export function createBroker({ socketPath = defaultSocketPath(), post, log = () 
     sock.on("close", () => {
       sessions.delete(session.sessionId);
       for (const [id, p] of pending) if (p.sessionId === session.sessionId) pending.delete(id);
+      if (session.helloSent) {
+        try {
+          post({ type: "bridge.session.closed", sessionId: session.sessionId });
+        } catch {
+          /* Chrome 端口已断开 */
+        }
+      }
     });
   }
 
