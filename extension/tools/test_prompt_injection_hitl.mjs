@@ -6,6 +6,8 @@ import {
   urlOrigin,
 } from "../lib/agent/tools.js";
 import { auditConfirmReason, auditToolCall, escapeForPrompt } from "../lib/agent/guardrail.js";
+import { createSettingsTools } from "../lib/agent/settings-tools.js";
+import { defaultSettings, normalizeSettings } from "../lib/storage.js";
 
 const HOME = "https://docs.example.com/page?a=1";
 const OTHER = "https://mail.bank.com/inbox";
@@ -113,5 +115,39 @@ const tags = [...prompt.matchAll(/<\/?([a-z_]+_[0-9a-f]{12})>/g)].map((m) => m[0
 assert.equal(tags.length, 4, "only the four nonce-tagged boundaries exist");
 assert.equal(prompt.match(/[<>]/g).length, 8, "no extra angle brackets from args or user text");
 assert.doesNotMatch(prompt, /<\/tool_call>/);
+
+// run_shell 参数级白名单与跨源/注入降级共存：只读命令免确认，危险变体与注入后的任何命令都要确认
+{
+  const shell = (command, extra = {}) => checkHitlRequirement({ toolName: "run_shell", args: { command }, hitlMode: "balanced", ...extra });
+  assert.equal(shell("git status").needsConfirmation, false);
+  assert.equal(shell("find . -maxdepth 1 -type d").needsConfirmation, false);
+  for (const cmd of ["find . -maxdepth 1 -delete", "git status; rm -rf /", "find /"]) {
+    assert.equal(shell(cmd).needsConfirmation, true, `${cmd} needs confirmation`);
+  }
+  const hit = { tool: "extract_page", match: "ignore previous instructions" };
+  assert.equal(shell("git status", { injectionSuspected: hit }).needsConfirmation, true, "injection downgrade covers whitelisted shell");
+}
+
+// update_settings 的人工确认不依赖 hitlMode / 本场免确认，注入降级也不会绕过它
+{
+  let stored = normalizeSettings({ ...defaultSettings(), hitlMode: "autonomous" });
+  const confirms = [];
+  const tools = createSettingsTools({
+    loadSettings: async () => structuredClone(stored),
+    saveSettings: async (next) => (stored = normalizeSettings(next)),
+    confirmSettingsChange: async (req) => (confirms.push(req), { allow: false }),
+  });
+  assert.equal(checkHitlRequirement({ toolName: "update_settings", hitlMode: "autonomous", sessionOverride: true }).needsConfirmation, false);
+  const out = await tools.find((t) => t.name === "update_settings").execute({ changes: [{ key: "nativeShell", value: false }] });
+  assert.equal(confirms.length, 1, "settings change still asks the user in autonomous mode");
+  assert(confirms[0].sensitive);
+  assert.match(out, /未确认/);
+  assert.equal(stored.nativeShell, true, "rejected change is not saved");
+  assert.equal(
+    checkHitlRequirement({ toolName: "update_settings", hitlMode: "autonomous", injectionSuspected: { tool: "extract_page" } }).needsConfirmation,
+    true,
+    "after injection, update_settings also goes through the HITL gate",
+  );
+}
 
 console.log("PASS test_prompt_injection_hitl.mjs");
