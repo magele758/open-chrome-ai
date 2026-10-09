@@ -314,7 +314,7 @@ python3 extension/tools/mock_llm.py
 1. **高层语义工具**：抽页、截图、点击填写、列/开/关标签、任务分组、书签、历史、音频转写视频、文稿文件夹、Automa / COSE、`run_shell`（需 Native Host）等
 2. **`chrome_call` 白名单**：tabs / windows / bookmarks / history / notifications / tts / tabGroups 等已授权 API
 
-不开放：cookies、debugger、downloads、proxy、裸读 `chrome.storage`（密钥在里面）。
+`chrome_call` 不开放：cookies、debugger、downloads、proxy、裸读 `chrome.storage`（密钥在里面）。调试器和下载只经由上面的结构化工具使用（如 `trusted_click`、`download_file`）：调试器可在设置里关闭，`download_file` / `upload_file` 等特权操作按授权模式确认。
 
 密钥、对话、笔记在 `chrome.storage.local` 和 IndexedDB。视频文稿在你选择的本机文件夹里。仓库里没有真实 key。问页时正文发往你配置的模型地址，不经过本项目的后端。
 
@@ -486,21 +486,13 @@ flowchart TB
 
 ## 待办
 
-- **给其他 Agent 调用 PageLens（选型后再做）**  
-  目标：Grok / Claude Code 等本机 Agent 能用你正在看的 Chrome（读页、音频转写、文稿目录），插件不要变重，也不要自己养一个常驻网关。
-  约束：MV3 扩展不能在 `127.0.0.1` 上 listen；IBM 的 ACP 已并进 A2A，不必单独实现。A2A 也要服务端端口，先放着。  
-  现状：PageLens → 本机已用 Native Messaging（`run_shell`）。反方向（Grok / Claude 调 PageLens）还没有 MCP / inbox。  
-  候选（未拍板）：
+- **外部 Agent 调用 PageLens：已有两条入口，MCP 未做**  
+  已落地：文稿目录 inbox（默认开，需 Native Host，见 [docs/agent-inbox.md](docs/agent-inbox.md)，CLI `tools/agent-inbox.mjs`）；bridge（默认关，CDP → Service Worker `__pl.call()`，只应在专用 Chrome profile 里开启，见 [docs/agent-interop.md](docs/agent-interop.md)，客户端 `tools/pl-bridge.mjs`）。PageLens → 本机仍走 Native Messaging（`run_shell`）。  
+  未做：在同一 Native Host 上挂 MCP 小垫片，让 Agent 用标准工具调用 PageLens。  
+  不要做：PageLens 自己常驻 HTTP 网关、公网 A2A、给默认配置文件开 CDP。MV3 扩展也不能在 `127.0.0.1` 上 listen。
 
-  1. 只留在扩展里（`externally_connectable`）— 仅其他扩展 / 网页能调  
-  2. 文稿目录 inbox — **已落地**（见 `docs/agent-inbox.md`，CLI `tools/agent-inbox.mjs`）— 零新进程，Agent 写文件、扩展扫目录，秒级延迟  
-  3. 扩展当 WebSocket **客户端**，MCP 由对方 Agent 会话里拉起 — 标准工具调用，不算 PageLens 服务  
-  4. 同一 Native Host 上再挂 MCP 小垫片，给其他 Agent 调 PageLens  
-
-  不要做：PageLens 自己常驻 HTTP 网关、公网 A2A、给默认配置文件开 CDP。
-
-- **实时音频翻译（边看边出中文配音）**  
-  还没有。现在只有整段转写 + 可选逐句 TTS。实时需要切窗 ASR、翻译、TTS 队列，选型后再做。
+- **同传继续打磨**  
+  点播中文配音已落地（见 [docs/planned-interpret.md](docs/planned-interpret.md)）。仍未做：直播 / 不能下载音轨的媒体边播边译；同传依附侧栏，关掉侧栏会中断；真实视频的冷 / 热缓存、1× / 2× 体验基线还没实测。
 
 ---
 
@@ -571,3 +563,11 @@ node extension/tools/test_video_pick.mjs
 `build` 为 `agent-debug-v1` 才是补全后的版本。看 `counts` 先确认记了哪些事件：`prompt.send`、`agent.turn`、`agent.model`、`agent.tool`、`agent.shell`、`agent.end`、`hitl.*`、`model.*`、`session.boot`。同传仍用 `runId` / `chunk` 对齐 `audio.chunk`、`asr.result`、`translation.*`、`interpret.line`。
 
 日志含识别文字、命令摘要和工具预览，不保存音频、密钥或请求头，也不会自动上传。
+
+---
+
+## 安全与许可证
+
+安全模型和漏洞报告方式见 [SECURITY.md](SECURITY.md)。
+
+本项目以 [Apache License 2.0](LICENSE) 发布。`extension/vendor/` 下的第三方库保留各自的许可证，版本与许可证见 [extension/vendor/VERSIONS.json](extension/vendor/VERSIONS.json)。
