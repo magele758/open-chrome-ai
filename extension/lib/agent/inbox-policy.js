@@ -16,6 +16,29 @@ export function needsConfirmation(action) {
   return PAGE_ACTIONS.includes(String(action || ""));
 }
 
+/** 带 token 的 job 需要的 scope；token 覆盖全部时页面动作不再逐个弹窗确认。 */
+const ACTION_SCOPES = Object.freeze({
+  clipboard_write: ["clipboard"],
+  paste_html: ["page:act", "clipboard"],
+  wechat_fill_draft: ["page:act", "clipboard"],
+  cose_publish: ["page:act"],
+});
+
+export function inboxActionScopes(action) {
+  return [...(ACTION_SCOPES[String(action || "")] || [])];
+}
+
+export function missingScopes(record, action) {
+  const have = record?.scopes || [];
+  return inboxActionScopes(action).filter((s) => !have.includes(s));
+}
+
+/** processed/ 里留存的 job 副本不保存明文 token。 */
+export function redactJobToken(job) {
+  if (!job || typeof job !== "object" || job.token == null) return job;
+  return { ...job, token: "[redacted]" };
+}
+
 export function pollMinutesFor({ packaged }) {
   return packaged ? POLL_MINUTES_PACKAGED : POLL_MINUTES_UNPACKED;
 }

@@ -278,4 +278,60 @@ store.settings = { agentInboxEnabled: true, agentInboxVersion: 1, cdpInput: fals
   assert.equal(native.files["job1.json"], undefined, "unconfirmed job is moved out of the inbox");
 }
 
+// --- jobs carrying a per-agent token ---
+{
+  const { createTokenRecord } = await import("../lib/bridge/auth.js");
+  const { redactJobToken, missingScopes } = await import("../lib/agent/inbox-policy.js");
+  const settings = normalizeSettings(store.settings);
+  const operate = await createTokenRecord({ name: "codex", scopes: ["page:act", "clipboard"], origins: ["https://bank.example"] });
+  const reader = await createTokenRecord({ name: "reader", scopes: ["page:read"], origins: ["*"] });
+  const records = [operate.record, reader.record];
+  const audited = [];
+  const deps = {
+    settings,
+    loadTokens: async () => records,
+    auditLog: { append: async (e) => audited.push(e) },
+    confirm: async () => {
+      throw new Error("token jobs must not open the confirm popup");
+    },
+  };
+
+  scripted.length = 0;
+  const ok = await inbox.executeJob({ id: "t1", action: "paste_html", token: operate.token, tabUrlIncludes: "bank", html: "<b>x</b>" }, deps);
+  assert.equal(ok.ok, true, "valid token with page:act+clipboard skips confirmation");
+  assert.equal(ok.tabId, 1, "tab picked from the token's origin range, not agentBridgeOrigins");
+  assert.equal(audited.length, 1);
+  assert.equal(audited[0].agent, "codex");
+  assert.equal(audited[0].tool, "inbox.paste_html");
+  assert.equal(audited[0].argsSummary.html, "[8 chars]", "audit keeps only the body length");
+
+  await assert.rejects(
+    inbox.executeJob({ action: "paste_html", token: operate.token, tabUrlIncludes: "weixin", html: "x" }, deps),
+    /不在白名单/,
+    "token origin range still applies",
+  );
+
+  const denied = await inbox.executeJob({ action: "paste_html", token: reader.token, tabUrlIncludes: "bank", html: "x" }, deps);
+  assert.equal(denied.code, "SCOPE_DENIED");
+  assert.deepEqual(missingScopes(reader.record, "cose_publish"), ["page:act"]);
+
+  const bad = await inbox.executeJob({ action: "paste_html", token: "plk_wrong", tabUrlIncludes: "bank", html: "x" }, deps);
+  assert.equal(bad.code, "UNAUTHORIZED", "an invalid token is rejected, not downgraded to a confirm popup");
+
+  records[0] = { ...operate.record, revokedAt: Date.now() };
+  const revoked = await inbox.executeJob({ action: "paste_html", token: operate.token, tabUrlIncludes: "bank", html: "x" }, deps);
+  assert.equal(revoked.code, "UNAUTHORIZED");
+
+  let asked = 0;
+  const legacy = await inbox.executeJob(
+    { action: "paste_html", tabUrlIncludes: "weixin", html: "x" },
+    { ...deps, confirm: async () => (asked++, { approved: false, reason: "rejected" }) },
+  );
+  assert.equal(legacy.failCriteria, "not_confirmed");
+  assert.equal(asked, 1, "jobs without token keep the confirmation");
+
+  assert.equal(redactJobToken({ id: "x", token: operate.token }).token, "[redacted]");
+  assert.equal(redactJobToken({ id: "x" }).token, undefined);
+}
+
 console.log("test_agent_inbox: ok");

@@ -4,6 +4,110 @@
 
 实现位置：`extension/lib/bridge/`（协议 `protocol.js`、白名单 `policy.js`、页面函数 `editor-fns.js`、工具 `tools.js`、分发 `index.js`），剪贴板 `extension/lib/clipboard-sw.js`，参考客户端 `tools/pl-bridge.mjs`。
 
+两种接入方式，工具与请求/响应格式（§3–§10）相同：
+
+| 方式 | 适用 | 鉴权 |
+|---|---|---|
+| **本机网关 + MCP（§0，推荐）** | 日常 Chrome；Cursor / Claude Code / Codex 等 MCP 客户端、本机脚本 | 每个 Agent 一个 token（scope + origin + 过期 + 吊销），每次调用校验 |
+| CDP / 扩展消息 / 文件 inbox（§1–§2） | 专用 profile、e2e | 全局开关 + origin 白名单 |
+
+## 0. 本机网关（日常 Chrome，per-agent token）
+
+```
+MCP 客户端 ──stdio──▶ pagelens-host --mcp ──NDJSON──▶ ~/.pagelens/bridge.sock ──▶ pagelens-host（broker）──Native Messaging──▶ 扩展 SW bridge
+```
+
+实现：扩展侧 `lib/native-port.js`（`connectNative` 长连接、断线指数退避 1s→60s、每分钟 alarm 唤醒检查）、`lib/bridge/gateway.js`（按设置启停）、`lib/bridge/auth.js` / `token-store.js`（token）、`lib/bridge/audit.js`（持久审计）；本机侧 `native/gateway.mjs`（socket broker 与客户端）、`native/pagelens-host.mjs --mcp`（MCP 垫片）。
+
+### 0.1 开启
+
+1. 装 Native Host：`node native/install-native-host.mjs --extension-id <扩展ID>`（扩展 ID 在 `chrome://extensions`；能自动找到已加载的扩展时可省略）。
+2. 侧栏 → 设置 → **外部 Agent**：新建 token（名称、权限预设或勾选 scope、允许的站点、过期时间）。**明文只显示一次**，页面同时给出保存命令。
+3. 保存 token 并生成 MCP 配置：
+   ```bash
+   node native/install-native-host.mjs --save-token cursor        # 从 stdin 粘贴 token → ~/.pagelens/agents/cursor.token（0600）
+   node native/install-native-host.mjs --mcp-config cursor        # 打印 Cursor / Claude Code / Codex 配置
+   node native/install-native-host.mjs --mcp-config cursor --write-cursor   # 合并进 ~/.cursor/mcp.json
+   ```
+4. 勾选「启用外部 Agent 网关」。状态行显示「运行中 · socket 路径」即可；关掉开关、或吊销最后一个有效 token，网关立即断开。
+
+MCP 配置（`<node>` 为 node 绝对路径，`<repo>` 为仓库路径；`--mcp-config` 会填好）：
+
+```json
+{ "mcpServers": { "pagelens": { "command": "<node>",
+  "args": ["<repo>/native/pagelens-host.mjs", "--mcp", "--token-file", "~/.pagelens/agents/cursor.token"] } } }
+```
+
+```bash
+claude mcp add --scope user pagelens -- <node> <repo>/native/pagelens-host.mjs --mcp --token-file ~/.pagelens/agents/claude.token
+```
+
+```toml
+[mcp_servers.pagelens]   # ~/.codex/config.toml
+command = "<node>"
+args = ["<repo>/native/pagelens-host.mjs", "--mcp", "--token-file", "/home/me/.pagelens/agents/codex.token"]
+```
+
+token 也可用环境变量 `PAGELENS_TOKEN` 给出；`--agent-name` / `PAGELENS_AGENT_NAME` 设置审计里的显示名；`PAGELENS_SOCKET` 覆盖 socket 路径。不带 token 的 `--mcp` 维持旧行为（只有本机 shell/文件工具，不连网关）。
+
+### 0.2 token
+
+| 字段 | 说明 |
+|---|---|
+| 格式 | `plk_` + 43 位 base64url（32 字节随机数）。扩展只存 SHA-256（`settings` 之外的 `agentTokens`），丢了只能新建 |
+| scope | `tabs:read` `tabs:manage` `page:read` `page:act` `page:js` `clipboard` `downloads` `upload` `settings:read` `settings:write` `agent:delegate` `host:shell` `host:fs`。预设：只读 = `tabs:read,page:read`；操作 = 只读 + `tabs:manage,page:act,clipboard`；完全 = 除 `agent:delegate` 外全部 |
+| origins | 与 §1 同样的模式；`*` 表示任意 http/https 站点。会话调用时**替代** `agentBridgeOrigins` |
+| 过期 / 吊销 | 过期或吊销后，已建立的会话下一次调用即返回 `UNAUTHORIZED` |
+| 设置隔离 | `agentGatewayEnabled` / `agentTokens` 不出现在扩展内 Agent 的设置工具里，也不能被它修改；只能在设置页改 |
+
+工具所需 scope（每个工具的 `scope` 也会出现在 `list_tools` 里，以那里为准）：
+
+| scope | 工具 |
+|---|---|
+| `tabs:read` | `list_tabs` `list_windows` |
+| `tabs:manage` | `open_tab` `activate_tab` `navigate_tab` `reload_tab` `go_back` `go_forward` `close_tab` `create_window` `focus_window` `close_window` |
+| `page:read` | `wait_for` `query_dom` `read_rendered_html` `screenshot` `pick_rich_editor` `wechat_pick_body_editor` `verify_editor_content` `snapshot_controls` `extract_page` `find_in_page` `get_links` |
+| `page:act` | `set_input_value` `trusted_click` `trusted_type` `press_keys` `hover` `paste_rich_trusted` `act_element` `select_option` `scroll_page` `drag_drop` `handle_dialog` |
+| `page:js` | `run_js` |
+| `clipboard` | `clipboard_write` `copy_selection_trusted` |
+| `downloads` / `upload` | `download_file` `list_downloads` / `upload_file` |
+| `settings:read` / `settings:write` | `get_settings` / `update_settings`（`agentTokens`、`agentGatewayEnabled` 等敏感项一律 `SETTING_PROTECTED`） |
+| `host:shell` / `host:fs` | MCP 垫片里的本机工具 `exec_command` / `read_file` `write_file` `list_directory` `scan_skills` |
+
+`hello` / `list_tools` / MCP `tools/list` 只返回 token 有权使用的工具。`job_status`、`audit_log` 只看得到本 token 的任务与记录。
+
+### 0.3 socket 协议（直连客户端）
+
+路径：`~/.pagelens/bridge.sock`（目录 0700、socket 0600；Windows 为 `\\.\pipe\pagelens-bridge-<用户名>`）。每行一个 JSON：
+
+```text
+→ {"type":"hello","token":"plk_…","agentName":"my-script"}
+← {"type":"welcome","sessionId":"s_…","protocol":2,"tools":[…],"agent":{"id":"tok_…","name":"…","scopes":[…],"origins":[…],"expiresAt":null,"state":"active",…}}
+→ {"type":"call","callId":"1","request":{"v":1,"id":"run-1","tool":"list_tabs","args":{}}}
+← {"type":"result","callId":"1","response":{ …§4 的响应… }}
+→ {"type":"ping"}   ← {"type":"pong"}
+```
+
+token 错误时返回 `{"type":"error","error":{"code":"UNAUTHORIZED",…}}` 并关闭连接。broker 自己不验证 token，每次调用都交给扩展验证。同一用户再启动一个 broker 会被拒绝（已有活的 socket）；Chrome 断开端口时 broker 退出并删除 socket。单条消息上限 1 MB（Native Messaging 限制）。Node 客户端可直接用 `native/gateway.mjs` 的 `connectGateway({ token })`。
+
+### 0.4 新增错误码
+
+| code | 含义 |
+|---|---|
+| `UNAUTHORIZED` | token 缺失、错误、过期或已吊销 |
+| `SCOPE_DENIED` | token 没有该工具需要的 scope；`details.scope` 给出所需 scope |
+| `EGRESS_NOT_ALLOWED` | 预留：token 记录里已有 `egress`（允许外发的目的地），bridge 侧的出站检查尚未接入 |
+
+网关未运行时，MCP 工具调用返回 `isError` 文本「PageLens 网关未运行…」，说明需要打开 Chrome 并在设置里启用网关。
+
+### 0.5 审计
+
+每次调用（含旧入口，记为 `legacy`）写入 IndexedDB `pagelens-data` 的 `agentAuditLog`，保留最近 2000 条：时间、Agent、工具、origin、参数摘要、成功/错误码、耗时。参数摘要不含正文：字符串只记长度（`selector`、`url` 等定位字段保留且截断，URL 去掉 query/hash），疑似密钥的键记为 `[redacted]`。设置页可查看、导出 JSON、清空。
+
+### 0.6 文件 inbox 带 token
+
+inbox job 可带 `"token":"plk_…"`：校验通过且 scope 足够时**跳过逐次确认**，使用 token 的 origins，审计记为 `inbox.<action>`；token 无效直接 `UNAUTHORIZED`（不会退回到确认框）。所需 scope：`clipboard_write` → `clipboard`；`paste_html` / `wechat_fill_draft` → `page:act,clipboard`；`cose_publish` → `page:act`；`bridge_call` 走网关会话路径。写入 `processed/` 的副本里 token 记为 `[redacted]`。
+
 ## 1. 安全模型（先读）
 
 | 约束 | 行为 |
@@ -279,6 +383,14 @@ node extension/tools/e2e_bridge.mjs             # 真浏览器冒烟（专用临
 ```
 
 除 `e2e_bridge.mjs` 外都由 `npm test` 自动收录；`e2e_bridge.mjs` 不属于 `run-tests`，需要本机有 Chrome。
+
+网关：
+
+```bash
+node extension/tools/test_agent_gateway.mjs   # token / scope / origin、会话调用、审计脱敏与上限、native port（npm test 收录）
+node native/test_gateway.mjs                  # host 作为 broker：socket 0600、MCP 垫片、吊销、Chrome 断开后退出、安装器（CI 收录）
+CHROME_BIN=/usr/bin/google-chrome-stable node extension/tools/e2e_gateway.mjs   # 真 Chrome：设置页建 token → MCP 调用 → 审计 → 吊销
+```
 
 ## 15. 委托扩展内 Agent（run_agent_task，scope `agent:delegate`）
 

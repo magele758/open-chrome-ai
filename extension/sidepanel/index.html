@@ -672,6 +672,84 @@
               </div>
             </details>
 
+            <details class="accordion settings-group" id="settings-group-agents">
+              <summary>
+                <span class="group-icon">
+                  <svg class="ico"><use href="#i-terminal"/></svg>
+                </span>
+                <span class="group-text">
+                  <strong>外部 Agent</strong>
+                  <small>MCP 网关 · token · 审计</small>
+                </span>
+                <span class="state settings-state" id="settings-state-agents">未启用</span>
+                <span class="chev">›</span>
+              </summary>
+              <div class="inner" id="block-agent-gateway">
+                <p class="hint">让 Cursor / Claude Code / Codex / 脚本通过 MCP 或本机 socket（~/.pagelens/bridge.sock）操作这个 Chrome。每个 Agent 用自己的 token，按 scope 与 origin 范围放行，调用不弹窗、全部记审计。需要先安装 Native Host。</p>
+                <label class="check">
+                  <input type="checkbox" id="agent-gateway" />
+                  启用外部 Agent 网关（至少需要一个有效 token）
+                </label>
+                <div class="row-btns">
+                  <span class="status" id="agent-gateway-status" role="status"></span>
+                  <button class="compact secondary" type="button" id="btn-agent-gateway-reconnect">重连</button>
+                </div>
+
+                <div class="divider"></div>
+                <h4>新建 token</h4>
+                <label class="field">名称（如 cursor、claude-code）
+                  <input type="text" id="agent-token-name" maxlength="40" placeholder="cursor" spellcheck="false" />
+                </label>
+                <label class="field">权限
+                  <select id="agent-token-preset">
+                    <option value="read-only">只读：列标签、读页面、截图</option>
+                    <option value="operate" selected>操作：只读 + 开/切标签、点击输入粘贴、写剪贴板</option>
+                    <option value="full">完全：操作 + 页面 JS、下载、上传、非安全设置、本机命令与文件</option>
+                  </select>
+                </label>
+                <p class="hint" id="agent-token-scopes"></p>
+                <label class="field">允许的网站（每行一个；<code>*</code> = 所有 http/https 网站）
+                  <textarea id="agent-token-origins" rows="3" spellcheck="false"></textarea>
+                </label>
+                <label class="field">有效期
+                  <select id="agent-token-expiry">
+                    <option value="0">永不过期</option>
+                    <option value="7">7 天</option>
+                    <option value="30" selected>30 天</option>
+                    <option value="90">90 天</option>
+                  </select>
+                </label>
+                <div class="row-btns">
+                  <button class="compact" type="button" id="btn-agent-token-create">创建 token</button>
+                  <span class="status" id="agent-token-status" role="status"></span>
+                </div>
+                <div id="agent-token-reveal" hidden>
+                  <p class="hint"><strong>只显示这一次</strong>，扩展只保存哈希。复制后用下面的命令存到 ~/.pagelens/agents/（0600）并生成 MCP 配置。</p>
+                  <code id="agent-token-value" class="agent-token-value"></code>
+                  <div class="row-btns">
+                    <button class="compact secondary" type="button" id="btn-agent-token-copy">复制 token</button>
+                    <button class="compact secondary" type="button" id="btn-agent-token-copy-setup">复制配置命令</button>
+                    <button class="compact secondary" type="button" id="btn-agent-token-hide">我已保存</button>
+                  </div>
+                  <pre id="agent-token-setup" class="agent-pre"></pre>
+                </div>
+
+                <div class="divider"></div>
+                <h4>已有 token</h4>
+                <ul id="agent-token-list" class="agent-token-list"></ul>
+
+                <div class="divider"></div>
+                <h4>审计</h4>
+                <div class="row-btns">
+                  <button class="compact secondary" type="button" id="btn-agent-audit-view">查看最近 50 条</button>
+                  <button class="compact secondary" type="button" id="btn-agent-audit-export">导出 JSON</button>
+                  <button class="compact secondary" type="button" id="btn-agent-audit-clear">清空</button>
+                  <span class="status" id="agent-audit-status" role="status"></span>
+                </div>
+                <pre id="agent-audit-view" class="agent-pre" hidden></pre>
+              </div>
+            </details>
+
             <div class="group-label">个性化与诊断</div>
             <details class="accordion settings-group" id="settings-group-colors">
               <summary>

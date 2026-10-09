@@ -13,8 +13,19 @@ import { cosePublish } from "./companions.js";
 import { loadSettings } from "../storage.js";
 import { getBridge } from "../bridge/index.js";
 import { isUrlAllowed } from "../bridge/policy.js";
-import { confirmSummary, createPollGate, needsConfirmation, pickAllowedTab, pollMinutesFor } from "./inbox-policy.js";
+import {
+  confirmSummary,
+  createPollGate,
+  missingScopes,
+  needsConfirmation,
+  pickAllowedTab,
+  pollMinutesFor,
+  redactJobToken,
+} from "./inbox-policy.js";
 import { getInboxConfirm } from "./inbox-confirm.js";
+import { verifyToken } from "../bridge/auth.js";
+import { loadAgentTokens } from "../bridge/token-store.js";
+import { auditEntry, getAuditLog, originOfUrl } from "../bridge/audit.js";
 
 export const INBOX_ROOT = "~/.pagelens/agent-inbox";
 export const OUTBOX_ROOT = "~/.pagelens/agent-outbox";
@@ -74,7 +85,7 @@ async function finishJob(jobName, job, result) {
     action: job?.action || null,
     ...result,
   };
-  await writeJson(INBOX_ROOT, `${PROCESSED_REL}/${jobName}`, job);
+  await writeJson(INBOX_ROOT, `${PROCESSED_REL}/${jobName}`, redactJobToken(job));
   try {
     await deleteRel(INBOX_ROOT, jobName);
   } catch {
@@ -536,33 +547,98 @@ async function defaultConfirm(summary) {
   return broker.request(summary);
 }
 
-export async function executeJob(job, { confirm = defaultConfirm, settings = null } = {}) {
+async function authorizeJobToken(job, action, loadTokens, now) {
+  let record;
+  try {
+    record = await verifyToken(await loadTokens(), job.token, now());
+  } catch (err) {
+    return { error: { ok: false, code: err?.code || "UNAUTHORIZED", error: err?.message || String(err), failCriteria: "unauthorized" } };
+  }
+  const missing = missingScopes(record, action);
+  if (missing.length) {
+    return {
+      error: {
+        ok: false,
+        code: "SCOPE_DENIED",
+        error: `token「${record.name}」缺少 ${missing.join("、")} 权限，不能执行 ${action}`,
+        failCriteria: "scope_denied",
+      },
+    };
+  }
+  return { record };
+}
+
+async function runPageAction(action, job, tab, content, s) {
+  if (action === "paste_html") {
+    await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+    return runPasteHtml(job, tab, content, s);
+  }
+  if (action === "wechat_fill_draft") return runWechatFillDraft(job, tab, content, s);
+  return runCosePublish(job, tab, content.markdown);
+}
+
+/**
+ * 无 token 的页面动作：agentBridgeOrigins 白名单 + 每次弹窗确认。
+ * 带有效 token 且 scope 覆盖的：用 token 的 origin 范围挑标签，不弹窗，写持久审计。
+ */
+export async function executeJob(
+  job,
+  { confirm = defaultConfirm, settings = null, loadTokens = loadAgentTokens, now = () => Date.now(), auditLog = getAuditLog() } = {},
+) {
   const action = String(job?.action || "").trim();
+  let auth = null;
+  if (job?.token != null && action !== "bridge_call") {
+    const res = await authorizeJobToken(job, action, loadTokens, now);
+    if (res.error) return res.error;
+    auth = res.record;
+  }
   if (action === "clipboard_write") return runClipboardWrite(job);
   if (needsConfirmation(action)) {
     const s = settings || (await loadSettings());
-    const { tab, content } = await preparePageAction(action, job, s.agentBridgeOrigins);
-    const decision = await confirm(confirmSummary(job, tab, content));
-    if (decision?.approved !== true) {
-      return {
-        ok: false,
-        error: `用户未确认（${decision?.reason || "rejected"}）`,
-        failCriteria: "not_confirmed",
-        tabId: tab.id,
-        tabUrl: tab.url,
-      };
+    const { tab, content } = await preparePageAction(action, job, auth ? auth.origins : s.agentBridgeOrigins);
+    if (!auth) {
+      const decision = await confirm(confirmSummary(job, tab, content));
+      if (decision?.approved !== true) {
+        return {
+          ok: false,
+          error: `用户未确认（${decision?.reason || "rejected"}）`,
+          failCriteria: "not_confirmed",
+          tabId: tab.id,
+          tabUrl: tab.url,
+        };
+      }
+      return runPageAction(action, job, tab, content, s);
     }
-    if (action === "paste_html") {
-      await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
-      return runPasteHtml(job, tab, content, s);
+    const started = now();
+    let result;
+    try {
+      result = await runPageAction(action, job, tab, content, s);
+      return result;
+    } finally {
+      auditLog
+        ?.append(
+          auditEntry({
+            ts: started,
+            agent: auth.name,
+            agentId: auth.id,
+            sessionId: `inbox:${String(job.id || "")}`,
+            tool: `inbox.${action}`,
+            origin: originOfUrl(tab.url),
+            args: { tabId: tab.id, title: job.title, html: job.html, text: job.text, markdown: job.markdown },
+            ok: result?.ok === true,
+            code: result?.ok === true ? null : result ? "TOOL_FAILED" : "ERROR",
+            ms: now() - started,
+          }),
+        )
+        .catch(() => {});
     }
-    if (action === "wechat_fill_draft") return runWechatFillDraft(job, tab, content, s);
-    return runCosePublish(job, tab, content.markdown);
   }
   if (action === "bridge_call") {
     const bridge = getBridge();
     if (!bridge) return { ok: false, error: "bridge 未安装" };
-    const res = await bridge.call({ id: String(job.id || `inbox-${Date.now()}`), ...(job.request || {}) });
+    const session =
+      job?.token != null ? { token: String(job.token), sessionId: `inbox:${String(job.id || "")}`, agentName: "inbox" } : undefined;
+    const res = await bridge.call({ id: String(job.id || `inbox-${Date.now()}`), ...(job.request || {}) }, { session });
     return { ...res, ok: res.ok === true };
   }
   return { ok: false, error: `unknown action: ${action || "(empty)"}` };

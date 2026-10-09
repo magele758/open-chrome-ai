@@ -104,6 +104,7 @@ export function defaultSettings() {
     agentInboxEnabled: false,
     agentInboxVersion: 1,
     ...normalizeBridgeSettings(),
+    agentGatewayEnabled: false,
     hitlMode: "balanced",
     irreversibleActions: defaultIrreversibleActions(),
     loopEngine: "kernel",
@@ -158,6 +159,7 @@ export function normalizeSettings(raw) {
   merged.agentInboxEnabled = raw?.agentInboxVersion >= 1 && raw?.agentInboxEnabled === true;
   merged.agentInboxVersion = 1;
   Object.assign(merged, normalizeBridgeSettings(raw));
+  merged.agentGatewayEnabled = raw?.agentGatewayEnabled === true;
   merged.hitlMode = ["strict", "balanced", "autonomous"].includes(raw?.hitlMode) ? raw.hitlMode : "balanced";
   merged.irreversibleActions = normalizeIrreversibleActions(raw?.irreversibleActions);
   merged.loopEngine = "kernel";

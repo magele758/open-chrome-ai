@@ -486,9 +486,10 @@ flowchart TB
 
 ## 待办
 
-- **外部 Agent 调用 PageLens：已有两条入口，MCP 未做**  
-  已落地：文稿目录 inbox（默认关，设置里开关“启用文件 inbox”，需 Native Host，见 [docs/agent-inbox.md](docs/agent-inbox.md)，CLI `tools/agent-inbox.mjs`）；bridge（默认关，CDP → Service Worker `__pl.call()`，只应在专用 Chrome profile 里开启，见 [docs/agent-interop.md](docs/agent-interop.md)，客户端 `tools/pl-bridge.mjs`）。PageLens → 本机仍走 Native Messaging（`run_shell`）。  
-  未做：在同一 Native Host 上挂 MCP 小垫片，让 Agent 用标准工具调用 PageLens。  
+- **外部 Agent 调用 PageLens：MCP 网关已落地，事件与委托待补**  
+  已落地：本机网关（默认关，设置 → 外部 Agent）。扩展用 `connectNative` 长连接 Native Host，host 在 `~/.pagelens/bridge.sock`（0600）上做 broker，`pagelens-host.mjs --mcp --token-file …` 作为标准 MCP server 给 Cursor / Claude Code / Codex 用；每个 Agent 一个 token（scope、站点范围、过期、吊销），调用不弹窗、持久审计（最近 2000 条）。见 [docs/agent-interop.md §0](docs/agent-interop.md)，安装器 `--save-token` / `--mcp-config` 生成配置。另有文稿目录 inbox（job 可带 token 免确认，见 [docs/agent-inbox.md](docs/agent-inbox.md)）和专用 profile 的 CDP bridge（`tools/pl-bridge.mjs`）。  
+  bridge 已有导航、表单、下载/上传、设置读写等浏览器工具，各自按 scope 放行。  
+  未做：事件推送、任务持久化、多会话标签租约（P3）；委托给扩展内 Agent 跑任务（P5）。  
   不要做：PageLens 自己常驻 HTTP 网关、公网 A2A、给默认配置文件开 CDP。MV3 扩展也不能在 `127.0.0.1` 上 listen。
 
 - **同传继续打磨**  

@@ -1,4 +1,5 @@
 import { createSettingsPage } from "./settings-page.js";
+import { createAgentGatewayPanel } from "./agent-gateway-panel.js";
 let settingsPage;
 import { toolCardOpen, bindToolCardState } from "./tool-card-state.js";
 import { applyUiTheme, bindThemeEditor } from "./theme.js";
@@ -6494,6 +6495,13 @@ function wire() {
   });
   $("btn-native-test")?.addEventListener("click", async () => {
     await refreshNativeHost();
+  });
+  createAgentGatewayPanel({
+    root: $("view-settings"),
+    copyText,
+    onGatewayChanged: (enabled) => {
+      state.settings.agentGatewayEnabled = enabled;
+    },
   });
   document.addEventListener("pointerdown", (e) => {
     if (!slash.open) return;
