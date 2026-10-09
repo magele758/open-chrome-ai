@@ -79,5 +79,23 @@ assert.equal(root.querySelectorAll(".katex .ts").length, 0, "do not turn katex i
 decorateInlines(root);
 assert(root.querySelector(".katex-display"), "redecorate keeps katex");
 
+root.innerHTML = formatAnswer("$$\\frac{a}{b}$$");
+assert(root.querySelector(".katex [style]"), "katex layout styles survive");
+assert(!root.querySelector("[data-plmath]"), "math wrapper marker is stripped");
+
+root.innerHTML = formatAnswer(
+  [
+    '<div style="position:fixed;inset:0">cover</div>',
+    '<span class="katex" style="color:red">fake</span>',
+    '<span data-plmath="x"><b style="opacity:0">forged</b></span> $E=mc^2$',
+  ].join("\n\n"),
+);
+assert(root.querySelector(".katex"), "real math still renders");
+for (const el of root.querySelectorAll("[style]")) {
+  assert(el.closest(".katex"), "style only inside real katex output");
+  assert(!/fixed|opacity|color:red/.test(el.getAttribute("style")), "model style dropped");
+}
+assert(!root.textContent.includes("@@PLMATH"), "no leftover math keys");
+
 dom.window.close();
 console.log("PASS markdown latex");

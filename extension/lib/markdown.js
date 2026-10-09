@@ -223,13 +223,41 @@ export function formatAnswer(text) {
     breaks: true,
     renderer: makeRenderer(),
   });
+  const nonce = maths.length ? globalThis.crypto.randomUUID() : "";
   for (const item of maths) {
-    html = html.split(item.key).join(renderMathHtml(item.tex, item.display));
+    const math = `<span data-plmath="${nonce}">${renderMathHtml(item.tex, item.display)}</span>`;
+    html = html.split(item.key).join(math);
   }
-  return purify.sanitize(html, {
-    USE_PROFILES: { html: true },
-    ADD_TAGS: ["button", "details", "summary"],
-    ADD_ATTR: ["class", "style", "data-t", "data-q", "type", "target", "rel", "open", "aria-hidden", "aria-label"],
+  ensureMathStyleHook(purify);
+  mathStyleNonce = nonce;
+  try {
+    const out = purify.sanitize(html, {
+      USE_PROFILES: { html: true },
+      ADD_TAGS: ["button", "details", "summary"],
+      ADD_ATTR: ["class", "data-t", "data-q", "type", "target", "rel", "open", "aria-hidden", "aria-label"],
+    });
+    return nonce ? out.split(` data-plmath="${nonce}"`).join("") : out;
+  } finally {
+    mathStyleNonce = "";
+  }
+}
+
+// Model output must not carry inline styles (it could restyle or cover HITL controls).
+// KaTeX layout needs them, so `style` survives only under a wrapper tagged with a per-call nonce.
+let mathStyleNonce = "";
+const hookedPurifiers = new WeakSet();
+
+function ensureMathStyleHook(purify) {
+  if (hookedPurifiers.has(purify)) return;
+  hookedPurifiers.add(purify);
+  purify.addHook("uponSanitizeAttribute", (node, data) => {
+    if (data.attrName !== "style") return;
+    const keep =
+      mathStyleNonce &&
+      !/url\s*\(|expression\s*\(|fixed/i.test(data.attrValue || "") &&
+      node.closest?.(`[data-plmath="${mathStyleNonce}"]`);
+    if (keep) data.forceKeepAttr = true;
+    else data.keepAttr = false;
   });
 }
 
