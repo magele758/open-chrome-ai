@@ -21,6 +21,7 @@ export async function nativeSend(message, { timeoutMs = 12000 } = {}) {
   if (typeof chrome === "undefined" || typeof chrome.runtime?.sendNativeMessage !== "function") {
     return { ok: false, error: "当前环境没有 Native Messaging。" };
   }
+  let timer;
   try {
     const send = chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, message);
     const ms = Number(timeoutMs);
@@ -28,7 +29,7 @@ export async function nativeSend(message, { timeoutMs = 12000 } = {}) {
       ? await Promise.race([
           send,
           new Promise((_, reject) => {
-            setTimeout(() => reject(new Error(`Native Host 超时（${Math.round(ms / 1000)}s）`)), ms);
+            timer = setTimeout(() => reject(new Error(`Native Host 超时（${Math.round(ms / 1000)}s）`)), ms);
           }),
         ])
       : await send;
@@ -36,6 +37,8 @@ export async function nativeSend(message, { timeoutMs = 12000 } = {}) {
     return { ok: false, error: "host 返回无效。" };
   } catch (err) {
     return { ok: false, error: describeNativeError(err, chrome.runtime?.id) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -3863,6 +3863,7 @@ function renderSettingsForm() {
   if ($("native-shell")) $("native-shell").checked = state.settings.nativeShell !== false;
   if ($("cdp-input")) $("cdp-input").checked = state.settings.cdpInput !== false;
   if ($("agent-bridge")) $("agent-bridge").checked = state.settings.agentBridgeEnabled === true;
+  if ($("agent-inbox")) $("agent-inbox").checked = state.settings.agentInboxEnabled === true;
   if ($("hitl-mode")) $("hitl-mode").value = state.settings.hitlMode || "balanced";
   if ($("loop-engine-label")) $("loop-engine-label").textContent = LOOP_ENGINE_ID;
   if ($("skills-enabled")) $("skills-enabled").checked = skillsOn();
@@ -6268,6 +6269,9 @@ function wire() {
   });
   $("agent-bridge")?.addEventListener("change", (e) => {
     state.settings.agentBridgeEnabled = e.target.checked;
+  });
+  $("agent-inbox")?.addEventListener("change", (e) => {
+    state.settings.agentInboxEnabled = e.target.checked;
   });
   $("hitl-mode")?.addEventListener("change", (e) => {
     state.settings.hitlMode = e.target.value;

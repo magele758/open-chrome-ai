@@ -619,6 +619,10 @@
                     <input type="checkbox" id="agent-bridge" />
                     允许外部 Agent 控制本扩展（默认关闭；仅在专用 Chrome profile 中开启；只作用于白名单 origin 的标签）
                   </label>
+                  <label class="check">
+                    <input type="checkbox" id="agent-inbox" />
+                    启用文件 inbox（默认关闭；轮询 ~/.pagelens/agent-inbox，需 Native Host；粘贴/发布只作用于白名单 origin 的标签，且每次弹窗确认）
+                  </label>
                   <label class="field">安全授权模式
                     <select id="hitl-mode">
                       <option value="balanced">智能审查（推荐）：只读直接放行，AI 审查安全意图放行，仅异常时弹窗</option>

@@ -1,6 +1,10 @@
 # Agent Inbox — external agents → PageLens
 
-Zero-new-daemon bridge: drop a JSON job under `~/.pagelens/agent-inbox/`, PageLens service worker polls every ~6s (when `agentInboxEnabled` is true, default **on**), executes, writes `~/.pagelens/agent-outbox/<id>.json`, and moves the job to `agent-inbox/processed/`.
+Zero-new-daemon bridge: drop a JSON job under `~/.pagelens/agent-inbox/`, PageLens service worker polls it (only when 设置 → “启用文件 inbox” is on, default **off**), executes, writes `~/.pagelens/agent-outbox/<id>.json`, and moves the job to `agent-inbox/processed/`.
+
+Poll interval: 30s for packaged installs (Chrome clamps alarms to ≥30s), ~6s when loaded unpacked. Each poll costs one Native Host process (`readdir`); if the host is unavailable, polling backs off from 1 to 30 minutes.
+
+Page actions (`paste_html`, `wechat_fill_draft`, `cose_publish`) only target tabs whose origin is in `agentBridgeOrigins` (same allowlist as the bridge), and each job opens a confirmation window. Unanswered within 60s → rejected (`failCriteria: "not_confirmed"`). Use `wait --timeout` ≥ 90000 so there is time to click 允许.
 
 Requires **Native Host** (`com.pagelens.host`) so the extension can read/write those directories:
 
@@ -44,7 +48,7 @@ Then reload PageLens on `chrome://extensions`.
 - **`clipboard_write`** — rich write (text/html) via offscreen document (same stack as sidepanel tools).
 - **`paste_html`** — clipboard_write → focus `selector` (or active editable) → **CDP trusted Meta/Ctrl+V**. Fallback: inject `pasteIntoPage` (paste-event first). **Does not count insertHTML-only as success** unless `allowInsertHtmlFallback: true`.
 - **`wechat_fill_draft`** — set `#title` with native value setter; focus body ProseMirror excluding `.title-editor__input`; clipboard + trusted Cmd+V; verify title exact and body text length > 500. Does **not** click 发表.
-- **`cose_publish`** — `companions.cosePublish` in MAIN world on an https tab where `$cose` exists.
+- **`cose_publish`** — `companions.cosePublish` in MAIN world on an allowlisted https tab where `$cose` exists.
 
 ## CLI
 
@@ -65,7 +69,8 @@ node tools/agent-inbox.mjs status
 
 ## Settings
 
-- `agentInboxEnabled` (default `true`) — set `false` in PageLens settings storage to pause polling.
+- `agentInboxEnabled` (default `false`) — toggle “启用文件 inbox” in settings. Off means no alarm and no Native Host calls.
+- `agentBridgeOrigins` — origin allowlist for page actions (defaults include `https://mp.weixin.qq.com`, localhost).
 - `cdpInput` must stay enabled for trusted paste.
 - `nativeShell` / Native Host must be installed for the current extension id.
 

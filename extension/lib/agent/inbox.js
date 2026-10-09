@@ -4,32 +4,37 @@
  * Zero new daemon — external agents drop jobs; the service worker picks them up.
  */
 
-import { nativeFs, nativeSend, pingNativeHost } from "../native-host.js";
+import { nativeFs, nativeSend } from "../native-host.js";
 import { getCdp } from "../cdp.js";
 import { keyEvents } from "../cdp-input.js";
-import { inject, injectMain } from "../chrome.js";
+import { inject, injectMain, restrictedUrl } from "../chrome.js";
 import { pasteIntoPage } from "./page-fns.js";
 import { cosePublish } from "./companions.js";
 import { loadSettings } from "../storage.js";
 import { getBridge } from "../bridge/index.js";
+import { isUrlAllowed } from "../bridge/policy.js";
+import { confirmSummary, createPollGate, needsConfirmation, pickAllowedTab, pollMinutesFor } from "./inbox-policy.js";
+import { getInboxConfirm } from "./inbox-confirm.js";
 
 export const INBOX_ROOT = "~/.pagelens/agent-inbox";
 export const OUTBOX_ROOT = "~/.pagelens/agent-outbox";
 export const PROCESSED_REL = "processed";
 export const ALARM_NAME = "pagelens-agent-inbox";
-export const POLL_MINUTES = 0.1; // ~6s (Chrome alarms minimum practical slice)
 
 const cdp = getCdp();
+const gate = createPollGate();
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
 async function ensureDirs() {
+  if (gate.dirsReady()) return;
   for (const path of [INBOX_ROOT, OUTBOX_ROOT, `${INBOX_ROOT}/${PROCESSED_REL}`]) {
     const res = await nativeFs({ action: "ensureDir", path });
     if (!res?.ok) throw new Error(res?.error || `ensureDir failed: ${path}`);
   }
+  gate.markDirsReady();
 }
 
 async function listInboxJobs() {
@@ -144,30 +149,11 @@ async function pasteKeyCombo() {
   return info.os === "mac" ? "Meta+V" : "Control+V";
 }
 
-async function findTab(job) {
-  const needle = String(job.tabUrlIncludes || "").trim();
+async function findTab(spec, origins) {
   const tabs = await chrome.tabs.query({});
-  const match = (t) => {
-    const url = String(t.url || "");
-    if (needle && !url.includes(needle)) return false;
-    if (job.tabUrlIncludesType77 && !/[?&]type=77\b/.test(url)) return false;
-    return true;
-  };
-  let candidates = tabs.filter(match);
-  if (job.preferType77) {
-    const typed = candidates.filter((t) => /[?&]type=77\b/.test(String(t.url || "")));
-    if (typed.length) candidates = typed;
-  }
-  // Prefer most recently accessed / highest id among matches
-  candidates.sort((a, b) => (b.id || 0) - (a.id || 0));
-  if (!candidates.length) {
-    throw new Error(
-      needle
-        ? `no tab matching url includes "${needle}"`
-        : "no tabUrlIncludes provided and no matching tab",
-    );
-  }
-  return candidates[0];
+  const picked = pickAllowedTab(tabs, spec, origins, restrictedUrl);
+  if (picked.error) throw new Error(picked.error);
+  return picked.tab;
 }
 
 function setNativeValueFn(spec) {
@@ -291,11 +277,9 @@ async function runClipboardWrite(job) {
   return { ok: true, method: "clipboard_write", clipboard: clip };
 }
 
-async function runPasteHtml(job, tab) {
+async function runPasteHtml(job, tab, { html, text }, settings) {
   const preferTrusted = job.preferTrustedPaste !== false;
   const allowInsert = job.allowInsertHtmlFallback === true;
-  const { html, text } = await resolveHtml(job);
-  const settings = await loadSettings();
   const methods = [];
 
   await writeClipboardFromSw({ text, html });
@@ -346,19 +330,11 @@ async function runPasteHtml(job, tab) {
   return { ok: true, method, methods, paste: pasteRes, tabId: tab.id, tabUrl: tab.url };
 }
 
-async function runWechatFillDraft(job) {
-  const tab = await findTab({
-    ...job,
-    tabUrlIncludes: job.tabUrlIncludes || "mp.weixin.qq.com",
-    preferType77: true,
-  });
+async function runWechatFillDraft(job, tab, { html, text }, settings) {
   await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
   await sleep(300);
 
   const title = String(job.title || "").trim();
-  if (!title) throw new Error("wechat_fill_draft requires title");
-  const { html, text } = await resolveHtml(job);
-  if (!html && !text) throw new Error("wechat_fill_draft requires html or text");
 
   const titleRes = await inject(tab.id, setNativeValueFn, [{ selector: "#title", value: title }]);
   if (!titleRes?.ok) throw new Error(titleRes?.error || "failed to set #title");
@@ -368,7 +344,6 @@ async function runWechatFillDraft(job) {
 
   await writeClipboardFromSw({ text: text || "", html });
   const methods = ["clipboard_write", "title_native_setter", "focus_body"];
-  const settings = await loadSettings();
   const allowInsert = job.allowInsertHtmlFallback === true;
   const preferTrusted = job.preferTrustedPaste !== false;
   const minBody = Number(job.minBodyLength) || 500;
@@ -478,30 +453,26 @@ async function runWechatFillDraft(job) {
   };
 }
 
-async function runCosePublish(job) {
+async function pickCoseTab(job, origins) {
+  if (job.tabUrlIncludes) return findTab({ tabUrlIncludes: job.tabUrlIncludes, requireHttps: true }, origins);
   const tabs = await chrome.tabs.query({});
-  const httpsTabs = tabs.filter((t) => /^https:\/\//i.test(String(t.url || "")));
-  let tab = null;
-  if (job.tabUrlIncludes) {
-    tab = httpsTabs.find((t) => String(t.url || "").includes(String(job.tabUrlIncludes)));
-  }
-  // Prefer a tab where window.$cose is already present
-  if (!tab) {
-    for (const candidate of httpsTabs) {
-      try {
-        const probe = await injectMain(candidate.id, () => Boolean(globalThis.$cose && typeof globalThis.$cose.addTask === "function"));
-        if (probe) {
-          tab = candidate;
-          break;
-        }
-      } catch {
-        /* try next */
-      }
+  const allowed = tabs.filter((t) => {
+    const url = String(t.url || "");
+    return /^https:\/\//i.test(url) && !restrictedUrl(url) && isUrlAllowed(url, origins);
+  });
+  for (const candidate of allowed) {
+    try {
+      const probe = await injectMain(candidate.id, () => Boolean(globalThis.$cose && typeof globalThis.$cose.addTask === "function"));
+      if (probe) return candidate;
+    } catch {
+      /* try next */
     }
   }
-  if (!tab) tab = httpsTabs[0];
-  if (!tab) throw new Error("cose_publish needs an https tab with $cose");
+  if (!allowed.length) throw new Error("cose_publish 需要一个白名单 origin 内、带 $cose 的 https 标签");
+  return allowed[0];
+}
 
+async function resolveMarkdown(job) {
   let markdown = String(job.markdown || job.content || "");
   if (!markdown && job.markdownFile) {
     const raw = String(job.markdownFile).trim().replace(/\\/g, "/");
@@ -513,10 +484,10 @@ async function runCosePublish(job) {
     if (file.truncated) throw new Error(`markdownFile truncated: ${raw}`);
     markdown = file.text;
   }
-  if (!String(job.title || "").trim() || !markdown.trim()) {
-    throw new Error("cose_publish requires title and markdown");
-  }
+  return markdown;
+}
 
+async function runCosePublish(job, tab, markdown) {
   const res = await injectMain(tab.id, cosePublish, [
     {
       title: job.title,
@@ -538,16 +509,56 @@ async function runCosePublish(job) {
   };
 }
 
-export async function executeJob(job) {
+/** 选标签（白名单内）并读出正文；只做准备，不改动页面。 */
+async function preparePageAction(action, job, origins) {
+  if (action === "paste_html") {
+    const tab = await findTab({ tabUrlIncludes: job.tabUrlIncludes }, origins);
+    return { tab, content: await resolveHtml(job) };
+  }
+  if (action === "wechat_fill_draft") {
+    const tab = await findTab({ tabUrlIncludes: job.tabUrlIncludes || "mp.weixin.qq.com", preferType77: true }, origins);
+    if (!String(job.title || "").trim()) throw new Error("wechat_fill_draft requires title");
+    const content = await resolveHtml(job);
+    if (!content.html && !content.text) throw new Error("wechat_fill_draft requires html or text");
+    return { tab, content };
+  }
+  const tab = await pickCoseTab(job, origins);
+  const markdown = await resolveMarkdown(job);
+  if (!String(job.title || "").trim() || !markdown.trim()) {
+    throw new Error("cose_publish requires title and markdown");
+  }
+  return { tab, content: { markdown } };
+}
+
+async function defaultConfirm(summary) {
+  const broker = getInboxConfirm();
+  if (!broker) return { approved: false, reason: "确认通道不可用" };
+  return broker.request(summary);
+}
+
+export async function executeJob(job, { confirm = defaultConfirm, settings = null } = {}) {
   const action = String(job?.action || "").trim();
   if (action === "clipboard_write") return runClipboardWrite(job);
-  if (action === "paste_html") {
-    const tab = await findTab(job);
-    await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
-    return runPasteHtml(job, tab);
+  if (needsConfirmation(action)) {
+    const s = settings || (await loadSettings());
+    const { tab, content } = await preparePageAction(action, job, s.agentBridgeOrigins);
+    const decision = await confirm(confirmSummary(job, tab, content));
+    if (decision?.approved !== true) {
+      return {
+        ok: false,
+        error: `用户未确认（${decision?.reason || "rejected"}）`,
+        failCriteria: "not_confirmed",
+        tabId: tab.id,
+        tabUrl: tab.url,
+      };
+    }
+    if (action === "paste_html") {
+      await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+      return runPasteHtml(job, tab, content, s);
+    }
+    if (action === "wechat_fill_draft") return runWechatFillDraft(job, tab, content, s);
+    return runCosePublish(job, tab, content.markdown);
   }
-  if (action === "wechat_fill_draft") return runWechatFillDraft(job);
-  if (action === "cose_publish") return runCosePublish(job);
   if (action === "bridge_call") {
     const bridge = getBridge();
     if (!bridge) return { ok: false, error: "bridge 未安装" };
@@ -559,24 +570,33 @@ export async function executeJob(job) {
 
 let polling = false;
 
-export async function pollAgentInboxOnce() {
+/**
+ * 每轮只调一次 Native Host（readdir）；目录在首次成功后不再重复创建。
+ * Host 不可用时指数退避（1 分钟起、最长 30 分钟），期间轮询直接跳过、不拉起进程。
+ */
+export async function pollAgentInboxOnce(deps = {}) {
   if (polling) return { skipped: true, reason: "busy" };
   polling = true;
   try {
     const settings = await loadSettings();
-    if (settings.agentInboxEnabled === false) return { skipped: true, reason: "disabled" };
+    if (settings.agentInboxEnabled !== true) return { skipped: true, reason: "disabled" };
+    if (!gate.canPoll()) return { skipped: true, reason: "backoff", retryInMs: gate.retryInMs() };
 
-    const ping = await pingNativeHost();
-    if (!ping?.ok) {
+    let names;
+    try {
+      await ensureDirs();
+      names = await listInboxJobs();
+      gate.onSuccess();
+    } catch (err) {
+      gate.onFailure();
       return {
         ok: false,
-        error: ping?.error || "Native Host not available",
+        error: err?.message || String(err),
+        retryInMs: gate.retryInMs(),
         hint: "node native/install-native-host.mjs --extension-id <id>",
       };
     }
 
-    await ensureDirs();
-    const names = await listInboxJobs();
     const results = [];
     for (const name of names) {
       let job;
@@ -590,7 +610,7 @@ export async function pollAgentInboxOnce() {
         continue;
       }
       try {
-        const result = await executeJob(job);
+        const result = await executeJob(job, { ...deps, settings });
         results.push(await finishJob(name, job, result));
       } catch (err) {
         results.push(
@@ -604,14 +624,31 @@ export async function pollAgentInboxOnce() {
   }
 }
 
-export async function setupAgentInboxAlarm() {
+export async function isPackagedInstall() {
   try {
-    await chrome.alarms.clear(ALARM_NAME);
+    const self = await chrome.management?.getSelf?.();
+    if (self?.installType) return self.installType !== "development";
   } catch {
-    /* ignore */
+    /* fall back to manifest */
   }
-  // periodInMinutes: Chrome accepts fractional values (>= ~0.05 in practice → ~3–6s)
-  await chrome.alarms.create(ALARM_NAME, { periodInMinutes: POLL_MINUTES });
+  return Boolean(chrome.runtime.getManifest?.()?.update_url);
+}
+
+/** 关闭时清掉 alarm（零进程）；开启时按安装方式设周期：打包 30s，解包 6s。 */
+export async function syncAgentInboxAlarm() {
+  const settings = await loadSettings();
+  const existing = await chrome.alarms.get(ALARM_NAME).catch(() => null);
+  if (settings.agentInboxEnabled !== true) {
+    if (existing) await chrome.alarms.clear(ALARM_NAME);
+    gate.reset();
+    return { enabled: false };
+  }
+  const periodInMinutes = pollMinutesFor({ packaged: await isPackagedInstall() });
+  if (existing?.periodInMinutes !== periodInMinutes) {
+    if (existing) await chrome.alarms.clear(ALARM_NAME);
+    await chrome.alarms.create(ALARM_NAME, { periodInMinutes });
+  }
+  return { enabled: true, periodInMinutes, created: !existing };
 }
 
 export function wireAgentInboxAlarm() {
@@ -619,4 +656,11 @@ export function wireAgentInboxAlarm() {
     if (alarm?.name !== ALARM_NAME) return;
     pollAgentInboxOnce().catch(() => {});
   });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes.settings) return;
+    syncAgentInboxAlarm()
+      .then((res) => (res.created ? pollAgentInboxOnce() : null))
+      .catch(() => {});
+  });
 }
+

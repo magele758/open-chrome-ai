@@ -100,7 +100,8 @@ export function defaultSettings() {
     shareActiveTab: true,
     nativeShell: true,
     cdpInput: true,
-    agentInboxEnabled: true,
+    agentInboxEnabled: false,
+    agentInboxVersion: 1,
     ...normalizeBridgeSettings(),
     hitlMode: "balanced",
     loopEngine: "kernel",
@@ -151,7 +152,9 @@ export function normalizeSettings(raw) {
   merged.uiThemeColors = normalizeThemeColors(raw?.uiThemeColors);
   merged.nativeShell = raw?.nativeShell !== false;
   merged.cdpInput = raw?.cdpInput !== false;
-  merged.agentInboxEnabled = raw?.agentInboxEnabled !== false;
+  // Before v1 the inbox was on by default and that implicit `true` got persisted; only an explicit opt-in counts.
+  merged.agentInboxEnabled = raw?.agentInboxVersion >= 1 && raw?.agentInboxEnabled === true;
+  merged.agentInboxVersion = 1;
   Object.assign(merged, normalizeBridgeSettings(raw));
   merged.hitlMode = ["strict", "balanced", "autonomous"].includes(raw?.hitlMode) ? raw.hitlMode : "balanced";
   merged.loopEngine = "kernel";

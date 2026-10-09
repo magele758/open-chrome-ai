@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>PageLens · 确认外部 Agent 操作</title>
+  <style>
+    body { font: 14px/1.5 system-ui, -apple-system, "PingFang SC", sans-serif; margin: 0; padding: 16px; color: #292621; background: #f6f5f1; }
+    h1 { font-size: 16px; margin: 0 0 4px; }
+    .sub { color: #6b665c; margin: 0 0 12px; font-size: 12px; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 12px; }
+    dt { color: #6b665c; }
+    dd { margin: 0; word-break: break-all; }
+    .origin { font-weight: 600; }
+    pre { white-space: pre-wrap; word-break: break-all; background: #fff; border: 1px solid #ddd8cc; border-radius: 6px; padding: 8px; max-height: 160px; overflow: auto; margin: 0 0 12px; font-size: 12px; }
+    .actions { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+    .timer { margin-right: auto; color: #6b665c; font-size: 12px; }
+    button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid #c9c3b6; background: #fff; cursor: pointer; }
+    button.primary { background: #b4532a; border-color: #b4532a; color: #fff; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>外部 Agent 请求操作页面</h1>
+  <p class="sub">来自本机文件 inbox（~/.pagelens/agent-inbox）。不认识这个请求就点拒绝。</p>
+  <div id="body">
+    <dl>
+      <dt>动作</dt><dd id="f-action"></dd>
+      <dt>目标标签</dt><dd><span id="f-origin" class="origin"></span><br /><span id="f-tab"></span></dd>
+      <dt>标题</dt><dd id="f-title"></dd>
+      <dt>平台</dt><dd id="f-platforms"></dd>
+      <dt>内容</dt><dd id="f-chars"></dd>
+      <dt>Job</dt><dd id="f-job"></dd>
+    </dl>
+    <pre id="f-preview"></pre>
+  </div>
+  <p id="gone" class="hidden">这个确认请求已结束（超时或已处理），可以关闭窗口。</p>
+  <div class="actions">
+    <span class="timer" id="timer"></span>
+    <button type="button" id="btn-reject">拒绝</button>
+    <button type="button" class="primary" id="btn-approve">允许</button>
+  </div>
+  <script type="module" src="inbox-confirm.js"></script>
+</body>
+</html>
