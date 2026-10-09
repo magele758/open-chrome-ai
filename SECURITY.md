@@ -28,7 +28,7 @@ PageLens 是本机运行的解压扩展，没有自己的后端。下面是它�
 ### 本机进程
 
 - **Native Host**（`com.pagelens.host`）：只允许 manifest 里登记的扩展 ID 连接。装好后 Agent 可以用 `run_shell` 在你的登录环境里执行命令，权限等同你本人；不需要时不要安装。
-- **文稿目录 inbox**（默认开启，需要 Native Host）：任何能写 `~/.pagelens/agent-inbox/` 的本机进程都可以投递任务。可执行的动作是固定的几种（剪贴板写入、粘贴到编辑器、发文草稿、`bridge_call`），`bridge_call` 还要过 bridge 的开关和白名单。不用时把设置项 `agentInboxEnabled` 设为 `false`，或不安装 Native Host。
+- **文稿目录 inbox**（默认关闭，需要 Native Host）：在设置里打开“启用文件 inbox”（`agentInboxEnabled`）后，任何能写 `~/.pagelens/agent-inbox/` 的本机进程都可以投递任务。可执行的动作是固定的几种（剪贴板写入、粘贴到编辑器、发文草稿、`bridge_call`）；页面动作只作用于 `agentBridgeOrigins` 白名单内的标签，且每个 job 需用户弹窗确认（60 秒未确认按拒绝）；`bridge_call` 还要过 bridge 的开关和白名单。不用时关掉该开关，或不安装 Native Host。
 - **bridge**（默认关闭）：通过 CDP 调用 Service Worker 的 `__pl.call()`。能连上 Chrome 远程调试端口的进程就能控制浏览器，所以**只在专用 Chrome profile / user-data-dir 里开启**，不要在日常 profile 上开 `--remote-debugging-port`。bridge 每次调用都重新检查开关和 origin 白名单，不暴露 `run_shell`、`upload_file`、下载等高危工具。manifest 没有 `externally_connectable`，网页和其他扩展不能直接调用。细节见 [docs/agent-interop.md](docs/agent-interop.md)。
 
 ### 数据与密钥

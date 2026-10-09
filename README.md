@@ -487,7 +487,7 @@ flowchart TB
 ## 待办
 
 - **外部 Agent 调用 PageLens：已有两条入口，MCP 未做**  
-  已落地：文稿目录 inbox（默认开，需 Native Host，见 [docs/agent-inbox.md](docs/agent-inbox.md)，CLI `tools/agent-inbox.mjs`）；bridge（默认关，CDP → Service Worker `__pl.call()`，只应在专用 Chrome profile 里开启，见 [docs/agent-interop.md](docs/agent-interop.md)，客户端 `tools/pl-bridge.mjs`）。PageLens → 本机仍走 Native Messaging（`run_shell`）。  
+  已落地：文稿目录 inbox（默认关，设置里开关“启用文件 inbox”，需 Native Host，见 [docs/agent-inbox.md](docs/agent-inbox.md)，CLI `tools/agent-inbox.mjs`）；bridge（默认关，CDP → Service Worker `__pl.call()`，只应在专用 Chrome profile 里开启，见 [docs/agent-interop.md](docs/agent-interop.md)，客户端 `tools/pl-bridge.mjs`）。PageLens → 本机仍走 Native Messaging（`run_shell`）。  
   未做：在同一 Native Host 上挂 MCP 小垫片，让 Agent 用标准工具调用 PageLens。  
   不要做：PageLens 自己常驻 HTTP 网关、公网 A2A、给默认配置文件开 CDP。MV3 扩展也不能在 `127.0.0.1` 上 listen。
 
