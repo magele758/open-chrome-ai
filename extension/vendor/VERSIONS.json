@@ -1,0 +1,40 @@
+{
+  "$comment": "Vendored third-party code. When upgrading, replace the files, bump the version here, and run npm test (test_vendor_versions checks the version strings inside each file).",
+  "libraries": {
+    "marked": {
+      "version": "15.0.12",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/marked",
+      "files": ["marked.min.js"]
+    },
+    "dompurify": {
+      "version": "3.2.6",
+      "license": "(MPL-2.0 OR Apache-2.0)",
+      "source": "https://www.npmjs.com/package/dompurify",
+      "files": ["purify.min.js"]
+    },
+    "mermaid": {
+      "version": "10.9.3",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/mermaid",
+      "files": ["mermaid.min.js"]
+    },
+    "katex": {
+      "version": "0.16.22",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/katex",
+      "files": ["katex/katex.min.js", "katex/katex.min.css", "katex/fonts/"]
+    },
+    "pdfjs-dist": {
+      "version": "4.10.38",
+      "license": "Apache-2.0",
+      "source": "https://www.npmjs.com/package/pdfjs-dist",
+      "files": ["pdfjs/pdf.min.mjs", "pdfjs/pdf.worker.min.mjs", "pdfjs/LICENSE"]
+    },
+    "@mage-ai-lab/agent-loop": {
+      "version": "0.1.1",
+      "source": "package.json dependency, bundled by scripts/bundle-agent-loop.mjs",
+      "files": ["agent-loop-mini.mjs"]
+    }
+  }
+}
