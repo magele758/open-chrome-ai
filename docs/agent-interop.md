@@ -331,5 +331,5 @@ await __pl.call({ v: 1, id: "t3", tool: "agent_task_cancel", args: { taskId } })
 
 ### 15.6 集成钩子（P1 / P3）
 
-- **P1 会话**：bridge 工具读 `ctx.session`（可选）：`{ agentName, sessionId, tokenId, egress[], skipIrreversible }`。`agentName` 显示在侧栏与待批准条目（`principal:"agent:<name>"`）；`tokenId || agentName` 作为任务 owner，`agent_task_status/cancel` 只对同一 owner 可见；`egress` 作为 `decideToolCall` 的 `tokenEgress`；`skipIrreversible:true` 时不可逆清单不拦。P1 只需在 `bridge/index.js` 构造 ctx 时挂上 `session`，并把 `ctx.authorizeUrl` 改成按 token origins 判定（胶囊收窄自动跟随）。
+- **P1 会话**：bridge 工具读 `ctx.session`（可选）：`{ agentName, sessionId, tokenId, egress[], skipIrreversible }`。`agentName` 显示在侧栏与待批准条目（`principal:"agent:<name>"`）；`tokenId || agentName` 作为任务 owner，带 owner 的任务对其他 owner 的 `agent_task_status/cancel` 不可见（返回 `JOB_NOT_FOUND`；无会话的旧入口仍可见全部）；`egress` 作为 `decideToolCall` 的 `tokenEgress`；`skipIrreversible:true` 时不可逆清单不拦。P1 只需在 `bridge/index.js` 构造 ctx 时挂上 `session`，并把 `ctx.authorizeUrl` 改成按 token origins 判定（胶囊收窄自动跟随）。
 - **P3 事件**：`import { onAgentTaskEvent, AGENT_TASK_EVENTS } from "extension/lib/agent/delegate.js"`，`onAgentTaskEvent(listener)` 返回取消订阅函数。事件 `{ type, taskId, at, ... }`：`agent_task.started {task}`、`agent_task.step {step}`、`agent_task.approval {pendingId, toolName, reason}`、`agent_task.finished {status, answer, error}`。P3 可在 SW 里订阅后转成 `bridge.event` 推给对应会话（按任务 owner 路由）。
