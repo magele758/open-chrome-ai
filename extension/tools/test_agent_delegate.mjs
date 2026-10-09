@@ -12,6 +12,7 @@ import {
   sessionTaskStorage,
 } from "../lib/agent/delegate.js";
 import { createApprovalQueue, memoryAdapter } from "../lib/agent/trust/approval-queue.js";
+import { createTokenRecord } from "../lib/bridge/auth.js";
 import { createBridge } from "../lib/bridge/index.js";
 import { ERROR_CODES } from "../lib/bridge/protocol.js";
 import { restrictCapsuleToCaller } from "../lib/bridge/tools-delegate.js";
@@ -382,6 +383,104 @@ const toolMessages = (seen) => seen.flatMap((s) => s.messages.filter((m) => m.ro
   await assert.rejects(manager.start({ prompt: "b" }), (e) => e.code === "BUSY" && e.retryable === true);
   await manager.cancel(a.id);
   console.log("PASS concurrency limit");
+}
+
+// 11. P1 token 会话：scope 门禁、token origin 收窄胶囊、agentName / owner 隔离
+{
+  const TABS = new Map([
+    [7, { id: 7, windowId: 1, active: true, url: "https://www.zhihu.com/write" }],
+    [8, { id: 8, windowId: 1, active: false, url: "http://localhost:8080/" }],
+  ]);
+  const { manager, seen } = makeManager({ script: [[{ name: "extract_page" }]] });
+  const noDelegate = await createTokenRecord({ name: "reader", scopes: ["tabs:read", "page:read"], origins: ["https://www.zhihu.com"] });
+  const alice = await createTokenRecord({ name: "alice", scopes: ["agent:delegate"], origins: ["https://www.zhihu.com"], egress: ["https://api.example"] });
+  const bob = await createTokenRecord({ name: "bob", scopes: ["agent:delegate"], origins: ["https://www.zhihu.com", "http://localhost:*"] });
+  const tokens = [noDelegate.record, alice.record, bob.record];
+  const settings = normalizeSettings({ agentBridgeEnabled: false, agentBridgeOrigins: ["http://localhost:*"] });
+  const bridge = createBridge({
+    getSettings: async () => settings,
+    getAgentTokens: async () => tokens,
+    auditLog: { append: async () => {}, list: async () => [] },
+    tabs: { get: async (id) => TABS.get(id), query: async () => [TABS.get(7)] },
+    sleep: async () => {},
+    now: () => Date.now(),
+    delegate: manager,
+  });
+  const as = (t, agentName) => ({ session: { token: t.token, sessionId: `s-${agentName}`, agentName } });
+  let n = 0;
+  const call = (tool, args, opts) => bridge.call({ v: 1, id: `tk${++n}`, tool, args }, opts);
+
+  const denied = await call("run_agent_task", { prompt: "总结" }, as(noDelegate, "reader"));
+  assert.equal(denied.error.code, ERROR_CODES.SCOPE_DENIED);
+  const deniedStatus = await call("agent_task_status", { taskId: "task_x" }, as(noDelegate, "reader"));
+  assert.equal(deniedStatus.error.code, ERROR_CODES.SCOPE_DENIED);
+  const listed = await call("list_tools", {}, as(noDelegate, "reader"));
+  assert.ok(!listed.result.tools.some((t) => t.name === "run_agent_task"), "delegate tools hidden without scope");
+
+  const outOfRange = await call("run_agent_task", { prompt: "总结", tabId: 8 }, as(alice, "client-claims-name"));
+  assert.equal(outOfRange.error.code, ERROR_CODES.ORIGIN_NOT_ALLOWED, "task tab must be inside the token's origins");
+
+  const res = await call(
+    "run_agent_task",
+    { prompt: "总结并发布", tabId: 7, capsule: { actions: ["publish", "navigate"], origins: ["zhihu.com", "localhost"], platforms: ["zhihu", "weibo"] } },
+    as(alice, "client-claims-name"),
+  );
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.ok(res.result.capsule.origins.includes("zhihu.com"));
+  assert.ok(!res.result.capsule.origins.includes("localhost"), "legacy whitelist does not apply on the token path");
+  assert.ok(res.result.droppedOrigins.includes("localhost") && res.result.droppedOrigins.includes("weibo.com"));
+  assert.deepEqual(res.result.capsule.platforms, ["zhihu"]);
+  const { taskId } = res.result;
+  const done = await manager.wait(taskId);
+  assert.equal(done.agentName, "alice", "agentName comes from the token record, not the client claim");
+  assert.equal(done.owner, alice.record.id);
+  assert.match(seen[0].messages[0].content, /外部 Agent|delegate test/);
+
+  const mine = await call("agent_task_status", { taskId }, as(alice, "alice"));
+  assert.equal(mine.ok, true);
+  assert.equal(mine.result.agentName, "alice");
+  const other = await call("agent_task_status", { taskId }, as(bob, "bob"));
+  assert.equal(other.error.code, ERROR_CODES.JOB_NOT_FOUND, "other token cannot see the task");
+  const otherCancel = await call("agent_task_cancel", { taskId }, as(bob, "bob"));
+  assert.equal(otherCancel.error.code, ERROR_CODES.JOB_NOT_FOUND);
+  assert.equal((await manager.list({ owner: bob.record.id })).length, 0);
+
+  const legacy = await call("agent_task_status", { taskId });
+  assert.equal(legacy.error.code, ERROR_CODES.DISABLED, "legacy path still needs agentBridgeEnabled");
+  console.log("PASS token session: SCOPE_DENIED, token-origin capsule narrowing, agentName/owner isolation");
+}
+
+// 12. 会话的 token 出站白名单传给信任判定
+{
+  const { manager, log } = makeManager({
+    script: [[{ name: "extract_page" }], [{ name: "navigate_tab", args: { tabId: 7, url: "https://api.example/x?q=1" } }]],
+  });
+  const t = await manager.start({
+    prompt: "总结",
+    capsule: { actions: ["navigate"], origins: ["api.example"] },
+    tabId: 7,
+    sourceUrl: TAB_URL,
+    session: { agentName: "alice", tokenId: "tok_a", egress: ["https://api.example"] },
+  });
+  const done = await manager.wait(t.id);
+  assert.ok(ran(log, "navigate_tab"), "in-capsule navigation to token egress origin runs");
+  assert.equal(done.owner, "tok_a");
+
+  const sub = makeManager({
+    script: [[{ name: "navigate_tab", args: { tabId: 7, url: "https://zhuanlan.zhihu.com/p/1" } }]],
+  });
+  const t2 = await sub.manager.start({
+    prompt: "打开知乎",
+    capsule: { actions: ["navigate"], origins: ["zhihu.com"] },
+    tabId: 7,
+    sourceUrl: TAB_URL,
+    session: { tokenId: "tok_a", allowUrl: (u) => u.startsWith("https://www.zhihu.com/") },
+  });
+  const d2 = await sub.manager.wait(t2.id);
+  assert.ok(!ran(sub.log, "navigate_tab"), "subdomain in capsule but outside token origins is blocked");
+  assert.equal(d2.denied[0].code, "ORIGIN_NOT_ALLOWED");
+  assert.ok(toolMessages(sub.seen).some((c) => c.includes("ORIGIN_NOT_ALLOWED")));
+  console.log("PASS session egress + per-call token origin check");
 }
 
 console.log("ALL PASS test_agent_delegate");

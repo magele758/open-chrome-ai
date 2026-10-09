@@ -307,7 +307,16 @@ export function createBridge(env = createDefaultEnv()) {
         artifacts,
         meta,
         tab: null,
-        session: auth ? { agentId: auth.record.id, agentName: auth.record.name, sessionId: auth.sessionId } : null,
+        session: auth
+          ? {
+              agentId: auth.record.id,
+              agentName: auth.record.name,
+              sessionId: auth.sessionId,
+              tokenId: auth.record.id,
+              egress: auth.record.egress || [],
+              skipIrreversible: auth.record.skipIrreversible === true,
+            }
+          : null,
         authorizeTab: (id) => authorizeTab(id, settings, auth),
         authorizeUrl: (url) => authorizeUrl(url, settings, auth),
       };

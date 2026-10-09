@@ -266,6 +266,13 @@ export function createDelegateManager({
         getTabId: () => task.tabId,
         getTabUrl: run.getTabUrl,
       });
+      if (/^https?:/i.test(targetUrl) && typeof session?.allowUrl === "function" && !session.allowUrl(targetUrl)) {
+        const denial = { code: "ORIGIN_NOT_ALLOWED", reason: `${targetUrl} 不在委托方可访问的 origin 范围内。[${toolName}]` };
+        task.denied.push({ toolName, code: denial.code, reason: clip(denial.reason) });
+        if (task.denied.length > 20) task.denied.shift();
+        addStep(task, { kind: "blocked", name: toolName, code: denial.code, summary: clip(denial.reason) });
+        return { allow: false, reason: formatTrustDenial(denial) };
+      }
       const refTab = args?.tabId != null && args?.tabId !== "" ? Number(args.tabId) : task.tabId;
       const elementText = args?.index != null && run.refLabel ? run.refLabel(refTab, args.index) : "";
       const d = decideToolCall({

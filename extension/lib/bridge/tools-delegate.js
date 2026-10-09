@@ -43,7 +43,8 @@ function ownerOf(ctx) {
 
 /** 胶囊里的站点必须在调用方可访问的 origin 范围内（委托不能成为越权通道）；不在范围内的丢弃并回报 */
 export function restrictCapsuleToCaller(capsule, isAllowed) {
-  const allowedDomain = (d) => isAllowed(`https://${d}/`) || isAllowed(`http://${d}/`);
+  // 胶囊域名已去掉 www.，按 www.<域名> 也算在范围内；子域仍由每次调用的 allowUrl 硬校验兜底
+  const allowedDomain = (d) => [`https://${d}/`, `http://${d}/`, `https://www.${d}/`, `http://www.${d}/`].some(isAllowed);
   const dropped = [];
   const origins = capsule.origins.filter((d) => {
     const ok = allowedDomain(d);
@@ -107,7 +108,7 @@ export function createDelegateTools(env, { obj, TAB_ID }) {
             sourceUrl: tab?.url || "",
             maxSteps: args.maxSteps,
             model: args.model,
-            session: sessionOf(ctx),
+            session: { ...sessionOf(ctx), allowUrl: isAllowed },
             restrictCapsule: (c) => restrictCapsuleToCaller(c, isAllowed),
           });
           return {

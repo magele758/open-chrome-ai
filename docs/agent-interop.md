@@ -425,7 +425,7 @@ await __pl.call({ v: 1, id: "t3", tool: "agent_task_cancel", args: { taskId } })
 ### 15.3 授权：意图胶囊 + 无人值守判定
 
 - **胶囊只来自委托人**：显式 `capsule` 经 `normalizeCapsule` 校验（未知动作/平台、非法 URL、含 `..` 的路径丢弃，`principal:"agent"`）；省略时 `extractCapsule(prompt)`。任务开始后胶囊**冻结**，页面、字幕、工具结果里的任何文字都不会并入胶囊。
-- **不越权**：胶囊里的站点必须在调用方可访问的 origin 范围内（现为 `agentBridgeOrigins`；P1 后为 token 的 origins），范围外的站点丢弃并在 `droppedOrigins` 回报；只剩被丢弃域名的平台一并去掉。
+- **不越权**：胶囊里的站点必须在调用方可访问的 origin 范围内（token 会话为 token 的 `origins`；无 token 的旧入口为 `agentBridgeOrigins`），范围外的站点丢弃并在 `droppedOrigins` 回报（`www.` 与裸域等价）；只剩被丢弃域名的平台一并去掉。运行中每个带目标 URL 的调用（导航、标签操作、下载）还会再按同一范围硬校验，范围外返回 `ORIGIN_NOT_ALLOWED`（胶囊域名覆盖子域，这一步防止借子域越出 token 范围）。任务标签同样要在范围内。
 - 每个工具调用走 P4 的 `decideToolCall`，`attended:false`（`hitlMode` 取设置里的严格/智能审查，全自动不适用于委托任务）：
   - 胶囊内 → 自动执行（即使会话已读入数据甚至被标为高污染）；只读 → 执行。
   - 胶囊外的副作用 → 拒绝，工具结果为 `{ok:false, code:"NEEDS_WIDER_AUTHORIZATION", reason, hint}`，记入 `denied`；出站到未声明目的地 → `EGRESS_NOT_ALLOWED`；**不会弹窗、不会挂起**。
@@ -443,5 +443,5 @@ await __pl.call({ v: 1, id: "t3", tool: "agent_task_cancel", args: { taskId } })
 
 ### 15.6 集成钩子（P1 / P3）
 
-- **P1 会话**：bridge 工具读 `ctx.session`（可选）：`{ agentName, sessionId, tokenId, egress[], skipIrreversible }`。`agentName` 显示在侧栏与待批准条目（`principal:"agent:<name>"`）；`tokenId || agentName` 作为任务 owner，带 owner 的任务对其他 owner 的 `agent_task_status/cancel` 不可见（返回 `JOB_NOT_FOUND`；无会话的旧入口仍可见全部）；`egress` 作为 `decideToolCall` 的 `tokenEgress`；`skipIrreversible:true` 时不可逆清单不拦。P1 只需在 `bridge/index.js` 构造 ctx 时挂上 `session`，并把 `ctx.authorizeUrl` 改成按 token origins 判定（胶囊收窄自动跟随）。
+- **P1 会话（已接入）**：token 路径上 bridge 先按工具 `scope` 校验（无 `agent:delegate` → `SCOPE_DENIED`，`list_tools` 里也看不到这三个工具），再把 `ctx.session = { agentId, agentName, sessionId, tokenId, egress[], skipIrreversible }` 交给工具。`agentName` 取 **token 名**（不信客户端自报），显示在侧栏与待批准条目（`principal:"agent:<name>"`）；`tokenId` 作为任务 owner，带 owner 的任务对其他 token 的 `agent_task_status/cancel` 不可见（`JOB_NOT_FOUND`；无会话的旧入口仍可见全部）；`egress` 作为 `decideToolCall` 的 `tokenEgress`；`skipIrreversible` 目前 token 记录里没有该字段，恒为 `false`（P4b 若加字段会自动生效）。
 - **P3 事件**：`import { onAgentTaskEvent, AGENT_TASK_EVENTS } from "extension/lib/agent/delegate.js"`，`onAgentTaskEvent(listener)` 返回取消订阅函数。事件 `{ type, taskId, at, ... }`：`agent_task.started {task}`、`agent_task.step {step}`、`agent_task.approval {pendingId, toolName, reason}`、`agent_task.finished {status, answer, error}`。P3 可在 SW 里订阅后转成 `bridge.event` 推给对应会话（按任务 owner 路由）。
