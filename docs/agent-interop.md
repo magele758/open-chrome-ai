@@ -97,6 +97,7 @@ token 错误时返回 `{"type":"error","error":{"code":"UNAUTHORIZED",…}}` 并
 | `UNAUTHORIZED` | token 缺失、错误、过期或已吊销 |
 | `SCOPE_DENIED` | token 没有该工具需要的 scope；`details.scope` 给出所需 scope |
 | `EGRESS_NOT_ALLOWED` | 预留：token 记录里已有 `egress`（允许外发的目的地），bridge 侧的出站检查尚未接入 |
+| `TAB_LEASED` | 标签被另一个会话 `tab_claim` 占用（见 §0.7）；`details.holder.agentName` 是占用方，可重试 |
 
 网关未运行时，MCP 工具调用返回 `isError` 文本「PageLens 网关未运行…」，说明需要打开 Chrome 并在设置里启用网关。
 
@@ -107,6 +108,42 @@ token 错误时返回 `{"type":"error","error":{"code":"UNAUTHORIZED",…}}` 并
 ### 0.6 文件 inbox 带 token
 
 inbox job 可带 `"token":"plk_…"`：校验通过且 scope 足够时**跳过逐次确认**，使用 token 的 origins，审计记为 `inbox.<action>`；token 无效直接 `UNAUTHORIZED`（不会退回到确认框）。所需 scope：`clipboard_write` → `clipboard`；`paste_html` / `wechat_fill_draft` → `page:act,clipboard`；`cose_publish` → `page:act`；`bridge_call` 走网关会话路径。写入 `processed/` 的副本里 token 记为 `[redacted]`。
+
+### 0.7 事件推送与多会话
+
+实现：`lib/bridge/events.js`（事件总线与过滤）、`lib/bridge/leases.js`（标签租约、按标签分队）、`lib/bridge/jobs.js`（任务持久化）、`lib/bridge/session-tools.js`（会话元工具）。
+
+**订阅**（只对网关会话开放，不需要额外 scope；无 token 的旧入口调用返回 `UNAUTHORIZED`）：
+
+| 工具 | 参数 | 返回 |
+|---|---|---|
+| `events_subscribe` | `types?: string[]`（支持 `tab.*`、`*`；省略 = token 权限内的全部） | `{types, since, push}`；显式请求了无权类型 → `SCOPE_DENIED` |
+| `events_unsubscribe` | `types?`（省略 = 全部） | `{types}` 剩余订阅 |
+| `events_poll` | `since?`（上次的 `next`）、`max?`（默认 50，最大 200） | `{events, next, more, dropped, subscribed}`；`dropped=true` 表示环形缓冲（每会话 200 条）挤掉了中间事件 |
+
+事件类型与所需 scope：
+
+| type | scope | 字段 |
+|---|---|---|
+| `tab.created` / `tab.updated` / `tab.removed` / `tab.activated` | `tabs:read` | `tabId` `windowId` `url` `title`；`tab.updated` 只在 `status=complete` 或 URL 变化时发，带 `status` |
+| `navigation.completed` | `tabs:read` | `tabId` `url`（`webNavigation.onCompleted`，只取主 frame） |
+| `download.created` / `download.changed` | `downloads` | `downloadId` `url` `finalUrl` `referrer` `filename` `state` `error` … |
+| `dialog.opened` | `page:read` | `tabId` `url` `dialogType` `message`（来自 `chrome.debugger`，只在 PageLens 已附加调试器的标签上可见，例如刚用过可信输入） |
+| `job.progress` / `job.done` | —（只发给发起任务的同一 token） | `jobId` `tool` `status` / `ok` `code`；工具可通过 `ctx.progress(data)` 报中间进度 |
+
+每个事件带会话内递增的 `seq` 和 `ts`。**过滤**：标签类事件 URL 在 token origins 内才发；标签从范围内跳到范围外时只发一次 `url:null, title:null, redacted:true`；关闭事件按最后已知 URL 判断（不认识的标签不报）。下载事件 `url`/`referrer` 有一个在范围内才发，范围外的字段置空。每次投递前重新读取 token，吊销或缩小 origin 立即生效。
+
+**推送路径**：扩展 `{type:"bridge.event", sessionId, event}` → broker → 该会话 socket `{"type":"event","event":{…}}`。MCP 垫片收到后发 `notifications/message`（`level:"info"`, `logger:"pagelens"`, `data` = 事件；`logging/setLevel` 设到 `warning` 及以上即静音）；`initialize` 时在 `capabilities.experimental` 声明 `"pagelens/events": {}` 的客户端另收 `notifications/pagelens/event {event}`。垫片的 `initialize` 结果声明 `logging` 与 `experimental["pagelens/events"]` 能力。不支持推送的客户端照常用 `events_poll`。订阅跟会话走：MCP 垫片重连（网关重启）后需重新 `events_subscribe`。
+
+**多会话**：同一 socket 上可以同时有多个客户端，各有自己的 `sessionId`、订阅和缓冲（同一 token 也可以开多个会话）。
+
+- `tab_claim {tabId}`：独占标签（token 需持有 `page:act` / `page:js` / `tabs:manage` / `upload` 之一，标签须在 origin 范围内）。之后其他会话（以及旧的 CDP / runtime 入口）在该标签上调用会改动页面的工具（scope 为 `page:act` `page:js` `tabs:manage` `upload` 的带 `tabId` 工具）得到 `TAB_LEASED`；只读工具不受影响。
+- `tab_release {tabId?}`：释放一个或（省略时）本会话全部租约。
+- 会话 `open_tab` / `create_window` 打开的标签自动归该会话，并放进一个名为 `Agent: <名称>` 的标签组（`chrome.tabGroups`）。
+- socket 断开（broker 发 `bridge.session.closed`）、Chrome 端口断开或标签关闭时租约自动释放。租约只在内存里：SW 重启会断开 Native port，所有会话随之结束。
+- 独占队列按标签分：不同标签上的可信输入可以并行，同一标签串行；碰剪贴板的工具（`clipboard_write` `copy_selection_trusted` `paste_rich_trusted`）额外占全局剪贴板锁，`activate:true` / 抢焦点的工具占全局焦点锁。
+
+**任务持久化**：`async:true` 的任务写入 `chrome.storage.session`（键 `agentBridgeJobs`，最近 50 个；大于 256 KB 的 artifact 只存元数据，标 `omitted:true`）。SW 被回收后 `job_status` 仍能查到；重启时还在跑的任务变成 `{status:"interrupted", hint}`——结果未知，先回读页面再决定是否换新 id 重试。任务按 token 归属，换会话（同一 token）也能查。
 
 ## 1. 安全模型（先读）
 
@@ -208,8 +245,8 @@ const { result, artifacts } = await pl.call("list_tabs");
 ## 5. 同步调用与长任务
 
 - 默认同步：`await __pl.call(req)`，通常 <2s；`paste_rich_trusted` 含重试最坏约 `(settleMs+1s)×尝试次数`。
-- 长任务：`async:true` → `{ok:true,result:{jobId:<id>,status:"running"}}`；轮询 `job_status {jobId}` → `{status:"running"}` 或 `{status:"done", response:{…最终响应…}}`。只做轮询，没有推送事件。任务存在 SW 内存里，**SW 重启会丢（`JOB_NOT_FOUND`）**；CDP 附着期间不会被回收。
-- 同一时刻，剪贴板与键鼠类工具（`exclusive`）在扩展内**全局串行**，不会交错。
+- 长任务：`async:true` → `{ok:true,result:{jobId:<id>,status:"running"}}`；轮询 `job_status {jobId}` → `{status:"running"}`、`{status:"done", response:{…最终响应…}}` 或 `{status:"interrupted"}`（SW 重启打断）。任务持久化在 `chrome.storage.session`（§0.7）；网关会话还可以订阅 `job.progress` / `job.done` 事件代替轮询。
+- 键鼠类工具（`exclusive`）**按标签串行**：同一标签不会交错，不同标签可以并行；剪贴板是全局资源，碰剪贴板的工具全局串行（§0.7）。
 
 ## 6. 错误码
 
@@ -228,6 +265,7 @@ const { result, artifacts } = await pl.call("list_tabs");
 | `CLIPBOARD_FAILED` | **是** | 三种剪贴板写入方式全失败，`details` 列出每种的错误 |
 | `VERIFY_FAILED` | 否 | 回读校验不通过（已按重试上限停止）；**不要**换 innerHTML 之类手段兜底 |
 | `JOB_NOT_FOUND` | 否 | `job_status` 找不到 |
+| `TAB_LEASED` | **是** | 标签被另一个网关会话 `tab_claim` 占用；换标签或等对方释放（§0.7） |
 | `TOOL_FAILED` | 否 | 其他工具失败，见 `message`；`act_element` 目标过期时 `details.stale=true`，重新 `snapshot_controls` |
 | `SETTING_PROTECTED` | 否 | `update_settings` 触及敏感设置；`details.keys` 列出键名，需用户在设置页手动改 |
 | `PATH_NOT_ALLOWED` | 否 | `upload_file` 含敏感本机路径；`details.paths` 列出被拒路径 |
@@ -298,6 +336,7 @@ const { result, artifacts } = await pl.call("list_tabs");
 | `copy_selection_trusted {tabId, selector}` | clipboard | 选中元素内容 + 可信 Meta/Ctrl+C | Chrome 自己序列化（带内联样式），随后 `paste_rich_trusted {useClipboard:true}` |
 | `paste_rich_trusted {tabId, html? / text? / source{tabId,selector} / useClipboard, titleEquals?, expect?, retries?, settleMs?, activate?, includeHtml?}` | page:act | 写剪贴板 → 点击聚焦 → 全选+清空 → 可信粘贴 → 回读校验 → 重试 | 默认从 `html` 推导断言：`minChars=85%`、`minTables`、`minImages`，可用 `expect` 覆盖；标题不得被污染或变化；失败 `VERIFY_FAILED`，**无 DataTransfer/innerHTML 兜底** |
 | `job_status` / `audit_log` / `list_tools` | — | 元工具 | |
+| `events_subscribe` / `events_unsubscribe` / `events_poll` / `tab_claim` / `tab_release` | —（仅网关会话） | 事件订阅、标签租约 | 见 §0.7 |
 
 ## 11. 参考 recipe：把 Doocs 简报写入微信公众号编辑器
 
@@ -362,7 +401,8 @@ await pl.call("trusted_click", { tabId: wx, text: "保存为草稿" });
 - `DEBUGGER_BUSY` 的真实"已被占用"场景只有 mock 测试。
 - 剪贴板被覆盖；非 macOS 上 Native Host 兜底不可用（前两种 offscreen 方式不受影响）。
 - 仅支持顶层 frame 的编辑器（iframe 内的编辑器未处理）。
-- 任务表在 SW 内存里，SW 重启丢失。
+- 任务表持久化在 `chrome.storage.session`：浏览器重启会清空；SW 重启时正在执行的任务只能标 `interrupted`，不会续跑。
+- `dialog.opened` 事件只在 PageLens 已附加 `chrome.debugger` 的标签上产生；其他标签的对话框不可见。
 - 不提供 cookies 工具：manifest 没有 `cookies` 权限（需单独的高危 scope 再加）。
 - `snapshot_controls` 的 ref 存在 SW 内存里，按标签保存最近一次快照；SW 重启或导航后需重新快照。
 
@@ -373,11 +413,13 @@ node extension/tools/test_bridge_protocol.mjs   # 协议、白名单、幂等、
 node extension/tools/test_bridge_editor.mjs     # jsdom：挑编辑器、回读校验、样式内联、原生 setter
 node extension/tools/test_bridge_paste.mjs      # paste_rich_trusted 流程（mock CDP）：顺序、重试、不兜底、焦点
 node extension/tools/test_bridge_browser_tools.mjs  # 标签/窗口、快照 ref、对话框、下载、上传敏感路径、受保护设置
+node extension/tools/test_bridge_events.mjs     # 事件过滤/缓冲/订阅、租约、按标签并行队列、job 持久化与 interrupted
+node native/test_gateway.mjs                    # broker + MCP 垫片：事件帧转发、MCP 通知、两个并发会话与租约
 node extension/tools/test_clipboard_sw.mjs      # 剪贴板三种方式的降级与 offscreen 让位
 node extension/tools/e2e_bridge.mjs             # 真浏览器冒烟（专用临时 profile，见脚本头注释）
 ```
 
-前五个由 `npm test` 自动收录；`e2e_bridge.mjs` 不属于 `run-tests`，需要本机有 Chrome。
+`extension/tools/test_*` 由 `npm test` 自动收录，`native/test_gateway.mjs` 单独运行；`e2e_bridge.mjs` 不属于 `run-tests`，需要本机有 Chrome。
 
 网关：
 
