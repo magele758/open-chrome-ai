@@ -4,12 +4,15 @@ Unit & Integration Tests for Decoupled Audio Dubbing Pipeline (yt_subtitle_dubbe
 
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 
 import yt_subtitle_dubber as dubber
+
+HAS_FFMPEG = all(shutil.which(name) for name in ('ffmpeg', 'ffprobe'))
 
 
 class TestDubberPipeline(unittest.TestCase):
@@ -66,6 +69,7 @@ class TestDubberPipeline(unittest.TestCase):
             if os.path.exists(f_path):
                 os.remove(f_path)
 
+    @unittest.skipUnless(HAS_FFMPEG, 'requires ffmpeg and ffprobe')
     def test_stem_separation_and_sidechain_ducking(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -117,6 +121,7 @@ class TestDubberPipeline(unittest.TestCase):
             self.assertTrue(final_audio.exists())
             self.assertAlmostEqual(dubber.get_audio_duration(final_audio), 4.0, delta=0.3)
 
+    @unittest.skipUnless(HAS_FFMPEG, 'requires ffmpeg and ffprobe')
     def test_elastic_speech_flow_scheduling(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

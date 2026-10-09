@@ -12,6 +12,9 @@ import unittest
 from unittest.mock import patch
 import media_helper as helper
 
+HAS_MEDIA_TOOLS = all(helper.find_executable(name) for name in ('yt-dlp', 'ffmpeg', 'ffprobe'))
+needs_media_tools = unittest.skipUnless(HAS_MEDIA_TOOLS, 'requires yt-dlp, ffmpeg and ffprobe')
+
 
 class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, *_):
@@ -19,6 +22,7 @@ class QuietHandler(SimpleHTTPRequestHandler):
 
 
 class MediaTest(unittest.TestCase):
+    @needs_media_tools
     def test_full_download_and_segments(self):
         with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as output:
             file = str(Path(source) / 'complete.mp4')
@@ -76,6 +80,7 @@ class MediaTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    @needs_media_tools
     def test_cache_hit_and_cleanup(self):
         with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as cache_dir, tempfile.TemporaryDirectory() as out1, tempfile.TemporaryDirectory() as out2:
             file = str(Path(source) / 'test_video.mp4')
