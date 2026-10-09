@@ -6,6 +6,7 @@
  *
  * 流程：加载解包扩展 → 在临时 profile 登记 com.pagelens.host → 在设置页 UI 里创建 token →
  * 打开网关 → MCP 垫片 initialize / tools/list / list_tabs / screenshot / query_dom / run_js（应 SCOPE_DENIED）
+ * → 事件推送（MCP notifications、范围外标签不泄露）、第二个会话的标签租约、会话标签组、async 任务写入 storage.session
  * → 吊销 token 后调用被拒 → 关网关后 socket 消失。
  * 只用 mkdtemp 的 --user-data-dir 与临时 socket，不碰日常 profile 和 ~/.pagelens。不属于 run-tests。
  */
@@ -18,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CdpConnection, connectBridge } from "../../tools/pl-bridge.mjs";
+import { connectGateway } from "../../native/gateway.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const CHROME = process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -94,6 +96,7 @@ function spawnMcp(env) {
   const child = spawn(process.execPath, [join(ROOT, "native/pagelens-host.mjs"), "--mcp"], { stdio: ["pipe", "pipe", "inherit"], env });
   let buf = "";
   const pending = new Map();
+  const notes = [];
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
     buf += chunk;
@@ -103,12 +106,14 @@ function spawnMcp(env) {
       buf = buf.slice(nl + 1);
       if (!line.trim()) continue;
       const msg = JSON.parse(line);
-      pending.get(msg.id)?.(msg);
+      if (msg.id == null && msg.method) notes.push(msg);
+      else pending.get(msg.id)?.(msg);
     }
   });
   let seq = 0;
   return {
     child,
+    notes,
     rpc(method, params = {}) {
       const id = ++seq;
       const p = new Promise((r) => pending.set(id, r));
@@ -207,8 +212,13 @@ try {
   let tabId;
   await step("MCP 垫片 tools/list + list_tabs", async () => {
     mcp = spawnMcp({ ...env, PAGELENS_TOKEN: token });
-    const init = await mcp.rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "e2e", version: "1" } });
+    const init = await mcp.rpc("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: { experimental: { "pagelens/events": {} } },
+      clientInfo: { name: "e2e", version: "1" },
+    });
     assert.equal(init.result.protocolVersion, "2024-11-05");
+    assert.ok(init.result.capabilities.logging, "logging capability declared");
     const list = await mcp.rpc("tools/list");
     const names = list.result.tools.map((t) => t.name);
     assert.ok(names.includes("screenshot") && names.includes("trusted_click"), names.join());
@@ -232,6 +242,65 @@ try {
     const js = await mcp.rpc("tools/call", { name: "run_js", arguments: { tabId, code: "return 1" } });
     assert.ok(js.result.isError && /SCOPE_DENIED/.test(js.result.content[0].text));
     return `screenshot ${img.data.length} b64 chars`;
+  });
+
+  await step("事件推送 + 第二会话租约 + 标签组 + job 持久化", async () => {
+    const sub = await mcp.rpc("tools/call", { name: "events_subscribe", arguments: { types: ["tab.*", "navigation.completed"] } });
+    assert.equal(sub.result.isError, false, JSON.stringify(sub));
+    const outside = fixtureUrl.replace("127.0.0.1", "localhost") + "outside";
+    await conn.send("Target.createTarget", { url: outside });
+    const opened = await mcp.rpc("tools/call", { name: "open_tab", arguments: { url: `${fixtureUrl}p3` } });
+    assert.equal(opened.result.isError, false, JSON.stringify(opened));
+    const newTab = JSON.parse(opened.result.content[0].text).tabId;
+    const nav = await waitFor(
+      () => mcp.notes.find((n) => n.method === "notifications/message" && n.params.data.type === "navigation.completed" && n.params.data.tabId === newTab),
+      10000,
+      "navigation.completed notification",
+    );
+    assert.equal(nav.params.level, "info");
+    await waitFor(() => mcp.notes.some((n) => n.method === "notifications/pagelens/event" && n.params.event.tabId === newTab), 5000, "custom notification");
+    await sleep(500);
+    assert.ok(!JSON.stringify(mcp.notes).includes("localhost"), "out-of-range tab never leaks");
+    const polled = await mcp.rpc("tools/call", { name: "events_poll", arguments: {} });
+    const pollEvents = JSON.parse(polled.result.content[0].text).events;
+    assert.ok(pollEvents.length > 0 && pollEvents.every((e) => e.url === null || e.url.startsWith("http://127.0.0.1:")), JSON.stringify(pollEvents));
+
+    const groupId = await bridge.evaluate(`chrome.tabs.get(${newTab}).then(t => t.groupId)`);
+    assert.ok(groupId > -1, "session-opened tab is grouped");
+    const groupTitle = await bridge.evaluate(`chrome.tabGroups.get(${groupId}).then(g => g.title)`);
+    assert.match(groupTitle, /^Agent: /);
+
+    const second = await connectGateway({ socketPath, token, agentName: "e2e-second" });
+    try {
+      const claim = await second.call({ id: "claim-1", tool: "tab_claim", args: { tabId } });
+      assert.ok(claim.ok, JSON.stringify(claim));
+      const click = await mcp.rpc("tools/call", { name: "trusted_click", arguments: { tabId, selector: "#hello" } });
+      assert.ok(click.result.isError && /TAB_LEASED/.test(click.result.content[0].text) && /e2e-second/.test(click.result.content[0].text), JSON.stringify(click));
+      const read = await mcp.rpc("tools/call", { name: "query_dom", arguments: { tabId, selector: "#hello" } });
+      assert.equal(read.result.isError, false);
+      const ownOpened = await second.call({ id: "c-own", tool: "trusted_click", args: { tabId: newTab, selector: "h1" } });
+      assert.equal(ownOpened.error?.code, "TAB_LEASED", "tab opened by the MCP session belongs to it");
+
+      const job = await second.call({ id: "job-p3", tool: "query_dom", args: { tabId, selector: ".item" }, async: true });
+      assert.equal(job.result.status, "running");
+      const done = await waitFor(async () => {
+        const st = await second.call({ id: `st-${Date.now()}`, tool: "job_status", args: { jobId: "job-p3" } });
+        return st.result?.status === "done" ? st : null;
+      }, 5000, "job done");
+      assert.ok(done.result.response.ok);
+      const persisted = await bridge.evaluate(`chrome.storage.session.get("agentBridgeJobs").then(v => (v.agentBridgeJobs || []).map(([k, j]) => [k.split("\u0000")[1], j.status]))`);
+      assert.ok(persisted.some(([id, st]) => id === "job-p3" && st === "done"), JSON.stringify(persisted));
+      const hang = await second.call({ id: "job-hang", tool: "wait_for", args: { tabId, selector: "#never", timeoutMs: 60000 }, async: true });
+      assert.equal(hang.result.status, "running");
+    } finally {
+      second.close();
+    }
+    await waitFor(async () => {
+      const r = await mcp.rpc("tools/call", { name: "trusted_click", arguments: { tabId, selector: "#hello" } });
+      return !/TAB_LEASED/.test(r.result.content[0].text);
+    }, 5000, "lease released when the second session disconnects");
+    await mcp.rpc("tools/call", { name: "close_tab", arguments: { tabId: newTab } });
+    return `${mcp.notes.length} notifications, group "${groupTitle}"`;
   });
 
   if (process.env.E2E_SHOT) {
@@ -284,6 +353,22 @@ try {
     assert.ok(existsSync(socketPath), "gateway keeps running while another token is active");
     await revoke("e2e-other");
     await waitFor(() => !existsSync(socketPath), 10000, "没有有效 token 后网关停止");
+  });
+
+  await step("SW 重启 → storage.session 里进行中的任务标 interrupted，已完成的保留", async () => {
+    const before = await page(`chrome.storage.session.get("agentBridgeJobs").then(v => (v.agentBridgeJobs || []).map(([k, j]) => [k.split("\\u0000")[1], j.status]))`);
+    assert.ok(before.some(([id, st]) => id === "job-hang" && st === "running"), JSON.stringify(before));
+    bridge.close();
+    await page.cdp("ServiceWorker.enable");
+    await page.cdp("ServiceWorker.stopAllWorkers");
+    await sleep(500);
+    await page(`chrome.runtime.sendMessage({ type: "pl.agentGateway.status" }).catch(() => null)`);
+    const after = await waitFor(async () => {
+      const list = await page(`chrome.storage.session.get("agentBridgeJobs").then(v => (v.agentBridgeJobs || []).map(([k, j]) => [k.split("\\u0000")[1], j.status]))`);
+      return list.some(([id, st]) => id === "job-hang" && st === "interrupted") ? list : null;
+    }, 10000, "job-hang interrupted");
+    assert.ok(after.some(([id, st]) => id === "job-p3" && st === "done"), JSON.stringify(after));
+    return JSON.stringify(after);
   });
 
   console.log(`\n${results.filter((r) => r.ok).length}/${results.length} passed${keep ? `; artifacts in ${work}` : ""}`);
