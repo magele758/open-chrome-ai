@@ -67,6 +67,15 @@ node tools/agent-inbox.mjs wait <id> --timeout 90000
 node tools/agent-inbox.mjs status
 ```
 
+## Token jobs (no confirmation window)
+
+A job may carry `"token": "plk_…"` (a per-agent token from 设置 → 外部 Agent, see [agent-interop.md §0](agent-interop.md)). CLI: `--token-file ~/.pagelens/agents/<name>.token` or env `PAGELENS_TOKEN`; the job file is written 0600.
+
+- Valid token with enough scope → runs **without** the confirmation window, on tabs matching the token's origins (not `agentBridgeOrigins`), audited as `inbox.<action>`.
+- Required scopes: `clipboard_write` → `clipboard`; `paste_html` / `wechat_fill_draft` → `page:act` + `clipboard`; `cose_publish` → `page:act`; `bridge_call` → the tool's own scope.
+- Invalid / expired / revoked token → `UNAUTHORIZED` (no fallback to the confirmation window). Missing scope → `SCOPE_DENIED`.
+- The copy in `processed/` has `"token": "[redacted]"`.
+
 ## Settings
 
 - `agentInboxEnabled` (default `false`) — toggle “启用文件 inbox” in settings. Off means no alarm and no Native Host calls.

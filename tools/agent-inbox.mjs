@@ -4,6 +4,7 @@
  *
  *   node tools/agent-inbox.mjs enqueue --action clipboard_write --text 'hi'
  *   node tools/agent-inbox.mjs enqueue --action wechat_fill_draft --title '...' --html-file ./body.html
+ *   node tools/agent-inbox.mjs enqueue --action paste_html --html-file ./a.html --token-file ~/.pagelens/agents/cli.token
  *   node tools/agent-inbox.mjs wait <id>
  *   node tools/agent-inbox.mjs status
  */
@@ -91,6 +92,8 @@ function enqueue(opts) {
     job.allowInsertHtmlFallback = true;
   }
   if (opts.replace === true || opts.replace === "true") job.replace = true;
+  const token = opts["token-file"] ? readMaybeFile(opts["token-file"]).trim() : process.env.PAGELENS_TOKEN?.trim();
+  if (token) job.token = token;
 
   let html = opts.html ? String(opts.html) : "";
   if (opts["html-file"]) html = readMaybeFile(opts["html-file"]);
@@ -108,7 +111,7 @@ function enqueue(opts) {
   }
 
   const jobPath = path.join(INBOX, `${id}.json`);
-  fs.writeFileSync(jobPath, JSON.stringify(job, null, 2), "utf8");
+  fs.writeFileSync(jobPath, JSON.stringify(job, null, 2), { encoding: "utf8", mode: 0o600 });
   console.log(JSON.stringify({ ok: true, id, jobPath, outboxPath: path.join(OUTBOX, `${id}.json`) }, null, 2));
   return id;
 }
