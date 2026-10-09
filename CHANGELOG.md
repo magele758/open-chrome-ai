@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 同传译文 `max_tokens` 提到 4096–8192；碰到输出上限先加大预算重试，仍截断才跳段。
 - **文件 inbox 默认关闭**：设置里新增开关（旧版本隐式保存的 `agentInboxEnabled: true` 不再生效，需要重新打开）；`paste_html` / `wechat_fill_draft` / `cose_publish` 只选 `agentBridgeOrigins` 白名单内的标签，并且每个 job 弹窗确认（60 秒未确认按拒绝）。
 - inbox 轮询：关闭时不建 alarm；去掉每轮 ping、目录只创建一次，稳态每轮 1 个 Native Host 进程；Host 不可用时 1→30 分钟指数退避；打包安装的周期改为 30 秒（Chrome 的下限），解包仍为 6 秒。
+- 视频同传的调度器与配音播放移入 offscreen 文档（`lib/interpret-host.js`），关闭侧栏不再中断；重新打开侧栏会同步正在进行的任务并可停止。侧栏经 SW 下发指令（`pl.interpret.cmd`），页面控制与 Native Messaging 由 SW 代理。纯享音频模式仍在侧栏内播放。
+- offscreen 文档由录音与同传共用：任一方仍在使用时不会被关闭；剪贴板写入遇到该文档时不再强行关闭它。
+
+### Removed
+- 旧同传引擎 `runInterpret`（`lib/interpret.js`）及只服务它的 `interpret-sync.js`、`interpret-pipeline.js`、`live-audio-playback.js`；`test_interpret_flow` 改测生产路径（侧栏 → SW → offscreen → `runPlannedInterpret`）。
 
 ### Added
 - **外部 Agent 控制入口（bridge，默认关闭）**: CDP → Service Worker `__pl.call()`（另有扩展页消息、inbox `bridge_call`）；握手/能力发现、幂等、async 任务、结构化错误码、origin 白名单、`DEBUGGER_BUSY` 重试策略；新增确定性工具 `read_rendered_html`（内联样式）、`pick_rich_editor` / `wechat_pick_body_editor`、`verify_editor_content`、`copy_selection_trusted`、`paste_rich_trusted`（可信粘贴 + 回读校验 + 重试，无 innerHTML/合成事件兜底）、`set_input_value`；剪贴板在 SW 里经 offscreen `execCommand("copy")` 写入；参考客户端 `tools/pl-bridge.mjs`，规范见 `docs/agent-interop.md`，e2e 见 `extension/tools/e2e_bridge.mjs`。inbox 改用共享的 `getCdp()`，避免与 bridge 对同一标签重复 attach。

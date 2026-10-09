@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { runPlannedInterpret } from '../lib/planned-interpret.js';
-import { InterpretController } from '../sidepanel/interpret-controller.js';
+import { InterpretController } from '../lib/interpret-controller.js';
 import { DUB_ARCHIVE_VERSION } from '../lib/interpret-policy.js';
 
 // A paused page must not govern audio production, even beyond the planning window.
@@ -78,6 +78,7 @@ const context = vm.createContext({
     setAudioProviders() {} subscribe(fn) { this.listener = fn; } isRunning() { return this.running; }
     async start(options) { this.running = true; audioStarts++; startOptions.push(options); } async stop() { this.running = false; audioStops++; }
   },
+  RemoteInterpretController: class { subscribe() {} isRunning() { return false; } async stop() {} },
   renderContext() {}, renderTranscribeAction() {}, formatTime: n => String(n), pushError: err => { throw Error(err); },
   getSharedAudioContext: () => null, injectVideo: async () => ({ ok: true }),
   isAsrReady: () => true, isTtsReady: () => true, requireModel: () => true, DUB_ARCHIVE_VERSION,

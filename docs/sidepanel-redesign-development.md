@@ -290,7 +290,7 @@ flowchart LR
 | `extension/sidepanel/index.html` | 顶部图标、媒体容器、任务列表、摘要区、独立上下文卡、回答尾部 |
 | `extension/sidepanel/styles.css` | 折叠布局、状态、窄屏、固定输入框、图标提示 |
 | `extension/sidepanel/app.js` | 拆 `state.tab/pack`，移除刷新时媒体清理和提前锁页；事件按请求/任务路由 |
-| `extension/sidepanel/interpret-controller.js` | taskId/runId；准备和播放分离；独立原音偏好 |
+| `extension/lib/interpret-controller.js` | taskId/runId；准备和播放分离；独立原音偏好 |
 | `extension/lib/planned-interpret.js` | 抽纯准备流程；共享限流；事件归属；禁止预缓存操作页面播放 |
 | `extension/lib/streaming-audio-player.js` | 每任务队列与共享单播放协调；暂停不丢缓存 |
 | `extension/lib/video-pick.js` | 保留原音门控；目标绑定具体播放器与来源 |

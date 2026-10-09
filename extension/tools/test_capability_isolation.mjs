@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { runPlannedInterpret } from "../lib/planned-interpret.js";
-import { InterpretController, InterpretState } from "../sidepanel/interpret-controller.js";
+import { InterpretController, InterpretState } from "../lib/interpret-controller.js";
 
 console.log("Starting Capability Isolation Test Suite (Video vs Audio)...");
 

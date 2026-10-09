@@ -2,12 +2,14 @@
  * PageLens Live Interpretation Multi-Task Manager & Controller.
  * Manages video probe, capture setup, stream lifecycle, audio-gain toggle, and multi-tab tasks.
  * Interpretation continues in background when switching tabs until the specific tab is closed or stopped.
+ * Video tasks run in the offscreen document (`interpret-host.js`), where `video`
+ * is an RPC to the service worker because offscreen pages have no chrome.scripting.
  */
 
-import { debugLog } from "../lib/debug-log.js";
-import { injectVideo } from "../lib/chrome.js";
-import { runPlannedInterpret as runInterpret } from "../lib/planned-interpret.js";
-import { abortRecording, discardCapture } from "../lib/tab-audio.js";
+import { debugLog } from "./debug-log.js";
+import { injectVideo } from "./chrome.js";
+import { runPlannedInterpret as runInterpret } from "./planned-interpret.js";
+import { abortRecording, discardCapture } from "./tab-audio.js";
 
 export const InterpretState = {
   IDLE: "idle",
@@ -62,8 +64,10 @@ export class InterpretTask {
 }
 
 export class InterpretController {
-  constructor({ audioOnly = false } = {}) {
+  constructor({ audioOnly = false, video = injectVideo, engineOptions = {} } = {}) {
     this.audioOnly = audioOnly;
+    this.video = video;
+    this.engineOptions = engineOptions;
     this.tasks = new Map();
     this.currentTabId = null;
     this.listeners = new Set();
@@ -147,6 +151,10 @@ export class InterpretController {
     return false;
   }
 
+  listStates() {
+    return [...this.tasks.values()].map(task => task.getState());
+  }
+
   getRunningTasks() {
     const out = [];
     for (const task of this.tasks.values()) {
@@ -183,7 +191,7 @@ export class InterpretController {
     this.notify({ type: "audio_toggled", originalAudioOn: next, tabId: targetId }, targetId);
 
     try {
-      await injectVideo(targetId, next ? "restore" : "silence");
+      await this.video(targetId, next ? "restore" : "silence");
       task?.currentCapture?.playback?.setGain?.(next ? 1 : 0);
     } catch (err) {
       if (task) task.originalAudioOn = prev;
@@ -227,13 +235,13 @@ export class InterpretController {
     let startAt = 0;
     let openingHold = false;
     try {
-      await injectVideo(tab.id, "pick", { fresh: true });
+      await this.video(tab.id, "pick", { fresh: true });
       abort.signal.throwIfAborted();
-      const st = await injectVideo(tab.id, "state");
+      const st = await this.video(tab.id, "state");
       startAt = Number(st?.currentTime) || 0;
       openingHold = Boolean(st?.ok && !st.ended && !st.paused);
-      const held = await injectVideo(tab.id, "control", { action: "pause", system: true });
-      const verified = await injectVideo(tab.id, "state");
+      const held = await this.video(tab.id, "control", { action: "pause", system: true });
+      const verified = await this.video(tab.id, "state");
       abort.signal.throwIfAborted();
       if (!held?.ok || !verified?.paused) {
         throw new Error("播放器未能暂停，未开始同传。请重试。");
@@ -256,6 +264,7 @@ export class InterpretController {
 
     try {
       const result = await runInterpret({
+        ...this.engineOptions,
         tabId: tab.id,
         sourceUrl: tab.url,
         title: tab.title,
@@ -271,6 +280,7 @@ export class InterpretController {
         getAudioScheduledTime: () => (this.audioScheduledTimeProvider ? this.audioScheduledTimeProvider(tab.id) : 0),
         isAudioActive: () => (this.isAudioActiveProvider ? this.isAudioActiveProvider(tab.id) : false),
         signal: abort.signal,
+        video: (cmd, arg) => this.video(tab.id, cmd, arg),
         wantOriginalAudio: () => task.abortController === abort && task.originalAudioOn,
         onEditable: edit => { task.editLine = edit; },
         onEvent: (ev) => {

@@ -1,6 +1,7 @@
 import { handleAudioMessage } from "./lib/tab-audio-sw.js";
 import { applyOptionalLocalSettings } from "./lib/storage.js";
 import { installBridge } from "./lib/bridge/index.js";
+import { createInterpretRouter } from "./lib/interpret-host-sw.js";
 import {
   syncAgentInboxAlarm,
   wireAgentInboxAlarm,
@@ -14,6 +15,7 @@ applyOptionalLocalSettings().catch(() => {});
 installDelegate();
 installAgentGateway(installBridge());
 installInboxConfirm();
+createInterpretRouter().install();
 wireAgentInboxAlarm();
 syncAgentInboxAlarm().catch(() => {});
 // Kick once shortly after SW starts so agents do not wait a full alarm period (no-op when disabled).

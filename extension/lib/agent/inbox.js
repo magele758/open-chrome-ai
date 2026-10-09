@@ -28,6 +28,7 @@ import { loadAgentTokens } from "../bridge/token-store.js";
 import { auditEntry, getAuditLog, originOfUrl } from "../bridge/audit.js";
 import { enforceTokenGuards } from "../bridge/trust-guard.js";
 import { chromeStorageAdapter, createApprovalQueue } from "./trust/approval-queue.js";
+import { offscreenDoc } from "../offscreen-doc.js";
 
 export const INBOX_ROOT = "~/.pagelens/agent-inbox";
 export const OUTBOX_ROOT = "~/.pagelens/agent-outbox";
@@ -112,14 +113,10 @@ async function writeClipboardFromSw({ text = "", html = "", image = "" } = {}) {
     // fall through to offscreen
   }
 
-  const hasDoc = await chrome.offscreen?.hasDocument?.().catch(() => false);
-  if (hasDoc) {
-    try {
-      await chrome.offscreen.closeDocument();
-    } catch {
-      /* ignore */
-    }
-  }
+  // The audio document may be running interpretation; closing it would stop the dub.
+  const docState = await offscreenDoc.state().catch(() => "none");
+  if (docState === "audio") throw new Error("offscreen 文档被同传/录音占用，暂时无法写入富文本剪贴板");
+  if (docState === "other") await chrome.offscreen.closeDocument().catch(() => {});
   await chrome.offscreen.createDocument({
     url: "offscreen/clipboard.html",
     reasons: ["CLIPBOARD"],

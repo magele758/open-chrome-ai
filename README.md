@@ -330,7 +330,11 @@ flowchart TB
     Off[offscreen/audio]
     Tab[当前标签 DOM / video]
     SP <-->|开栏 / pending 选区| SW
-    SW -->|pl.audio.*| Off
+    SW -->|pl.audio.* / pl.interpret.host| Off
+    SP -->|pl.interpret.cmd| SW
+    Off -.->|pl.interpret.event| SP
+    Off -->|pl.interpret.video| SW
+    SW -->|scripting.inject| Tab
     SP -->|scripting.inject| Tab
     SP -->|tabCapture| Off
   end
@@ -503,7 +507,7 @@ flowchart TB
 extension/          可加载的解压扩展（选这个目录）
   sidepanel/        侧栏 UI（编排中心）
   sw.js             开栏、右键选区、录音消息
-  offscreen/        tabCapture 录音
+  offscreen/        tabCapture 录音；视频同传调度与配音播放（关闭侧栏不中断）
   lib/              读页、视频、模型、持久化、本机桥
   lib/agent/        循环、工具、压缩与续跑
   skills/           可选的打包 SKILL.md（默认空）；本机目录在设置里单独授权

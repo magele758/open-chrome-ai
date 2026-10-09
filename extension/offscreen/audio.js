@@ -1,4 +1,5 @@
 import { captureWithRecorder, getTabStream, playThrough } from "../lib/tab-audio-record.js";
+import { createInterpretHost } from "../lib/interpret-host.js";
 
 let session = null;
 
@@ -40,3 +41,5 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   return false;
 });
+
+createInterpretHost({ isBusy: () => Boolean(session) });

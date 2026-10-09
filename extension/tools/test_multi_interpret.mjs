@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { InterpretController, InterpretState, InterpretTask } from "../sidepanel/interpret-controller.js";
+import { InterpretController, InterpretState, InterpretTask } from "../lib/interpret-controller.js";
 
 console.log("Starting Multi-Interpret Task test suite...");
 

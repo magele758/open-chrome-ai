@@ -30,8 +30,8 @@ import { summarizeTranscript } from "../lib/summarize-transcript.js";
 import { loadPageCaptions, transcribeTab, usableTranscript } from "../lib/captions.js";
 import { abortRecording, beginCapture, beginTabCapture, discardCapture, recordFromCapture } from "../lib/tab-audio.js";
 import { injectVideo } from "../lib/chrome.js";
-import { runInterpret } from "../lib/interpret.js";
-import { InterpretController } from "./interpret-controller.js";
+import { InterpretController } from "../lib/interpret-controller.js";
+import { RemoteInterpretController } from "./interpret-client.js";
 import { createMessageScroll } from "./message-scroll.js";
 let messageScroll;
 const thinkingScrolls = new WeakMap();
@@ -151,7 +151,6 @@ const state = {
   recordAbort: null,
   workAbort: null,
   interpret: null,
-  siAbort: null,
   siCapture: null,
   originalAudioOn: true,
   library: { configured: false, granted: false, name: "" },
@@ -205,8 +204,9 @@ const delegatePanel = createDelegatePanel({
   cancel: (taskId) => chrome.runtime.sendMessage({ type: "pl.delegate.cancel", taskId }),
 });
 
-
-const interpretController = new InterpretController();
+// Video interpretation runs in the offscreen document and survives closing the
+// panel. Pure-audio mode plays through the panel's own player, so it stays local.
+const interpretController = new RemoteInterpretController();
 const compactController = new InterpretController({ audioOnly: true });
 
 compactController.setAudioProviders({
@@ -6532,7 +6532,6 @@ function wire() {
     persistSession();
     state.recordAbort?.abort();
     state.workAbort?.abort();
-    state.siAbort?.abort();
     abortRecording();
   });
   } catch (err) {

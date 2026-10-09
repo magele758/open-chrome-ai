@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { InterpretController, InterpretState } from "../sidepanel/interpret-controller.js";
+import { InterpretController, InterpretState } from "../lib/interpret-controller.js";
 
 console.log("Starting InterpretController test suite...");
 
