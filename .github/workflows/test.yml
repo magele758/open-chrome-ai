@@ -20,6 +20,8 @@ jobs:
         run: git diff --exit-code extension/vendor/agent-loop-mini.mjs
       - name: Native host tests
         run: node native/test_host.mjs
+      - name: Native gateway (socket broker + MCP shim) tests
+        run: node native/test_gateway.mjs
       - run: npm audit --audit-level=high
 
   python-tools:

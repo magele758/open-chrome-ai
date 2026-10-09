@@ -93,7 +93,14 @@ export function createNativeGateway({
       schedule(String(msg.error || "broker 启动失败"));
       return;
     }
-    if (msg.type === "bridge.call") dispatch(p, msg);
+    if (msg.type === "bridge.call") {
+      dispatch(p, msg);
+      return;
+    }
+    if (!msg.type && msg.ok === false && status.state === "connecting") {
+      drop(p);
+      schedule(`Native Host 不支持网关（${msg.error || "未知 op"}）：请更新仓库后重新运行 node native/install-native-host.mjs`);
+    }
   }
 
   function open() {

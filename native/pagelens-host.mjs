@@ -5,10 +5,12 @@
  */
 
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SOCKET_PROTOCOL, connectGateway, createBroker, defaultSocketPath } from "./gateway.mjs";
 import { shellPolicyBlock } from "../extension/lib/agent/shell-policy.js";
 import {
   expandUserPath,
@@ -26,7 +28,7 @@ import {
 } from "../extension/lib/fs-path.js";
 
 export const HOST_NAME = "com.pagelens.host";
-export const HOST_VERSION = "1.3.1";
+export const HOST_VERSION = "1.4.0";
 export const DEFAULT_TIMEOUT_MS = 60_000;
 export const MAX_TIMEOUT_MS = 300_000;
 export const MAX_OUTPUT = 200_000;
@@ -566,6 +568,80 @@ export const MCP_TOOLS = [
   },
 ];
 
+function mcpText(text, isError) {
+  return { content: [{ type: "text", text }], isError };
+}
+
+/** 本机 shell/fs MCP 工具；未知工具返回 null。 */
+export async function callLocalMcpTool(name, args = {}) {
+  if (name === "exec_command") {
+    const res = await execCommand({
+      command: args.command,
+      cwd: args.cwd,
+      timeoutMs: args.timeoutMs,
+    });
+    const text = res.ok
+      ? [res.stdout, res.stderr].filter(Boolean).join("\n") || `(Command exited with code ${res.code})`
+      : `Error: ${res.error}`;
+    return mcpText(text, !res.ok || (res.code != null && res.code !== 0));
+  }
+  if (name === "read_file") {
+    const res = handleFs({
+      action: "readText",
+      path: args.path,
+      root: args.root || args.path,
+      rel: args.rel || "",
+    });
+    return mcpText(res.ok ? res.text : `Error: ${res.error}`, !res.ok);
+  }
+  if (name === "write_file") {
+    const res = handleFs({
+      action: "writeText",
+      root: args.root,
+      rel: args.rel,
+      text: args.text,
+    });
+    return mcpText(res.ok ? `Successfully wrote ${res.bytes} characters to ${res.path}` : `Error: ${res.error}`, !res.ok);
+  }
+  if (name === "list_directory") {
+    const res = handleFs({
+      action: "readdir",
+      path: args.path,
+      root: args.path,
+      rel: args.rel || "",
+    });
+    return mcpText(res.ok ? JSON.stringify(res.entries, null, 2) : `Error: ${res.error}`, !res.ok);
+  }
+  if (name === "scan_skills") {
+    const res = handleFs({
+      action: "scanSkills",
+      path: args.path,
+      maxSkills: args.maxSkills,
+      maxDepth: args.maxDepth,
+    });
+    return mcpText(res.ok ? JSON.stringify(res.files, null, 2) : `Error: ${res.error}`, !res.ok);
+  }
+  return null;
+}
+
+function mcpInitialize(id, name) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: {
+      protocolVersion: "2024-11-05",
+      capabilities: {
+        tools: {},
+      },
+      serverInfo: {
+        name,
+        version: HOST_VERSION,
+      },
+    },
+  };
+}
+
+/** 无 token 的旧 MCP 模式：只有本机 shell/fs 工具，不连扩展。 */
 export async function handleMcpRequest(req) {
   if (!req || typeof req !== "object") {
     return { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } };
@@ -577,20 +653,7 @@ export async function handleMcpRequest(req) {
   }
 
   if (method === "initialize") {
-    return {
-      jsonrpc: "2.0",
-      id,
-      result: {
-        protocolVersion: "2024-11-05",
-        capabilities: {
-          tools: {},
-        },
-        serverInfo: {
-          name: "pagelens-host",
-          version: HOST_VERSION,
-        },
-      },
-    };
+    return mcpInitialize(id, "pagelens-host");
   }
 
   if (method === "ping") {
@@ -609,95 +672,8 @@ export async function handleMcpRequest(req) {
 
   if (method === "tools/call") {
     const name = String(params?.name || "");
-    const args = params?.arguments || {};
-
-    if (name === "exec_command") {
-      const res = await execCommand({
-        command: args.command,
-        cwd: args.cwd,
-        timeoutMs: args.timeoutMs,
-      });
-      const text = res.ok
-        ? [res.stdout, res.stderr].filter(Boolean).join("\n") || `(Command exited with code ${res.code})`
-        : `Error: ${res.error}`;
-      return {
-        jsonrpc: "2.0",
-        id,
-        result: {
-          content: [{ type: "text", text }],
-          isError: !res.ok || (res.code != null && res.code !== 0),
-        },
-      };
-    }
-
-    if (name === "read_file") {
-      const res = handleFs({
-        action: "readText",
-        path: args.path,
-        root: args.root || args.path,
-        rel: args.rel || "",
-      });
-      return {
-        jsonrpc: "2.0",
-        id,
-        result: {
-          content: [{ type: "text", text: res.ok ? res.text : `Error: ${res.error}` }],
-          isError: !res.ok,
-        },
-      };
-    }
-
-    if (name === "write_file") {
-      const res = handleFs({
-        action: "writeText",
-        root: args.root,
-        rel: args.rel,
-        text: args.text,
-      });
-      return {
-        jsonrpc: "2.0",
-        id,
-        result: {
-          content: [{ type: "text", text: res.ok ? `Successfully wrote ${res.bytes} characters to ${res.path}` : `Error: ${res.error}` }],
-          isError: !res.ok,
-        },
-      };
-    }
-
-    if (name === "list_directory") {
-      const res = handleFs({
-        action: "readdir",
-        path: args.path,
-        root: args.path,
-        rel: args.rel || "",
-      });
-      return {
-        jsonrpc: "2.0",
-        id,
-        result: {
-          content: [{ type: "text", text: res.ok ? JSON.stringify(res.entries, null, 2) : `Error: ${res.error}` }],
-          isError: !res.ok,
-        },
-      };
-    }
-
-    if (name === "scan_skills") {
-      const res = handleFs({
-        action: "scanSkills",
-        path: args.path,
-        maxSkills: args.maxSkills,
-        maxDepth: args.maxDepth,
-      });
-      return {
-        jsonrpc: "2.0",
-        id,
-        result: {
-          content: [{ type: "text", text: res.ok ? JSON.stringify(res.files, null, 2) : `Error: ${res.error}` }],
-          isError: !res.ok,
-        },
-      };
-    }
-
+    const result = await callLocalMcpTool(name, params?.arguments || {});
+    if (result) return { jsonrpc: "2.0", id, result };
     return {
       jsonrpc: "2.0",
       id,
@@ -712,7 +688,148 @@ export async function handleMcpRequest(req) {
   };
 }
 
-export function attachMcpStdio(stdin = process.stdin, stdout = process.stdout) {
+/** 本机工具在网关模式下要求 token 持有的 scope。 */
+export const LOCAL_TOOL_SCOPES = Object.freeze({
+  exec_command: "host:shell",
+  read_file: "host:fs",
+  write_file: "host:fs",
+  list_directory: "host:fs",
+  scan_skills: "host:fs",
+});
+
+/** 网关里不需要暴露给 MCP 的元工具（tools/list 已覆盖）。 */
+const HIDDEN_BRIDGE_TOOLS = new Set(["list_tools"]);
+
+export function bridgeToolToMcp(tool) {
+  const notes = [tool.scope ? `scope: ${tool.scope}` : "", tool.focus && tool.focus !== "none" ? `focus: ${tool.focus}` : ""]
+    .filter(Boolean)
+    .join("; ");
+  return {
+    name: tool.name,
+    description: notes ? `${tool.description}（${notes}）` : tool.description,
+    inputSchema: tool.parameters || { type: "object", properties: {} },
+  };
+}
+
+/** bridge 响应 → MCP tools/call result；截图等图片 artifact 变成 image 内容。 */
+export function bridgeResponseToMcp(res) {
+  const content = [];
+  if (res?.ok) {
+    content.push({ type: "text", text: JSON.stringify(res.result ?? null, null, 2) });
+  } else {
+    const e = res?.error || { code: "TOOL_FAILED", message: "未知错误" };
+    const lines = [`${e.code}: ${e.message}`];
+    if (e.hint) lines.push(`提示：${e.hint}`);
+    if (e.retryable) lines.push("（可重试）");
+    if (e.details !== undefined) lines.push(`details: ${JSON.stringify(e.details).slice(0, 4000)}`);
+    content.push({ type: "text", text: lines.join("\n") });
+  }
+  for (const a of res?.artifacts || []) {
+    if (a.encoding === "base64" && /^image\//.test(a.mime || "")) {
+      content.push({ type: "image", data: a.data, mimeType: a.mime });
+    } else if (a.encoding === "base64") {
+      content.push({ type: "resource", resource: { uri: `pagelens://artifact/${a.name}`, mimeType: a.mime, blob: a.data } });
+    } else {
+      content.push({ type: "resource", resource: { uri: `pagelens://artifact/${a.name}`, mimeType: a.mime, text: a.data } });
+    }
+  }
+  return { content, isError: !res?.ok };
+}
+
+/**
+ * 带 token 的 MCP 模式：tools/list 来自扩展的会话工具（按 token scope 过滤），
+ * 本机 shell/fs 工具只在 token 有 host:shell / host:fs 时出现。
+ */
+export function createGatewayMcpHandler({ token, socketPath = defaultSocketPath(), agentName = "", connect = connectGateway, connectTimeoutMs = 5000 } = {}) {
+  let client = null;
+  let connecting = null;
+  let clientName = "";
+
+  async function ensure() {
+    if (client && !client.closed) return client;
+    connecting ||= connect({ socketPath, token, agentName: agentName || clientName || "mcp", timeoutMs: connectTimeoutMs })
+      .then((c) => {
+        client = c;
+        return c;
+      })
+      .finally(() => {
+        connecting = null;
+      });
+    return connecting;
+  }
+
+  const scopes = () => client?.agent?.scopes || [];
+  const localAllowed = (name) => Boolean(LOCAL_TOOL_SCOPES[name]) && scopes().includes(LOCAL_TOOL_SCOPES[name]);
+
+  function connectError(id, err) {
+    const hint = err?.hint ? `\n提示：${err.hint}` : "";
+    return { jsonrpc: "2.0", id, error: { code: -32000, message: `${err?.code && err.code !== "GATEWAY_UNAVAILABLE" ? `${err.code}: ` : ""}${err?.message || err}${hint}` } };
+  }
+
+  async function handle(req) {
+    if (!req || typeof req !== "object") {
+      return { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } };
+    }
+    const { id, method, params } = req;
+    if (method === "notifications/initialized" || (typeof method === "string" && method.startsWith("notifications/"))) return null;
+    if (method === "initialize") {
+      clientName = String(params?.clientInfo?.name || "").slice(0, 60);
+      return mcpInitialize(id, "pagelens");
+    }
+    if (method === "ping") return { jsonrpc: "2.0", id, result: {} };
+    if (method === "tools/list") {
+      let c;
+      try {
+        c = await ensure();
+      } catch (err) {
+        return connectError(id, err);
+      }
+      const tools = c.tools.filter((t) => !HIDDEN_BRIDGE_TOOLS.has(t.name)).map(bridgeToolToMcp);
+      for (const t of MCP_TOOLS) if (localAllowed(t.name)) tools.push(t);
+      return { jsonrpc: "2.0", id, result: { tools } };
+    }
+    if (method === "tools/call") {
+      const name = String(params?.name || "");
+      const args = params?.arguments || {};
+      let c;
+      try {
+        c = await ensure();
+      } catch (err) {
+        return { jsonrpc: "2.0", id, result: mcpText(err?.message || String(err), true) };
+      }
+      if (LOCAL_TOOL_SCOPES[name]) {
+        if (!localAllowed(name)) {
+          return { jsonrpc: "2.0", id, result: mcpText(`SCOPE_DENIED: token 没有 ${LOCAL_TOOL_SCOPES[name]} 权限，不能调用 ${name}。`, true) };
+        }
+        return { jsonrpc: "2.0", id, result: await callLocalMcpTool(name, args) };
+      }
+      let res;
+      try {
+        res = await c.call({ id: `mcp-${crypto.randomUUID()}`, tool: name, args });
+      } catch (err) {
+        return { jsonrpc: "2.0", id, result: mcpText(err?.message || String(err), true) };
+      }
+      return { jsonrpc: "2.0", id, result: bridgeResponseToMcp(res) };
+    }
+    return { jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${method}` } };
+  }
+
+  return { handle, close: () => client?.close() };
+}
+
+export function resolveMcpToken({ argv = process.argv, env = process.env, home = os.homedir() } = {}) {
+  const i = argv.indexOf("--token-file");
+  if (i >= 0) {
+    const raw = String(argv[i + 1] || "").trim();
+    if (!raw) throw new Error("--token-file 需要路径。");
+    const file = expandUserPath(raw, home);
+    return { token: fs.readFileSync(file, "utf8").trim(), source: file };
+  }
+  const token = String(env.PAGELENS_TOKEN || "").trim();
+  return token ? { token, source: "PAGELENS_TOKEN" } : { token: "", source: "" };
+}
+
+export function attachMcpStdio(stdin = process.stdin, stdout = process.stdout, handler = handleMcpRequest) {
   let lineBuf = "";
   stdin.setEncoding("utf8");
   stdin.on("data", async (chunk) => {
@@ -724,7 +841,7 @@ export function attachMcpStdio(stdin = process.stdin, stdout = process.stdout) {
       if (!trimmed) continue;
       try {
         const parsed = JSON.parse(trimmed);
-        const reply = await handleMcpRequest(parsed);
+        const reply = await handler(parsed);
         if (reply) {
           stdout.write(JSON.stringify(reply) + "\n");
         }
@@ -747,9 +864,67 @@ function writeReply(obj) {
   process.stdout.write(encodeMessage(obj));
 }
 
-export function attachStdio(stdin = process.stdin, stdoutWrite = writeReply) {
+/**
+ * Chrome 端口上的消息分发。一次性 op（ping/exec/fs/clipboard_write）照旧一问一答；
+ * connectNative 长连接发 broker.start 后进入 broker 模式，bridge.* 消息转给 socket 会话。
+ */
+export function createHostMessageHandler({ write, socketPath = defaultSocketPath(), makeBroker = createBroker, log = () => {} }) {
+  let broker = null;
+  let starting = null;
+
+  async function startBroker() {
+    if (broker) return broker;
+    starting ||= (async () => {
+      const b = makeBroker({ socketPath, post: write, log });
+      await b.start();
+      broker = b;
+      return b;
+    })().finally(() => {
+      starting = null;
+    });
+    return starting;
+  }
+
+  return {
+    async onMessage(msg) {
+      if (msg?.type === "broker.start") {
+        try {
+          const b = await startBroker();
+          write({ type: "broker.ready", socketPath: b.socketPath, version: HOST_VERSION, protocol: SOCKET_PROTOCOL });
+        } catch (err) {
+          write({ type: "broker.error", error: err?.message || String(err) });
+        }
+        return;
+      }
+      if (typeof msg?.type === "string" && msg.type.startsWith("bridge.")) {
+        broker?.handleExtensionMessage(msg);
+        return;
+      }
+      try {
+        write(await handleRequest(msg));
+      } catch (err) {
+        write({ ok: false, error: err.message || String(err) });
+      }
+    },
+    async close() {
+      await starting?.catch(() => {});
+      await broker?.close();
+      broker = null;
+    },
+    isBroker: () => Boolean(broker),
+  };
+}
+
+export function attachStdio(stdin = process.stdin, stdoutWrite = writeReply, { log = (m) => process.stderr.write(`[pagelens-host] ${m}\n`) } = {}) {
+  const host = createHostMessageHandler({ write: stdoutWrite, log });
   let buf = Buffer.alloc(0);
-  stdin.on("data", async (chunk) => {
+  const finish = (code) => {
+    host
+      .close()
+      .catch(() => {})
+      .finally(() => process.exit(code));
+  };
+  stdin.on("data", (chunk) => {
     buf = Buffer.concat([buf, chunk]);
     while (true) {
       let parsed;
@@ -757,27 +932,43 @@ export function attachStdio(stdin = process.stdin, stdoutWrite = writeReply) {
         parsed = tryReadMessage(buf);
       } catch (err) {
         stdoutWrite({ ok: false, error: err.message || String(err) });
-        process.exit(1);
+        finish(1);
         return;
       }
       if (!parsed) break;
       buf = parsed.rest;
-      try {
-        stdoutWrite(await handleRequest(parsed.msg));
-      } catch (err) {
-        stdoutWrite({ ok: false, error: err.message || String(err) });
-      }
+      host.onMessage(parsed.msg);
     }
   });
-  stdin.on("end", () => process.exit(0));
-  stdin.on("error", () => process.exit(1));
+  stdin.on("end", () => finish(0));
+  stdin.on("error", () => finish(1));
+  return host;
+}
+
+function startMcp() {
+  let resolved;
+  try {
+    resolved = resolveMcpToken();
+  } catch (err) {
+    process.stderr.write(`[pagelens-mcp] 读取 token 失败：${err.message || err}\n`);
+    process.exit(1);
+  }
+  if (!resolved.token) {
+    process.stderr.write("[pagelens-mcp] 未提供 token：只提供本机 shell/fs 工具。浏览器工具需要 PAGELENS_TOKEN 或 --token-file。\n");
+    attachMcpStdio();
+    return;
+  }
+  const nameIdx = process.argv.indexOf("--agent-name");
+  const agentName = nameIdx >= 0 ? String(process.argv[nameIdx + 1] || "") : String(process.env.PAGELENS_AGENT_NAME || "");
+  const gateway = createGatewayMcpHandler({ token: resolved.token, agentName });
+  attachMcpStdio(process.stdin, process.stdout, (req) => gateway.handle(req));
 }
 
 if (isMain) {
   const isMcp = process.argv.includes("--mcp") || Boolean(process.env.PAGELENS_MCP);
   process.stdin.resume();
   if (isMcp) {
-    attachMcpStdio();
+    startMcp();
   } else {
     attachStdio();
   }
