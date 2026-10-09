@@ -29,11 +29,14 @@ import { createBridgeTools } from "./tools.js";
 import { publicTokenInfo, requireScope, scopeAllows, tokenUrlAllowed, verifyToken } from "./auth.js";
 import { loadAgentTokens } from "./token-store.js";
 import { auditEntry, getAuditLog, originOfUrl } from "./audit.js";
+import { createEventBus, installEventSources } from "./events.js";
+import { chromeTabGroups, createKeyedQueue, createTabLeases, leaseGuarded, openedTabIds, queueKeys } from "./leases.js";
+import { chromeSessionStorage, createJobStore } from "./jobs.js";
+import { SESSION_META, SESSION_META_TOOLS, createSessionMeta, jobView } from "./session-tools.js";
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const CACHE_MAX = 200;
 const AUDIT_MAX = 100;
-const JOB_MAX = 50;
 
 export function createDefaultEnv() {
   return {
@@ -68,10 +71,12 @@ export function createDefaultEnv() {
     extensionVersion: () => chrome.runtime.getManifest().version,
     getAgentTokens: () => loadAgentTokens(),
     auditLog: getAuditLog(),
+    sessionStorage: chromeSessionStorage(),
+    tabGroups: chromeTabGroups(),
   };
 }
 
-const META_TOOLS = new Set(["list_tools", "job_status", "audit_log"]);
+const META_TOOLS = new Set(["list_tools", "job_status", "audit_log", ...SESSION_META]);
 
 function originOf(url) {
   let origin = url;
@@ -110,11 +115,14 @@ export function createBridge(env = createDefaultEnv()) {
   const tools = createBridgeTools(env);
   const byName = new Map(tools.map((t) => [t.name, t]));
   const cache = new Map();
-  const jobs = new Map();
   const audit = [];
   const auditLog = env.auditLog || null;
   const loadTokens = env.getAgentTokens || (async () => []);
-  let exclusiveTail = Promise.resolve();
+  const now = () => env.now?.() ?? Date.now();
+  const events = env.events || createEventBus({ loadTokens, now });
+  const leases = createTabLeases({ now, groups: env.tabGroups || null });
+  const queue = createKeyedQueue();
+  const jobs = createJobStore({ storage: env.sessionStorage || null, now });
 
   const describe = (t) => ({
     name: t.name,
@@ -141,7 +149,10 @@ export function createBridge(env = createDefaultEnv()) {
       needsTab: false,
       parameters: { type: "object", properties: { limit: { type: "integer", description: "默认 50，最大 500" } }, additionalProperties: false, required: [] },
     },
+    ...SESSION_META_TOOLS,
   ];
+  const metaByName = new Map(metaTools.map((t) => [t.name, t]));
+  const visibleMeta = (auth) => (auth ? metaTools : metaTools.filter((t) => !SESSION_META.has(t.name)));
 
   async function authenticate(session) {
     const record = await verifyToken(await loadTokens(), session?.token, env.now());
@@ -166,7 +177,7 @@ export function createBridge(env = createDefaultEnv()) {
         agent: publicTokenInfo(auth.record, env.now()),
         allowedOrigins: auth.record.origins,
         errorCodes: Object.keys(ERROR_CODES),
-        tools: [...metaTools, ...visibleTools(auth)].map(describe),
+        tools: [...visibleMeta(auth), ...visibleTools(auth)].map(describe),
       };
     }
     const enabled = settings.agentBridgeEnabled === true;
@@ -177,7 +188,7 @@ export function createBridge(env = createDefaultEnv()) {
       enabled,
       allowedOrigins: enabled ? settings.agentBridgeOrigins : [],
       errorCodes: Object.keys(ERROR_CODES),
-      tools: enabled ? [...metaTools, ...tools].map(describe) : [],
+      tools: enabled ? [...visibleMeta(null), ...tools].map(describe) : [],
     };
   }
 
@@ -230,11 +241,13 @@ export function createBridge(env = createDefaultEnv()) {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
-  function enqueueExclusive(fn) {
-    const run = exclusiveTail.then(fn, fn);
-    exclusiveTail = run.catch(() => {});
-    return run;
-  }
+  const owner = (auth) => (auth ? { sessionId: auth.sessionId, agentId: auth.record.id, agentName: auth.agentName || auth.record.name } : null);
+  const sessionMeta = createSessionMeta({
+    events,
+    leases,
+    owner,
+    authorizeTab: (tabId, auth, settings) => authorizeTab(tabId, settings, auth),
+  });
 
   function record(entry, req, auth, origin) {
     audit.push(entry);
@@ -266,7 +279,6 @@ export function createBridge(env = createDefaultEnv()) {
       if (entry.done && now - entry.at > CACHE_TTL_MS) cache.delete(id);
     }
     while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
-    while (jobs.size > JOB_MAX) jobs.delete(jobs.keys().next().value);
   }
 
   async function execute(req, settings, auth) {
@@ -277,7 +289,7 @@ export function createBridge(env = createDefaultEnv()) {
     let origin = originOfUrl(req.args?.url);
     try {
       if (req.tool === "list_tools") {
-        const result = { tools: [...metaTools, ...visibleTools(auth)].map(describe) };
+        const result = { tools: [...visibleMeta(auth), ...visibleTools(auth)].map(describe) };
         if (auth) result.agent = publicTokenInfo(auth.record, env.now());
         return okResponse(req.id, result, { meta: { ...meta, ms: 0 } });
       }
@@ -289,9 +301,13 @@ export function createBridge(env = createDefaultEnv()) {
       }
       if (req.tool === "job_status") {
         checkArgs(metaTools[1], req.args);
-        const job = jobs.get(keyFor(auth, req.args.jobId));
-        if (!job) throw new BridgeError(ERROR_CODES.JOB_NOT_FOUND, `没有任务 ${req.args.jobId}（Service Worker 重启会丢失任务）。`);
-        return okResponse(req.id, job.response ? { status: "done", response: job.response } : { status: "running" }, { meta });
+        const job = await jobs.get(keyFor(auth, req.args.jobId));
+        if (!job) throw new BridgeError(ERROR_CODES.JOB_NOT_FOUND, `没有任务 ${req.args.jobId}（已过期或被更新的任务挤出）。`);
+        return okResponse(req.id, jobView(job), { meta });
+      }
+      if (SESSION_META.has(req.tool)) {
+        checkArgs(metaByName.get(req.tool), req.args);
+        return okResponse(req.id, await sessionMeta(req.tool, req.args, auth, settings), { meta });
       }
       const tool = byName.get(req.tool);
       if (!tool) {
@@ -310,6 +326,9 @@ export function createBridge(env = createDefaultEnv()) {
         session: auth ? { agentId: auth.record.id, agentName: auth.record.name, sessionId: auth.sessionId } : null,
         authorizeTab: (id) => authorizeTab(id, settings, auth),
         authorizeUrl: (url) => authorizeUrl(url, settings, auth),
+        progress: (data) => {
+          if (req.async && auth) events.emit({ type: "job.progress", agentId: auth.record.id, jobId: req.id, tool: req.tool, status: "running", data });
+        },
       };
       const run = async () => {
         if (tool.needsTab) {
@@ -317,11 +336,13 @@ export function createBridge(env = createDefaultEnv()) {
           tabId = ctx.tab.id;
           meta.tabId = tabId;
           origin = originOfUrl(ctx.tab.url);
+          if (leaseGuarded(tool)) leases.check(tabId, owner(auth));
         }
         return tool.execute(req.args, ctx);
       };
-      const guarded = tool.exclusive ? () => enqueueExclusive(run) : run;
+      const guarded = tool.exclusive ? () => queue.run(queueKeys(tool, req.args, tool.needsTab ? req.args.tabId : null), run) : run;
       const result = await withTimeout(guarded(), req.timeoutMs, req.tool);
+      if (auth) await leases.adopt(openedTabIds(tool.name, result), owner(auth)).catch(() => {});
       meta.ms = env.now() - started;
       record({ ts: started, id: req.id, tool: req.tool, tabId, ok: true, ms: meta.ms }, req, auth, origin);
       return okResponse(req.id, result, { artifacts, meta });
@@ -390,10 +411,12 @@ export function createBridge(env = createDefaultEnv()) {
     cache.set(key, entry);
 
     if (req.async && !META_TOOLS.has(req.tool)) {
-      const job = { response: null };
-      jobs.set(key, job);
+      const agentId = auth?.record.id || null;
+      jobs.start(key, { tool: req.tool, sessionId: auth?.sessionId || null, agentId });
+      if (agentId) events.emit({ type: "job.progress", agentId, jobId: req.id, tool: req.tool, status: "running" });
       promise.then((res) => {
-        job.response = res;
+        jobs.finish(key, res);
+        if (agentId) events.emit({ type: "job.done", agentId, jobId: req.id, tool: req.tool, ok: res.ok, ...(res.ok ? {} : { code: res.error.code }) });
       });
       const ack = okResponse(req.id, { jobId: req.id, status: "running" }, { meta: { async: true, tool: req.tool } });
       entry.promise = Promise.resolve(ack);
@@ -402,7 +425,24 @@ export function createBridge(env = createDefaultEnv()) {
     return promise;
   }
 
-  return { hello, call, tools, audit: () => [...audit] };
+  return {
+    hello,
+    call,
+    tools,
+    audit: () => [...audit],
+    events,
+    leases,
+    jobs,
+    /** 网关会话断开（socket 关闭）：清掉它的订阅与租约。 */
+    closeSession(sessionId) {
+      events.closeSession(sessionId);
+      leases.releaseSession(sessionId);
+    },
+    closeAllSessions() {
+      events.closeAll();
+      leases.clear();
+    },
+  };
 }
 
 let installed = null;
@@ -412,6 +452,8 @@ export function installBridge(env) {
   if (installed) return installed;
   const bridge = createBridge(env);
   installed = bridge;
+  installEventSources(bridge.events);
+  chrome.tabs?.onRemoved?.addListener?.((tabId) => bridge.leases.dropTab(tabId));
   globalThis.__pl = {
     protocol: BRIDGE_PROTOCOL,
     hello: () => bridge.hello(),

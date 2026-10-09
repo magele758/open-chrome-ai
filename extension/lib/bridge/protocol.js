@@ -27,6 +27,7 @@ export const ERROR_CODES = Object.freeze({
   EGRESS_NOT_ALLOWED: "EGRESS_NOT_ALLOWED",
   SETTING_PROTECTED: "SETTING_PROTECTED",
   PATH_NOT_ALLOWED: "PATH_NOT_ALLOWED",
+  TAB_LEASED: "TAB_LEASED",
 });
 
 /** 默认可重试的错误码：同一请求稍后再发可能成功。 */
