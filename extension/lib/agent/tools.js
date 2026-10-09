@@ -47,6 +47,7 @@ import { actOnRef, scrollContainerOf, scrollViewport, snapshotControls } from ".
 import { cdpAvailable, getCdp } from "../cdp.js";
 import { cdpScreenshot, createCdpTools, withDialogGuard } from "./cdp-tools.js";
 import { createBrowserApiTools } from "./browser-api-tools.js";
+import { createSettingsTools } from "./settings-tools.js";
 import { askJev, isJevActive } from "../jev.js";
 import { readClipboardRich, writeClipboardRich } from "../clipboard.js";
 import { buildJevRequest, formatSnapshot, interpretJevAnswers, mergeFrameSnapshots } from "../jev-actions.js";
@@ -1437,14 +1438,14 @@ export function createAgentTools(ctx) {
     {
       name: "request_toolsets",
       description:
-        "当当前任务需要更多专业能力时申请挂载工具集。可选工具集：'dom_interact'（页面点击与填写）、'browser_mgmt'（标签管理与书签）、'system_ops'（本地文件/Shell/技能）、'media_player'（视频控制与转写）。",
+        "当当前任务需要更多专业能力时申请挂载工具集。可选工具集：'dom_interact'（页面点击与填写）、'browser_mgmt'（标签管理与书签）、'system_ops'（本地文件/Shell/技能）、'media_player'（视频控制与转写）、'settings'（读取和修改 PageLens 自身设置）。",
       parameters: obj(
         {
           toolsets: {
             type: "array",
             items: {
               type: "string",
-              enum: ["dom_interact", "browser_mgmt", "system_ops", "media_player"],
+              enum: ["dom_interact", "browser_mgmt", "system_ops", "media_player", "settings"],
             },
             description: "需要挂载的工具集名称列表",
           },
@@ -1478,6 +1479,7 @@ export function createAgentTools(ctx) {
     );
   }
   tools.push(...createBrowserApiTools(ctx, { resolveTabId: resolveForGuard }));
+  tools.push(...createSettingsTools(ctx));
   const guarded = withDialogGuard(tools, { cdp, resolveTabId: resolveForGuard, enabled: cdpEnabled });
   if (ctx.enableSkills === false || ctx.settings?.skillsEnabled === false) {
     return guarded.filter((t) => t.name !== "load_skill");
@@ -1716,6 +1718,7 @@ export const TOOL_DOMAINS = {
     "capture_voice_ref",
     "tts_speak",
   ],
+  settings: ["get_settings", "update_settings"],
 };
 
 export { isShellCommandWhitelisted };
@@ -1826,6 +1829,14 @@ export function resolveActiveTools({
     )
   ) {
     activeDomains.add("system_ops");
+  }
+
+  if (
+    /设置|配置|设定|偏好|主题|字体|深色|暗色|浅色|回答语言|确认模式|免确认|全自动|严格模式|智能模式|切换模型|换个模型|换成.*模型|setting|config|preference|theme|font/i.test(
+      text,
+    )
+  ) {
+    activeDomains.add("settings");
   }
 
   const allowedNames = new Set(["request_toolsets"]);

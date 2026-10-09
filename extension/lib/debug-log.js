@@ -17,8 +17,10 @@ export function debugId(prefix = "job") {
   return `${session}:${prefix}:${++sequence}`;
 }
 
+const SECRET_KEY = /api.?key|authorization|cookie|password|secret|token|headers|blob|buffer|base64/i;
+
 function safe(value, key = "", depth = 0) {
-  if (/api.?key|authorization|cookie|password|secret|token|headers|blob|buffer|base64/i.test(key)) return "[redacted]";
+  if (SECRET_KEY.test(key)) return "[redacted]";
   if (depth > 5) return "[depth limit]";
   if (typeof value === "string") {
     const text = value.replace(/Bearer\s+\S+/gi, "Bearer [redacted]");
@@ -37,6 +39,10 @@ function safe(value, key = "", depth = 0) {
   if (Array.isArray(value)) return value.slice(0, 30).map((v) => safe(v, "", depth + 1));
   if (value instanceof Error) return { name: value.name };
   if (typeof value === "object") {
+    if (typeof value.key === "string" && "value" in value && SECRET_KEY.test(value.key)) {
+      const { value: _secret, ...rest } = value;
+      return { ...safe(rest, key, depth), value: "[redacted]" };
+    }
     return Object.fromEntries(Object.entries(value).slice(0, 40).map(([k, v]) => [k, safe(v, k, depth + 1)]));
   }
   return String(value);

@@ -73,6 +73,7 @@ import { initMarkdown, formatAnswer, splitThinking, decorateInlines, bindMarkdow
 import { createKernelAgentLoop, LOOP_ENGINE_ID } from "../lib/agent/loop-kernel.js";
 import { writeClipboardRich } from "../lib/clipboard.js";
 import { createAgentTools, resolveActiveTools, checkHitlRequirement } from "../lib/agent/tools.js";
+import { redactSettingsArgs } from "../lib/agent/settings-tools.js";
 import { deleteSessionArtifacts } from "../lib/agent/artifact-store.js";
 import { auditToolCall } from "../lib/agent/guardrail.js";
 import { loadRuntimeSkills, shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
@@ -1749,7 +1750,7 @@ function formatToolArgs(name, args) {
     ].filter(Boolean).join("\n") || "（无输入）";
   }
   try {
-    return JSON.stringify(args, (_k, v) => (
+    return JSON.stringify(name === "update_settings" ? redactSettingsArgs(args) : args, (_k, v) => (
       typeof v === "string" && v.length > 1200 ? `${v.slice(0, 1200)}…` : v
     ), 2);
   } catch {
@@ -2393,7 +2394,7 @@ function showTransientAuditNotice(text) {
   }, 2800);
 }
 
-function showHitlModal({ toolName, args, reason, signal, timeoutSeconds, onDecision }) {
+function showHitlModal({ toolName, args, reason, signal, timeoutSeconds, onDecision, title, detail, allowRemember = true, approveLabel, armMs = 0 }) {
   const modal = $("hitl-modal");
   const descEl = $("hitl-desc");
   const cmdEl = $("hitl-cmd");
@@ -2401,6 +2402,7 @@ function showHitlModal({ toolName, args, reason, signal, timeoutSeconds, onDecis
   const rememberEl = $("hitl-session-remember");
   const btnApprove = $("btn-hitl-approve");
   const btnReject = $("btn-hitl-reject");
+  const titleEl = $("hitl-title");
 
   if (!modal) {
     onDecision({ allow: false, reason: "无法弹出授权确认窗口" });
@@ -2408,7 +2410,14 @@ function showHitlModal({ toolName, args, reason, signal, timeoutSeconds, onDecis
   }
 
   if (descEl) descEl.textContent = reason || `模型申请执行特权操作: ${toolName}`;
-  const cmd = args?.command || (toolName === "run_shell" ? "" : JSON.stringify(args, null, 2));
+  if (titleEl) titleEl.textContent = title || "特权操作需要授权";
+  $("hitl-session-label")?.classList.toggle("hidden", !allowRemember);
+  if (btnApprove) {
+    btnApprove.textContent = approveLabel || "允许执行";
+    btnApprove.disabled = armMs > 0;
+    if (armMs > 0) setTimeout(() => { btnApprove.disabled = false; }, armMs);
+  }
+  const cmd = detail || args?.command || (toolName === "run_shell" ? "" : JSON.stringify(args, null, 2));
   if (cmd && cmdEl) {
     cmdEl.textContent = cmd;
     cmdEl.classList.remove("hidden");
@@ -2435,8 +2444,9 @@ function showHitlModal({ toolName, args, reason, signal, timeoutSeconds, onDecis
   };
 
   const handleApprove = () => {
+    if (btnApprove?.disabled) return;
     cleanup();
-    if (rememberEl?.checked) {
+    if (allowRemember && rememberEl?.checked) {
       state.sessionHitlOverride = true;
       updateHitlBadge();
     }
@@ -4968,6 +4978,40 @@ function lastUserAskedForSkill() {
   return userInvokedSkill(lastUser?.text || "");
 }
 
+function confirmAgentSettingsChange({ text, sensitive, reason, signal }) {
+  const why = reason ? `\n模型说明（仅供参考，以下方对比为准）：${reason}` : "";
+  return new Promise((resolve) => {
+    showHitlModal({
+      toolName: "update_settings",
+      title: "修改设置需要确认",
+      reason: (sensitive
+        ? "⚠️ 包含安全相关设置（确认模式、本机权限、外部入口、服务地址或密钥）。请确认是你本人要求的修改，而不是网页内容诱导。"
+        : "Agent 请求修改以下设置，确认后立即生效并保存。") + why,
+      detail: text,
+      allowRemember: false,
+      approveLabel: "确认修改",
+      armMs: sensitive ? 1500 : 0,
+      signal,
+      timeoutSeconds: Math.max(60, state.settings.hitlTimeoutSeconds || 30),
+      onDecision: (decision) => {
+        debugLog("settings.agent.decision", { allow: Boolean(decision?.allow), sensitive: Boolean(sensitive) });
+        resolve(decision);
+      },
+    });
+  });
+}
+
+function applyAgentSettings(saved) {
+  state.settings = saved;
+  applyUiFont(saved.uiFont);
+  applyUiTheme(saved.uiTheme, saved.uiThemeColors);
+  renderModelLine();
+  updateHitlBadge();
+  renderSkills();
+  if (!$("view-settings")?.classList.contains("hidden")) renderSettingsForm();
+  else settingsPage?.refreshSummary();
+}
+
 function createPageLensLoop(host) {
   return createKernelAgentLoop(host);
 }
@@ -5020,9 +5064,15 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         }
       },
       skills,
-      settings: state.settings,
-      nativeShell: state.settings.nativeShell !== false,
+      get settings() {
+        return state.settings;
+      },
+      get nativeShell() {
+        return state.settings.nativeShell !== false;
+      },
       enableSkills: useSkills,
+      confirmSettingsChange: confirmAgentSettingsChange,
+      onSettingsChanged: applyAgentSettings,
     });
 
     loop = createKernelAgentLoop({

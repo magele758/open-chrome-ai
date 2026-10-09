@@ -12,6 +12,10 @@ try {
   const saved = exportDebugLog();
   for (const token of ['secret1','secret2','secret3','secret4','secret5','secret6','secret7','audio-bytes','user:password']) assert(!saved.includes(token), token);
   assert(saved.includes('优优独播剧场'), 'keep diagnostic ASR text');
+  debugLog('agent.tool.start', { name: 'update_settings', args: { changes: [{ key: 'asr.apiKey', value: 'secret8' }, { key: 'uiTheme', value: 'cyber' }] } });
+  const settingsLog = exportDebugLog();
+  assert(!settingsLog.includes('secret8'), 'key/value pairs naming a secret are redacted');
+  assert(settingsLog.includes('cyber') && settingsLog.includes('asr.apiKey'), 'non-secret settings stay readable');
   assert.equal(printed[0][0], '[PageLens debug]');
   assert.equal(JSON.parse(printed[0][1]).event, 'test');
   for (let i = 0; i < DEBUG_LIMIT + 20; i++) debugLog('translation.raw', { i, text: 'x'.repeat(5000) });
