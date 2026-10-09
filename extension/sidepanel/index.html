@@ -308,6 +308,27 @@
         </div>
 
         <div class="composer">
+          <div class="trust-bar hidden" id="trust-bar">
+            <div class="trust-row">
+              <span class="trust-icon" aria-hidden="true">🔐</span>
+              <span class="trust-summary" id="trust-summary">授权范围 · 仅阅读</span>
+              <span class="trust-taint hidden" id="trust-taint"></span>
+              <button type="button" class="trust-btn" id="btn-trust-edit" title="调整本会话允许 Agent 自动执行的动作与目标">调整授权</button>
+            </div>
+            <div class="trust-editor hidden" id="trust-editor">
+              <div class="trust-actions" id="trust-actions"></div>
+              <textarea id="trust-extra" rows="2" spellcheck="false" placeholder="追加目标，每行一个：域名或网址（github.com）、`命令`、本机路径（~/Downloads/a.pdf）"></textarea>
+              <div class="trust-editor-ops">
+                <button type="button" class="secondary" id="btn-trust-cancel">取消</button>
+                <button type="button" class="primary" id="btn-trust-save">保存授权</button>
+              </div>
+            </div>
+            <div class="trust-pending hidden" id="trust-pending"></div>
+            <div class="trust-undo hidden" id="trust-undo">
+              <span id="trust-undo-text"></span>
+              <button type="button" class="trust-btn" id="btn-trust-undo">撤销</button>
+            </div>
+          </div>
           <div class="recall-banner hidden" id="recall-banner">
             <span class="recall-icon">💡</span>
             <div class="recall-content">
@@ -630,7 +651,11 @@
                       <option value="autonomous">全自动模式：所有命令自动静默执行，零弹窗中断</option>
                     </select>
                   </label>
-                  <p class="hint">智能审查会自动放行只读和同源操作；跨源执行脚本、输入、打开链接等需确认，AI 审查只给风险提示，不会代你放行。</p>
+                  <p class="hint">智能审查会自动放行只读和同源操作；跨源执行脚本、输入、打开链接等需确认，AI 审查只给风险提示，不会代你放行。你在提问里明确要求的动作与目标（网址、平台、`命令`）会自动放行；网页和工具结果里的内容永远不能授权操作。</p>
+                  <div class="field">
+                    <span class="field-label">以下操作无论谁要求都先让我确认</span>
+                    <div id="irreversible-list" class="irreversible-list"></div>
+                  </div>
                   <details class="plain-detail">
                     <summary>安装与诊断</summary>
                     <p class="hint">Agent 循环：<code id="loop-engine-label">@mage-ai-lab/agent-loop/mini</code>（npm）</p>

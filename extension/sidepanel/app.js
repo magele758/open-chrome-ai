@@ -72,11 +72,17 @@ import {
 import { initMarkdown, formatAnswer, splitThinking, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createKernelAgentLoop, LOOP_ENGINE_ID } from "../lib/agent/loop-kernel.js";
 import { writeClipboardRich } from "../lib/clipboard.js";
-import { createAgentTools, resolveActiveTools, checkHitlRequirement, resolveHitlTargetUrl } from "../lib/agent/tools.js";
+import { createAgentTools, resolveActiveTools, checkHitlRequirement, resolveHitlTargetUrl, urlOrigin } from "../lib/agent/tools.js";
 import { redactSettingsArgs } from "../lib/agent/settings-tools.js";
 import { deleteSessionArtifacts } from "../lib/agent/artifact-store.js";
 import { auditToolCall, auditConfirmReason } from "../lib/agent/guardrail.js";
 import { detectInjection, withUntrustedOutput, wrapUntrusted } from "../lib/untrusted.js";
+import { extractCapsule, mergeCapsules } from "../lib/agent/trust/capsule.js";
+import { createTaintState, ingestData, markHighTaint } from "../lib/agent/trust/taint.js";
+import { formatTrustDenial } from "../lib/agent/trust/decide.js";
+import { APPROVAL_STORAGE_KEY, chromeStorageAdapter, createApprovalQueue } from "../lib/agent/trust/approval-queue.js";
+import { IRREVERSIBLE_ITEMS, normalizeIrreversibleActions } from "../lib/agent/trust/irreversible.js";
+import { createTrustPanel } from "./trust-panel.js";
 import { loadRuntimeSkills, shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
 import { applySlashItem, composeSkillPrompt, filterSlashItems, parseSlashToken, slashItemsFromSkills, userInvokedSkill } from "../lib/slash.js";
 import { pickSkillFolder, clearSkillFolderHandle, setSkillFolderPath, ensureSkillBody, skillFolderStatus } from "../lib/skill-folder.js";
@@ -152,6 +158,9 @@ const state = {
   sessionHitlOverride: null,
   hitlApprovedOrigins: new Set(),
   injectionSuspected: null,
+  capsule: null,
+  taint: createTaintState(),
+  refLabel: null,
   dubPlaying: false,
   activeToolDomains: new Set(),
   currentClipMsg: null,
@@ -177,6 +186,18 @@ const state = {
   pageRevision: 0,
   dismissedPage: null,
 };
+
+const approvalQueue = createApprovalQueue({ storage: chromeStorageAdapter() });
+const trustPanel = createTrustPanel({
+  getCapsule: () => state.capsule,
+  setCapsule: (capsule) => {
+    state.capsule = capsule;
+    debugLog("trust.capsule.widen", { actions: capsule.actions, origins: capsule.origins, commands: capsule.commands.length });
+  },
+  getTaint: () => state.taint,
+  approvals: approvalQueue,
+});
+
 
 const interpretController = new InterpretController();
 const compactController = new InterpretController({ audioOnly: true });
@@ -2362,8 +2383,13 @@ function applySession(session) {
   state.image = null;
   state.run = session.run || null;
   state.taskGroupId = Number.isInteger(session.taskGroupId) ? session.taskGroupId : null;
+  state.capsule = capsuleFromMessages(state.messages);
+  state.taint = createTaintState();
+  state.injectionSuspected = null;
+  state.hitlApprovedOrigins = new Set();
   renderAttach();
   renderMessages();
+  trustPanel.render();
 }
 
 function updateHitlBadge() {
@@ -2380,13 +2406,28 @@ function updateHitlBadge() {
   }
 }
 
+/** 注入特征命中：会话标为高污染（告警 + 审计）。胶囊内动作照常放行，胶囊外有副作用的动作逐项确认。 */
 function flagInjection(hit, botMsg) {
   if (!hit || state.injectionSuspected) return;
   state.injectionSuspected = hit;
+  state.taint = markHighTaint(state.taint, hit);
   state.sessionHitlOverride = null;
   updateHitlBadge();
-  debugLog("hitl.injection", { tool: hit.tool, match: hit.match });
-  if (botMsg) pushTraceItem(botMsg, { kind: "meta", name: "疑似提示词注入，已降级为逐项确认", ok: false });
+  debugLog("hitl.injection", { tool: hit.tool, match: hit.match, excerpt: String(hit.excerpt || "").slice(0, 120) });
+  if (botMsg) pushTraceItem(botMsg, { kind: "meta", name: "疑似提示词注入：会话已标为高污染，授权范围外的操作需确认", ok: false });
+  trustPanel.render();
+}
+
+function ingestTaint(info) {
+  const before = state.taint?.level;
+  state.taint = ingestData(state.taint, info);
+  if (state.taint.level !== before) trustPanel.render();
+}
+
+function capsuleFromMessages(messages) {
+  return (messages || [])
+    .filter((m) => m.role === "user" && m.text)
+    .reduce((acc, m) => mergeCapsules(acc, extractCapsule(m.text)), null);
 }
 
 function showHitlModal({ toolName, args, reason, signal, timeoutSeconds, onDecision, title, detail, allowRemember = true, approveLabel, armMs = 0 }) {
@@ -2460,7 +2501,7 @@ function showHitlModal({ toolName, args, reason, signal, timeoutSeconds, onDecis
     timeLeft -= 1;
     if (timeLeft <= 0) {
       cleanup();
-      onDecision({ allow: false, reason: "授权超时未确认，操作已取消。" });
+      onDecision({ allow: false, timedOut: true, reason: "授权超时未确认，操作已取消。" });
     } else if (timerEl) {
       timerEl.textContent = `${timeLeft}s`;
     }
@@ -2493,7 +2534,10 @@ async function startNewSession() {
   state.sessionHitlOverride = null;
   state.hitlApprovedOrigins = new Set();
   state.injectionSuspected = null;
+  state.capsule = null;
+  state.taint = createTaintState();
   updateHitlBadge();
+  trustPanel.render();
   state.recordAbort?.abort();
   state.workAbort?.abort();
   abortRecording();
@@ -3847,6 +3891,26 @@ async function handleTextProviderAction(action, id, modelId, enabled) {
   }
 }
 
+function renderIrreversibleList() {
+  const box = $("irreversible-list");
+  if (!box) return;
+  const on = normalizeIrreversibleActions(state.settings.irreversibleActions);
+  box.replaceChildren(
+    ...IRREVERSIBLE_ITEMS.map((item) => {
+      const label = document.createElement("label");
+      label.className = "check";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = on[item.id];
+      input.addEventListener("change", () => {
+        state.settings.irreversibleActions = { ...normalizeIrreversibleActions(state.settings.irreversibleActions), [item.id]: input.checked };
+      });
+      label.append(input, ` ${item.label}`);
+      return label;
+    }),
+  );
+}
+
 function renderSettingsForm() {
   renderTextProviders();
   $("block-asr").querySelectorAll(".field, .row-btns").forEach((n) => n.remove());
@@ -3872,6 +3936,7 @@ function renderSettingsForm() {
   if ($("agent-bridge")) $("agent-bridge").checked = state.settings.agentBridgeEnabled === true;
   if ($("agent-inbox")) $("agent-inbox").checked = state.settings.agentInboxEnabled === true;
   if ($("hitl-mode")) $("hitl-mode").value = state.settings.hitlMode || "balanced";
+  renderIrreversibleList();
   if ($("loop-engine-label")) $("loop-engine-label").textContent = LOOP_ENGINE_ID;
   if ($("skills-enabled")) $("skills-enabled").checked = skillsOn();
   if ($("daily-notes-folder")) $("daily-notes-folder").value = state.settings.dailyNotesFolder ?? "Daily";
@@ -5071,8 +5136,23 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       enableSkills: useSkills,
       confirmSettingsChange: confirmAgentSettingsChange,
       onSettingsChanged: applyAgentSettings,
+      exposeRefLabel: (fn) => {
+        state.refLabel = fn;
+      },
+      // 用户在对话里要求改非安全设置、且没勾选「修改设置」确认时：直接生效 + 一键撤销
+      autoApplySettings: () =>
+        Boolean(state.capsule?.actions?.includes("settings")) &&
+        !normalizeIrreversibleActions(state.settings.irreversibleActions).settings_change &&
+        state.taint?.level !== "high",
+      onSettingsAutoApplied: ({ text, undo }) => {
+        debugLog("settings.agent.autoApplied", { text: String(text || "").slice(0, 200) });
+        trustPanel.showUndo({ text, undo });
+      },
     });
-    tools = withUntrustedOutput(tools, { onInjection: (hit) => flagInjection(hit, botMsg) });
+    tools = withUntrustedOutput(tools, {
+      onInjection: (hit) => flagInjection(hit, botMsg),
+      onIngest: ingestTaint,
+    });
 
     loop = createKernelAgentLoop({
       maxTurns: 0,
@@ -5095,6 +5175,8 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           getTabId: () => state.tab?.id,
           getTabUrl: async (tabId) => (await chrome.tabs.get(tabId))?.url,
         });
+        const refTab = args?.tabId != null && args?.tabId !== "" ? Number(args.tabId) : state.tab?.id;
+        const elementText = args?.index != null && state.refLabel ? state.refLabel(refTab, args.index) : "";
         const req = checkHitlRequirement({
           toolName: tool.name,
           args,
@@ -5104,12 +5186,38 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           userUrl: hitlUserUrl,
           approvedOrigins: state.hitlApprovedOrigins,
           injectionSuspected: state.injectionSuspected,
+          capsule: state.capsule,
+          taint: state.taint,
+          attended: true,
+          settings: state.settings,
+          elementText,
         });
+        debugLog("trust.decision", {
+          tool: tool.name,
+          decision: req.decision,
+          code: req.code || "",
+          inCapsule: Boolean(req.inCapsule),
+          taint: req.taint,
+          irreversible: req.irreversible?.id || "",
+          egress: req.egress?.channel || "",
+        });
+        if (req.decision === "deny") {
+          return { allow: false, reason: formatTrustDenial(req) };
+        }
         if (!req.needsConfirmation) {
           if (tool.name === "run_shell") {
-            debugLog("hitl.skip", { tool: tool.name, command: args?.command || "", hitlMode });
+            debugLog("hitl.skip", { tool: tool.name, command: args?.command || "", hitlMode, inCapsule: Boolean(req.inCapsule) });
           }
           return { allow: true };
+        }
+
+        // 用户已在侧栏批准过同一调用（之前确认超时进了待批准队列）
+        if (req.irreversible) {
+          const approved = await approvalQueue.consumeApproved(tool.name, args).catch(() => null);
+          if (approved) {
+            debugLog("hitl.queue.consume", { tool: tool.name, pendingId: approved.id });
+            return { allow: true };
+          }
         }
 
         if (req.needsAudit && isModelReady(resolveModel(state.settings, "text"))) {
@@ -5117,7 +5225,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           const audit = await auditToolCall({
             toolName: tool.name,
             args,
-            userText: userText || lastUser?.text || "",
+            userText: lastUser?.text || userText || "",
             model: resolveModel(state.settings, "text"),
             signal,
           });
@@ -5131,8 +5239,9 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             args,
             reason: req.reason,
             signal,
+            allowRemember: req.allowRemember !== false,
             timeoutSeconds: state.settings.hitlTimeoutSeconds || 30,
-            onDecision: (decision) => {
+            onDecision: async (decision) => {
               debugLog("hitl.decision", {
                 tool: tool.name,
                 command: args?.command || "",
@@ -5140,6 +5249,16 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
                 reason: decision?.reason || req.reason || "",
               });
               if (decision?.allow && req.approveOrigin) state.hitlApprovedOrigins.add(req.approveOrigin);
+              if (!decision?.allow && decision?.timedOut && req.irreversible) {
+                const entry = await approvalQueue
+                  .enqueue({ toolName: tool.name, args, reason: req.reason, item: req.irreversible, principal: "user", sessionId: state.sessionId || "" })
+                  .catch(() => null);
+                trustPanel.render();
+                if (entry) {
+                  resolve({ allow: false, reason: formatTrustDenial({ ...req, code: "CONFIRMATION_REQUIRED" }, { pendingId: entry.id }) });
+                  return;
+                }
+              }
               resolve(decision);
             },
           });
@@ -5409,6 +5528,11 @@ async function sendPrompt(userText, options = {}) {
 
   const image = options.image || state.image;
   messageScroll?.reset();
+  // 胶囊只从用户本人写的文字抽取，必须在页面内容拼进上下文之前
+  if (text) {
+    state.capsule = mergeCapsules(state.capsule, extractCapsule(text));
+    debugLog("trust.capsule", { actions: state.capsule.actions, origins: state.capsule.origins, commands: state.capsule.commands.length });
+  }
   state.messages.push({ role: "user", text: text || userText, image: image || null });
   const botMsg = { role: "bot", text: "…", trace: [], thinking: "" };
   state.messages.push(botMsg);
@@ -5442,8 +5566,12 @@ async function sendPrompt(userText, options = {}) {
     const pack = state.share ? state.pack : null;
     const context = state.chatRef?.context
       || (pack ? packToContext(pack) : "（用户未分享页面）");
+    if (pack || state.chatRef?.context) {
+      ingestTaint({ source: state.chatRef?.context ? "reference" : "page", tool: "context", origin: urlOrigin(pack?.url) });
+    }
     const contextHit = detectInjection(context);
     if (contextHit) flagInjection({ tool: pack ? "page" : "reference", ...contextHit }, botMsg);
+    trustPanel.render();
     botMsg.sourceTitle = state.chatRef?.title
       || (state.share ? (state.pack?.title || state.tab?.title || "") : "");
     const prior = [];
@@ -6328,6 +6456,11 @@ function wire() {
     state.settings.hitlMode = e.target.value;
     updateHitlBadge();
   });
+  trustPanel.bind();
+  chrome.storage?.onChanged?.addListener((changes, area) => {
+    if (area === "local" && changes[APPROVAL_STORAGE_KEY]) trustPanel.render();
+  });
+  trustPanel.render();
   $("hitl-badge")?.addEventListener("click", () => {
     state.sessionHitlOverride = false;
     state.settings.hitlMode = "balanced";
