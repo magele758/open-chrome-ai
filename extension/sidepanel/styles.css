@@ -1253,27 +1253,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   background: var(--warning-line, #fde047);
 }
 
-.audit-notice {
-  display: none;
-  align-items: center;
-  gap: 6px;
-  background: var(--success-bg, #f0fdf4);
-  color: var(--ok);
-  border: 1px solid var(--success-line, #bbf7d0);
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 550;
-  margin-bottom: 6px;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.audit-notice.visible {
-  display: inline-flex;
-}
-
 .hitl-modal {
   position: absolute;
   top: 0;

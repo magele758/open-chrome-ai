@@ -1723,8 +1723,61 @@ export const TOOL_DOMAINS = {
 
 export { isShellCommandWhitelisted };
 
-/** 判断工具是否属于高危特权类 */
-export function isToolPrivileged(toolName, args = {}) {
+/** 作用于已有标签、能读写页面或代用户输入的工具：目标与用户所在 origin 不同则需确认 */
+export const ORIGIN_SCOPED_TAB_TOOLS = new Set([
+  "run_js",
+  "fill",
+  "trusted_type",
+  "trusted_click",
+  "paste_into_page",
+]);
+/** 以 URL 发起请求的工具：URL 本身就能把数据带出去 */
+export const ORIGIN_SCOPED_NAV_TOOLS = new Set(["open_tab", "navigate_tab"]);
+
+// run_js 里出现这些能力时，即使同源也可能外发数据或读凭据
+const RUN_JS_SENSITIVE_RE =
+  /\b(fetch|XMLHttpRequest|sendBeacon|WebSocket|EventSource|RTCPeerConnection|importScripts|eval|Function|postMessage|cookieStore)\b|document\s*\.\s*cookie|\b(local|session)Storage\b|\bindexedDB\b|\bimport\s*\(|\.\s*(src|href|action)\s*=(?!=)|\blocation\s*(\.\s*\w+\s*)?=(?!=)|\bwindow\s*\.\s*open\b/;
+
+export function urlOrigin(url) {
+  try {
+    const u = new URL(String(url || ""));
+    return /^https?:$/.test(u.protocol) ? u.origin : "";
+  } catch {
+    return "";
+  }
+}
+
+/** 拿到 HITL 判断所需的目标 URL；解析不出时返回空串（按跨源处理） */
+export async function resolveHitlTargetUrl(toolName, args = {}, { getTabId, getTabUrl } = {}) {
+  if (ORIGIN_SCOPED_NAV_TOOLS.has(toolName)) return String(args?.url || "").trim();
+  if (!ORIGIN_SCOPED_TAB_TOOLS.has(toolName)) return "";
+  const raw = args?.tabId;
+  const tabId = raw != null && raw !== "" ? Number(raw) : getTabId?.();
+  if (!tabId) return "";
+  try {
+    return String((await getTabUrl?.(tabId)) || "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 跨源判定：目标 origin 不明、与用户所在 origin 不同且未经用户放行时返回目标 origin（可能为空串），否则返回 null。
+ */
+function crossOriginTarget({ targetUrl, userUrl, approvedOrigins } = {}) {
+  const target = urlOrigin(targetUrl);
+  const home = urlOrigin(userUrl);
+  if (target && home && target === home) return null;
+  if (target && approvedOrigins?.has?.(target)) return null;
+  return target;
+}
+
+/** 判断工具是否属于高危特权类；origin 类工具需传 { targetUrl, userUrl, approvedOrigins } */
+export function isToolPrivileged(toolName, args = {}, origin = {}) {
+  if (toolName === "run_js" && RUN_JS_SENSITIVE_RE.test(String(args?.code || ""))) return true;
+  if (ORIGIN_SCOPED_TAB_TOOLS.has(toolName) || ORIGIN_SCOPED_NAV_TOOLS.has(toolName)) {
+    return crossOriginTarget(origin) !== null;
+  }
   if (toolName === "run_shell") return true;
   if (toolName === "cose_publish") return true;
   if (toolName === "close_tab" || toolName === "close_task_group") return true;
@@ -1744,12 +1797,28 @@ export function checkHitlRequirement({
   args = {},
   hitlMode = "balanced",
   sessionOverride = false,
+  targetUrl,
+  userUrl,
+  approvedOrigins,
 }) {
   if (hitlMode === "autonomous" || sessionOverride) {
     return { needsConfirmation: false };
   }
-  if (!isToolPrivileged(toolName, args)) {
+  const origin = { targetUrl, userUrl, approvedOrigins };
+  if (!isToolPrivileged(toolName, args, origin)) {
     return { needsConfirmation: false };
+  }
+  const isOriginTool = ORIGIN_SCOPED_TAB_TOOLS.has(toolName) || ORIGIN_SCOPED_NAV_TOOLS.has(toolName);
+  const crossOrigin = isOriginTool ? crossOriginTarget(origin) : null;
+  if (crossOrigin !== null) {
+    const where = crossOrigin || "未知来源";
+    return {
+      needsConfirmation: true,
+      needsAudit: hitlMode !== "strict",
+      // 只有明确的 http(s) origin 才能记入“本会话已放行”
+      approveOrigin: crossOrigin || undefined,
+      reason: `跨源操作：[${toolName}] 作用于 ${where}，与你当前所在页面（${urlOrigin(userUrl) || "未知"}）不同，需手动授权`,
+    };
   }
   if (hitlMode === "strict") {
     return {

@@ -72,10 +72,10 @@ import {
 import { initMarkdown, formatAnswer, splitThinking, decorateInlines, bindMarkdownLinks, enhanceMermaid } from "../lib/markdown.js";
 import { createKernelAgentLoop, LOOP_ENGINE_ID } from "../lib/agent/loop-kernel.js";
 import { writeClipboardRich } from "../lib/clipboard.js";
-import { createAgentTools, resolveActiveTools, checkHitlRequirement } from "../lib/agent/tools.js";
+import { createAgentTools, resolveActiveTools, checkHitlRequirement, resolveHitlTargetUrl } from "../lib/agent/tools.js";
 import { redactSettingsArgs } from "../lib/agent/settings-tools.js";
 import { deleteSessionArtifacts } from "../lib/agent/artifact-store.js";
-import { auditToolCall } from "../lib/agent/guardrail.js";
+import { auditToolCall, auditConfirmReason } from "../lib/agent/guardrail.js";
 import { loadRuntimeSkills, shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
 import { applySlashItem, composeSkillPrompt, filterSlashItems, parseSlashToken, slashItemsFromSkills, userInvokedSkill } from "../lib/slash.js";
 import { pickSkillFolder, clearSkillFolderHandle, setSkillFolderPath, ensureSkillBody, skillFolderStatus } from "../lib/skill-folder.js";
@@ -149,6 +149,7 @@ const state = {
   skillFolder: { configured: false, granted: false, name: "", count: 0 },
   nativeHost: { ok: false, checked: false },
   sessionHitlOverride: null,
+  hitlApprovedOrigins: new Set(),
   dubPlaying: false,
   activeToolDomains: new Set(),
   currentClipMsg: null,
@@ -2377,23 +2378,6 @@ function updateHitlBadge() {
   }
 }
 
-function showTransientAuditNotice(text) {
-  let el = $("audit-notice");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "audit-notice";
-    el.className = "audit-notice";
-    const composer = document.querySelector(".composer");
-    if (composer) composer.insertBefore(el, composer.firstChild);
-  }
-  el.textContent = text;
-  el.classList.add("visible");
-  clearTimeout(el._timer);
-  el._timer = setTimeout(() => {
-    el.classList.remove("visible");
-  }, 2800);
-}
-
 function showHitlModal({ toolName, args, reason, signal, timeoutSeconds, onDecision, title, detail, allowRemember = true, approveLabel, armMs = 0 }) {
   const modal = $("hitl-modal");
   const descEl = $("hitl-desc");
@@ -2496,6 +2480,7 @@ async function startNewSession() {
   state.transcribe = null;
   state.activeToolDomains = new Set();
   state.sessionHitlOverride = null;
+  state.hitlApprovedOrigins = new Set();
   updateHitlBadge();
   state.recordAbort?.abort();
   state.workAbort?.abort();
@@ -5018,6 +5003,7 @@ function createPageLensLoop(host) {
 
 async function executeLoop({ userText, history, resume, turnsUsed, lastText, botMsg, model, clearImage }) {
   const useSkills = skillsOn() && lastUserAskedForSkill();
+  const hitlUserUrl = state.tab?.url || state.pack?.url || "";
   const skills = useSkills ? [...(state.skills || []), ...shortcutsAsSkills(state.settings)] : [];
   let tools;
   let loop;
@@ -5092,11 +5078,18 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       async interceptToolCall({ tool, args, call, signal }) {
         const hitlMode = state.settings.hitlMode || "balanced";
         const sessionOverride = Boolean(state.sessionHitlOverride);
+        const targetUrl = await resolveHitlTargetUrl(tool.name, args, {
+          getTabId: () => state.tab?.id,
+          getTabUrl: async (tabId) => (await chrome.tabs.get(tabId))?.url,
+        });
         const req = checkHitlRequirement({
           toolName: tool.name,
           args,
           hitlMode,
           sessionOverride,
+          targetUrl,
+          userUrl: hitlUserUrl,
+          approvedOrigins: state.hitlApprovedOrigins,
         });
         if (!req.needsConfirmation) {
           if (tool.name === "run_shell") {
@@ -5105,7 +5098,6 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           return { allow: true };
         }
 
-        // AI 审查中间态 (Guardrail Audit)
         if (req.needsAudit && isModelReady(resolveModel(state.settings, "text"))) {
           const lastUser = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
           const audit = await auditToolCall({
@@ -5115,15 +5107,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             model: resolveModel(state.settings, "text"),
             signal,
           });
-
-          if (audit.verdict === "SAFE") {
-            const shortCmd = args?.command ? ` (${String(args.command).slice(0, 24)})` : "";
-            showTransientAuditNotice(`🛡️ AI 审查已放行: ${tool.name}${shortCmd}`);
-            debugLog("hitl.audit", { tool: tool.name, command: args?.command || "", verdict: "SAFE", reason: audit.reason });
-            return { allow: true, reason: audit.reason, audited: true };
-          }
-
-          req.reason = `⚠️ AI 审查预警 [${audit.risk.toUpperCase()}]：${audit.reason}，请人工核查！`;
+          req.reason = auditConfirmReason(audit, req.reason);
           debugLog("hitl.audit", { tool: tool.name, command: args?.command || "", verdict: audit.verdict, risk: audit.risk, reason: audit.reason });
         }
 
@@ -5141,6 +5125,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
                 allow: Boolean(decision?.allow),
                 reason: decision?.reason || req.reason || "",
               });
+              if (decision?.allow && req.approveOrigin) state.hitlApprovedOrigins.add(req.approveOrigin);
               resolve(decision);
             },
           });
