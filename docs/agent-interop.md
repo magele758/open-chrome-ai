@@ -57,6 +57,8 @@ token 也可用环境变量 `PAGELENS_TOKEN` 给出；`--agent-name` / `PAGELENS
 | 格式 | `plk_` + 43 位 base64url（32 字节随机数）。扩展只存 SHA-256（`settings` 之外的 `agentTokens`），丢了只能新建 |
 | scope | `tabs:read` `tabs:manage` `page:read` `page:act` `page:js` `clipboard` `downloads` `upload` `settings:read` `settings:write` `agent:delegate` `host:shell` `host:fs`。预设：只读 = `tabs:read,page:read`；操作 = 只读 + `tabs:manage,page:act,clipboard`；完全 = 除 `agent:delegate` 外全部 |
 | origins | 与 §1 同样的模式；`*` 表示任意 http/https 站点。会话调用时**替代** `agentBridgeOrigins` |
+| egress | 出站白名单（同样的模式，可空）：除 origins 外，数据还允许发往的目的地（如 API 域名）。见 §0.7 |
+| skipIrreversible | 免「不可逆动作清单」确认，默认 `false`；只能在设置页新建 token 时勾选（会二次确认），命中时审计记 `optOut` |
 | 过期 / 吊销 | 过期或吊销后，已建立的会话下一次调用即返回 `UNAUTHORIZED` |
 | 设置隔离 | `agentGatewayEnabled` / `agentTokens` 不出现在扩展内 Agent 的设置工具里，也不能被它修改；只能在设置页改 |
 
@@ -96,17 +98,53 @@ token 错误时返回 `{"type":"error","error":{"code":"UNAUTHORIZED",…}}` 并
 |---|---|
 | `UNAUTHORIZED` | token 缺失、错误、过期或已吊销 |
 | `SCOPE_DENIED` | token 没有该工具需要的 scope；`details.scope` 给出所需 scope |
-| `EGRESS_NOT_ALLOWED` | 预留：token 记录里已有 `egress`（允许外发的目的地），bridge 侧的出站检查尚未接入 |
+| `EGRESS_NOT_ALLOWED` | 数据会流向 token origins ∪ egress 之外的目的地（§0.7）；`details.channel` / `destination` / `origin` 说明通道与目的地。不可重试，需用户新建范围更大的 token |
+| `CONFIRMATION_REQUIRED` | 命中不可逆动作清单，已放入待批准队列；`details.pendingId`、`details.item`（清单项）。**可重试**：用户在侧栏批准后，用完全相同的 `tool` + `args` 重试（同 id 或新 id 均可） |
+| `CONFIRMATION_REJECTED` | 用户在侧栏拒绝了这次调用（只报告一次；再次调用会重新排队）。不要换别的工具绕过 |
 
 网关未运行时，MCP 工具调用返回 `isError` 文本「PageLens 网关未运行…」，说明需要打开 Chrome 并在设置里启用网关。
 
 ### 0.5 审计
 
-每次调用（含旧入口，记为 `legacy`）写入 IndexedDB `pagelens-data` 的 `agentAuditLog`，保留最近 2000 条：时间、Agent、工具、origin、参数摘要、成功/错误码、耗时。参数摘要不含正文：字符串只记长度（`selector`、`url` 等定位字段保留且截断，URL 去掉 query/hash），疑似密钥的键记为 `[redacted]`。设置页可查看、导出 JSON、清空。
+每次调用（含旧入口，记为 `legacy`）写入 IndexedDB `pagelens-data` 的 `agentAuditLog`，保留最近 2000 条：时间、Agent、工具、origin、参数摘要、成功/错误码、耗时，以及信任字段：`confirmed`（经用户批准后执行）、`irreversible`（命中的清单项 id）、`optOut`（token 免清单而直接执行）。参数摘要不含正文：字符串只记长度（`selector`、`url` 等定位字段保留且截断，URL 去掉 query/hash），疑似密钥的键记为 `[redacted]`。设置页可查看、导出 JSON、清空。
 
 ### 0.6 文件 inbox 带 token
 
-inbox job 可带 `"token":"plk_…"`：校验通过且 scope 足够时**跳过逐次确认**，使用 token 的 origins，审计记为 `inbox.<action>`；token 无效直接 `UNAUTHORIZED`（不会退回到确认框）。所需 scope：`clipboard_write` → `clipboard`；`paste_html` / `wechat_fill_draft` → `page:act,clipboard`；`cose_publish` → `page:act`；`bridge_call` 走网关会话路径。写入 `processed/` 的副本里 token 记为 `[redacted]`。
+inbox job 可带 `"token":"plk_…"`：校验通过且 scope 足够时**跳过逐次确认**，使用 token 的 origins，审计记为 `inbox.<action>`；但命中不可逆清单（`cose_publish` 属于「发布/发送」；在付款页上的粘贴属于「付款」）且 token 未免清单时，job 结果为 `{ok:false, code:"CONFIRMATION_REQUIRED", pendingId}`，用户在侧栏批准后**重新投递同一 job 正文**（`id` 可换，`token` 不参与匹配）即执行一次；无 token 的旧 job 仍逐次弹窗确认，不进队列。token 无效直接 `UNAUTHORIZED`（不会退回到确认框）。所需 scope：`clipboard_write` → `clipboard`；`paste_html` / `wechat_fill_draft` → `page:act,clipboard`；`cose_publish` → `page:act`；`bridge_call` 走网关会话路径。写入 `processed/` 的副本里 token 记为 `[redacted]`。
+
+### 0.7 token 会话的信任护栏
+
+持 token 的 Agent 直接调用工具 = 委托人本人的动作：不经扩展 LLM、不弹逐次确认。每次调用在 scope / origin 校验之后、工具执行之前（`lib/bridge/trust-guard.js`）再过两道护栏，任何一道都**立即返回**，从不阻塞等待：
+
+1. **出站**（与 `skipIrreversible` 无关，始终生效）。允许的目的地 = token `origins` ∪ `egress`：
+   - `navigate_tab` / `open_tab` / `create_window` / `download_file`：URL 带 query / fragment / 凭据 / 超长段（可能夹带数据）且目的地不在范围内 → `EGRESS_NOT_ALLOWED`。不带数据的 URL 仍按 origins 校验（`ORIGIN_NOT_ALLOWED`）。
+   - `run_js`：代码里有 `fetch` / `XMLHttpRequest` / `sendBeacon` / `WebSocket` / `*.src=` / `location=` / `form.submit()` 等，且字面 URL 不在范围内，或目的地无法静态确定 → `EGRESS_NOT_ALLOWED`。
+   - `set_input_value` / `select_option` / `act_element fill|select` / `trusted_type` / `paste_rich_trusted`：目标标签不在范围内 → `EGRESS_NOT_ALLOWED`。
+2. **不可逆动作清单**（设置页的确认清单，用户可关掉某项）。命中且 token 未勾选免清单 → `CONFIRMATION_REQUIRED` + `pendingId`，侧栏授权条出现「待批准」：
+   | 清单项 | bridge 调用 |
+   |---|---|
+   | 发布 / 发送 | `act_element click` / `trusted_click` 目标文字是「发布 / 发表 / 发送 / 提交订单 / Publish / Send …」（文字取自 `text` 参数或 `snapshot_controls` 的 ref 名称）；inbox `cose_publish` |
+   | 删除 | `close_tab`、`close_window`；点击「删除 / 清空 / Delete …」类按钮 |
+   | 下载可执行文件 | `download_file` 的 URL 或 `filename` 是 exe / dmg / pkg / sh 等 |
+   | 上传本机文件 | `upload_file` |
+   | 修改设置 | `update_settings` |
+   | 付款 / 结账 | 导航到 checkout / pay 类 URL；在此类页面上点击、输入、粘贴、`run_js` |
+
+   工具自己会硬拒绝的调用（敏感设置 → `SETTING_PROTECTED`、敏感上传路径 → `PATH_NOT_ALLOWED`）不进队列。
+
+批准流程：
+
+```text
+Agent  → call close_tab {tabId:7}                 ← CONFIRMATION_REQUIRED {pendingId:"pend_…"}
+用户   → 侧栏「待批准：close_tab」→ 批准一次
+Agent  → 相同 tool + args 重试                     ← ok（审计 confirmed=true；该批准已用掉）
+Agent  → 再调一次相同调用                           ← CONFIRMATION_REQUIRED（新 pendingId）
+```
+
+- 批准按 token 隔离：别的 token 或侧栏里的扩展内 Agent 的同一调用不能消费它；待批准条目 24 小时过期。
+- 用户拒绝后，下一次重试返回 `CONFIRMATION_REJECTED`（一次），之后再调会重新排队。
+- `CONFIRMATION_REQUIRED` 是可重试错误：同 id 重试不会命中幂等缓存的旧失败结果。
+- 旧入口（CDP `__pl` / 扩展消息 / 无 token 的 inbox）不经过这两道护栏，行为不变。
 
 ## 1. 安全模型（先读）
 
@@ -231,6 +269,10 @@ const { result, artifacts } = await pl.call("list_tabs");
 | `TOOL_FAILED` | 否 | 其他工具失败，见 `message`；`act_element` 目标过期时 `details.stale=true`，重新 `snapshot_controls` |
 | `SETTING_PROTECTED` | 否 | `update_settings` 触及敏感设置；`details.keys` 列出键名，需用户在设置页手动改 |
 | `PATH_NOT_ALLOWED` | 否 | `upload_file` 含敏感本机路径；`details.paths` 列出被拒路径 |
+| `UNAUTHORIZED` / `SCOPE_DENIED` | 否 | token 会话：见 §0.4 |
+| `EGRESS_NOT_ALLOWED` | 否 | token 会话：目的地不在 token origins ∪ egress（§0.7） |
+| `CONFIRMATION_REQUIRED` | **是** | token 会话：命中不可逆清单，`details.pendingId`；用户在侧栏批准后用相同参数重试（§0.7） |
+| `CONFIRMATION_REJECTED` | 否 | token 会话：用户拒绝了该调用 |
 
 ## 7. 幂等与重试约定
 

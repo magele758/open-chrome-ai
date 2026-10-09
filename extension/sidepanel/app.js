@@ -5214,7 +5214,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
 
         // 用户已在侧栏批准过同一调用（之前确认超时进了待批准队列）
         if (req.irreversible) {
-          const approved = await approvalQueue.consumeApproved(tool.name, args).catch(() => null);
+          const approved = await approvalQueue.consumeApproved(tool.name, args, { principal: "user" }).catch(() => null);
           if (approved) {
             debugLog("hitl.queue.consume", { tool: tool.name, pendingId: approved.id });
             return { allow: true };

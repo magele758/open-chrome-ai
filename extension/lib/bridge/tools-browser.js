@@ -363,6 +363,7 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
     ),
     scope: "page:act",
     needsTab: true,
+    trustHint: (args, ctx) => (args.ref != null ? refs.get(ctx.tab.id, args.ref).item?.label || "" : ""),
     async execute(args, ctx) {
       const tabId = ctx.tab.id;
       const action = args.action;

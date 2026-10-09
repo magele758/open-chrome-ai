@@ -26,6 +26,8 @@ import { getInboxConfirm } from "./inbox-confirm.js";
 import { verifyToken } from "../bridge/auth.js";
 import { loadAgentTokens } from "../bridge/token-store.js";
 import { auditEntry, getAuditLog, originOfUrl } from "../bridge/audit.js";
+import { enforceTokenGuards } from "../bridge/trust-guard.js";
+import { chromeStorageAdapter, createApprovalQueue } from "./trust/approval-queue.js";
 
 export const INBOX_ROOT = "~/.pagelens/agent-inbox";
 export const OUTBOX_ROOT = "~/.pagelens/agent-outbox";
@@ -541,6 +543,18 @@ async function preparePageAction(action, job, origins) {
   return { tab, content: { markdown } };
 }
 
+let sharedApprovals = null;
+function defaultApprovals() {
+  sharedApprovals ||= createApprovalQueue({ storage: chromeStorageAdapter() });
+  return sharedApprovals;
+}
+
+/** 批准匹配用的“参数”：job 正文去掉 id / token，重投同一 job（新 id）即可消费批准 */
+function jobApprovalArgs(job) {
+  const { id: _id, token: _token, ...rest } = job || {};
+  return rest;
+}
+
 async function defaultConfirm(summary) {
   const broker = getInboxConfirm();
   if (!broker) return { approved: false, reason: "确认通道不可用" };
@@ -579,11 +593,19 @@ async function runPageAction(action, job, tab, content, s) {
 
 /**
  * 无 token 的页面动作：agentBridgeOrigins 白名单 + 每次弹窗确认。
- * 带有效 token 且 scope 覆盖的：用 token 的 origin 范围挑标签，不弹窗，写持久审计。
+ * 带有效 token 且 scope 覆盖的：用 token 的 origin 范围挑标签，不弹窗，写持久审计；
+ * 命中不可逆清单（如 cose_publish）且 token 未免清单 → 进待批准队列，返回 CONFIRMATION_REQUIRED + pendingId。
  */
 export async function executeJob(
   job,
-  { confirm = defaultConfirm, settings = null, loadTokens = loadAgentTokens, now = () => Date.now(), auditLog = getAuditLog() } = {},
+  {
+    confirm = defaultConfirm,
+    settings = null,
+    loadTokens = loadAgentTokens,
+    now = () => Date.now(),
+    auditLog = getAuditLog(),
+    approvals = null,
+  } = {},
 ) {
   const action = String(job?.action || "").trim();
   let auth = null;
@@ -611,8 +633,29 @@ export async function executeJob(
     }
     const started = now();
     let result;
+    let trust = null;
     try {
-      result = await runPageAction(action, job, tab, content, s);
+      trust = await enforceTokenGuards(`inbox.${action}`, jobApprovalArgs(job), {
+        record: auth,
+        settings: s,
+        targetUrl: tab.url,
+        approvals: approvals || defaultApprovals(),
+        sessionId: `inbox:${String(job.id || "")}`,
+      });
+    } catch (err) {
+      result = {
+        ok: false,
+        code: err?.code || "ERROR",
+        error: err?.message || String(err),
+        failCriteria: String(err?.code || "error").toLowerCase(),
+        ...(err?.details?.pendingId ? { pendingId: err.details.pendingId } : {}),
+        ...(err?.hint ? { hint: err.hint } : {}),
+        tabId: tab.id,
+        tabUrl: tab.url,
+      };
+    }
+    try {
+      if (!result) result = await runPageAction(action, job, tab, content, s);
       return result;
     } finally {
       auditLog
@@ -626,8 +669,9 @@ export async function executeJob(
             origin: originOfUrl(tab.url),
             args: { tabId: tab.id, title: job.title, html: job.html, text: job.text, markdown: job.markdown },
             ok: result?.ok === true,
-            code: result?.ok === true ? null : result ? "TOOL_FAILED" : "ERROR",
+            code: result?.ok === true ? null : result?.code || (result ? "TOOL_FAILED" : "ERROR"),
             ms: now() - started,
+            ...trust,
           }),
         )
         .catch(() => {});

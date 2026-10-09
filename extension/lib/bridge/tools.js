@@ -135,6 +135,7 @@ export function createBridgeTools(env) {
       focus: "emulated",
       needsTab: true,
       exclusive: true,
+      trustHint: (args, ctx) => (args.index != null ? refs.get(ctx.tab.id, args.index).item?.label || "" : ""),
       async execute(args, ctx) {
         const { activate, ...rest } = args;
         const run = async () => {

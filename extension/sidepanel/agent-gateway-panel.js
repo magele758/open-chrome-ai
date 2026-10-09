@@ -52,7 +52,8 @@ function fmtTime(ts) {
 
 export function formatAuditLine(e) {
   const args = JSON.stringify(e.argsSummary || {});
-  return `${fmtTime(e.ts)}  ${e.ok ? "ok " : "ERR"} ${e.agent} · ${e.tool}${e.origin ? ` @ ${e.origin}` : ""}${e.code ? ` [${e.code}]` : ""}  ${args.length > 160 ? `${args.slice(0, 160)}…` : args}`;
+  const trust = e.confirmed ? " {已批准}" : e.optOut ? ` {免清单:${e.irreversible || "?"}}` : "";
+  return `${fmtTime(e.ts)}  ${e.ok ? "ok " : "ERR"} ${e.agent} · ${e.tool}${e.origin ? ` @ ${e.origin}` : ""}${e.code ? ` [${e.code}]` : ""}${trust}  ${args.length > 160 ? `${args.slice(0, 160)}…` : args}`;
 }
 
 export function createAgentGatewayPanel({ root, copyText, onGatewayChanged = () => {} }) {
@@ -99,7 +100,7 @@ export function createAgentGatewayPanel({ root, copyText, onGatewayChanged = () 
       const title = document.createElement("strong");
       title.textContent = `${t.name} · ${TOKEN_STATE_TEXT[t.state] || t.state}`;
       const meta = document.createElement("small");
-      meta.textContent = `scope：${t.scopes.join(", ") || "无"}\n网站：${t.origins.join(", ") || "无"}\n创建 ${fmtTime(t.createdAt)} · 过期 ${t.expiresAt ? fmtTime(t.expiresAt) : "永不"}`;
+      meta.textContent = `scope：${t.scopes.join(", ") || "无"}\n网站：${t.origins.join(", ") || "无"}\n出站白名单：${t.egress?.join(", ") || "无"}${t.skipIrreversible ? "\n⚠️ 免不可逆清单确认" : ""}\n创建 ${fmtTime(t.createdAt)} · 过期 ${t.expiresAt ? fmtTime(t.expiresAt) : "永不"}`;
       meta.style.whiteSpace = "pre-line";
       info.append(title, meta);
       const btn = document.createElement("button");
@@ -149,6 +150,8 @@ export function createAgentGatewayPanel({ root, copyText, onGatewayChanged = () 
     const name = $("agent-token-name").value.trim();
     const preset = $("agent-token-preset").value;
     const origins = $("agent-token-origins").value.split(/[\s,]+/).filter(Boolean);
+    const egress = $("agent-token-egress").value.split(/[\s,]+/).filter(Boolean);
+    const skipIrreversible = $("agent-token-skip-irreversible").checked;
     const days = Number($("agent-token-expiry").value) || 0;
     if (!name) {
       setStatus("agent-token-status", "请填写名称。", "bad");
@@ -158,20 +161,25 @@ export function createAgentGatewayPanel({ root, copyText, onGatewayChanged = () 
       setStatus("agent-token-status", "至少填一个网站（或 *）。", "bad");
       return;
     }
+    if (skipIrreversible && !confirm(`让「${name}」跳过不可逆动作清单？它发起的发布、删除、上传、改设置等操作将不再等你批准。`)) return;
     try {
       const { token, info } = await addAgentToken({
         name,
         scopes: SCOPE_PRESETS[preset],
         origins,
+        egress,
+        skipIrreversible,
         expiresAt: days ? Date.now() + days * DAY_MS : null,
       });
-      const dropped = origins.length - info.origins.length;
+      const dropped = origins.length - info.origins.length + egress.length - info.egress.length;
       lastToken = token;
       lastName = info.name;
       $("agent-token-value").textContent = token;
       $("agent-token-setup").textContent = setupCommands(info.name, chrome.runtime?.id || "");
       $("agent-token-reveal").hidden = false;
       $("agent-token-name").value = "";
+      $("agent-token-egress").value = "";
+      $("agent-token-skip-irreversible").checked = false;
       setStatus("agent-token-status", dropped ? `已创建；忽略了 ${dropped} 个无效网站。` : "已创建。", dropped ? "bad" : "ok");
       await refresh();
     } catch (err) {

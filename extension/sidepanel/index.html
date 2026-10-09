@@ -710,6 +710,13 @@
                 <label class="field">允许的网站（每行一个；<code>*</code> = 所有 http/https 网站）
                   <textarea id="agent-token-origins" rows="3" spellcheck="false"></textarea>
                 </label>
+                <label class="field">出站白名单（可选，每行一个；数据可以额外发往的网站，例如 API 域名。网站范围本身已允许）
+                  <textarea id="agent-token-egress" rows="2" spellcheck="false" placeholder="https://api.example.com"></textarea>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="agent-token-skip-irreversible" />
+                  此 Agent 免「不可逆动作清单」确认（发布/删除/上传/改设置等将直接执行；每次命中都记入审计）
+                </label>
                 <label class="field">有效期
                   <select id="agent-token-expiry">
                     <option value="0">永不过期</option>

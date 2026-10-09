@@ -116,6 +116,7 @@ export function normalizeTokenRecord(raw) {
     scopes: normalizeScopes(raw.scopes),
     origins: normalizeTokenOrigins(raw.origins),
     egress: normalizeTokenOrigins(raw.egress),
+    skipIrreversible: raw.skipIrreversible === true,
     expiresAt: num(raw.expiresAt),
     createdAt: num(raw.createdAt) ?? 0,
     revokedAt: num(raw.revokedAt),
@@ -139,7 +140,7 @@ export function hasActiveToken(records, now = Date.now()) {
 
 /** 新建 token：返回只显示一次的明文与要存储的记录（不含明文）。 */
 export async function createTokenRecord(
-  { name, scopes, origins, egress, expiresAt = null } = {},
+  { name, scopes, origins, egress, skipIrreversible = false, expiresAt = null } = {},
   { now = Date.now(), randomBytes, id } = {},
 ) {
   const cleanName = normalizeTokenName(name);
@@ -155,6 +156,7 @@ export async function createTokenRecord(
     scopes: cleanScopes,
     origins: normalizeTokenOrigins(origins),
     egress: normalizeTokenOrigins(egress),
+    skipIrreversible: skipIrreversible === true,
     expiresAt,
     createdAt: now,
     revokedAt: null,

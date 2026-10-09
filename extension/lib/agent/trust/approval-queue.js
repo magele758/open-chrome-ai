@@ -66,12 +66,24 @@ export function createApprovalQueue({ storage = memoryAdapter(), now = () => Dat
   async function write(list) {
     await storage.save(list.slice(-max));
   }
+  /** principal 缺省匹配任意委托人；给定时只认该委托人入队的条目（外部 token 与侧栏用户互不消费） */
+  const samePrincipal = (e, principal) => principal == null || e.principal === String(principal);
+  async function take(status, toolName, args, principal) {
+    const list = await read();
+    const key = approvalKey(toolName, args);
+    const entry = list.find((e) => e.key === key && e.status === status && samePrincipal(e, principal));
+    if (!entry) return null;
+    entry.status = "used";
+    entry.usedAt = now();
+    await storage.save(list.slice(-max));
+    return entry;
+  }
   return {
-    /** 入队；同一调用已在等待时复用原条目 */
+    /** 入队；同一委托人的同一调用已在等待时复用原条目 */
     async enqueue({ toolName, args = {}, reason = "", item = null, principal = "", sessionId = "" }) {
       const list = await read();
       const key = approvalKey(toolName, args);
-      const existing = list.find((e) => e.key === key && e.status === "pending");
+      const existing = list.find((e) => e.key === key && e.status === "pending" && samePrincipal(e, principal));
       if (existing) return existing;
       const entry = {
         id: randomId(),
@@ -107,15 +119,12 @@ export function createApprovalQueue({ storage = memoryAdapter(), now = () => Dat
       return entry;
     },
     /** 有匹配的已批准条目则标记为已用并返回（一次批准只放行一次） */
-    async consumeApproved(toolName, args = {}) {
-      const list = await read();
-      const key = approvalKey(toolName, args);
-      const entry = list.find((e) => e.key === key && e.status === "approved");
-      if (!entry) return null;
-      entry.status = "used";
-      entry.usedAt = now();
-      await storage.save(list.slice(-max));
-      return entry;
+    async consumeApproved(toolName, args = {}, { principal } = {}) {
+      return take("approved", toolName, args, principal);
+    },
+    /** 有匹配的已拒绝条目则标记为已用并返回：把拒绝结果告诉重试的 Agent 一次 */
+    async consumeRejected(toolName, args = {}, { principal } = {}) {
+      return take("rejected", toolName, args, principal);
     },
   };
 }

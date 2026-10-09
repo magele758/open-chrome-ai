@@ -29,6 +29,8 @@ import { createBridgeTools } from "./tools.js";
 import { publicTokenInfo, requireScope, scopeAllows, tokenUrlAllowed, verifyToken } from "./auth.js";
 import { loadAgentTokens } from "./token-store.js";
 import { auditEntry, getAuditLog, originOfUrl } from "./audit.js";
+import { enforceTokenGuards } from "./trust-guard.js";
+import { chromeStorageAdapter, createApprovalQueue } from "../agent/trust/approval-queue.js";
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const CACHE_MAX = 200;
@@ -68,6 +70,7 @@ export function createDefaultEnv() {
     extensionVersion: () => chrome.runtime.getManifest().version,
     getAgentTokens: () => loadAgentTokens(),
     auditLog: getAuditLog(),
+    approvals: createApprovalQueue({ storage: chromeStorageAdapter() }),
   };
 }
 
@@ -114,6 +117,7 @@ export function createBridge(env = createDefaultEnv()) {
   const audit = [];
   const auditLog = env.auditLog || null;
   const loadTokens = env.getAgentTokens || (async () => []);
+  const approvals = env.approvals || createApprovalQueue({ now: () => env.now() });
   let exclusiveTail = Promise.resolve();
 
   const describe = (t) => ({
@@ -242,7 +246,7 @@ export function createBridge(env = createDefaultEnv()) {
     persist(req, auth, { ...entry, origin });
   }
 
-  function persist(req, auth, { ts, ok, code, ms, origin, session }) {
+  function persist(req, auth, { ts, ok, code, ms, origin, session, trust }) {
     if (!auditLog) return;
     const s = auth || session || null;
     const entry = auditEntry({
@@ -256,6 +260,7 @@ export function createBridge(env = createDefaultEnv()) {
       ok,
       code,
       ms,
+      ...trust,
     });
     auditLog.append(entry).catch(() => {});
   }
@@ -275,6 +280,7 @@ export function createBridge(env = createDefaultEnv()) {
     const artifacts = [];
     let tabId = null;
     let origin = originOfUrl(req.args?.url);
+    let trust = null;
     try {
       if (req.tool === "list_tools") {
         const result = { tools: [...metaTools, ...visibleTools(auth)].map(describe) };
@@ -318,18 +324,29 @@ export function createBridge(env = createDefaultEnv()) {
           meta.tabId = tabId;
           origin = originOfUrl(ctx.tab.url);
         }
+        if (auth) {
+          trust = await enforceTokenGuards(tool.name, req.args, {
+            record: auth.record,
+            settings,
+            targetUrl: ctx.tab?.url || "",
+            elementText: tool.trustHint?.(req.args, ctx) || "",
+            approvals,
+            sessionId: auth.sessionId,
+          });
+        }
         return tool.execute(req.args, ctx);
       };
       const guarded = tool.exclusive ? () => enqueueExclusive(run) : run;
       const result = await withTimeout(guarded(), req.timeoutMs, req.tool);
       meta.ms = env.now() - started;
-      record({ ts: started, id: req.id, tool: req.tool, tabId, ok: true, ms: meta.ms }, req, auth, origin);
+      if (trust?.confirmed) meta.confirmed = true;
+      record({ ts: started, id: req.id, tool: req.tool, tabId, ok: true, ms: meta.ms, trust }, req, auth, origin);
       return okResponse(req.id, result, { artifacts, meta });
     } catch (err) {
       meta.ms = env.now() - started;
       if (tabId) meta.tabId = tabId;
       const res = errorResponse(req.id, err, { meta });
-      record({ ts: started, id: req.id, tool: req.tool, tabId, ok: false, code: res.error.code, ms: meta.ms }, req, auth, origin);
+      record({ ts: started, id: req.id, tool: req.tool, tabId, ok: false, code: res.error.code, ms: meta.ms, trust }, req, auth, origin);
       return res;
     }
   }
