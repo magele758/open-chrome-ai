@@ -8,6 +8,7 @@
  *     关闭事件按最后已知 URL 判断。
  *   - 下载：url 或 referrer 在范围内才发，范围外的那个字段置空。
  *   - 对话框：所在标签 URL 在范围内才发。
+ *   - 归属类事件（job.* / agent_task.* / approval.*）只发给发起方 token（event.agentId === token id）。
  */
 
 import { BridgeError, ERROR_CODES } from "./protocol.js";
@@ -24,9 +25,15 @@ export const EVENT_TYPES = Object.freeze([
   "dialog.opened",
   "job.progress",
   "job.done",
+  "agent_task.started",
+  "agent_task.step",
+  "agent_task.approval",
+  "agent_task.finished",
+  "approval.queued",
+  "approval.resolved",
 ]);
 
-/** null = 只要有效会话（job.* 另按 token 归属过滤）。 */
+/** null = 只要有效会话（归属类事件另按 token 过滤）。 */
 export const EVENT_SCOPES = Object.freeze({
   "tab.created": "tabs:read",
   "tab.updated": "tabs:read",
@@ -38,6 +45,12 @@ export const EVENT_SCOPES = Object.freeze({
   "dialog.opened": "page:read",
   "job.progress": null,
   "job.done": null,
+  "agent_task.started": "agent:delegate",
+  "agent_task.step": "agent:delegate",
+  "agent_task.approval": "agent:delegate",
+  "agent_task.finished": "agent:delegate",
+  "approval.queued": null,
+  "approval.resolved": null,
 });
 
 export const RING_SIZE = 200;
@@ -45,7 +58,8 @@ export const POLL_DEFAULT = 50;
 export const POLL_MAX = 200;
 
 const TAB_TYPES = new Set(["tab.created", "tab.updated", "tab.removed", "tab.activated", "navigation.completed"]);
-const isJob = (type) => type.startsWith("job.");
+const OWNED_PREFIXES = ["job.", "agent_task.", "approval."];
+const isOwned = (type) => OWNED_PREFIXES.some((p) => type.startsWith(p));
 
 function typeAllowed(record, type) {
   const scope = EVENT_SCOPES[type];
@@ -77,7 +91,7 @@ export function expandEventTypes(types) {
 export function filterEventForToken(event, record, { prevUrl = null } = {}) {
   if (!event || !record || !EVENT_TYPES.includes(event.type)) return null;
   if (!typeAllowed(record, event.type)) return null;
-  if (isJob(event.type)) return event.agentId && event.agentId === record.id ? stripInternal(event) : null;
+  if (isOwned(event.type)) return event.agentId && event.agentId === record.id ? stripInternal(event) : null;
   const allowed = (u) => Boolean(u) && tokenUrlAllowed(record, u);
   if (TAB_TYPES.has(event.type)) {
     if (allowed(event.url)) return stripInternal(event);
@@ -240,13 +254,50 @@ export function createEventBus({ loadTokens = async () => [], now = () => Date.n
   };
 }
 
+/** delegate.js 的 agent_task.* 事件 → 总线事件；owner 只在 started 里带，后续按 taskId 记住。 */
+export function agentTaskBusEvent(raw, owners) {
+  if (!raw?.type || !String(raw.type).startsWith("agent_task.") || !raw.taskId) return null;
+  const { type, taskId, at, ...payload } = raw;
+  if (type === "agent_task.started") owners.set(taskId, raw.task?.owner || null);
+  const agentId = owners.get(taskId) || null;
+  if (type === "agent_task.finished") owners.delete(taskId);
+  if (!agentId) return null;
+  const event = { type, agentId, taskId, ...payload };
+  if (at) event.ts = at;
+  if (event.task) {
+    const { owner, ...task } = event.task;
+    event.task = task;
+  }
+  return event;
+}
+
+const TOKEN_PRINCIPAL = "token:";
+
+/** 待批准队列（storage agentApprovalQueue）前后两版的差异 → approval.queued / approval.resolved；只认 token:<id> 委托人。 */
+export function approvalEvents(oldList, newList) {
+  const before = new Map((Array.isArray(oldList) ? oldList : []).map((e) => [e?.id, e]));
+  const out = [];
+  for (const e of Array.isArray(newList) ? newList : []) {
+    if (!e?.id || !String(e.principal || "").startsWith(TOKEN_PRINCIPAL)) continue;
+    const agentId = e.principal.slice(TOKEN_PRINCIPAL.length);
+    const prev = before.get(e.id);
+    const base = { agentId, pendingId: e.id, tool: e.toolName || "", ...(e.item?.id ? { item: e.item.id } : {}) };
+    if (!prev && e.status === "pending") {
+      out.push({ type: "approval.queued", ...base, reason: String(e.reason || "").slice(0, 300), ...(String(e.sessionId || "").startsWith("task_") ? { taskId: e.sessionId } : {}) });
+    } else if (prev?.status === "pending" && (e.status === "approved" || e.status === "rejected")) {
+      out.push({ type: "approval.resolved", ...base, status: e.status });
+    }
+  }
+  return out;
+}
+
 const pick = (obj, keys) => Object.fromEntries(keys.filter((k) => obj?.[k] !== undefined).map((k) => [k, obj[k]]));
 
 /**
  * 把 chrome.* 事件接到总线。api 缺哪个就跳过哪个（测试里传假对象）。
  * JS 对话框来自 chrome.debugger 的 Page.javascriptDialogOpening：只在 PageLens 已附加调试器的标签上可见。
  */
-export function installEventSources(bus, api = globalThis.chrome) {
+export function installEventSources(bus, api = globalThis.chrome, { onAgentTaskEvent = null, approvalKey = "agentApprovalQueue" } = {}) {
   const tabs = api?.tabs;
   const downloadUrls = new Map();
   tabs?.onCreated?.addListener?.((tab) => {
@@ -305,6 +356,17 @@ export function installEventSources(bus, api = globalThis.chrome) {
     if (!Object.keys(changes).length) return;
     if (changes.state === "complete" || changes.state === "interrupted") downloadUrls.delete(delta.id);
     bus.emit({ type: "download.changed", downloadId: delta.id, ...known, ...changes });
+  });
+  if (typeof onAgentTaskEvent === "function") {
+    const owners = new Map();
+    onAgentTaskEvent((raw) => {
+      const event = agentTaskBusEvent(raw, owners);
+      if (event) bus.emit(event);
+    });
+  }
+  api?.storage?.onChanged?.addListener?.((changes, area) => {
+    if (area !== "local" || !changes?.[approvalKey]) return;
+    for (const event of approvalEvents(changes[approvalKey].oldValue, changes[approvalKey].newValue)) bus.emit(event);
   });
   api?.debugger?.onEvent?.addListener?.((source, method, params) => {
     if (method !== "Page.javascriptDialogOpening" || source?.tabId == null) return;

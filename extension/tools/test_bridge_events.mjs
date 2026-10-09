@@ -3,7 +3,9 @@ import { createTokenRecord } from "../lib/bridge/auth.js";
 import { createBridge } from "../lib/bridge/index.js";
 import { createBridgeTools } from "../lib/bridge/tools.js";
 import { DEFAULT_ALLOWED_ORIGINS } from "../lib/bridge/policy.js";
-import { EVENT_TYPES, RING_SIZE, createEventBus, expandEventTypes, filterEventForToken, installEventSources } from "../lib/bridge/events.js";
+import { EVENT_TYPES, RING_SIZE, agentTaskBusEvent, approvalEvents, createEventBus, expandEventTypes, filterEventForToken, installEventSources } from "../lib/bridge/events.js";
+import { createDelegateManager, memoryTaskStorage } from "../lib/agent/delegate.js";
+import { createApprovalQueue, memoryAdapter } from "../lib/agent/trust/approval-queue.js";
 import { createKeyedQueue, createTabLeases, leaseGuarded, openedTabIds, queueKeys } from "../lib/bridge/leases.js";
 import { JOBS_KEY, PERSIST_ARTIFACT_MAX, createJobStore } from "../lib/bridge/jobs.js";
 import { createNativeGateway } from "../lib/native-port.js";
@@ -64,7 +66,7 @@ const { token: readTok, record: reader } = await createTokenRecord({ name: "read
   assert.throws(() => bus.subscribe({ record: local }, ["tab.updated"]), (e) => e.code === "UNAUTHORIZED");
   assert.throws(() => bus.subscribe({ record: noTabs, sessionId: "sN" }, ["tab.updated"]), (e) => e.code === "SCOPE_DENIED");
   const all = bus.subscribe({ record: noTabs, sessionId: "sN" });
-  assert.deepEqual(all.types, ["download.created", "download.changed", "job.progress", "job.done"], "wildcard keeps only permitted types");
+  assert.deepEqual(all.types, ["download.created", "download.changed", "job.progress", "job.done", "approval.queued", "approval.resolved"], "wildcard keeps only permitted types");
 
   const sub = bus.subscribe(authL, ["tab.updated", "tab.removed"]);
   assert.deepEqual(sub, { types: ["tab.updated", "tab.removed"], since: 0, push: true });
@@ -475,6 +477,158 @@ function makeBridge({ sessionStorage = null, tabGroups = null, slowJs = null } =
   listeners.dis();
   assert.equal(bridge.events.sessionCount(), 0, "port loss drops every session");
   gw.stop();
+}
+
+// ---- P5 agent_task.* + approval events: owning token only ----
+{
+  const { token: delTok, record: delegator } = await createTokenRecord({ name: "delegator", scopes: ["agent:delegate", "tabs:read", "page:act"], origins: ["http://localhost:*"] });
+  const owners = new Map();
+  const started = agentTaskBusEvent({ type: "agent_task.started", taskId: "task_1", at: 5, task: { id: "task_1", owner: delegator.id, prompt: "p" } }, owners);
+  assert.deepEqual(started, { type: "agent_task.started", agentId: delegator.id, taskId: "task_1", ts: 5, task: { id: "task_1", prompt: "p" } }, "owner stripped from payload");
+  assert.equal(agentTaskBusEvent({ type: "agent_task.step", taskId: "task_1", step: { n: 1 } }, owners).agentId, delegator.id, "owner remembered by taskId");
+  assert.ok(agentTaskBusEvent({ type: "agent_task.finished", taskId: "task_1", status: "done" }, owners));
+  assert.equal(owners.size, 0, "forgotten after finished");
+  assert.equal(agentTaskBusEvent({ type: "agent_task.started", taskId: "task_2", task: { owner: null } }, owners), null, "legacy (ownerless) tasks are not routed");
+  assert.equal(agentTaskBusEvent({ type: "job.done", taskId: "x" }, owners), null);
+
+  const evs = approvalEvents(
+    [{ id: "p1", status: "pending", principal: `token:${delegator.id}`, toolName: "cose_publish" }],
+    [
+      { id: "p1", status: "approved", principal: `token:${delegator.id}`, toolName: "cose_publish", item: { id: "publish" } },
+      { id: "p2", status: "pending", principal: `token:${delegator.id}`, toolName: "trusted_click", reason: "提交", sessionId: "task_9" },
+      { id: "p3", status: "pending", principal: "user", toolName: "x" },
+    ],
+  );
+  assert.deepEqual(evs, [
+    { type: "approval.resolved", agentId: delegator.id, pendingId: "p1", tool: "cose_publish", item: "publish", status: "approved" },
+    { type: "approval.queued", agentId: delegator.id, pendingId: "p2", tool: "trusted_click", reason: "提交", taskId: "task_9" },
+  ], "side-panel principals are ignored");
+
+  const tokens = [delegator, local];
+  const bus = createEventBus({ loadTokens: async () => tokens });
+  assert.throws(() => bus.subscribe({ record: local, sessionId: "L" }, ["agent_task.*"]), (e) => e.code === "SCOPE_DENIED", "agent_task needs agent:delegate");
+  bus.subscribe({ record: local, sessionId: "L" }, ["approval.*"]);
+  bus.subscribe({ record: delegator, sessionId: "D1" }, ["agent_task.*", "approval.*"]);
+  bus.subscribe({ record: delegator, sessionId: "D2" }, ["agent_task.finished"]);
+
+  const listeners = [];
+  const storageListeners = [];
+  installEventSources(bus, { storage: { onChanged: { addListener: (fn) => storageListeners.push(fn) } } }, { onAgentTaskEvent: (fn) => listeners.push(fn) });
+  listeners[0]({ type: "agent_task.started", taskId: "task_7", at: 1, task: { id: "task_7", owner: delegator.id } });
+  listeners[0]({ type: "agent_task.approval", taskId: "task_7", pendingId: "p9", toolName: "cose_publish", reason: "发布" });
+  listeners[0]({ type: "agent_task.finished", taskId: "task_7", status: "done", answer: "ok" });
+  storageListeners[0]({ agentApprovalQueue: { oldValue: [], newValue: [{ id: "p9", status: "pending", principal: `token:${delegator.id}`, toolName: "cose_publish" }] } }, "local");
+  storageListeners[0]({ agentApprovalQueue: { oldValue: [], newValue: [{ id: "p10", status: "pending", principal: `token:${delegator.id}` }] } }, "session");
+  await bus.idle();
+  assert.deepEqual(bus.poll("D1").events.map((e) => e.type), ["agent_task.started", "agent_task.approval", "agent_task.finished", "approval.queued"]);
+  assert.deepEqual(bus.poll("D2").events.map((e) => e.type), ["agent_task.finished"], "every session of the owning token, per its subscription");
+  assert.equal(bus.poll("L").events.length, 0, "other tokens never see the delegator's tasks or approvals");
+
+  // CONFIRMATION_REQUIRED from a direct bridge call lands in the queue → approval.queued for that token
+  const area = { list: [] };
+  const approvals = createApprovalQueue({
+    storage: {
+      load: async () => area.list,
+      save: async (list) => {
+        const old = area.list;
+        area.list = structuredClone(list);
+        for (const e of approvalEvents(old, area.list)) bridgeA.events.emit(e);
+      },
+    },
+  });
+  const bridgeA = createBridge({
+    getSettings: async () => ({ agentBridgeEnabled: false, agentBridgeOrigins: [], agentIrreversible: ["publish"] }),
+    getAgentTokens: async () => [delegator],
+    approvals,
+    tabs: { get: async (id) => ({ id, windowId: 1, url: "http://localhost:3000/", title: "x" }), query: async () => [] },
+    inject: async () => ({ ok: true }),
+    cdp: { send: async () => ({}) },
+    platform: () => "other",
+    sleep: async () => {},
+    now: () => Date.now(),
+  });
+  const sD = { token: delTok, sessionId: "sD", agentName: "d" };
+  await bridgeA.call({ id: "sub", tool: "events_subscribe", args: { types: ["approval.queued"] } }, { session: sD });
+  const pending = await approvals.enqueue({ toolName: "cose_publish", args: {}, principal: `token:${delegator.id}` });
+  await bridgeA.events.idle();
+  const queued = (await bridgeA.call({ id: "poll", tool: "events_poll", args: {} }, { session: sD })).result.events;
+  assert.deepEqual(queued.map((e) => [e.type, e.pendingId]), [["approval.queued", pending.id]]);
+}
+
+// ---- delegated runs respect tab leases ----
+{
+  const { token: delTok, record: delegator } = await createTokenRecord({ name: "delegator", scopes: ["agent:delegate", "tabs:read", "page:act"], origins: ["http://localhost:*"] });
+  let captured = null;
+  const bridge = createBridge({
+    getSettings: async () => ({ agentBridgeEnabled: false, agentBridgeOrigins: [] }),
+    getAgentTokens: async () => [delegator, local],
+    delegate: {
+      start: async (p) => {
+        captured = p.session;
+        return { id: "task_x", status: "running", tabId: p.tabId, capsule: {}, capsuleSummary: [], droppedOrigins: [], maxSteps: 12 };
+      },
+    },
+    tabs: { get: async (id) => ({ id, windowId: 1, url: "http://localhost:3000/", title: "x" }), query: async () => [] },
+    inject: async () => ({ ok: true, matches: true }),
+    cdp: { send: async () => ({}) },
+    platform: () => "other",
+    sleep: async () => {},
+    now: () => Date.now(),
+  });
+  const sD = { token: delTok, sessionId: "sD", agentName: "delegator" };
+  const sOther = { token: localTok, sessionId: "sO", agentName: "other" };
+  const run = await bridge.call({ id: "r1", tool: "run_agent_task", args: { prompt: "在搜索框填 hi", tabId: 1 } }, { session: sD });
+  assert.ok(run.ok, JSON.stringify(run));
+  assert.equal(typeof captured.tabLease, "function");
+  assert.equal(captured.tabLease(1), null, "unleased tab → allowed");
+  await bridge.call({ id: "c1", tool: "tab_claim", args: { tabId: 1 } }, { session: sOther });
+  assert.equal(captured.tabLease(1).code, "TAB_LEASED", "tab leased by another session → blocked");
+  assert.equal(captured.tabLease(null), null);
+  await bridge.call({ id: "r1", tool: "tab_release", args: {} }, { session: sOther });
+  await bridge.call({ id: "c2", tool: "tab_claim", args: { tabId: 1 } }, { session: sD });
+  assert.equal(captured.tabLease(1), null, "delegating session holds it → allowed");
+
+  // inside the delegate loop: a write tool on a leased tab becomes a blocked step; reads still run
+  const log = [];
+  const def = (name) => ({ name, description: name, parameters: { type: "object", properties: {} }, execute: async (a) => (log.push(name), `${name} ok`) });
+  let turn = 0;
+  const manager = createDelegateManager({
+    storage: memoryTaskStorage(),
+    approvals: createApprovalQueue({ storage: memoryAdapter() }),
+    loadSettings: async () => ({ hitlMode: "balanced" }),
+    createRun: async () => ({
+      tools: [def("extract_page"), def("fill")],
+      systemPrompt: "t",
+      getTabUrl: async () => "http://localhost:3000/",
+      model: {
+        async runTurn({ tools }) {
+          turn += 1;
+          if (turn === 1 && tools?.length) {
+            return { content: "", finishReason: "tool_calls", toolCalls: [
+              { id: "a", name: "extract_page", arguments: "{}" },
+              { id: "b", name: "fill", arguments: JSON.stringify({ selector: "#q", value: "hi" }) },
+            ] };
+          }
+          return { content: "done", finishReason: "stop", toolCalls: [] };
+        },
+      },
+    }),
+  });
+  const task = await manager.start({
+    prompt: "在这个页面的搜索框填写 hi",
+    tabId: 7,
+    sourceUrl: "http://localhost:3000/",
+    session: { tokenId: delegator.id, agentName: "delegator", tabLease: (id) => (id === 7 ? { code: "TAB_LEASED", reason: "标签 7 已被「other」占用。" } : null) },
+  });
+  await manager.status(task.id);
+  for (let i = 0; i < 50; i += 1) {
+    const st = await manager.status(task.id);
+    if (st.status !== "running") break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  const st = await manager.status(task.id);
+  assert.deepEqual(log, ["extract_page"], "fill on the leased tab never ran");
+  assert.ok(st.steps.some((s) => s.kind === "blocked" && s.name === "fill" && s.code === "TAB_LEASED"), JSON.stringify(st.steps));
 }
 
 console.log("PASS bridge-events");

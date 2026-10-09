@@ -35,6 +35,7 @@ import { chromeSessionStorage, createJobStore } from "./jobs.js";
 import { SESSION_META, SESSION_META_TOOLS, createSessionMeta, jobView } from "./session-tools.js";
 import { enforceTokenGuards } from "./trust-guard.js";
 import { chromeStorageAdapter, createApprovalQueue } from "../agent/trust/approval-queue.js";
+import { onAgentTaskEvent } from "../agent/delegate.js";
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const CACHE_MAX = 200;
@@ -342,6 +343,7 @@ export function createBridge(env = createDefaultEnv()) {
           : null,
         authorizeTab: (id) => authorizeTab(id, settings, auth),
         authorizeUrl: (url) => authorizeUrl(url, settings, auth),
+        checkTabLease: (id) => leases.check(id, owner(auth)),
         progress: (data) => {
           if (req.async && auth) events.emit({ type: "job.progress", agentId: auth.record.id, jobId: req.id, tool: req.tool, status: "running", data });
         },
@@ -479,7 +481,7 @@ export function installBridge(env) {
   if (installed) return installed;
   const bridge = createBridge(env);
   installed = bridge;
-  installEventSources(bridge.events);
+  installEventSources(bridge.events, chrome, { onAgentTaskEvent });
   chrome.tabs?.onRemoved?.addListener?.((tabId) => bridge.leases.dropTab(tabId));
   globalThis.__pl = {
     protocol: BRIDGE_PROTOCOL,

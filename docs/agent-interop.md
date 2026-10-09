@@ -169,6 +169,8 @@ Agent  → 再调一次相同调用                           ← CONFIRMATION_R
 | `download.created` / `download.changed` | `downloads` | `downloadId` `url` `finalUrl` `referrer` `filename` `state` `error` … |
 | `dialog.opened` | `page:read` | `tabId` `url` `dialogType` `message`（来自 `chrome.debugger`，只在 PageLens 已附加调试器的标签上可见，例如刚用过可信输入） |
 | `job.progress` / `job.done` | —（只发给发起任务的同一 token） | `jobId` `tool` `status` / `ok` `code`；工具可通过 `ctx.progress(data)` 报中间进度 |
+| `agent_task.started` / `agent_task.step` / `agent_task.approval` / `agent_task.finished` | `agent:delegate`（只发给任务 owner token 的会话） | `taskId` + `task` / `step` / `pendingId toolName reason` / `status answer error`（§15，来自 `onAgentTaskEvent`） |
+| `approval.queued` / `approval.resolved` | —（只发给委托人为 `token:<本 token>` 的条目） | `pendingId` `tool` `item` `reason` `taskId?`（委托任务入队时） / `status: approved\|rejected`。直调 `CONFIRMATION_REQUIRED` 与委托任务入队都会发；用户在侧栏批准后收到 `approval.resolved`，即可用相同参数重试，无需轮询 |
 
 每个事件带会话内递增的 `seq` 和 `ts`。**过滤**：标签类事件 URL 在 token origins 内才发；标签从范围内跳到范围外时只发一次 `url:null, title:null, redacted:true`；关闭事件按最后已知 URL 判断（不认识的标签不报）。下载事件 `url`/`referrer` 有一个在范围内才发，范围外的字段置空。每次投递前重新读取 token，吊销或缩小 origin 立即生效。
 
@@ -180,6 +182,7 @@ Agent  → 再调一次相同调用                           ← CONFIRMATION_R
 - `tab_release {tabId?}`：释放一个或（省略时）本会话全部租约。
 - 会话 `open_tab` / `create_window` 打开的标签自动归该会话，并放进一个名为 `Agent: <名称>` 的标签组（`chrome.tabGroups`）。
 - socket 断开（broker 发 `bridge.session.closed`）、Chrome 端口断开或标签关闭时租约自动释放。租约只在内存里：SW 重启会断开 Native port，所有会话随之结束。
+- 委托运行（`run_agent_task`）里的内部动作同样受租约约束：非只读工具作用的标签被其他会话占用时，该步记为 `blocked`（`TAB_LEASED`）并告知内部 Agent；委托方自己的会话持有或无人持有时放行。
 - 独占队列按标签分：不同标签上的可信输入可以并行，同一标签串行；碰剪贴板的工具（`clipboard_write` `copy_selection_trusted` `paste_rich_trusted`）额外占全局剪贴板锁，`activate:true` / 抢焦点的工具占全局焦点锁。
 
 **任务持久化**：`async:true` 的任务写入 `chrome.storage.session`（键 `agentBridgeJobs`，最近 50 个；大于 256 KB 的 artifact 只存元数据，标 `omitted:true`）。SW 被回收后 `job_status` 仍能查到；重启时还在跑的任务变成 `{status:"interrupted", hint}`——结果未知，先回读页面再决定是否换新 id 重试。任务按 token 归属，换会话（同一 token）也能查。
@@ -529,4 +532,4 @@ await __pl.call({ v: 1, id: "t3", tool: "agent_task_cancel", args: { taskId } })
 ### 15.6 集成钩子（P1 / P3）
 
 - **P1 会话（已接入）**：token 路径上 bridge 先按工具 `scope` 校验（无 `agent:delegate` → `SCOPE_DENIED`，`list_tools` 里也看不到这三个工具），再把 `ctx.session = { agentId, agentName, sessionId, tokenId, egress[], skipIrreversible }` 交给工具。`agentName` 取 **token 名**（不信客户端自报），显示在侧栏与待批准条目（`principal:"agent:<name>"`）；`tokenId` 作为任务 owner，带 owner 的任务对其他 token 的 `agent_task_status/cancel` 不可见（`JOB_NOT_FOUND`；无会话的旧入口仍可见全部）；`egress` 作为 `decideToolCall` 的 `tokenEgress`；`skipIrreversible` 目前 token 记录里没有该字段，恒为 `false`（P4b 若加字段会自动生效）。
-- **P3 事件**：`import { onAgentTaskEvent, AGENT_TASK_EVENTS } from "extension/lib/agent/delegate.js"`，`onAgentTaskEvent(listener)` 返回取消订阅函数。事件 `{ type, taskId, at, ... }`：`agent_task.started {task}`、`agent_task.step {step}`、`agent_task.approval {pendingId, toolName, reason}`、`agent_task.finished {status, answer, error}`。P3 可在 SW 里订阅后转成 `bridge.event` 推给对应会话（按任务 owner 路由）。
+- **P3 事件**：`import { onAgentTaskEvent, AGENT_TASK_EVENTS } from "extension/lib/agent/delegate.js"`，`onAgentTaskEvent(listener)` 返回取消订阅函数。事件 `{ type, taskId, at, ... }`：`agent_task.started {task}`、`agent_task.step {step}`、`agent_task.approval {pendingId, toolName, reason}`、`agent_task.finished {status, answer, error}`。已接入：bridge 在 SW 里订阅，按任务 owner（token id）转成 `agent_task.*` 事件推给该 token 的会话（需 `agent:delegate`，见 §0.8）；委托运行的 `session.tabLease(tabId)` 让内部动作遵守标签租约。

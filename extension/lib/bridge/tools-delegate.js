@@ -75,6 +75,17 @@ export function createDelegateTools(env, { obj, TAB_ID }) {
     }
   };
 
+  /** 委托运行里的内部动作也受标签租约约束：委托方会话持有或无人持有才放行。返回 null 或拒绝原因。 */
+  const leaseCheckFor = (ctx) => (tabId) => {
+    if (!Number.isInteger(tabId) || typeof ctx.checkTabLease !== "function") return null;
+    try {
+      ctx.checkTabLease(tabId);
+      return null;
+    } catch (err) {
+      return { code: err?.code || ERROR_CODES.TAB_LEASED, reason: String(err?.message || err) };
+    }
+  };
+
   return [
     {
       name: "run_agent_task",
@@ -108,7 +119,7 @@ export function createDelegateTools(env, { obj, TAB_ID }) {
             sourceUrl: tab?.url || "",
             maxSteps: args.maxSteps,
             model: args.model,
-            session: { ...sessionOf(ctx), allowUrl: isAllowed },
+            session: { ...sessionOf(ctx), allowUrl: isAllowed, tabLease: leaseCheckFor(ctx) },
             restrictCapsule: (c) => restrictCapsuleToCaller(c, isAllowed),
           });
           return {

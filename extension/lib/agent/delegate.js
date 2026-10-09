@@ -16,6 +16,7 @@ import { resolveHitlTargetUrl } from "./tools.js";
 import { describeCapsule, extractCapsule, normalizeCapsule } from "./trust/capsule.js";
 import { CONFIRMATION_REQUIRED, NEEDS_WIDER_AUTHORIZATION, decideToolCall, formatTrustDenial } from "./trust/decide.js";
 import { createTaintState, ingestData, markHighTaint, taintLevel } from "./trust/taint.js";
+import { READ_ONLY_TOOLS } from "./trust/tool-classes.js";
 import { withUntrustedOutput } from "../untrusted.js";
 
 export const DELEGATE_STORAGE_KEY = "agentDelegateTasks";
@@ -274,6 +275,13 @@ export function createDelegateManager({
         return { allow: false, reason: formatTrustDenial(denial) };
       }
       const refTab = args?.tabId != null && args?.tabId !== "" ? Number(args.tabId) : task.tabId;
+      if (typeof session?.tabLease === "function" && !READ_ONLY_TOOLS.has(toolName)) {
+        const leased = session.tabLease(refTab);
+        if (leased) {
+          addStep(task, { kind: "blocked", name: toolName, code: leased.code, summary: clip(leased.reason) });
+          return { allow: false, reason: `${leased.code}: ${leased.reason}（标签被其他 Agent 占用；换标签或在最终回答里说明）` };
+        }
+      }
       const elementText = args?.index != null && run.refLabel ? run.refLabel(refTab, args.index) : "";
       const d = decideToolCall({
         toolName,

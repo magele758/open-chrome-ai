@@ -245,7 +245,7 @@ try {
   });
 
   await step("事件推送 + 第二会话租约 + 标签组 + job 持久化", async () => {
-    const sub = await mcp.rpc("tools/call", { name: "events_subscribe", arguments: { types: ["tab.*", "navigation.completed"] } });
+    const sub = await mcp.rpc("tools/call", { name: "events_subscribe", arguments: { types: ["tab.*", "navigation.completed", "approval.*"] } });
     assert.equal(sub.result.isError, false, JSON.stringify(sub));
     const outside = fixtureUrl.replace("127.0.0.1", "localhost") + "outside";
     await conn.send("Target.createTarget", { url: outside });
@@ -299,7 +299,15 @@ try {
       const r = await mcp.rpc("tools/call", { name: "trusted_click", arguments: { tabId, selector: "#hello" } });
       return !/TAB_LEASED/.test(r.result.content[0].text);
     }, 5000, "lease released when the second session disconnects");
-    await mcp.rpc("tools/call", { name: "close_tab", arguments: { tabId: newTab } });
+    const close = await mcp.rpc("tools/call", { name: "close_tab", arguments: { tabId: newTab } });
+    if (/CONFIRMATION_REQUIRED/.test(close.result.content[0].text)) {
+      const queued = await waitFor(
+        () => mcp.notes.find((n) => n.method === "notifications/message" && n.params.data.type === "approval.queued" && n.params.data.tool === "close_tab"),
+        5000,
+        "approval.queued notification",
+      );
+      assert.ok(queued.params.data.pendingId);
+    }
     return `${mcp.notes.length} notifications, group "${groupTitle}"`;
   });
 
