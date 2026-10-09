@@ -16,6 +16,7 @@ import { BridgeError, ERROR_CODES, makeArtifact, toBridgeError } from "./protoco
 import { isUrlAllowed } from "./policy.js";
 import { plEditor, plReadRenderedHtml, plSelectContents, plSetInputValue, plWaitFor } from "./editor-fns.js";
 import { createBrowserTools, createSnapshotRefs } from "./tools-browser.js";
+import { createDelegateTools } from "./tools-delegate.js";
 
 export const MAX_PASTE_RETRIES = 3;
 const BUSY_RETRY_DELAY_MS = 500;
@@ -516,6 +517,7 @@ export function createBridgeTools(env) {
   });
 
   for (const def of createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpTool })) add(def);
+  for (const def of createDelegateTools(env, { obj, TAB_ID })) add(def);
 
   return tools;
 }
