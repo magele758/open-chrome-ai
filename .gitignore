@@ -11,3 +11,6 @@ __pycache__/
 
 # 私人使用方案 / 待办，不入库
 TODO.private.md
+
+# local git worktrees
+.worktrees/
