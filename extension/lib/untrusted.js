@@ -1,4 +1,5 @@
 /** 页面、PDF、字幕等外部内容进入模型上下文时的不可信边界与注入特征检测 */
+import { sourceLabel } from "./agent/trust/taint.js";
 
 export const UNTRUSTED_TAG = "untrusted_page";
 
@@ -82,9 +83,10 @@ export function detectInjection(text) {
 
 /**
  * 给工具加上不可信边界与注入检测：页面类工具的文本结果包进边界；
- * 任一工具结果命中注入特征时调用 onInjection({ tool, match, excerpt })。
+ * 任一工具结果都是数据，读入时调用 onIngest({ tool, source })；
+ * 命中注入特征时调用 onInjection({ tool, match, excerpt })。
  */
-export function withUntrustedOutput(tools, { onInjection } = {}) {
+export function withUntrustedOutput(tools, { onInjection, onIngest } = {}) {
   return tools.map((tool) => {
     const wrap = PAGE_CONTENT_TOOLS.has(tool.name);
     const scan = !SCAN_EXEMPT_TOOLS.has(tool.name);
@@ -94,6 +96,7 @@ export function withUntrustedOutput(tools, { onInjection } = {}) {
       async execute(...rest) {
         const out = await tool.execute(...rest);
         if (out == null) return out;
+        if (scan) onIngest?.({ tool: tool.name, source: sourceLabel(tool.name) });
         if (scan) {
           let text = out;
           try {
