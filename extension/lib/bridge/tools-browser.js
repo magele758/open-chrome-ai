@@ -536,7 +536,7 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
       scope: "cookies",
       async execute(args, ctx) {
         ctx.authorizeUrl(args.url);
-        if (!env.cookies) throw new BridgeError(ERROR_CODES.TOOL_FAILED, "当前环境没有 chrome.cookies。");
+        if (!env.cookies) throw new BridgeError(ERROR_CODES.TOOL_FAILED, "cookies 是可选权限，尚未授予：请先在 PageLens 侧栏里用一次 cookie 工具完成授权。");
         return parseToolText(await inner.execute(args));
       },
     });

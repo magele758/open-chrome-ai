@@ -62,7 +62,9 @@ export function createDefaultEnv() {
       remove: (id) => chrome.windows.remove(id),
     },
     downloads: chrome.downloads,
-    cookies: chrome.cookies,
+    get cookies() {
+      return chrome.cookies;
+    },
     saveSettings,
     inject,
     injectFrames,

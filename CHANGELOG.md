@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 回答渲染不再放行模型输出里的 `style` 属性（可伪装或遮挡确认按钮）；只保留 KaTeX 公式自身的排版样式。
 
 ### Changed
+- 宽泛权限改为按需申请。书签、历史、下载、cookie、通知、剪贴板、标签网址、标签组、用户脚本、Native Messaging、`tabCapture`、`webNavigation`、`favicon`，以及全部主机权限（含 `<all_urls>`）改为 optional。第一次使用对应功能时说明原因并单独申请。`debugger` 与 `tts` 仍在安装时申请，因为 Chrome 不允许把它们做成可选权限。已安装用户已经授予的权限会保留。
 - 项目以 Apache-2.0 发布（`LICENSE`）；新增 `SECURITY.md`；`package.json` 版本与 manifest 对齐为 0.12.1；`extension/vendor/VERSIONS.json` 记录第三方库版本，`npm test` 校验。
 - 下载的字幕和转写稿改为写入 `~/.cache/pagelens-docs`，不再自动落到 Obsidian 文稿文件夹。
 - 文本模型改为多服务商：可新增多个 OpenAI 兼容 Provider、扫描/手填模型、勾选可选模型，并在对话底部切换。

@@ -55,6 +55,7 @@ import { buildJevRequest, formatSnapshot, interpretJevAnswers, mergeFrameSnapsho
 import { findSkill } from "./skills.js";
 import { ensureSkillBody } from "../skill-folder.js";
 import { execNativeShell, formatExecResult, nativeFs } from "../native-host.js";
+import { requireHostUrl, requireOptionalFeature } from "../optional-permissions.js";
 import { aliasAgentPath, isAllowedAgentReadName, isBlockedAgentRoot } from "./fs-policy.js";
 import { isShellCommandWhitelisted, shellPolicyBlock } from "./shell-policy.js";
 import { debugLog } from "../debug-log.js";
@@ -698,6 +699,8 @@ export function createAgentTools(ctx) {
         query: { type: "string", description: "按标题或 URL 子串过滤" },
       }),
       async execute(args) {
+        const denied = await requireOptionalFeature("tabs");
+        if (denied) return denied;
         const currentWindow = args?.currentWindow !== false;
         const tabs = await chrome.tabs.query(currentWindow ? { currentWindow: true } : {});
         const needle = String(args?.query || "").trim().toLowerCase();
@@ -724,6 +727,8 @@ export function createAgentTools(ctx) {
       async execute(args) {
         const url = String(args.url || "").trim();
         if (!isHttpUrl(url)) return `只能打开 http(s) URL，收到：${url}`;
+        const hostDenied = await requireHostUrl(url);
+        if (hostDenied) return hostDenied;
         const tab = await chrome.tabs.create({ url, active: Boolean(args.active) });
         const groupId = await attachTabToTask(ctx, tab.id);
         await ctx.onTabsMutated?.();
@@ -798,6 +803,8 @@ export function createAgentTools(ctx) {
       async execute(args) {
         const url = String(args.url || "").trim();
         if (!isHttpUrl(url)) return `只能打开 http(s) URL，收到：${url}`;
+        const hostDenied = await requireHostUrl(url);
+        if (hostDenied) return hostDenied;
         const tabId = await resolveTabId(ctx, args);
         const tab = await chrome.tabs.update(tabId, { url });
         const groupId = await attachTabToTask(ctx, tabId);
@@ -810,6 +817,8 @@ export function createAgentTools(ctx) {
       description: "搜索浏览器书签。",
       parameters: obj({ query: { type: "string", description: "标题或 URL 关键词" } }, ["query"]),
       async execute(args) {
+        const denied = await requireOptionalFeature("bookmarks");
+        if (denied) return denied;
         if (!chrome.bookmarks?.search) return "当前未授权 bookmarks。";
         const hits = await chrome.bookmarks.search(String(args.query || ""));
         return toToolText(
@@ -828,6 +837,8 @@ export function createAgentTools(ctx) {
         ["title"],
       ),
       async execute(args) {
+        const denied = await requireOptionalFeature("bookmarks");
+        if (denied) return denied;
         if (!chrome.bookmarks?.create) return "当前未授权 bookmarks。";
         const title = String(args.title || "").trim();
         if (!title) return "需要文件夹名称。";
@@ -845,10 +856,14 @@ export function createAgentTools(ctx) {
         parentId: { type: "string", description: "文件夹 id，默认书签栏" },
       }),
       async execute(args) {
+        const denied = await requireOptionalFeature("bookmarks");
+        if (denied) return denied;
         if (!chrome.bookmarks?.create) return "当前未授权 bookmarks。";
         let url = String(args.url || "").trim();
         let title = String(args.title || "").trim();
         if (!url) {
+          const tabsDenied = await requireOptionalFeature("tabs");
+          if (tabsDenied) return tabsDenied;
           const tabId = ctx.getTabId?.();
           if (!tabId) return "没有当前标签可收藏。";
           const tab = await chrome.tabs.get(tabId);
@@ -874,6 +889,10 @@ export function createAgentTools(ctx) {
         ["title"],
       ),
       async execute(args) {
+        const denied = await requireOptionalFeature("bookmarks");
+        if (denied) return denied;
+        const tabsDenied = await requireOptionalFeature("tabs");
+        if (tabsDenied) return tabsDenied;
         if (!chrome.bookmarks?.create) return "当前未授权 bookmarks。";
         const title = String(args.title || "").trim();
         if (!title) return "需要文件夹名称。";
@@ -915,6 +934,8 @@ export function createAgentTools(ctx) {
         maxResults: { type: "integer", description: "默认 20，最大 30" },
       }),
       async execute(args) {
+        const denied = await requireOptionalFeature("history");
+        if (denied) return denied;
         if (!chrome.history?.search) return "当前未授权 history。";
         const hits = await chrome.history.search({
           text: String(args.query || ""),
@@ -1112,6 +1133,8 @@ export function createAgentTools(ctx) {
         ["message"],
       ),
       async execute(args) {
+        const denied = await requireOptionalFeature("notifications");
+        if (denied) return denied;
         if (!chrome.notifications?.create) return "当前未授权 notifications。";
         const id = await chrome.notifications.create({
           type: "basic",

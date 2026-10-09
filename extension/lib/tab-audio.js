@@ -1,4 +1,5 @@
 import { injectPageAudio, injectVideo, sleep } from "./chrome.js";
+import { requireOptionalFeature } from "./optional-permissions.js";
 import { captureWithRecorder, getTabStream, isQuietBlob, playThrough } from "./tab-audio-record.js";
 
 export const MAX_RECORD_SECONDS = 1800;
@@ -119,8 +120,12 @@ async function recordOffscreen({ tabId, maxSeconds, minSeconds, fromStart, onPro
  */
 export async function beginTabCapture(tabId) {
   if (!tabId) throw new Error("没有可取声音的标签。");
-  if (!chrome.tabCapture?.getMediaStreamId) {
-    throw new Error("当前 Chrome 不支持 tabCapture。请到 chrome://extensions 重新加载 PageLens。");
+  if (typeof chrome.tabCapture?.getMediaStreamId !== "function") {
+    const denied = await requireOptionalFeature("tabCapture");
+    if (denied) throw new Error(denied);
+    if (typeof chrome.tabCapture?.getMediaStreamId !== "function") {
+      throw new Error("已获得标签音频权限。请再点一次「一键总结」或「同声传译」。");
+    }
   }
   if (localActive) throw new Error("已经在处理当前标签声音。");
   let streamId;

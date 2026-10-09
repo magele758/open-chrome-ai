@@ -1,4 +1,5 @@
 import { offscreenDoc } from "./offscreen-doc.js";
+import { requireOptionalFeature } from "./optional-permissions.js";
 
 let offscreenBusy = false;
 
@@ -7,6 +8,13 @@ export async function handleAudioMessage(msg) {
     if (offscreenBusy) return { ok: false, error: "已经在录音" };
     if (!msg.tabId) return { ok: false, error: "缺少 tabId" };
     await offscreenDoc.ensure();
+    if (typeof chrome.tabCapture?.getMediaStreamId !== "function") {
+      const denied = await requireOptionalFeature("tabCapture");
+      if (denied) return { ok: false, error: denied };
+      if (typeof chrome.tabCapture?.getMediaStreamId !== "function") {
+        return { ok: false, error: "已获得标签音频权限。请再点一次「一键总结」或「同声传译」。" };
+      }
+    }
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: Number(msg.tabId) });
     const res = await offscreenDoc.send({ type: "pl.offscreen.start", streamId });
     if (!res?.ok) return { ok: false, error: res?.error || "offscreen 未能开始录音" };

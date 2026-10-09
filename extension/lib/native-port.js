@@ -8,6 +8,7 @@
  */
 
 import { NATIVE_HOST_NAME, describeNativeError } from "./native-host.js";
+import { ensureOptionalAccess } from "./optional-permissions.js";
 import { errorResponse } from "./bridge/protocol.js";
 
 export const GATEWAY_PROTOCOL = 2;
@@ -130,6 +131,27 @@ export function createNativeGateway({
 
   function open() {
     if (!running || port) return;
+    const api = globalThis.chrome?.permissions;
+    if (typeof api?.contains !== "function") {
+      connectNow();
+      return;
+    }
+    ensureOptionalAccess({ permission: "nativeMessaging", interactive: false })
+      .then((gate) => {
+        if (!running || port) return;
+        if (!gate.granted && !gate.skipped && !gate.required) {
+          schedule(gate.message || "需要连接本机助手后才能打开外部 Agent 网关。");
+          return;
+        }
+        connectNow();
+      })
+      .catch((err) => {
+        if (!running || port) return;
+        schedule(err?.message || String(err));
+      });
+  }
+
+  function connectNow() {
     let p;
     try {
       p = connect(hostName);

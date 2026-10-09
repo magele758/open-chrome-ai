@@ -1,7 +1,9 @@
 /**
  * 系统剪贴板的富文本读写：text/plain + text/html + 图片。
- * 只能在有文档的扩展页（侧栏）里用；clipboardRead / clipboardWrite 权限已声明。
+ * 只能在有文档的扩展页（侧栏）里用。clipboardRead / clipboardWrite 在第一次读写时申请。
  */
+
+import { requireOptionalFeature } from "./optional-permissions.js";
 
 const MAX_HTML = 20000;
 const IMAGE_TYPE = /^image\//;
@@ -33,6 +35,8 @@ function blobToDataUrl(blob) {
 
 /** 返回 { text, html, htmlTruncated, image }；image 是 dataURL，没有则为 null。 */
 export async function readClipboardRich({ clipboard = navigator.clipboard, toDataUrl = blobToDataUrl } = {}) {
+  const denied = await requireOptionalFeature("clipboardRead");
+  if (denied) throw new Error(denied);
   const out = { text: "", html: "", htmlTruncated: false, image: null };
   if (typeof clipboard?.read === "function") {
     try {
@@ -74,6 +78,8 @@ export async function writeClipboardRich(
   { text = "", html = "", image = "" } = {},
   { clipboard = navigator.clipboard, ClipboardItemCtor = globalThis.ClipboardItem, fetchImpl = fetch } = {},
 ) {
+  const denied = await requireOptionalFeature("clipboardWrite");
+  if (denied) throw new Error(denied);
   if (!text && !html && !image) throw new Error("没有可复制的内容。");
   const plain = text || htmlToPlainText(html);
   if (!html && !image) {

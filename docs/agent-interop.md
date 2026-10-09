@@ -453,7 +453,7 @@ await pl.call("trusted_click", { tabId: wx, text: "保存为草稿" });
 - 仅支持顶层 frame 的编辑器（iframe 内的编辑器未处理）。
 - 任务表持久化在 `chrome.storage.session`：浏览器重启会清空；SW 重启时正在执行的任务只能标 `interrupted`，不会续跑。
 - `dialog.opened` 事件只在 PageLens 已附加 `chrome.debugger` 的标签上产生；其他标签的对话框不可见。
-- cookie 工具（`get_cookies` / `set_cookie` / `remove_cookie`）需要 manifest 的 `cookies` 权限和单独的高危 scope `cookies`。`chrome_call` 仍不开放 `cookies.*`。权限目前是必需权限；若以后改成可选，申请点在 `acquireCookiesApi`。
+- cookie 工具（`get_cookies` / `set_cookie` / `remove_cookie`）需要 `cookies` 权限和单独的高危 scope `cookies`。`chrome_call` 仍不开放 `cookies.*`。`cookies` 是可选权限，侧栏里第一次用 cookie 工具时由 `acquireCookiesApi` 申请；外部 Agent 经 bridge 调用不会弹授权，未授权时返回 `TOOL_FAILED`。
 - `snapshot_controls` 的 ref 存在 SW 内存里，按标签保存最近一次快照；SW 重启或导航后需重新快照。
 
 ## 14. 测试

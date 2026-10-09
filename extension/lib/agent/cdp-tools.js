@@ -5,6 +5,7 @@
 
 import { dragMoveEvents, keyEvents, mouseClickEvents } from "../cdp-input.js";
 import { inject, injectFrames, toToolText } from "../chrome.js";
+import { requireOptionalFeature } from "../optional-permissions.js";
 import { iframeRect, locateElement } from "./page-snapshot.js";
 
 const MAX_SHOT_HEIGHT = 16000;
@@ -98,6 +99,8 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
 
   async function frameOffset(tabId, frameId) {
     if (!frameId) return { x: 0, y: 0 };
+    const denied = await requireOptionalFeature("webNavigation");
+    if (denied) throw new Error(denied);
     const info = await webNavigation()?.getFrame?.({ tabId, frameId });
     if (!info || info.parentFrameId !== 0) {
       throw new Error("嵌套 iframe 暂不支持可信输入，请改用 click / act_element。");

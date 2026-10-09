@@ -1,3 +1,5 @@
+import { requireOptionalFeature } from "./optional-permissions.js";
+
 export const NATIVE_HOST_NAME = "com.pagelens.host";
 
 export function installHint(extensionId) {
@@ -18,6 +20,8 @@ export function describeNativeError(err, extensionId) {
 }
 
 export async function nativeSend(message, { timeoutMs = 12000 } = {}) {
+  const denied = await requireOptionalFeature("nativeMessaging");
+  if (denied) return { ok: false, error: denied };
   if (typeof chrome === "undefined" || typeof chrome.runtime?.sendNativeMessage !== "function") {
     return { ok: false, error: "当前环境没有 Native Messaging。" };
   }

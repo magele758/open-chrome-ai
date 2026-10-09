@@ -7,6 +7,7 @@
  */
 
 import { readLibraryText, writeLibraryText, deleteLibraryFile, videoIdentity } from "./library.js";
+import { requireOptionalFeature } from "./optional-permissions.js";
 
 export const CLIPPINGS_STORAGE_KEY = "pagelens_clippings";
 export const BOOKMARK_FOLDER_NAME = "PageLens 智库";
@@ -393,6 +394,8 @@ async function defaultBookmarkParentId(parentId) {
  * Retrieves or creates a dedicated bookmark folder in Chrome.
  */
 export async function getOrCreateBookmarkFolder(folderName = BOOKMARK_FOLDER_NAME) {
+  const denied = await requireOptionalFeature("bookmarks");
+  if (denied) throw new Error(denied);
   if (!chrome.bookmarks?.search) {
     throw new Error("Chrome bookmarks API unavailable.");
   }

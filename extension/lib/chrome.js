@@ -3,6 +3,7 @@
  * Side-panel and tool code share these; no extra process.
  */
 
+import { permissionForChromeMethod, requireHostUrl, requireOptionalFeature } from "./optional-permissions.js";
 import { plPageAudio, plVideo } from "./video-pick.js";
 
 const BLOCKED_PROTOCOLS = new Set([
@@ -245,8 +246,12 @@ export function toToolText(value) {
 
 async function assertInjectable(tabId) {
   if (!tabId) throw new Error("没有可操作的标签");
+  const tabsDenied = await requireOptionalFeature("tabs");
+  if (tabsDenied) throw new Error(tabsDenied);
   const tab = await chrome.tabs.get(tabId);
   if (restrictedUrl(tab?.url)) throw new Error(`受限页，无法注入：${tab?.url || ""}`);
+  const hostDenied = await requireHostUrl(tab?.url || "");
+  if (hostDenied) throw new Error(hostDenied);
 }
 
 export async function inject(tabId, func, args = [], { world, frameId } = {}) {
@@ -306,7 +311,11 @@ export async function runJsInTab(tabId, runJsFn, code) {
   if (!last?.cspBlocked) return last;
 
   if (typeof chrome.userScripts?.execute !== "function") {
-    return { ok: false, cspBlocked: true, error: `${last.error || "CSP 拦截"}。${CSP_HINT}` };
+    const denied = await requireOptionalFeature("userScripts");
+    if (denied) return { ok: false, cspBlocked: true, error: denied };
+    if (typeof chrome.userScripts?.execute !== "function") {
+      return { ok: false, cspBlocked: true, error: `${last.error || "CSP 拦截"}。${CSP_HINT}` };
+    }
   }
   try {
     const [entry] = await chrome.userScripts.execute({
@@ -337,6 +346,8 @@ const GROUP_COLORS = ["orange", "blue", "cyan", "green", "purple", "pink", "yell
 
 export async function ensureTaskGroup(tabId, { groupId, title, color } = {}) {
   if (!tabId || typeof chrome.tabs?.group !== "function") return null;
+  const denied = await requireOptionalFeature("tabGroups");
+  if (denied) return null;
   try {
     let id = Number.isInteger(groupId) && groupId >= 0 ? groupId : null;
     if (id != null) {
@@ -367,6 +378,8 @@ export async function ensureTaskGroup(tabId, { groupId, title, color } = {}) {
 }
 
 export async function captureTab(tabId, windowId) {
+  const tabsDenied = await requireOptionalFeature("tabs");
+  if (tabsDenied) throw new Error(tabsDenied);
   let targetTab = null;
   if (tabId) {
     try {
@@ -391,6 +404,8 @@ export async function captureTab(tabId, windowId) {
     if (restrictedUrl(targetTab.url)) {
       throw new Error(`受限页，无法截图：${targetTab.url || "系统页面"}`);
     }
+    const hostDenied = await requireHostUrl(targetTab.url || "");
+    if (hostDenied) throw new Error(hostDenied);
     if (!targetTab.active && targetTab.id) {
       await chrome.tabs.update(targetTab.id, { active: true });
       await sleep(280);
@@ -457,6 +472,16 @@ export async function chromeCall(method, args) {
     if (url && !isHttpUrl(url)) {
       return { ok: false, error: `只能打开 http(s) URL，收到：${url}` };
     }
+  }
+  const permission = permissionForChromeMethod(name);
+  if (permission) {
+    const denied = await requireOptionalFeature(permission);
+    if (denied) return { ok: false, error: denied };
+  }
+  for (const url of extractWriteUrls(name, params)) {
+    if (!url) continue;
+    const hostDenied = await requireHostUrl(url);
+    if (hostDenied) return { ok: false, error: hostDenied };
   }
   if (name === "history.search") params[0] = clampHistoryQuery(params[0]);
   params = withNotificationDefaults(name, params);

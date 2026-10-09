@@ -4,6 +4,7 @@
  */
 
 import { isHttpUrl, toToolText } from "../chrome.js";
+import { requireOptionalFeature } from "../optional-permissions.js";
 
 const SAME_SITE = new Set(["no_restriction", "lax", "strict", "unspecified"]);
 const MAX_COOKIES = 40;
@@ -14,22 +15,21 @@ function obj(properties, required = []) {
 }
 
 /**
- * 取 chrome.cookies。
- * cookies 现在写在 manifest.permissions 里，是必需权限，这里直接用。
- * 若以后改成 optional_permissions：仓库里还没有统一的可选权限申请助手
- * （library.ensurePermission 只管文件句柄）。不要在这里新写一套申请流程。
- * 申请点就是本函数：在返回 API 之前申请 "cookies"。
+ * 取 chrome.cookies。cookies 是可选权限：第一次用到时申请，chrome.cookies 要在授权后才出现，所以每次现取。
+ * 返回 { cookies } 或 { error }。
  */
-export async function acquireCookiesApi(api = globalThis.chrome) {
+export async function acquireCookiesApi(api = globalThis.chrome, deps = {}) {
+  const denied = await requireOptionalFeature("cookies", deps);
+  if (denied) return { error: denied };
   const cookies = api?.cookies;
   if (cookies && (typeof cookies.getAll === "function" || typeof cookies.set === "function" || typeof cookies.remove === "function")) {
-    return cookies;
+    return { cookies };
   }
-  return null;
+  return { error: missingCookies() };
 }
 
 function missingCookies() {
-  return "当前环境没有 chrome.cookies。请重新加载扩展以获得 cookies 权限；若该权限之后改为可选，先在 acquireCookiesApi 申请再重试。";
+  return "当前环境没有 chrome.cookies。cookies 权限授予后若仍不可用，请重新加载扩展再试。";
 }
 
 function publicCookie(cookie) {
@@ -65,8 +65,9 @@ export function createCookieTools(_ctx, { api = globalThis.chrome } = {}) {
         ["url"],
       ),
       async execute(args) {
-        const cookies = await acquireCookiesApi(api);
-        if (!cookies?.getAll) return missingCookies();
+        const { cookies, error } = await acquireCookiesApi(api);
+        if (error) return error;
+        if (!cookies.getAll) return missingCookies();
         const parsed = httpUrl(args);
         if (parsed.error) return parsed.error;
         const query = { url: parsed.url };
@@ -98,8 +99,9 @@ export function createCookieTools(_ctx, { api = globalThis.chrome } = {}) {
         ["url", "name", "value"],
       ),
       async execute(args) {
-        const cookies = await acquireCookiesApi(api);
-        if (!cookies?.set) return missingCookies();
+        const { cookies, error } = await acquireCookiesApi(api);
+        if (error) return error;
+        if (!cookies.set) return missingCookies();
         const parsed = httpUrl(args);
         if (parsed.error) return parsed.error;
         const name = String(args?.name || "").slice(0, 256);
@@ -128,8 +130,9 @@ export function createCookieTools(_ctx, { api = globalThis.chrome } = {}) {
       description: "按 URL 和名字删除 cookie。删除类操作，在用户的不可逆清单里。高危。",
       parameters: obj({ url: { type: "string" }, name: { type: "string" } }, ["url", "name"]),
       async execute(args) {
-        const cookies = await acquireCookiesApi(api);
-        if (!cookies?.remove) return missingCookies();
+        const { cookies, error } = await acquireCookiesApi(api);
+        if (error) return error;
+        if (!cookies.remove) return missingCookies();
         const parsed = httpUrl(args);
         if (parsed.error) return parsed.error;
         const name = String(args?.name || "").slice(0, 256);

@@ -7,6 +7,7 @@ import { SCOPE_LABELS, SCOPE_PRESETS, hasActiveToken, tokenFileName } from "../l
 import { DEFAULT_ALLOWED_ORIGINS } from "../lib/bridge/policy.js";
 import { TOKENS_KEY, addAgentToken, listAgentTokens, loadAgentTokens, removeAgentToken, revokeAgentToken } from "../lib/bridge/token-store.js";
 import { GATEWAY_STATUS_KEY } from "../lib/bridge/gateway.js";
+import { ensureOptionalAccess } from "../lib/optional-permissions.js";
 import { loadSettings, saveSettings } from "../lib/storage.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -131,6 +132,14 @@ export function createAgentGatewayPanel({ root, copyText, onGatewayChanged = () 
       $("agent-gateway").checked = false;
       setStatus("agent-gateway-status", "请先在下面创建一个 token。", "bad");
       return;
+    }
+    if (next) {
+      const gate = await ensureOptionalAccess({ permission: "nativeMessaging", force: true });
+      if (!gate.granted && !gate.skipped && !gate.required) {
+        $("agent-gateway").checked = false;
+        setStatus("agent-gateway-status", gate.message || "未授予本机助手权限。", "bad");
+        return;
+      }
     }
     const saved = await saveSettings({ ...(await loadSettings()), agentGatewayEnabled: next });
     enabled = saved.agentGatewayEnabled === true;

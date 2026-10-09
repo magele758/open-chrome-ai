@@ -163,7 +163,7 @@ const SRC = "https://docs.example.com/article";
   assert.equal(got.cookies[0].value, "abc");
   assert.equal(JSON.parse(await tools.remove_cookie.execute({ url: SRC, name: "sid" })).ok, true);
   assert.equal(JSON.parse(await tools.get_cookies.execute({ url: SRC })).count, 0);
-  assert.match(await createCookieTools({}, { api: {} })[0].execute({ url: SRC }), /acquireCookiesApi/);
+  assert.match(await createCookieTools({}, { api: {} })[0].execute({ url: SRC }), /chrome\.cookies/);
 
   const foreign = checkHitlRequirement({
     toolName: "get_cookies",

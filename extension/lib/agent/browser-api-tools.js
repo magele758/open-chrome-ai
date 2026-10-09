@@ -1,6 +1,7 @@
 /** 下载、整页存档、最近关闭的标签、默认搜索引擎：对应 downloads / pageCapture / sessions / search 权限。 */
 
 import { isHttpUrl, restrictedUrl, toToolText } from "../chrome.js";
+import { ensureToolPermissions } from "../optional-permissions.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -95,6 +96,8 @@ export function createBrowserApiTools(ctx, { resolveTabId, api = globalThis.chro
         ["url"],
       ),
       async execute(args, hooks = {}) {
+        const denied = await ensureToolPermissions(["downloads"]);
+        if (denied) return denied;
         if (!api.downloads?.download) return missing("downloads");
         const url = String(args?.url || "");
         if (!isHttpUrl(url)) return "只能下载 http(s) 链接。";
@@ -116,6 +119,8 @@ export function createBrowserApiTools(ctx, { resolveTabId, api = globalThis.chro
         limit: { type: "integer", description: "默认 10，最大 30" },
       }),
       async execute(args) {
+        const denied = await ensureToolPermissions(["downloads"]);
+        if (denied) return denied;
         if (!api.downloads?.search) return missing("downloads");
         const limit = Math.min(Math.max(Number(args?.limit) || 10, 1), 30);
         const query = String(args?.query || "").trim();
@@ -141,6 +146,8 @@ export function createBrowserApiTools(ctx, { resolveTabId, api = globalThis.chro
       description: "把标签页完整存成单个 MHTML 文件（含样式和图片，离线可看），返回本机路径。",
       parameters: obj({ tabId: { type: "integer", minimum: 1 } }),
       async execute(args) {
+        const denied = await ensureToolPermissions(["pageCapture", "downloads"]);
+        if (denied) return denied;
         if (!api.pageCapture?.saveAsMHTML) return missing("pageCapture");
         const tabId = await resolveTabId(args);
         const tab = await api.tabs.get(tabId);
@@ -166,6 +173,8 @@ export function createBrowserApiTools(ctx, { resolveTabId, api = globalThis.chro
       description: "列出最近关闭的标签/窗口（可恢复）。用户说「刚才关掉的那个页面」时用。",
       parameters: obj({ limit: { type: "integer", description: "默认 10，最大 25" } }),
       async execute(args) {
+        const denied = await ensureToolPermissions(["sessions"]);
+        if (denied) return denied;
         if (!api.sessions?.getRecentlyClosed) return missing("sessions");
         const maxResults = Math.min(Math.max(Number(args?.limit) || 10, 1), 25);
         const rows = await api.sessions.getRecentlyClosed({ maxResults });
@@ -183,6 +192,8 @@ export function createBrowserApiTools(ctx, { resolveTabId, api = globalThis.chro
       description: "恢复 recently_closed_tabs 里的某个标签或窗口。",
       parameters: obj({ sessionId: { type: "string" } }, ["sessionId"]),
       async execute(args) {
+        const denied = await ensureToolPermissions(["sessions"]);
+        if (denied) return denied;
         if (!api.sessions?.restore) return missing("sessions");
         const restored = await api.sessions.restore(String(args.sessionId));
         const tab = restored?.tab;
@@ -197,6 +208,8 @@ export function createBrowserApiTools(ctx, { resolveTabId, api = globalThis.chro
         newTab: { type: "boolean", description: "默认 true；false 则替换当前标签" },
       }),
       async execute(args) {
+        const denied = await ensureToolPermissions(["search"]);
+        if (denied) return denied;
         if (!api.search?.query) return missing("search");
         const text = String(args?.text || "").trim();
         if (!text) return "搜索词不能为空。";
