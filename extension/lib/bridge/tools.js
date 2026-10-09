@@ -1,10 +1,11 @@
 /**
  * 外部 Agent 可直接调用的确定性工具（不经过扩展内 LLM）。
- * 每个工具：{ name, description, parameters, focus, needsTab, exclusive, execute(args, ctx) }
+ * 每个工具：{ name, description, parameters, focus, needsTab, exclusive, scope, execute(args, ctx) }
+ *   scope: 网关会话调用时 token 必须持有的权限（auth.js AGENT_SCOPES）
  *   focus: "none" 不碰焦点 | "emulated" 用 Emulation.setFocusEmulationEnabled 模拟焦点（不抢窗口）
  *          | "activates" 会把标签切到前台
  *   exclusive: 进全局串行队列（剪贴板、键鼠输入共享全局状态）
- * ctx: { tab, settings, authorizeTab(tabId), artifacts[], meta }
+ * ctx: { tab, settings, authorizeTab(tabId), authorizeUrl(url), session, artifacts[], meta }
  */
 
 import { keyEvents, mouseClickEvents } from "../cdp-input.js";
@@ -129,6 +130,7 @@ export function createBridgeTools(env) {
         },
         inner.parameters.required,
       ),
+      scope: "page:act",
       focus: "emulated",
       needsTab: true,
       exclusive: true,
@@ -167,6 +169,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "list_tabs",
+    scope: "tabs:read",
     description: "列出白名单 origin 内的标签（其他标签不可见）。",
     parameters: obj({ query: { type: "string", description: "按标题或 URL 子串过滤" } }),
     async execute(args, ctx) {
@@ -181,6 +184,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "open_tab",
+    scope: "tabs:manage",
     description: "新开标签（默认后台，不抢焦点）。URL 必须在 origin 白名单内。",
     parameters: obj(
       { url: { type: "string" }, active: { type: "boolean", description: "true 会切到前台（抢焦点），默认 false" } },
@@ -199,6 +203,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "activate_tab",
+    scope: "tabs:manage",
     description: "把标签切到前台。会抢焦点（明示）。",
     parameters: obj({ tabId: TAB_ID }, ["tabId"]),
     focus: "activates",
@@ -211,6 +216,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "wait_for",
+    scope: "page:read",
     description: "在页面内轮询等待 selector 出现或文本出现。",
     parameters: obj({
       tabId: TAB_ID,
@@ -229,6 +235,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "query_dom",
+    scope: "page:read",
     description: "用 CSS 选择器读取 DOM 节点的 tag/文本/href。",
     parameters: obj({ tabId: TAB_ID, selector: { type: "string" }, limit: { type: "integer" } }, ["tabId", "selector"]),
     needsTab: true,
@@ -239,6 +246,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "run_js",
+    scope: "page:js",
     description: "在页面执行 JS（return 结果需 JSON 可序列化）。只在白名单 origin 的标签内可用。",
     parameters: obj({ tabId: TAB_ID, code: { type: "string" } }, ["tabId", "code"]),
     needsTab: true,
@@ -251,6 +259,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "read_rendered_html",
+    scope: "page:read",
     description:
       "读取已渲染元素的 HTML，用 getComputedStyle 把样式内联（解决 cloneContents/innerHTML 丢样式表）。HTML 放在 artifacts[0]，result 只给统计。",
     parameters: obj({
@@ -272,6 +281,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "screenshot",
+    scope: "page:read",
     description: "截图（可见区/整页/元素），作为 artifact 返回 base64 JPEG。走调试器，不切标签。",
     parameters: obj({ tabId: TAB_ID, fullPage: { type: "boolean" }, selector: { type: "string" } }, ["tabId"]),
     needsTab: true,
@@ -286,6 +296,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "clipboard_write",
+    scope: "clipboard",
     description: "写系统剪贴板 text/html + text/plain（不含图片）。写完请用 paste_rich_trusted 的 useClipboard 粘贴。",
     parameters: obj({ html: { type: "string" }, text: { type: "string" } }),
     exclusive: true,
@@ -303,6 +314,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "set_input_value",
+    scope: "page:act",
     description: "用原生 value setter 写 input/textarea 并触发 input/change（标题栏用这个；富文本正文不要用）。",
     parameters: obj({ tabId: TAB_ID, selector: { type: "string" }, value: { type: "string" } }, ["tabId", "selector", "value"]),
     needsTab: true,
@@ -322,6 +334,7 @@ export function createBridgeTools(env) {
   const pickDef = (name, description) => ({
     name,
     description,
+    scope: "page:read",
     parameters: obj({ tabId: TAB_ID, ...EDITOR_PROPS }, ["tabId"]),
     needsTab: true,
     async execute(args, ctx) {
@@ -335,6 +348,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "verify_editor_content",
+    scope: "page:read",
     description: "回读校验编辑器：字数/table/img 数量、标题是否被污染、必含文本。ok=false 时 checks 列出失败项。",
     parameters: obj(
       {
@@ -362,6 +376,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "copy_selection_trusted",
+    scope: "clipboard",
     description:
       "选中某元素全部内容并用可信 Meta/Ctrl+C 复制（Chrome 自己序列化，带内联样式）。随后在编辑器页用 paste_rich_trusted {useClipboard:true} 粘贴。",
     parameters: obj(
@@ -386,6 +401,7 @@ export function createBridgeTools(env) {
 
   add({
     name: "paste_rich_trusted",
+    scope: "page:act",
     description:
       "写富文本剪贴板 → 聚焦编辑器 → 可信 Meta/Ctrl+V → 回读校验 → 失败重试（默认最多 2 次重试）。不使用 DataTransfer / innerHTML 兜底；仍失败返回 VERIFY_FAILED。内容来源：html / text / source{tabId,selector} / useClipboard。",
     parameters: obj(

@@ -103,6 +103,7 @@ export function defaultSettings() {
     agentInboxEnabled: false,
     agentInboxVersion: 1,
     ...normalizeBridgeSettings(),
+    agentGatewayEnabled: false,
     hitlMode: "balanced",
     loopEngine: "kernel",
     hitlTimeoutSeconds: 30,
@@ -156,6 +157,7 @@ export function normalizeSettings(raw) {
   merged.agentInboxEnabled = raw?.agentInboxVersion >= 1 && raw?.agentInboxEnabled === true;
   merged.agentInboxVersion = 1;
   Object.assign(merged, normalizeBridgeSettings(raw));
+  merged.agentGatewayEnabled = raw?.agentGatewayEnabled === true;
   merged.hitlMode = ["strict", "balanced", "autonomous"].includes(raw?.hitlMode) ? raw.hitlMode : "balanced";
   merged.loopEngine = "kernel";
   const timeout = Number(raw?.hitlTimeoutSeconds);

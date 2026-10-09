@@ -54,10 +54,17 @@ export const AGENT_SETTINGS_SCHEMA = [
 
 const SCHEMA_BY_KEY = new Map(AGENT_SETTINGS_SCHEMA.map((f) => [f.key, f]));
 
+/**
+ * Never listed, read or changed by any agent, even with confirmation: these grant agents their own
+ * access (gateway switch, per-agent tokens), so an agent could otherwise escalate itself.
+ */
+export const AGENT_HIDDEN_SETTINGS = Object.freeze(["agentGatewayEnabled", "agentTokens"]);
+
 // Defence in depth: a future schema entry that forgets `sensitive` still gets flagged.
 const SENSITIVE_KEY = /key|secret|token|password|baseurl|endpoint|origin|allow|inbox|hitl|bridge|shell|cdp|langfuse\.enabled/i;
 
 export function isSensitiveSetting(key) {
+  if (AGENT_HIDDEN_SETTINGS.includes(key)) return true;
   const field = SCHEMA_BY_KEY.get(key);
   return Boolean(field?.sensitive) || SENSITIVE_KEY.test(String(key || ""));
 }
@@ -190,6 +197,10 @@ export function planSettingsChange(current, changes) {
   for (const item of list) {
     const key = String(item?.key || "").trim();
     const field = SCHEMA_BY_KEY.get(key);
+    if (AGENT_HIDDEN_SETTINGS.includes(key)) {
+      errors.push(`${key}：外部 Agent 授权只能由用户在设置页「外部 Agent」里修改。`);
+      continue;
+    }
     if (!field) {
       errors.push(`${key || "（空）"}：不允许通过对话修改，或没有这个设置项。`);
       continue;

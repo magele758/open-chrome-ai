@@ -12,6 +12,13 @@ export const DEFAULT_ALLOWED_ORIGINS = Object.freeze([
 
 const PATTERN = /^(https?|file):\/\/(\*\.)?([^/:*]*)(:(\*|\d+))?$/i;
 
+/** 只有 per-token origin 范围接受它（任意 http/https 页面）；agentBridgeOrigins 的规范化会丢掉它。 */
+export const ALL_WEB_ORIGINS = "*";
+
+export function isValidOriginPattern(value) {
+  return value === ALL_WEB_ORIGINS || PATTERN.test(String(value || ""));
+}
+
 export function normalizeOriginPatterns(raw) {
   if (!Array.isArray(raw)) return [...DEFAULT_ALLOWED_ORIGINS];
   const out = [];
@@ -31,6 +38,13 @@ export function normalizeBridgeSettings(raw) {
 
 /** 模式：`https://host`、`http://localhost:*`（任意端口）、`https://*.example.com`（子域）。 */
 export function originMatches(pattern, url) {
+  if (pattern === ALL_WEB_ORIGINS) {
+    try {
+      return ["http:", "https:"].includes(new URL(String(url || "")).protocol);
+    } catch {
+      return false;
+    }
+  }
   const m = PATTERN.exec(String(pattern || ""));
   if (!m) return false;
   let parsed;
