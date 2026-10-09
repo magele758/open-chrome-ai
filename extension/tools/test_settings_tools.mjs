@@ -65,6 +65,19 @@ for (const f of AGENT_SETTINGS_SCHEMA.filter((f) => /apiKey|Key$/.test(f.key))) 
 assert.equal(maskSecret(""), "（未设置）");
 assert(!maskSecret(SECRET).includes(SECRET.slice(0, 10)), "mask hides the key body");
 
+// Inbox: opt-in goes through a sensitive confirmation and survives the storage migration; the version marker is not writable.
+{
+  const store = makeStore();
+  const t = tool(createSettingsTools(store.ctx()), "update_settings");
+  assert.equal(store.stored.agentInboxEnabled, false, "inbox is off by default");
+  let out = await t.execute({ changes: [{ key: "agentInboxVersion", value: 0 }] });
+  assert(/未修改/.test(out) && store.calls.confirms.length === 0, "agentInboxVersion is not agent-writable");
+  out = await t.execute({ changes: [{ key: "agentInboxEnabled", value: true }] });
+  assert.equal(store.calls.confirms.length, 1, "enabling inbox asks the user");
+  assert(store.calls.confirms[0].sensitive, "inbox toggle is confirmed as sensitive");
+  assert.equal(store.stored.agentInboxEnabled, true, "confirmed inbox opt-in is saved");
+}
+
 // get_settings never echoes full keys.
 {
   const store = makeStore();

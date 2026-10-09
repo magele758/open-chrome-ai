@@ -47,7 +47,7 @@ export const AGENT_SETTINGS_SCHEMA = [
   { key: "hitlTimeoutSeconds", label: "确认弹窗超时（秒）", type: "number", min: 5, max: 300, integer: true, sensitive: true },
   { key: "nativeShell", label: "允许执行本机命令", type: "boolean", sensitive: true },
   { key: "cdpInput", label: "允许真实输入（CDP）", type: "boolean", sensitive: true },
-  { key: "agentInboxEnabled", label: "文件 inbox", type: "boolean", sensitive: true },
+  { key: "agentInboxEnabled", label: "文件 inbox（本机进程可投递页面动作）", type: "boolean", sensitive: true },
   { key: "agentBridgeEnabled", label: "外部 Agent 入口", type: "boolean", sensitive: true },
   { key: "agentBridgeOrigins", label: "外部 Agent origin 白名单", type: "origins", sensitive: true },
 ];
