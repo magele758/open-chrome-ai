@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- 回答渲染不再放行模型输出里的 `style` 属性（可伪装或遮挡确认按钮）；只保留 KaTeX 公式自身的排版样式。
+
 ### Changed
+- 项目以 Apache-2.0 发布（`LICENSE`）；新增 `SECURITY.md`；`package.json` 版本与 manifest 对齐为 0.12.1；`extension/vendor/VERSIONS.json` 记录第三方库版本，`npm test` 校验。
 - 下载的字幕和转写稿改为写入 `~/.cache/pagelens-docs`，不再自动落到 Obsidian 文稿文件夹。
 - 文本模型改为多服务商：可新增多个 OpenAI 兼容 Provider、扫描/手填模型、勾选可选模型，并在对话底部切换。
 - `run_shell` 拦访达 / 递归扫盘：整串匹配（含 `bash -c`、`/usr/bin/open`），换目录 `ls` 满 8 次或连续拦截 3 次后强制收束。
