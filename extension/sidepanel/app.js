@@ -83,6 +83,8 @@ import { formatTrustDenial } from "../lib/agent/trust/decide.js";
 import { APPROVAL_STORAGE_KEY, chromeStorageAdapter, createApprovalQueue } from "../lib/agent/trust/approval-queue.js";
 import { IRREVERSIBLE_ITEMS, normalizeIrreversibleActions } from "../lib/agent/trust/irreversible.js";
 import { createTrustPanel } from "./trust-panel.js";
+import { createDelegatePanel } from "./delegate-panel.js";
+import { DELEGATE_STORAGE_KEY } from "../lib/agent/delegate.js";
 import { loadRuntimeSkills, shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
 import { applySlashItem, composeSkillPrompt, filterSlashItems, parseSlashToken, slashItemsFromSkills, userInvokedSkill } from "../lib/slash.js";
 import { pickSkillFolder, clearSkillFolderHandle, setSkillFolderPath, ensureSkillBody, skillFolderStatus } from "../lib/skill-folder.js";
@@ -196,6 +198,10 @@ const trustPanel = createTrustPanel({
   },
   getTaint: () => state.taint,
   approvals: approvalQueue,
+});
+const delegatePanel = createDelegatePanel({
+  load: async () => (await chrome.storage.session.get(DELEGATE_STORAGE_KEY))?.[DELEGATE_STORAGE_KEY] || [],
+  cancel: (taskId) => chrome.runtime.sendMessage({ type: "pl.delegate.cancel", taskId }),
 });
 
 
@@ -6459,8 +6465,10 @@ function wire() {
   trustPanel.bind();
   chrome.storage?.onChanged?.addListener((changes, area) => {
     if (area === "local" && changes[APPROVAL_STORAGE_KEY]) trustPanel.render();
+    if (area === "session" && changes[DELEGATE_STORAGE_KEY]) delegatePanel.render();
   });
   trustPanel.render();
+  delegatePanel.render();
   $("hitl-badge")?.addEventListener("click", () => {
     state.sessionHitlOverride = false;
     state.settings.hitlMode = "balanced";
