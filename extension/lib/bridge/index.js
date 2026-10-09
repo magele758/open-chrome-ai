@@ -33,6 +33,8 @@ import { createEventBus, installEventSources } from "./events.js";
 import { chromeTabGroups, createKeyedQueue, createTabLeases, leaseGuarded, openedTabIds, queueKeys } from "./leases.js";
 import { chromeSessionStorage, createJobStore } from "./jobs.js";
 import { SESSION_META, SESSION_META_TOOLS, createSessionMeta, jobView } from "./session-tools.js";
+import { enforceTokenGuards } from "./trust-guard.js";
+import { chromeStorageAdapter, createApprovalQueue } from "../agent/trust/approval-queue.js";
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const CACHE_MAX = 200;
@@ -73,6 +75,7 @@ export function createDefaultEnv() {
     auditLog: getAuditLog(),
     sessionStorage: chromeSessionStorage(),
     tabGroups: chromeTabGroups(),
+    approvals: createApprovalQueue({ storage: chromeStorageAdapter() }),
   };
 }
 
@@ -123,6 +126,7 @@ export function createBridge(env = createDefaultEnv()) {
   const leases = createTabLeases({ now, groups: env.tabGroups || null });
   const queue = createKeyedQueue();
   const jobs = createJobStore({ storage: env.sessionStorage || null, now });
+  const approvals = env.approvals || createApprovalQueue({ now: () => env.now() });
 
   const describe = (t) => ({
     name: t.name,
@@ -255,7 +259,7 @@ export function createBridge(env = createDefaultEnv()) {
     persist(req, auth, { ...entry, origin });
   }
 
-  function persist(req, auth, { ts, ok, code, ms, origin, session }) {
+  function persist(req, auth, { ts, ok, code, ms, origin, session, trust }) {
     if (!auditLog) return;
     const s = auth || session || null;
     const entry = auditEntry({
@@ -269,6 +273,7 @@ export function createBridge(env = createDefaultEnv()) {
       ok,
       code,
       ms,
+      ...trust,
     });
     auditLog.append(entry).catch(() => {});
   }
@@ -287,6 +292,7 @@ export function createBridge(env = createDefaultEnv()) {
     const artifacts = [];
     let tabId = null;
     let origin = originOfUrl(req.args?.url);
+    let trust = null;
     try {
       if (req.tool === "list_tools") {
         const result = { tools: [...visibleMeta(auth), ...visibleTools(auth)].map(describe) };
@@ -323,7 +329,17 @@ export function createBridge(env = createDefaultEnv()) {
         artifacts,
         meta,
         tab: null,
-        session: auth ? { agentId: auth.record.id, agentName: auth.record.name, sessionId: auth.sessionId } : null,
+        session: auth
+          ? {
+              agentId: auth.record.id,
+              agentName: auth.record.name,
+              sessionId: auth.sessionId,
+              tokenId: auth.record.id,
+              // 与直调路径（trust-guard tokenEgressPolicy）一致：允许的出站目的地 = origins ∪ egress
+              egress: [...auth.record.origins, ...(auth.record.egress || [])],
+              skipIrreversible: auth.record.skipIrreversible === true,
+            }
+          : null,
         authorizeTab: (id) => authorizeTab(id, settings, auth),
         authorizeUrl: (url) => authorizeUrl(url, settings, auth),
         progress: (data) => {
@@ -338,19 +354,30 @@ export function createBridge(env = createDefaultEnv()) {
           origin = originOfUrl(ctx.tab.url);
           if (leaseGuarded(tool)) leases.check(tabId, owner(auth));
         }
+        if (auth) {
+          trust = await enforceTokenGuards(tool.name, req.args, {
+            record: auth.record,
+            settings,
+            targetUrl: ctx.tab?.url || "",
+            elementText: tool.trustHint?.(req.args, ctx) || "",
+            approvals,
+            sessionId: auth.sessionId,
+          });
+        }
         return tool.execute(req.args, ctx);
       };
       const guarded = tool.exclusive ? () => queue.run(queueKeys(tool, req.args, tool.needsTab ? req.args.tabId : null), run) : run;
       const result = await withTimeout(guarded(), req.timeoutMs, req.tool);
       if (auth) await leases.adopt(openedTabIds(tool.name, result), owner(auth)).catch(() => {});
       meta.ms = env.now() - started;
-      record({ ts: started, id: req.id, tool: req.tool, tabId, ok: true, ms: meta.ms }, req, auth, origin);
+      if (trust?.confirmed) meta.confirmed = true;
+      record({ ts: started, id: req.id, tool: req.tool, tabId, ok: true, ms: meta.ms, trust }, req, auth, origin);
       return okResponse(req.id, result, { artifacts, meta });
     } catch (err) {
       meta.ms = env.now() - started;
       if (tabId) meta.tabId = tabId;
       const res = errorResponse(req.id, err, { meta });
-      record({ ts: started, id: req.id, tool: req.tool, tabId, ok: false, code: res.error.code, ms: meta.ms }, req, auth, origin);
+      record({ ts: started, id: req.id, tool: req.tool, tabId, ok: false, code: res.error.code, ms: meta.ms, trust }, req, auth, origin);
       return res;
     }
   }

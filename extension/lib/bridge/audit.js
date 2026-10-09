@@ -53,7 +53,7 @@ export function originOfUrl(url) {
   }
 }
 
-export function auditEntry({ ts, agent, agentId, sessionId, tool, origin, args, ok, code, confirmed = false, ms }) {
+export function auditEntry({ ts, agent, agentId, sessionId, tool, origin, args, ok, code, confirmed = false, irreversible = null, optOut = false, ms }) {
   return {
     ts,
     agent: agent || "unknown",
@@ -65,6 +65,8 @@ export function auditEntry({ ts, agent, agentId, sessionId, tool, origin, args, 
     ok: Boolean(ok),
     code: code || null,
     confirmed: Boolean(confirmed),
+    ...(irreversible ? { irreversible: String(irreversible) } : {}),
+    ...(optOut ? { optOut: true } : {}),
     ...(ms != null ? { ms } : {}),
   };
 }

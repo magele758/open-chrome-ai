@@ -1420,6 +1420,29 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .trust-undo span { flex: 1; min-width: 0; }
 .irreversible-list { display: grid; gap: 2px; margin-top: 4px; }
 
+.delegate-tasks {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 8px;
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--surface);
+}
+.delegate-box > summary { cursor: pointer; }
+.delegate-item { border-top: 1px dashed var(--line); margin-top: 6px; padding-top: 6px; display: grid; gap: 3px; }
+.delegate-head { display: flex; align-items: center; gap: 6px; color: var(--ink); }
+.delegate-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.delegate-status { font-size: 10px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); }
+.delegate-status.needs_approval, .delegate-status.failed {
+  background: var(--warning-bg, #fef08a);
+  color: var(--warning-ink, #854d0e);
+  border-color: var(--warning-line, #fde047);
+}
+.delegate-prompt, .delegate-capsule { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.delegate-pending, .delegate-error { color: var(--warning-ink, #854d0e); }
+.delegate-step { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* 智能回显横幅 (Smart Recall Banner) */
 .recall-banner {
   display: flex;

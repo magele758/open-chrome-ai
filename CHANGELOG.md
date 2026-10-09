@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- 外部 Agent token 会话接入信任护栏（`lib/bridge/trust-guard.js`）：数据流向 token origins ∪ 出站白名单之外 → `EGRESS_NOT_ALLOWED`；命中不可逆动作清单（发布/删除/上传/改设置/可执行下载/付款页）→ `CONFIRMATION_REQUIRED` + `pendingId` 进侧栏待批准队列，批准后相同参数重试执行一次。token 新增「出站白名单」与「免不可逆清单确认」（默认关、审计记 `optOut`）。inbox 带 token 的 `cose_publish` 同样进队列；无 token 的 job 不变。
 - 回答渲染不再放行模型输出里的 `style` 属性（可伪装或遮挡确认按钮）；只保留 KaTeX 公式自身的排版样式。
 
 ### Changed

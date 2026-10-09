@@ -7,9 +7,11 @@ import {
   pollAgentInboxOnce,
 } from "./lib/agent/inbox.js";
 import { installInboxConfirm } from "./lib/agent/inbox-confirm.js";
+import { installDelegate } from "./lib/agent/delegate-sw.js";
 import { installAgentGateway } from "./lib/bridge/gateway.js";
 
 applyOptionalLocalSettings().catch(() => {});
+installDelegate();
 installAgentGateway(installBridge());
 installInboxConfirm();
 wireAgentInboxAlarm();

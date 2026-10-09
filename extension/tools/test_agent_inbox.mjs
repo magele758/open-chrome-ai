@@ -334,4 +334,62 @@ store.settings = { agentInboxEnabled: true, agentInboxVersion: 1, cdpInput: fals
   assert.equal(redactJobToken({ id: "x" }).token, undefined);
 }
 
+// --- token jobs: irreversible items go to the approval queue ---
+{
+  const { createTokenRecord } = await import("../lib/bridge/auth.js");
+  const { createApprovalQueue, memoryAdapter } = await import("../lib/agent/trust/approval-queue.js");
+  const settings = normalizeSettings(store.settings);
+  const pub = await createTokenRecord({ name: "codex", scopes: ["page:act", "clipboard"], origins: ["https://bank.example"] });
+  const optOut = await createTokenRecord({ name: "bot", scopes: ["page:act", "clipboard"], origins: ["https://bank.example"], skipIrreversible: true });
+  const approvals = createApprovalQueue({ storage: memoryAdapter() });
+  const audited = [];
+  const deps = {
+    settings,
+    approvals,
+    loadTokens: async () => [pub.record, optOut.record],
+    auditLog: { append: async (e) => audited.push(e) },
+    confirm: async () => {
+      throw new Error("token jobs must not open the confirm popup");
+    },
+  };
+  const body = { action: "cose_publish", title: "T", markdown: "# hi", platforms: ["wechat"] };
+
+  scripted.length = 0;
+  const queued = await inbox.executeJob({ id: "p1", token: pub.token, ...body }, deps);
+  assert.equal(queued.ok, false);
+  assert.equal(queued.code, "CONFIRMATION_REQUIRED");
+  assert.match(queued.pendingId, /^pend_/);
+  const probes = scripted.length;
+  assert.ok(probes <= 1, "only the $cose probe ran; nothing was published");
+  const [entry] = await approvals.list({ status: "pending" });
+  assert.equal(entry.id, queued.pendingId);
+  assert.equal(entry.toolName, "inbox.cose_publish");
+  assert.equal(entry.item.id, "publish_send");
+  assert.ok(!entry.argsPreview.includes(pub.token), "token never lands in the approval queue");
+  assert.equal(audited.at(-1).code, "CONFIRMATION_REQUIRED");
+
+  await approvals.resolve(queued.pendingId, true);
+  const ran = await inbox.executeJob({ id: "p2", token: pub.token, ...body }, deps);
+  assert.equal(ran.ok, true, "resubmitted job (new id, same body) runs after approval");
+  assert.equal(ran.method, "cose_publish");
+  assert.equal(audited.at(-1).confirmed, true);
+  const again = await inbox.executeJob({ id: "p3", token: pub.token, ...body }, deps);
+  assert.equal(again.code, "CONFIRMATION_REQUIRED", "approval is single-use");
+
+  const skipped = await inbox.executeJob({ id: "p4", token: optOut.token, ...body }, deps);
+  assert.equal(skipped.ok, true, "opt-out token publishes directly");
+  assert.equal(audited.at(-1).optOut, true);
+  assert.equal(audited.at(-1).irreversible, "publish_send");
+
+  const paste = await inbox.executeJob({ id: "p5", token: pub.token, action: "paste_html", tabUrlIncludes: "bank", html: "<b>x</b>" }, deps);
+  assert.equal(paste.ok, true, "non-irreversible token jobs still skip confirmation");
+
+  const pendingBefore = (await approvals.list()).length;
+  let asked = 0;
+  const legacy = await inbox.executeJob(body, { ...deps, confirm: async () => (asked++, { approved: false, reason: "rejected" }) });
+  assert.equal(legacy.failCriteria, "not_confirmed");
+  assert.equal(asked, 1, "tokenless cose_publish keeps the per-job confirmation");
+  assert.equal((await approvals.list()).length, pendingBefore, "tokenless jobs never use the approval queue");
+}
+
 console.log("test_agent_inbox: ok");

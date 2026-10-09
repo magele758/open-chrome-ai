@@ -57,6 +57,8 @@ token 也可用环境变量 `PAGELENS_TOKEN` 给出；`--agent-name` / `PAGELENS
 | 格式 | `plk_` + 43 位 base64url（32 字节随机数）。扩展只存 SHA-256（`settings` 之外的 `agentTokens`），丢了只能新建 |
 | scope | `tabs:read` `tabs:manage` `page:read` `page:act` `page:js` `clipboard` `downloads` `upload` `settings:read` `settings:write` `agent:delegate` `host:shell` `host:fs`。预设：只读 = `tabs:read,page:read`；操作 = 只读 + `tabs:manage,page:act,clipboard`；完全 = 除 `agent:delegate` 外全部 |
 | origins | 与 §1 同样的模式；`*` 表示任意 http/https 站点。会话调用时**替代** `agentBridgeOrigins` |
+| egress | 出站白名单（同样的模式，可空）：除 origins 外，数据还允许发往的目的地（如 API 域名）。见 §0.7 |
+| skipIrreversible | 免「不可逆动作清单」确认，默认 `false`；只能在设置页新建 token 时勾选（会二次确认），命中时审计记 `optOut` |
 | 过期 / 吊销 | 过期或吊销后，已建立的会话下一次调用即返回 `UNAUTHORIZED` |
 | 设置隔离 | `agentGatewayEnabled` / `agentTokens` 不出现在扩展内 Agent 的设置工具里，也不能被它修改；只能在设置页改 |
 
@@ -96,20 +98,57 @@ token 错误时返回 `{"type":"error","error":{"code":"UNAUTHORIZED",…}}` 并
 |---|---|
 | `UNAUTHORIZED` | token 缺失、错误、过期或已吊销 |
 | `SCOPE_DENIED` | token 没有该工具需要的 scope；`details.scope` 给出所需 scope |
-| `EGRESS_NOT_ALLOWED` | 预留：token 记录里已有 `egress`（允许外发的目的地），bridge 侧的出站检查尚未接入 |
-| `TAB_LEASED` | 标签被另一个会话 `tab_claim` 占用（见 §0.7）；`details.holder.agentName` 是占用方，可重试 |
+| `TAB_LEASED` | 标签被另一个会话 `tab_claim` 占用（见 §0.8）；`details.holder.agentName` 是占用方，可重试 |
+| `EGRESS_NOT_ALLOWED` | 数据会流向 token origins ∪ egress 之外的目的地（§0.7）；`details.channel` / `destination` / `origin` 说明通道与目的地。不可重试，需用户新建范围更大的 token |
+| `CONFIRMATION_REQUIRED` | 命中不可逆动作清单，已放入待批准队列；`details.pendingId`、`details.item`（清单项）。**可重试**：用户在侧栏批准后，用完全相同的 `tool` + `args` 重试（同 id 或新 id 均可） |
+| `CONFIRMATION_REJECTED` | 用户在侧栏拒绝了这次调用（只报告一次；再次调用会重新排队）。不要换别的工具绕过 |
 
 网关未运行时，MCP 工具调用返回 `isError` 文本「PageLens 网关未运行…」，说明需要打开 Chrome 并在设置里启用网关。
 
 ### 0.5 审计
 
-每次调用（含旧入口，记为 `legacy`）写入 IndexedDB `pagelens-data` 的 `agentAuditLog`，保留最近 2000 条：时间、Agent、工具、origin、参数摘要、成功/错误码、耗时。参数摘要不含正文：字符串只记长度（`selector`、`url` 等定位字段保留且截断，URL 去掉 query/hash），疑似密钥的键记为 `[redacted]`。设置页可查看、导出 JSON、清空。
+每次调用（含旧入口，记为 `legacy`）写入 IndexedDB `pagelens-data` 的 `agentAuditLog`，保留最近 2000 条：时间、Agent、工具、origin、参数摘要、成功/错误码、耗时，以及信任字段：`confirmed`（经用户批准后执行）、`irreversible`（命中的清单项 id）、`optOut`（token 免清单而直接执行）。参数摘要不含正文：字符串只记长度（`selector`、`url` 等定位字段保留且截断，URL 去掉 query/hash），疑似密钥的键记为 `[redacted]`。设置页可查看、导出 JSON、清空。
 
 ### 0.6 文件 inbox 带 token
 
-inbox job 可带 `"token":"plk_…"`：校验通过且 scope 足够时**跳过逐次确认**，使用 token 的 origins，审计记为 `inbox.<action>`；token 无效直接 `UNAUTHORIZED`（不会退回到确认框）。所需 scope：`clipboard_write` → `clipboard`；`paste_html` / `wechat_fill_draft` → `page:act,clipboard`；`cose_publish` → `page:act`；`bridge_call` 走网关会话路径。写入 `processed/` 的副本里 token 记为 `[redacted]`。
+inbox job 可带 `"token":"plk_…"`：校验通过且 scope 足够时**跳过逐次确认**，使用 token 的 origins，审计记为 `inbox.<action>`；但命中不可逆清单（`cose_publish` 属于「发布/发送」；在付款页上的粘贴属于「付款」）且 token 未免清单时，job 结果为 `{ok:false, code:"CONFIRMATION_REQUIRED", pendingId}`，用户在侧栏批准后**重新投递同一 job 正文**（`id` 可换，`token` 不参与匹配）即执行一次；无 token 的旧 job 仍逐次弹窗确认，不进队列。token 无效直接 `UNAUTHORIZED`（不会退回到确认框）。所需 scope：`clipboard_write` → `clipboard`；`paste_html` / `wechat_fill_draft` → `page:act,clipboard`；`cose_publish` → `page:act`；`bridge_call` 走网关会话路径。写入 `processed/` 的副本里 token 记为 `[redacted]`。
 
-### 0.7 事件推送与多会话
+### 0.7 token 会话的信任护栏
+
+持 token 的 Agent 直接调用工具 = 委托人本人的动作：不经扩展 LLM、不弹逐次确认。每次调用在 scope / origin 校验之后、工具执行之前（`lib/bridge/trust-guard.js`）再过两道护栏，任何一道都**立即返回**，从不阻塞等待：
+
+1. **出站**（与 `skipIrreversible` 无关，始终生效）。允许的目的地 = token `origins` ∪ `egress`：
+   - `navigate_tab` / `open_tab` / `create_window` / `download_file`：URL 带 query / fragment / 凭据 / 超长段（可能夹带数据）且目的地不在范围内 → `EGRESS_NOT_ALLOWED`。不带数据的 URL 仍按 origins 校验（`ORIGIN_NOT_ALLOWED`）。
+   - `run_js`：代码里有 `fetch` / `XMLHttpRequest` / `sendBeacon` / `WebSocket` / `*.src=` / `location=` / `form.submit()` 等，且字面 URL 不在范围内，或目的地无法静态确定 → `EGRESS_NOT_ALLOWED`。
+   - `set_input_value` / `select_option` / `act_element fill|select` / `trusted_type` / `paste_rich_trusted`：目标标签不在范围内 → `EGRESS_NOT_ALLOWED`。
+2. **不可逆动作清单**（设置页的确认清单，用户可关掉某项）。命中且 token 未勾选免清单 → `CONFIRMATION_REQUIRED` + `pendingId`，侧栏授权条出现「待批准」：
+   | 清单项 | bridge 调用 |
+   |---|---|
+   | 发布 / 发送 | `act_element click` / `trusted_click` 目标文字是「发布 / 发表 / 发送 / 提交订单 / Publish / Send …」（文字取自 `text` 参数或 `snapshot_controls` 的 ref 名称）；inbox `cose_publish` |
+   | 删除 | `close_tab`、`close_window`；点击「删除 / 清空 / Delete …」类按钮 |
+   | 下载可执行文件 | `download_file` 的 URL 或 `filename` 是 exe / dmg / pkg / sh 等 |
+   | 上传本机文件 | `upload_file` |
+   | 修改设置 | `update_settings` |
+   | 付款 / 结账 | 导航到 checkout / pay 类 URL；在此类页面上点击、输入、粘贴、`run_js` |
+
+   工具自己会硬拒绝的调用（敏感设置 → `SETTING_PROTECTED`、敏感上传路径 → `PATH_NOT_ALLOWED`）不进队列。
+
+批准流程：
+
+```text
+Agent  → call close_tab {tabId:7}                 ← CONFIRMATION_REQUIRED {pendingId:"pend_…"}
+用户   → 侧栏「待批准：close_tab」→ 批准一次
+Agent  → 相同 tool + args 重试                     ← ok（审计 confirmed=true；该批准已用掉）
+Agent  → 再调一次相同调用                           ← CONFIRMATION_REQUIRED（新 pendingId）
+```
+
+- 批准按 token 隔离：别的 token 或侧栏里的扩展内 Agent 的同一调用不能消费它；待批准条目 24 小时过期。
+- 用户拒绝后，下一次重试返回 `CONFIRMATION_REJECTED`（一次），之后再调会重新排队。
+- `CONFIRMATION_REQUIRED` 是可重试错误：同 id 重试不会命中幂等缓存的旧失败结果。
+- 旧入口（CDP `__pl` / 扩展消息 / 无 token 的 inbox）不经过这两道护栏，行为不变。
+- 委托（`run_agent_task` / `agent_task_status` / `agent_task_cancel`）本身不在清单里、不进队列；委托任务内部的每一步由扩展内的来源判定（`decideToolCall`）把关，使用同一 token 的 `skipIrreversible` 与出站范围（origins ∪ egress），排队的批准也记为 `token:<id>`，侧栏批准后重跑任务即可执行一次。
+
+### 0.8 事件推送与多会话
 
 实现：`lib/bridge/events.js`（事件总线与过滤）、`lib/bridge/leases.js`（标签租约、按标签分队）、`lib/bridge/jobs.js`（任务持久化）、`lib/bridge/session-tools.js`（会话元工具）。
 
@@ -153,7 +192,7 @@ inbox job 可带 `"token":"plk_…"`：校验通过且 scope 足够时**跳过�
 | 仅限专用 profile | 只应在**专用 Chrome profile / 专用 user-data-dir** 里开启。扩展无法自证 profile 身份，靠"显式开关 + 你只在专用 profile 里打开"保证；**不要在日常 Chrome 里开启** |
 | origin 白名单 | `settings.agentBridgeOrigins`，默认 `localhost:*`、`127.0.0.1:*`、`mp.weixin.qq.com`、知乎专栏、B 站创作中心、小红书创作、抖音创作。白名单之外的标签：`list_tabs` 看不到，任何带 `tabId` 的工具返回 `ORIGIN_NOT_ALLOWED`；`open_tab` 也校验 URL。`chrome://` 等受限页返回 `TAB_RESTRICTED` |
 | 每次调用都鉴权 | 每次调用重新读开关与白名单、重新取标签当前 URL（导航后 origin 变了立即失效）；关掉开关即时生效 |
-| 按 scope 分级 | 每个工具带 `scope`（`tabs:read` `tabs:manage` `page:read` `page:act` `page:js` `clipboard` `downloads` `upload` `settings:read` `settings:write`），见 §10。`run_js` 只在白名单 origin 的标签里可用；不提供 `run_shell` |
+| 按 scope 分级 | 每个工具带 `scope`（`tabs:read` `tabs:manage` `page:read` `page:act` `page:js` `clipboard` `downloads` `upload` `settings:read` `settings:write` `agent:delegate`），见 §10。`run_js` 只在白名单 origin 的标签里可用；不提供 `run_shell` |
 | URL 目标 | `open_tab` / `navigate_tab` / `create_window` / `download_file` 的目标 URL 都要在白名单内（`ORIGIN_NOT_ALLOWED`）；`close_window` 要求窗口内**全部**标签在白名单内 |
 | 上传硬拒绝 | `upload_file` 对密钥/凭据类路径（`.ssh`、`.aws`、`.gnupg`、`.kube`、`.env*`、`*.pem/*.key/*.p12`、`id_*`、`credentials`、浏览器 `Login Data`/`Cookies`、含 `..` 的路径等）一律返回 `PATH_NOT_ALLOWED`，与 scope 无关 |
 | 设置保护 | `get_settings` 不返回敏感项（密钥、服务地址、`hitlMode`、`nativeShell`、`cdpInput`、`agentBridge*`、`agentInbox*` 等，只在 `protected` 列出键名）；`update_settings` 含任一敏感键即整批拒绝（`SETTING_PROTECTED`） |
@@ -245,8 +284,8 @@ const { result, artifacts } = await pl.call("list_tabs");
 ## 5. 同步调用与长任务
 
 - 默认同步：`await __pl.call(req)`，通常 <2s；`paste_rich_trusted` 含重试最坏约 `(settleMs+1s)×尝试次数`。
-- 长任务：`async:true` → `{ok:true,result:{jobId:<id>,status:"running"}}`；轮询 `job_status {jobId}` → `{status:"running"}`、`{status:"done", response:{…最终响应…}}` 或 `{status:"interrupted"}`（SW 重启打断）。任务持久化在 `chrome.storage.session`（§0.7）；网关会话还可以订阅 `job.progress` / `job.done` 事件代替轮询。
-- 键鼠类工具（`exclusive`）**按标签串行**：同一标签不会交错，不同标签可以并行；剪贴板是全局资源，碰剪贴板的工具全局串行（§0.7）。
+- 长任务：`async:true` → `{ok:true,result:{jobId:<id>,status:"running"}}`；轮询 `job_status {jobId}` → `{status:"running"}`、`{status:"done", response:{…最终响应…}}` 或 `{status:"interrupted"}`（SW 重启打断）。任务持久化在 `chrome.storage.session`（§0.8）；网关会话还可以订阅 `job.progress` / `job.done` 事件代替轮询。
+- 键鼠类工具（`exclusive`）**按标签串行**：同一标签不会交错，不同标签可以并行；剪贴板是全局资源，碰剪贴板的工具全局串行（§0.8）。
 
 ## 6. 错误码
 
@@ -265,10 +304,14 @@ const { result, artifacts } = await pl.call("list_tabs");
 | `CLIPBOARD_FAILED` | **是** | 三种剪贴板写入方式全失败，`details` 列出每种的错误 |
 | `VERIFY_FAILED` | 否 | 回读校验不通过（已按重试上限停止）；**不要**换 innerHTML 之类手段兜底 |
 | `JOB_NOT_FOUND` | 否 | `job_status` 找不到 |
-| `TAB_LEASED` | **是** | 标签被另一个网关会话 `tab_claim` 占用；换标签或等对方释放（§0.7） |
+| `TAB_LEASED` | **是** | 标签被另一个网关会话 `tab_claim` 占用；换标签或等对方释放（§0.8） |
 | `TOOL_FAILED` | 否 | 其他工具失败，见 `message`；`act_element` 目标过期时 `details.stale=true`，重新 `snapshot_controls` |
 | `SETTING_PROTECTED` | 否 | `update_settings` 触及敏感设置；`details.keys` 列出键名，需用户在设置页手动改 |
 | `PATH_NOT_ALLOWED` | 否 | `upload_file` 含敏感本机路径；`details.paths` 列出被拒路径 |
+| `UNAUTHORIZED` / `SCOPE_DENIED` | 否 | token 会话：见 §0.4 |
+| `EGRESS_NOT_ALLOWED` | 否 | token 会话：目的地不在 token origins ∪ egress（§0.7） |
+| `CONFIRMATION_REQUIRED` | **是** | token 会话：命中不可逆清单，`details.pendingId`；用户在侧栏批准后用相同参数重试（§0.7） |
+| `CONFIRMATION_REJECTED` | 否 | token 会话：用户拒绝了该调用 |
 
 ## 7. 幂等与重试约定
 
@@ -335,8 +378,11 @@ const { result, artifacts } = await pl.call("list_tabs");
 | `verify_editor_content {tabId, expect?, titleEquals?, titleBefore?, includeHtml?}` | page:read | 回读校验 | `stats`（chars/tables/imgs/paragraphs/headings/links）、`title`、`titlePolluted`、`checks[]`；`expect:{minChars,minTables,minImages,contains[]}` |
 | `copy_selection_trusted {tabId, selector}` | clipboard | 选中元素内容 + 可信 Meta/Ctrl+C | Chrome 自己序列化（带内联样式），随后 `paste_rich_trusted {useClipboard:true}` |
 | `paste_rich_trusted {tabId, html? / text? / source{tabId,selector} / useClipboard, titleEquals?, expect?, retries?, settleMs?, activate?, includeHtml?}` | page:act | 写剪贴板 → 点击聚焦 → 全选+清空 → 可信粘贴 → 回读校验 → 重试 | 默认从 `html` 推导断言：`minChars=85%`、`minTables`、`minImages`，可用 `expect` 覆盖；标题不得被污染或变化；失败 `VERIFY_FAILED`，**无 DataTransfer/innerHTML 兜底** |
+| `run_agent_task {prompt, capsule?, tabId?, maxSteps?, model?}` | agent:delegate | 把高层任务交给扩展内 Agent 在后台跑，立即返回 `taskId` | 见 §15；胶囊外副作用 `NEEDS_WIDER_AUTHORIZATION`，不可逆动作 `CONFIRMATION_REQUIRED` + `pendingId` |
+| `agent_task_status {taskId, sinceStep?}` | agent:delegate | 任务状态、步骤、最终回答 | `sinceStep` 做增量轮询 |
+| `agent_task_cancel {taskId}` | agent:delegate | 取消任务 | 已结束的返回 `alreadyFinished:true` |
 | `job_status` / `audit_log` / `list_tools` | — | 元工具 | |
-| `events_subscribe` / `events_unsubscribe` / `events_poll` / `tab_claim` / `tab_release` | —（仅网关会话） | 事件订阅、标签租约 | 见 §0.7 |
+| `events_subscribe` / `events_unsubscribe` / `events_poll` / `tab_claim` / `tab_release` | —（仅网关会话） | 事件订阅、标签租约 | 见 §0.8 |
 
 ## 11. 参考 recipe：把 Doocs 简报写入微信公众号编辑器
 
@@ -416,10 +462,12 @@ node extension/tools/test_bridge_browser_tools.mjs  # 标签/窗口、快照 ref
 node extension/tools/test_bridge_events.mjs     # 事件过滤/缓冲/订阅、租约、按标签并行队列、job 持久化与 interrupted
 node native/test_gateway.mjs                    # broker + MCP 垫片：事件帧转发、MCP 通知、两个并发会话与租约
 node extension/tools/test_clipboard_sw.mjs      # 剪贴板三种方式的降级与 offscreen 让位
+node extension/tools/test_agent_delegate.mjs    # 委托：胶囊校验、胶囊内自动执行、胶囊外拒绝、不可逆进队列、取消、持久化、事件、数据指令不扩权
+node extension/tools/test_delegate_panel.mjs    # jsdom：侧栏委托任务列表与取消
 node extension/tools/e2e_bridge.mjs             # 真浏览器冒烟（专用临时 profile，见脚本头注释）
 ```
 
-`extension/tools/test_*` 由 `npm test` 自动收录，`native/test_gateway.mjs` 单独运行；`e2e_bridge.mjs` 不属于 `run-tests`，需要本机有 Chrome。
+`extension/tools/test_*` 由 `npm test` 自动收录，`native/test_gateway.mjs` 单独运行；`e2e_bridge.mjs` / `e2e_gateway.mjs` 不属于 `run-tests`，需要本机有 Chrome。
 
 网关：
 
@@ -428,3 +476,57 @@ node extension/tools/test_agent_gateway.mjs   # token / scope / origin、会话�
 node native/test_gateway.mjs                  # host 作为 broker：socket 0600、MCP 垫片、吊销、Chrome 断开后退出、安装器（CI 收录）
 CHROME_BIN=/usr/bin/google-chrome-stable node extension/tools/e2e_gateway.mjs   # 真 Chrome：设置页建 token → MCP 调用 → 审计 → 吊销
 ```
+
+## 15. 委托扩展内 Agent（run_agent_task，scope `agent:delegate`）
+
+外部 Agent 也可以不逐步调用确定性工具，而是把**高层任务**交给 PageLens 内部的 LLM Agent（例如"总结这个视频并配音"、"把这页要点整理后发到知乎草稿"），自己只轮询进度与结果。实现：`extension/lib/agent/delegate.js`（任务管理、信任判定、持久化、事件）、`delegate-sw.js`（SW 运行环境）、`extension/lib/bridge/tools-delegate.js`（bridge 工具）。
+
+### 15.1 运行位置
+
+任务在扩展 **Service Worker** 里跑（与侧栏无关，侧栏关着也能跑），复用侧栏同一套内部工具（`createAgentTools`）、loop 内核（`loop-kernel.js`）和文本模型设置。不占用 offscreen 文档（同传/剪贴板仍可用）。运行中每 20s 调一次扩展 API 保活。
+
+已知差异：SW 里没有 DOM，PDF 文字层抽取（pdf.js 动态加载）不可用，会退回网页正文；需要侧栏页面能力的工具（截图预览、转写进度展示等）只返回结果、不渲染。
+
+### 15.2 调用
+
+```js
+await __pl.call({ v: 1, id: "t1", tool: "run_agent_task", args: {
+  prompt: "总结这个视频，并发布一条摘要到知乎",
+  tabId: 123,                       // 省略：当前窗口活动标签（需在可访问 origin 内，否则不指定标签）
+  capsule: { actions: ["publish"], platforms: ["zhihu"] },   // 可选；省略时只从 prompt 原文抽取
+  maxSteps: 12,                     // 模型轮次上限，1–40
+}});
+// → { taskId, status:"running", tabId, capsule, capsuleSource:"explicit"|"prompt", capsuleSummary[], droppedOrigins[], maxSteps }
+
+await __pl.call({ v: 1, id: "t2", tool: "agent_task_status", args: { taskId, sinceStep: 0 } });
+// → { id, status, agentName, prompt, capsule, capsuleSummary, taint, steps:[{n, kind, name, ok, code, pendingId, summary, at}],
+//     stepCount, answer, pending:[{pendingId, toolName, reason, approval}], denied:[{toolName, code, reason}], error, endReason, ... }
+
+await __pl.call({ v: 1, id: "t3", tool: "agent_task_cancel", args: { taskId } });
+```
+
+`status`：`running` → `done` | `needs_approval` | `failed` | `cancelled`。`steps[].kind`：`tool`（工具执行，`ok`）、`blocked`（被信任判定拦下，`code` / `pendingId`）、`answer`（模型输出）、`note`（使用了已批准的待办、检测到注入等）。用 `sinceStep` = 上次拿到的最大 `n` 做增量轮询。`run_agent_task` 本身立即返回，不需要 `async:true`。同时最多 3 个任务在跑，超出返回 `TOOL_FAILED`（`retryable:true`，`details.reason:"BUSY"`）；未知任务 `JOB_NOT_FOUND`；未配置文本模型时任务 `failed`，`error.code:"MODEL_NOT_READY"`。
+
+### 15.3 授权：意图胶囊 + 无人值守判定
+
+- **胶囊只来自委托人**：显式 `capsule` 经 `normalizeCapsule` 校验（未知动作/平台、非法 URL、含 `..` 的路径丢弃，`principal:"agent"`）；省略时 `extractCapsule(prompt)`。任务开始后胶囊**冻结**，页面、字幕、工具结果里的任何文字都不会并入胶囊。
+- **不越权**：胶囊里的站点必须在调用方可访问的 origin 范围内（token 会话为 token 的 `origins`；无 token 的旧入口为 `agentBridgeOrigins`），范围外的站点丢弃并在 `droppedOrigins` 回报（`www.` 与裸域等价）；只剩被丢弃域名的平台一并去掉。运行中每个带目标 URL 的调用（导航、标签操作、下载）还会再按同一范围硬校验，范围外返回 `ORIGIN_NOT_ALLOWED`（胶囊域名覆盖子域，这一步防止借子域越出 token 范围）。任务标签同样要在范围内。
+- 每个工具调用走 P4 的 `decideToolCall`，`attended:false`（`hitlMode` 取设置里的严格/智能审查，全自动不适用于委托任务）：
+  - 胶囊内 → 自动执行（即使会话已读入数据甚至被标为高污染）；只读 → 执行。
+  - 胶囊外的副作用 → 拒绝，工具结果为 `{ok:false, code:"NEEDS_WIDER_AUTHORIZATION", reason, hint}`，记入 `denied`；出站到未声明目的地 → `EGRESS_NOT_ALLOWED`；**不会弹窗、不会挂起**。
+  - 命中用户的**不可逆清单** → 进待批准队列（与侧栏共用 `chrome.storage.local.agentApprovalQueue`），工具结果 `CONFIRMATION_REQUIRED` + `pendingId`；任务结束时状态为 `needs_approval`，`pending[].approval` 实时反映 `pending/approved/rejected`。用户在侧栏「待批准」里批准后，**同一调用（工具 + 参数一致）**下次可执行一次：委托人重新发起任务（或在 P1 后的会话里重试同一动作）即可。
+  - 改设置：委托任务没有确认通道，`update_settings` 一律不生效（且在不可逆清单里）。
+- 内部模型看到的系统提示写明了委托人、授权范围和"被拦下不要绕过、在最终回答里说明"。
+
+### 15.4 侧栏
+
+侧栏输入框上方显示"🤖 外部委托任务"：来源 Agent 名（`ctx.session.agentName`）、状态、prompt、授权范围、最近步骤；运行中的任务可「取消」。待批准的操作出现在授权条的「待批准」里。
+
+### 15.5 持久化
+
+任务存在 `chrome.storage.session` 的 `agentDelegateTasks`（保留最近 30 个，每个最多 200 步，摘要截断）。SW 重启后状态仍可查询；当时还在跑的任务标为 `failed`，`error.code:"INTERRUPTED"`，已完成的步骤保留。浏览器重启后清空。
+
+### 15.6 集成钩子（P1 / P3）
+
+- **P1 会话（已接入）**：token 路径上 bridge 先按工具 `scope` 校验（无 `agent:delegate` → `SCOPE_DENIED`，`list_tools` 里也看不到这三个工具），再把 `ctx.session = { agentId, agentName, sessionId, tokenId, egress[], skipIrreversible }` 交给工具。`agentName` 取 **token 名**（不信客户端自报），显示在侧栏与待批准条目（`principal:"agent:<name>"`）；`tokenId` 作为任务 owner，带 owner 的任务对其他 token 的 `agent_task_status/cancel` 不可见（`JOB_NOT_FOUND`；无会话的旧入口仍可见全部）；`egress` 作为 `decideToolCall` 的 `tokenEgress`；`skipIrreversible` 目前 token 记录里没有该字段，恒为 `false`（P4b 若加字段会自动生效）。
+- **P3 事件**：`import { onAgentTaskEvent, AGENT_TASK_EVENTS } from "extension/lib/agent/delegate.js"`，`onAgentTaskEvent(listener)` 返回取消订阅函数。事件 `{ type, taskId, at, ... }`：`agent_task.started {task}`、`agent_task.step {step}`、`agent_task.approval {pendingId, toolName, reason}`、`agent_task.finished {status, answer, error}`。P3 可在 SW 里订阅后转成 `bridge.event` 推给对应会话（按任务 owner 路由）。
