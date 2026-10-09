@@ -1723,6 +1723,31 @@ export const TOOL_DOMAINS = {
 
 export { isShellCommandWhitelisted };
 
+/** 疑似提示词注入后仍可免确认的只读浏览器工具；其余工具（含本机文件读取）都要逐项确认 */
+export const INJECTION_SAFE_TOOLS = new Set([
+  "extract_page",
+  "extract_pages",
+  "get_page_info",
+  "screenshot",
+  "get_selection",
+  "get_links",
+  "find_in_page",
+  "query_dom",
+  "list_controls",
+  "snapshot_controls",
+  "wait_for",
+  "wait_for_navigation",
+  "scroll_page",
+  "list_tabs",
+  "get_captions",
+  "seek_video",
+  "highlight_quote",
+  "search_tool_artifact",
+  "read_tool_page",
+  "list_companion_extensions",
+  "request_toolsets",
+]);
+
 /** 作用于已有标签、能读写页面或代用户输入的工具：目标与用户所在 origin 不同则需确认 */
 export const ORIGIN_SCOPED_TAB_TOOLS = new Set([
   "run_js",
@@ -1800,10 +1825,19 @@ export function checkHitlRequirement({
   targetUrl,
   userUrl,
   approvedOrigins,
+  injectionSuspected = null,
 }) {
-  if (hitlMode === "autonomous" || sessionOverride) {
-    return { needsConfirmation: false };
+  if (sessionOverride) return { needsConfirmation: false };
+  // 降级对全自动模式同样生效；用户在确认框里勾选“本场免确认”即重新显式信任
+  if (injectionSuspected && !INJECTION_SAFE_TOOLS.has(toolName)) {
+    const from = injectionSuspected.tool ? `（来源 ${injectionSuspected.tool}：「${String(injectionSuspected.excerpt || injectionSuspected.match || "").slice(0, 60)}」）` : "";
+    return {
+      needsConfirmation: true,
+      needsAudit: hitlMode === "balanced",
+      reason: `检测到外部内容疑似提示词注入${from}，本会话已降级为逐项确认：[${toolName}]`,
+    };
   }
+  if (hitlMode === "autonomous") return { needsConfirmation: false };
   const origin = { targetUrl, userUrl, approvedOrigins };
   if (!isToolPrivileged(toolName, args, origin)) {
     return { needsConfirmation: false };

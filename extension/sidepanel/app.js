@@ -76,6 +76,7 @@ import { createAgentTools, resolveActiveTools, checkHitlRequirement, resolveHitl
 import { redactSettingsArgs } from "../lib/agent/settings-tools.js";
 import { deleteSessionArtifacts } from "../lib/agent/artifact-store.js";
 import { auditToolCall, auditConfirmReason } from "../lib/agent/guardrail.js";
+import { detectInjection, withUntrustedOutput, wrapUntrusted } from "../lib/untrusted.js";
 import { loadRuntimeSkills, shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
 import { applySlashItem, composeSkillPrompt, filterSlashItems, parseSlashToken, slashItemsFromSkills, userInvokedSkill } from "../lib/slash.js";
 import { pickSkillFolder, clearSkillFolderHandle, setSkillFolderPath, ensureSkillBody, skillFolderStatus } from "../lib/skill-folder.js";
@@ -150,6 +151,7 @@ const state = {
   nativeHost: { ok: false, checked: false },
   sessionHitlOverride: null,
   hitlApprovedOrigins: new Set(),
+  injectionSuspected: null,
   dubPlaying: false,
   activeToolDomains: new Set(),
   currentClipMsg: null,
@@ -1258,7 +1260,7 @@ function citeTranscript() {
   state.chatRef = {
     kind: "transcript",
     title,
-    context: `【主动引用视频文稿】标题：${title}\nURL：${state.pack?.url || state.tab?.url || ""}\n\n${text.slice(0, 12000)}`,
+    context: `【主动引用视频文稿】URL：${state.pack?.url || state.tab?.url || ""}\n${wrapUntrusted(`标题：${title}\n\n${text.slice(0, 12000)}`, "captions")}`,
   };
   setView("chat");
   renderComposerChip();
@@ -2378,6 +2380,15 @@ function updateHitlBadge() {
   }
 }
 
+function flagInjection(hit, botMsg) {
+  if (!hit || state.injectionSuspected) return;
+  state.injectionSuspected = hit;
+  state.sessionHitlOverride = null;
+  updateHitlBadge();
+  debugLog("hitl.injection", { tool: hit.tool, match: hit.match });
+  if (botMsg) pushTraceItem(botMsg, { kind: "meta", name: "疑似提示词注入，已降级为逐项确认", ok: false });
+}
+
 function showHitlModal({ toolName, args, reason, signal, timeoutSeconds, onDecision, title, detail, allowRemember = true, approveLabel, armMs = 0 }) {
   const modal = $("hitl-modal");
   const descEl = $("hitl-desc");
@@ -2481,6 +2492,7 @@ async function startNewSession() {
   state.activeToolDomains = new Set();
   state.sessionHitlOverride = null;
   state.hitlApprovedOrigins = new Set();
+  state.injectionSuspected = null;
   updateHitlBadge();
   state.recordAbort?.abort();
   state.workAbort?.abort();
@@ -5060,6 +5072,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       confirmSettingsChange: confirmAgentSettingsChange,
       onSettingsChanged: applyAgentSettings,
     });
+    tools = withUntrustedOutput(tools, { onInjection: (hit) => flagInjection(hit, botMsg) });
 
     loop = createKernelAgentLoop({
       maxTurns: 0,
@@ -5090,6 +5103,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           targetUrl,
           userUrl: hitlUserUrl,
           approvedOrigins: state.hitlApprovedOrigins,
+          injectionSuspected: state.injectionSuspected,
         });
         if (!req.needsConfirmation) {
           if (tool.name === "run_shell") {
@@ -5428,6 +5442,8 @@ async function sendPrompt(userText, options = {}) {
     const pack = state.share ? state.pack : null;
     const context = state.chatRef?.context
       || (pack ? packToContext(pack) : "（用户未分享页面）");
+    const contextHit = detectInjection(context);
+    if (contextHit) flagInjection({ tool: pack ? "page" : "reference", ...contextHit }, botMsg);
     botMsg.sourceTitle = state.chatRef?.title
       || (state.share ? (state.pack?.title || state.tab?.title || "") : "");
     const prior = [];
