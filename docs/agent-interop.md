@@ -73,6 +73,7 @@ token 也可用环境变量 `PAGELENS_TOKEN` 给出；`--agent-name` / `PAGELENS
 | `page:js` | `run_js` |
 | `clipboard` | `clipboard_write` `copy_selection_trusted` |
 | `downloads` / `upload` | `download_file` `list_downloads` / `upload_file` |
+| `cookies` | `get_cookies` `set_cookie` `remove_cookie`（高危；只在「完全」预设里，不在只读/操作） |
 | `settings:read` / `settings:write` | `get_settings` / `update_settings`（`agentTokens`、`agentGatewayEnabled` 等敏感项一律 `SETTING_PROTECTED`） |
 | `host:shell` / `host:fs` | MCP 垫片里的本机工具 `exec_command` / `read_file` `write_file` `list_directory` `scan_skills` |
 
@@ -365,7 +366,7 @@ const { result, artifacts } = await pl.call("list_tabs");
 | `scroll_page {tabId, selector? / percent? / y? / direction?}` | page:act | 滚动 | `direction` 为一屏 |
 | `drag_drop {tabId, from, to}` | page:act | 可信拖拽 | `from`/`to` 各用 `index`（快照 ref）/`selector`/`text`/`x,y` |
 | `handle_dialog {tabId, accept?, promptText?}` | page:act | 处理 alert/confirm/prompt/beforeunload | 页面动作触发对话框时，`act_element`/`select_option`/`drag_drop`/`upload_file` 立即返回 `result.dialog`，不再卡住 |
-| `download_file {url, filename?, timeoutMs?}` | downloads | 下载到下载目录，返回本机路径 | URL 需在白名单；大文件用 `async:true`；不校验重定向后的最终域名 |
+| `download_file {url, filename?, timeoutMs?}` | downloads | 下载到下载目录，返回本机路径 | URL 需在白名单；大文件用 `async:true`；重定向后的最终 URL 若不在允许的目的地（token 的 origins ∪ 出站白名单）内，取消下载并返回 `EGRESS_NOT_ALLOWED` |
 | `list_downloads {query?, limit?}` | downloads | 最近下载 | 只列来源在白名单内的 |
 | `upload_file {tabId, selector / index / text, paths[]}` | upload | 把本机文件交给页面 | `<input type=file>` 直接设；自定义按钮接管文件选择框；敏感路径 `PATH_NOT_ALLOWED` |
 | `get_settings {}` | settings:read | 非敏感设置及允许值 | 敏感项只在 `protected` 列键名 |
@@ -452,7 +453,7 @@ await pl.call("trusted_click", { tabId: wx, text: "保存为草稿" });
 - 仅支持顶层 frame 的编辑器（iframe 内的编辑器未处理）。
 - 任务表持久化在 `chrome.storage.session`：浏览器重启会清空；SW 重启时正在执行的任务只能标 `interrupted`，不会续跑。
 - `dialog.opened` 事件只在 PageLens 已附加 `chrome.debugger` 的标签上产生；其他标签的对话框不可见。
-- 不提供 cookies 工具：manifest 没有 `cookies` 权限（需单独的高危 scope 再加）。
+- cookie 工具（`get_cookies` / `set_cookie` / `remove_cookie`）需要 manifest 的 `cookies` 权限和单独的高危 scope `cookies`。`chrome_call` 仍不开放 `cookies.*`。权限目前是必需权限；若以后改成可选，申请点在 `acquireCookiesApi`。
 - `snapshot_controls` 的 ref 存在 SW 内存里，按标签保存最近一次快照；SW 重启或导航后需重新快照。
 
 ## 14. 测试

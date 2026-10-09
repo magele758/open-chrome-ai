@@ -448,7 +448,7 @@ export async function chromeCall(method, args) {
   if (!CHROME_CALL_ALLOW.includes(name)) {
     return {
       ok: false,
-      error: `不允许调用 ${name}。cookies / debugger / downloads / storage / scripting 不开放；截图用 screenshot，读页用 extract_page / run_js。`,
+      error: `不允许调用 ${name}。cookies / debugger / downloads / storage / scripting 不开放；cookie 用 get_cookies / set_cookie / remove_cookie，截图用 screenshot，读页用 extract_page / run_js。`,
       allowed: CHROME_CALL_ALLOW,
     };
   }

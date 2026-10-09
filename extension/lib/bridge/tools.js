@@ -12,6 +12,7 @@ import { keyEvents, mouseClickEvents } from "../cdp-input.js";
 import { htmlToPlainText } from "../clipboard.js";
 import { restrictedUrl } from "../chrome.js";
 import { cdpScreenshot, createCdpTools } from "../agent/cdp-tools.js";
+import { readSelectorLabel } from "../agent/click-label.js";
 import { queryDom, runJs } from "../agent/page-fns.js";
 import { BridgeError, ERROR_CODES, makeArtifact, toBridgeError } from "./protocol.js";
 import { isUrlAllowed } from "./policy.js";
@@ -136,7 +137,14 @@ export function createBridgeTools(env) {
       focus: "emulated",
       needsTab: true,
       exclusive: true,
-      trustHint: (args, ctx) => (args.index != null ? refs.get(ctx.tab.id, args.index).item?.label || "" : ""),
+      async trustHint(args, ctx) {
+        if (args.index != null) {
+          const label = refs.get(ctx.tab.id, args.index).item?.label || "";
+          if (label) return label;
+        }
+        if (inner.name !== "trusted_click" || !args?.selector || !ctx.tab?.id) return "";
+        return readSelectorLabel(ctx.tab.id, args, { inject: env.inject, injectFrames: env.injectFrames });
+      },
       async execute(args, ctx) {
         const { activate, ...rest } = args;
         const run = async () => {

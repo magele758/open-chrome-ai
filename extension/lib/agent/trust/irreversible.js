@@ -82,7 +82,7 @@ const PAGE_ACT_TOOLS = new Set([
 ]);
 
 /**
- * 命中的清单项。ctx.elementText：act_element / 按编号点击时控件的可见文字；ctx.targetUrl：目标标签 URL。
+ * 命中的清单项。ctx.elementText：按编号或 CSS 选择器点到的控件可见文字；ctx.targetUrl：目标标签 URL。
  * @returns {{ id: string, label: string, reason: string } | null}
  */
 export function matchIrreversible(toolName, args = {}, settings = {}, ctx = {}) {
@@ -96,6 +96,7 @@ export function matchIrreversible(toolName, args = {}, settings = {}, ctx = {}) 
   if (isClick && buttonText && PUBLISH_TEXT_RE.test(buttonText)) hits.push(item("publish_send", `点击「${buttonText.slice(0, 40)}」`));
 
   if (toolName === "close_task_group") hits.push(item("delete", "批量关闭任务分组标签"));
+  if (toolName === "remove_cookie") hits.push(item("delete", "删除 cookie"));
   if (toolName === "chrome_call" && /remove|delete|clear/i.test(String(args?.method || ""))) {
     hits.push(item("delete", `chrome_call ${args.method}`));
   }

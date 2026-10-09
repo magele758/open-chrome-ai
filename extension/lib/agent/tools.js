@@ -47,6 +47,7 @@ import { actOnRef, scrollContainerOf, scrollViewport, snapshotControls } from ".
 import { cdpAvailable, getCdp } from "../cdp.js";
 import { cdpScreenshot, createCdpTools, withDialogGuard } from "./cdp-tools.js";
 import { createBrowserApiTools } from "./browser-api-tools.js";
+import { createCookieTools } from "./cookie-tools.js";
 import { createSettingsTools } from "./settings-tools.js";
 import { askJev, isJevActive } from "../jev.js";
 import { readClipboardRich, writeClipboardRich } from "../clipboard.js";
@@ -1428,7 +1429,7 @@ export function createAgentTools(ctx) {
     {
       name: "chrome_call",
       description:
-        "调用扩展已授权的 Chrome API（白名单）。高层工具够用时不要用这个。args 与官方签名一致，例如 tabs.query 传 [{currentWindow:true}]。不能调用 cookies/debugger/downloads/storage/scripting。",
+        "调用扩展已授权的 Chrome API（白名单）。高层工具够用时不要用这个。args 与官方签名一致，例如 tabs.query 传 [{currentWindow:true}]。不能调用 cookies/debugger/downloads/storage/scripting；cookie 用 get_cookies / set_cookie / remove_cookie。",
       parameters: obj(
         {
           method: {
@@ -1492,7 +1493,14 @@ export function createAgentTools(ctx) {
       }),
     );
   }
-  tools.push(...createBrowserApiTools(ctx, { resolveTabId: resolveForGuard }));
+  tools.push(...createBrowserApiTools(ctx, {
+    resolveTabId: resolveForGuard,
+    allowDownloadUrl: (url) => {
+      const policy = typeof ctx.getEgressPolicy === "function" ? ctx.getEgressPolicy() : null;
+      return !policy || policy.isAllowed(url);
+    },
+  }));
+  tools.push(...createCookieTools(ctx));
   tools.push(...createSettingsTools(ctx));
   const guarded = withDialogGuard(tools, { cdp, resolveTabId: resolveForGuard, enabled: cdpEnabled });
   if (ctx.enableSkills === false || ctx.settings?.skillsEnabled === false) {
@@ -1703,6 +1711,9 @@ export const TOOL_DOMAINS = {
     "recently_closed_tabs",
     "restore_closed_tab",
     "web_search",
+    "get_cookies",
+    "set_cookie",
+    "remove_cookie",
   ],
   system_ops: [
     "list_directory",
@@ -1799,7 +1810,7 @@ export function resolveActiveTools({
 
   // 标签管理意图
   if (
-    /标签|窗口|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|tab|bookmark|history|window|download|restore|search/i.test(
+    /标签|窗口|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|tab|bookmark|history|window|download|restore|search/i.test(
       text,
     )
   ) {

@@ -314,7 +314,7 @@ python3 extension/tools/mock_llm.py
 1. **高层语义工具**：抽页、截图、点击填写、列/开/关标签、任务分组、书签、历史、音频转写视频、文稿文件夹、Automa / COSE、`run_shell`（需 Native Host）等
 2. **`chrome_call` 白名单**：tabs / windows / bookmarks / history / notifications / tts / tabGroups 等已授权 API
 
-`chrome_call` 不开放：cookies、debugger、downloads、proxy、裸读 `chrome.storage`（密钥在里面）。调试器和下载只经由上面的结构化工具使用（如 `trusted_click`、`download_file`）：调试器可在设置里关闭，`download_file` / `upload_file` 等特权操作按授权模式确认。
+`chrome_call` 不开放：cookies、debugger、downloads、proxy、裸读 `chrome.storage`（密钥在里面）。调试器、下载和 cookie 只经由结构化工具使用（如 `trusted_click`、`download_file`、`get_cookies` / `set_cookie` / `remove_cookie`）：调试器可在设置里关闭，`download_file` / `upload_file` 等特权操作按授权模式确认。外部 Agent 读写 cookie 还需要单独的 `cookies` scope。
 
 密钥、对话、笔记在 `chrome.storage.local` 和 IndexedDB。视频文稿在你选择的本机文件夹里。仓库里没有真实 key。问页时正文发往你配置的模型地址，不经过本项目的后端。
 

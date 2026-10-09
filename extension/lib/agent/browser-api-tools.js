@@ -17,38 +17,75 @@ export function safeRelativeFilename(name) {
   return cleaned.slice(0, 180);
 }
 
-export async function waitForDownload(downloads, id, { timeoutMs = 30000, pollMs = 300 } = {}) {
+async function blockRedirectedDownload(downloads, id, url) {
+  if (typeof downloads.cancel === "function") {
+    try { await downloads.cancel(id); } catch { /* 已经结束或已取消 */ }
+  }
+  if (typeof downloads.removeFile === "function") {
+    try { await downloads.removeFile(id); } catch { /* 文件还没落到磁盘 */ }
+  }
+  if (typeof downloads.erase === "function") {
+    try { await downloads.erase({ id }); } catch { /* 历史记录已经没有这一条 */ }
+  }
+  return {
+    id,
+    state: "blocked",
+    filename: "",
+    bytes: 0,
+    mime: "",
+    url,
+    error: "EGRESS_NOT_ALLOWED",
+    reason: `出站拦截：下载被重定向到未声明的目的地 ${url}`,
+  };
+}
+
+function downloadRow(item) {
+  return {
+    id: item.id,
+    state: item.state,
+    filename: item.filename || "",
+    bytes: item.fileSize ?? item.totalBytes ?? 0,
+    mime: item.mime || "",
+    error: item.error || undefined,
+    url: item.finalUrl || item.url,
+  };
+}
+
+/**
+ * 等到下载结束。allowFinalUrl 只在最终 URL 和请求 URL 不同（发生了重定向）时调用；
+ * 返回 false 则取消下载、删文件，并标成 EGRESS_NOT_ALLOWED。
+ */
+export async function waitForDownload(downloads, id, { timeoutMs = 30000, pollMs = 300, allowFinalUrl, requestedUrl = "" } = {}) {
   const started = Date.now();
   for (;;) {
     const [item] = await downloads.search({ id });
     if (!item) return { id, state: "missing" };
-    if (item.state !== "in_progress" || Date.now() - started >= timeoutMs) {
-      return {
-        id,
-        state: item.state,
-        filename: item.filename || "",
-        bytes: item.fileSize ?? item.totalBytes ?? 0,
-        mime: item.mime || "",
-        error: item.error || undefined,
-        url: item.finalUrl || item.url,
-      };
+    if (typeof allowFinalUrl === "function") {
+      const requested = String(requestedUrl || item.url || "").trim();
+      const current = String(item.url || "").trim();
+      const finalUrl = String(item.finalUrl || "").trim();
+      const landed = finalUrl || (current && current !== requested ? current : "");
+      if (landed && requested && landed !== requested && !(await allowFinalUrl(landed))) {
+        return blockRedirectedDownload(downloads, id, landed);
+      }
     }
+    if (item.state !== "in_progress" || Date.now() - started >= timeoutMs) return downloadRow(item);
     await sleep(pollMs);
   }
 }
 
-export function createBrowserApiTools(ctx, { resolveTabId, api = globalThis.chrome, pollMs = 300 } = {}) {
+export function createBrowserApiTools(ctx, { resolveTabId, api = globalThis.chrome, pollMs = 300, allowDownloadUrl } = {}) {
   const missing = (name) => `当前环境没有 chrome.${name}，请在扩展里重新加载以获得新权限。`;
-  const startDownload = async (options, timeoutMs) => {
+  const startDownload = async (options, timeoutMs, allowFinalUrl) => {
     const id = await api.downloads.download({ conflictAction: "uniquify", saveAs: false, ...options });
-    return waitForDownload(api.downloads, id, { timeoutMs, pollMs });
+    return waitForDownload(api.downloads, id, { timeoutMs, pollMs, allowFinalUrl, requestedUrl: options.url });
   };
 
   return [
     {
       name: "download_file",
       description:
-        "把一个 http(s) 链接下载到本机下载目录，等完成后返回本机绝对路径（可交给 upload_file 上传，或用 read_file 读取）。filename 可选，只能是下载目录下的相对路径。",
+        "把一个 http(s) 链接下载到本机下载目录，等完成后返回本机绝对路径（可交给 upload_file 上传，或用 read_file 读取）。filename 可选，只能是下载目录下的相对路径。若被重定向到未声明的目的地，会取消下载。",
       parameters: obj(
         {
           url: { type: "string" },
@@ -57,14 +94,15 @@ export function createBrowserApiTools(ctx, { resolveTabId, api = globalThis.chro
         },
         ["url"],
       ),
-      async execute(args) {
+      async execute(args, hooks = {}) {
         if (!api.downloads?.download) return missing("downloads");
         const url = String(args?.url || "");
         if (!isHttpUrl(url)) return "只能下载 http(s) 链接。";
         const filename = safeRelativeFilename(args?.filename);
         const timeoutMs = Math.min(Math.max(Number(args?.timeoutMs) || 30000, 2000), 120000);
+        const allowFinalUrl = hooks.allowFinalUrl || allowDownloadUrl;
         try {
-          return toToolText(await startDownload({ url, ...(filename ? { filename } : {}) }, timeoutMs));
+          return toToolText(await startDownload({ url, ...(filename ? { filename } : {}) }, timeoutMs, allowFinalUrl));
         } catch (err) {
           return `下载失败：${err?.message || err}`;
         }

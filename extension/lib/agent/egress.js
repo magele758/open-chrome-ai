@@ -119,6 +119,14 @@ export function checkEgress(toolName, args = {}, { targetUrl = "", policy } = {}
   const allowed = (url) => Boolean(policy?.isAllowed(url));
   const where = (url) => urlHost(url) || String(url || "未知目的地").slice(0, 80);
   switch (toolName) {
+    case "get_cookies":
+    case "set_cookie":
+    case "remove_cookie": {
+      const url = String(args?.url || "").trim();
+      if (!url || allowed(url)) return { ok: true };
+      const verb = toolName === "get_cookies" ? "读取" : toolName === "remove_cookie" ? "删除" : "写入";
+      return hit("cookie", url, `${verb} cookie 的站点不在声明的目的地内：${where(url)}`);
+    }
     case "open_tab":
     case "navigate_tab":
     case "download_file": {

@@ -174,6 +174,7 @@ export function isToolPrivileged(toolName, args = {}, origin = {}) {
   if (toolName === "write_library") return true;
   if (toolName === "automa_execute") return true;
   if (toolName === "download_file" || toolName === "upload_file") return true;
+  if (toolName === "get_cookies" || toolName === "set_cookie" || toolName === "remove_cookie") return true;
   if (toolName === "chrome_call") {
     const method = String(args?.method || "");
     if (/remove|delete|update/i.test(method)) return true;

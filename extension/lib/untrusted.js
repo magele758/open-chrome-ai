@@ -20,6 +20,7 @@ export const PAGE_CONTENT_TOOLS = new Set([
   "search_tool_artifact",
   "run_js",
   "clipboard_read",
+  "get_cookies",
   "list_tabs",
   "search_history",
   "search_bookmarks",

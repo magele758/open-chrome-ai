@@ -69,6 +69,10 @@ assert.ok(!urlCarriesPayload("https://news.site.com/world/2026/story"));
   assert.equal(nav.origin, "https://evil.com");
   assert.equal(eg("download_file", { url: "https://evil.com/x.pdf?d=1" }).channel, "download");
   assert.ok(eg("download_file", { url: "https://docs.example.com/x.pdf?v=2" }).ok);
+  assert.equal(eg("get_cookies", { url: "https://evil.com/" }).channel, "cookie");
+  assert.ok(eg("get_cookies", { url: SRC }).ok);
+  assert.equal(eg("set_cookie", { url: "https://evil.com/", name: "a", value: "b" }).code, EGRESS_NOT_ALLOWED);
+  assert.ok(eg("remove_cookie", { url: SRC, name: "sid" }).ok);
 
   // run_js：跨源目标 / 网络能力 + 目的地
   assert.equal(eg("run_js", { code: "return 1" }, "https://mail.bank.com/").channel, "script");
@@ -164,6 +168,9 @@ assert.deepEqual(shellNetworkDestinations("rsync -a ./ backup.host.io:/srv").hos
   assert.ok(!yes("chrome_call", { method: "tabs.query" }));
   assert.ok(yes("write_library", { path: "a.md" }, { overwrite: true }));
   assert.ok(!yes("write_library", { path: "a.md" }));
+  assert.ok(yes("remove_cookie", { url: "https://x.com/", name: "sid" }));
+  assert.ok(yes("trusted_click", { selector: "#publish" }, { elementText: "发表" }));
+  assert.ok(!yes("trusted_click", { selector: "#publish" }), "a selector alone is not a label");
   assert.ok(yes("download_file", { url: "https://x.com/setup.exe" }));
   assert.ok(yes("download_file", { url: "https://x.com/get?id=1", filename: "tool.dmg" }));
   assert.ok(!yes("download_file", { url: "https://x.com/report.pdf" }));

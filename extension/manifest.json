@@ -32,6 +32,7 @@
     "userScripts",
     "debugger",
     "downloads",
+    "cookies",
     "sessions",
     "search",
     "pageCapture",

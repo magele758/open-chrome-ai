@@ -18,6 +18,7 @@ export const AGENT_SCOPES = Object.freeze([
   "clipboard",
   "downloads",
   "upload",
+  "cookies",
   "settings:read",
   "settings:write",
   "agent:delegate",
@@ -34,6 +35,7 @@ export const SCOPE_LABELS = Object.freeze({
   clipboard: "写剪贴板",
   downloads: "下载",
   upload: "上传本机文件",
+  cookies: "读写 cookie（高危，仅完全权限预设）",
   "settings:read": "读设置（非安全项）",
   "settings:write": "改设置（非安全项）",
   "agent:delegate": "委托扩展内 Agent",
@@ -41,7 +43,7 @@ export const SCOPE_LABELS = Object.freeze({
   "host:fs": "本机文件（MCP 垫片）",
 });
 
-/** agent:delegate 要等来源信任模型（P4）落地才开放，预设里都不含。 */
+/** agent:delegate 要等来源信任模型（P4）落地才开放，预设里都不含。cookies 只在 full 里。 */
 export const SCOPE_PRESETS = Object.freeze({
   "read-only": Object.freeze(["tabs:read", "page:read"]),
   operate: Object.freeze(["tabs:read", "tabs:manage", "page:read", "page:act", "clipboard"]),

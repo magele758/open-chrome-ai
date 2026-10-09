@@ -29,7 +29,7 @@ import { systemPrompt, packToContext, visibleSkills, formatTime } from "../lib/p
 import { summarizeTranscript } from "../lib/summarize-transcript.js";
 import { loadPageCaptions, transcribeTab, usableTranscript } from "../lib/captions.js";
 import { abortRecording, beginCapture, beginTabCapture, discardCapture, recordFromCapture } from "../lib/tab-audio.js";
-import { injectVideo } from "../lib/chrome.js";
+import { inject, injectFrames, injectVideo } from "../lib/chrome.js";
 import { InterpretController } from "../lib/interpret-controller.js";
 import { RemoteInterpretController } from "./interpret-client.js";
 import { createMessageScroll } from "./message-scroll.js";
@@ -74,6 +74,8 @@ import { initMarkdown, formatAnswer, splitThinking, decorateInlines, bindMarkdow
 import { createKernelAgentLoop, LOOP_ENGINE_ID } from "../lib/agent/loop-kernel.js";
 import { writeClipboardRich } from "../lib/clipboard.js";
 import { createAgentTools, resolveActiveTools, checkHitlRequirement, resolveHitlTargetUrl, urlOrigin } from "../lib/agent/tools.js";
+import { resolveClickElementText } from "../lib/agent/click-label.js";
+import { buildEgressPolicy } from "../lib/agent/egress.js";
 import { redactSettingsArgs } from "../lib/agent/settings-tools.js";
 import { deleteSessionArtifacts } from "../lib/agent/artifact-store.js";
 import { auditToolCall, auditConfirmReason } from "../lib/agent/guardrail.js";
@@ -5137,6 +5139,13 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       get settings() {
         return state.settings;
       },
+      getEgressPolicy: () =>
+        buildEgressPolicy({
+          capsule: state.capsule,
+          sourceUrl: state.tab?.url || state.pack?.url || "",
+          approvedOrigins: state.hitlApprovedOrigins,
+          taint: state.taint,
+        }),
       get nativeShell() {
         return state.settings.nativeShell !== false;
       },
@@ -5183,7 +5192,14 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           getTabUrl: async (tabId) => (await chrome.tabs.get(tabId))?.url,
         });
         const refTab = args?.tabId != null && args?.tabId !== "" ? Number(args.tabId) : state.tab?.id;
-        const elementText = args?.index != null && state.refLabel ? state.refLabel(refTab, args.index) : "";
+        const elementText = await resolveClickElementText({
+          toolName: tool.name,
+          args,
+          tabId: refTab,
+          refLabel: state.refLabel,
+          inject,
+          injectFrames,
+        });
         const req = checkHitlRequirement({
           toolName: tool.name,
           args,

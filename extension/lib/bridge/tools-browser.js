@@ -8,6 +8,8 @@ import { restrictedUrl } from "../chrome.js";
 import { extractPage } from "../extract.js";
 import { formatSnapshot, mergeFrameSnapshots } from "../jev-actions.js";
 import { createBrowserApiTools } from "../agent/browser-api-tools.js";
+import { createCookieTools } from "../agent/cookie-tools.js";
+import { buildEgressPolicy } from "../agent/egress.js";
 import { findInPage, getLinks, pageAct, scrollPage } from "../agent/page-fns.js";
 import { actOnRef, scrollContainerOf, scrollViewport, snapshotControls } from "../agent/page-snapshot.js";
 import { isSensitiveSetting, planSettingsChange, settingsSnapshot } from "../agent/settings-tools.js";
@@ -470,9 +472,14 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
     ),
   );
 
+  function downloadDestinationAllowed(url, ctx) {
+    const patterns = ctx.session?.egress?.length ? ctx.session.egress : ctx.settings?.agentBridgeOrigins || [];
+    return buildEgressPolicy({ tokenEgress: patterns }).isAllowed(url);
+  }
+
   add({
     name: "download_file",
-    description: "下载 http(s) 链接到本机下载目录（URL 必须在白名单），完成后返回本机路径。较大文件请用 async:true。",
+    description: "下载 http(s) 链接到本机下载目录（URL 必须在白名单），完成后返回本机路径。重定向后的最终 URL 若不在允许的目的地内会取消下载。较大文件请用 async:true。",
     parameters: obj(
       {
         url: { type: "string" },
@@ -485,8 +492,17 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
     async execute(args, ctx) {
       const url = ctx.authorizeUrl(args.url);
       if (!env.downloads?.download) throw new BridgeError(ERROR_CODES.TOOL_FAILED, "当前环境没有 chrome.downloads。");
-      const text = await apiTools.get("download_file").execute({ ...args, url });
+      const text = await apiTools.get("download_file").execute(
+        { ...args, url },
+        { allowFinalUrl: (finalUrl) => downloadDestinationAllowed(finalUrl, ctx) },
+      );
       const res = parseToolText(text);
+      if (res.state === "blocked" || res.error === "EGRESS_NOT_ALLOWED") {
+        throw new BridgeError(ERROR_CODES.EGRESS_NOT_ALLOWED, res.reason || `出站拦截：下载被重定向到未声明的目的地 ${res.url || ""}`, {
+          hint: "最终地址不在 token 的网站范围或出站白名单里。不要换别的方式把文件拉下来。",
+          details: { channel: "download", destination: res.url || null, origin: originOf(res.url) || null },
+        });
+      }
       if (res.state === "interrupted" || res.state === "missing") {
         throw new BridgeError(ERROR_CODES.TOOL_FAILED, `下载失败：${res.error || res.state}`, { details: res });
       }
@@ -505,6 +521,26 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
       return { downloads: rows.filter((d) => allowed(d.url, ctx)) };
     },
   });
+
+  // ---- cookies（高危 scope；chrome_call 不开放 cookies.*）----
+
+  const cookieTools = new Map(
+    createCookieTools({}, { api: { get cookies() { return env.cookies; } } }).map((tool) => [tool.name, tool]),
+  );
+  for (const name of ["get_cookies", "set_cookie", "remove_cookie"]) {
+    const inner = cookieTools.get(name);
+    add({
+      name: inner.name,
+      description: inner.description,
+      parameters: inner.parameters,
+      scope: "cookies",
+      async execute(args, ctx) {
+        ctx.authorizeUrl(args.url);
+        if (!env.cookies) throw new BridgeError(ERROR_CODES.TOOL_FAILED, "当前环境没有 chrome.cookies。");
+        return parseToolText(await inner.execute(args));
+      },
+    });
+  }
 
   // ---- upload ----
 

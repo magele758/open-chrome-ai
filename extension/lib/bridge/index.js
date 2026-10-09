@@ -62,6 +62,7 @@ export function createDefaultEnv() {
       remove: (id) => chrome.windows.remove(id),
     },
     downloads: chrome.downloads,
+    cookies: chrome.cookies,
     saveSettings,
     inject,
     injectFrames,
@@ -357,11 +358,16 @@ export function createBridge(env = createDefaultEnv()) {
           if (leaseGuarded(tool)) leases.check(tabId, owner(auth));
         }
         if (auth) {
+          let elementText = "";
+          if (typeof tool.trustHint === "function") {
+            const hinted = await tool.trustHint(req.args, ctx);
+            if (typeof hinted === "string") elementText = hinted;
+          }
           trust = await enforceTokenGuards(tool.name, req.args, {
             record: auth.record,
             settings,
             targetUrl: ctx.tab?.url || "",
-            elementText: tool.trustHint?.(req.args, ctx) || "",
+            elementText,
             approvals,
             sessionId: auth.sessionId,
           });

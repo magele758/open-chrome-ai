@@ -392,6 +392,20 @@ export function locateElement(spec) {
     el = nodes[Math.min(nth, nodes.length - 1)];
   }
 
+  // 只取可见文字，不滚动、不点。给不可逆清单用，避免选择器点击看不到按钮文案。
+  if (o.labelOnly) {
+    const bits = [];
+    const aria = el.getAttribute("aria-label");
+    const title = el.getAttribute("title");
+    const alt = el.getAttribute("alt");
+    if (aria) bits.push(aria);
+    if (title) bits.push(title);
+    if (alt) bits.push(alt);
+    if (el.tagName === "INPUT" && ["button", "submit", "reset", "image"].includes(el.type) && el.value) bits.push(el.value);
+    else if (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA" && el.innerText) bits.push(el.innerText);
+    return { ok: true, tag: el.tagName.toLowerCase(), text: clean(bits.join(" ")).slice(0, 200) };
+  }
+
   el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
   const r = el.getBoundingClientRect();
   if (r.width <= 0 || r.height <= 0) return { ok: false, error: "目标没有可点击区域" };

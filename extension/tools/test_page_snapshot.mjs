@@ -178,6 +178,18 @@ assert.equal(loc.ok, true);
 assert.deepEqual([loc.x, loc.y], [50, 115], "center of the button rect");
 assert.equal(locateElement({ text: "登录" }).ok, true);
 assert.equal(locateElement({ selector: "#deep" }).ok, true, "locates inside shadow DOM");
+{
+  let scrolls = 0;
+  const prevScroll = window.Element.prototype.scrollIntoView;
+  window.Element.prototype.scrollIntoView = function () { scrolls += 1; };
+  const labelOnly = locateElement({ selector: "#go", labelOnly: true });
+  assert.equal(labelOnly.text, "登录");
+  assert.equal(labelOnly.x, undefined, "label lookup does not resolve a click point");
+  assert.equal(scrolls, 0, "label lookup does not scroll the page");
+  assert.equal(locateElement({ selector: "#pw", labelOnly: true }).text, "密码", "aria-label is the button text; input values stay out");
+  assert.equal(scrolls, 0);
+  window.Element.prototype.scrollIntoView = prevScroll;
+}
 assert.equal(locateElement({ selector: "#nope" }).notFound, true);
 assert.equal(locateElement({ node: 424242 }).stale, true);
 const fresh = snapshotControls({});
