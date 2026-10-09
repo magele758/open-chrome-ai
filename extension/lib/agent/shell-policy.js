@@ -146,7 +146,7 @@ function shellWords(cmd) {
   return words;
 }
 
-function isSensitivePath(p) {
+export function isSensitivePath(p) {
   const segs = String(p || "").split(/[/\\=]/);
   return segs.some((s) => SENSITIVE_SEG.has(s.toLowerCase()) || SENSITIVE_NAME.test(s));
 }

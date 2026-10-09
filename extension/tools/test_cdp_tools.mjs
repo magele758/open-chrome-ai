@@ -316,7 +316,13 @@ assert.equal(timedOut.state, "in_progress", "slow downloads return instead of ha
 
 for (const name of ["download_file", "upload_file"]) {
   assert.equal(checkHitlRequirement({ toolName: name, hitlMode: "strict" }).needsConfirmation, true, `${name} needs confirmation`);
-  assert.equal(checkHitlRequirement({ toolName: name, hitlMode: "autonomous" }).needsConfirmation, false);
 }
+assert.equal(checkHitlRequirement({ toolName: "download_file", hitlMode: "autonomous" }).needsConfirmation, false);
+// 上传本机文件在默认不可逆清单里：全自动也要确认；用户取消勾选后恢复自动
+assert.equal(checkHitlRequirement({ toolName: "upload_file", hitlMode: "autonomous" }).needsConfirmation, true);
+assert.equal(
+  checkHitlRequirement({ toolName: "upload_file", hitlMode: "autonomous", settings: { irreversibleActions: { file_upload: false } } }).needsConfirmation,
+  false,
+);
 
 console.log("test_cdp_tools ok");

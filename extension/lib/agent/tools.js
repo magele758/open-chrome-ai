@@ -57,6 +57,15 @@ import { execNativeShell, formatExecResult, nativeFs } from "../native-host.js";
 import { aliasAgentPath, isAllowedAgentReadName, isBlockedAgentRoot } from "./fs-policy.js";
 import { isShellCommandWhitelisted, shellPolicyBlock } from "./shell-policy.js";
 import { debugLog } from "../debug-log.js";
+import { decideToolCall } from "./trust/decide.js";
+import {
+  ORIGIN_SCOPED_NAV_TOOLS,
+  ORIGIN_SCOPED_TAB_TOOLS,
+  READ_ONLY_TOOLS,
+  TAB_TARGET_TOOLS,
+  isToolPrivileged,
+  urlOrigin,
+} from "./trust/tool-classes.js";
 import {
   COMPANIONS,
   automaExecute,
@@ -200,6 +209,11 @@ export function createAgentTools(ctx) {
   const cdp = ctx.cdp || (cdpAvailable() ? getCdp() : null);
   const cdpEnabled = Boolean(cdp) && ctx.settings?.cdpInput !== false;
   const snapshots = new Map();
+  // HITL 需要按编号操作的控件文字来匹配不可逆清单（「发布」「删除」类按钮）
+  ctx.exposeRefLabel?.((tabId, index) => {
+    const item = snapshots.get(Number(tabId))?.items?.find((x) => x.index === Number(index));
+    return item ? String(item.label || item.text || "") : "";
+  });
   const jevHistory = new Map();
   const noteAction = (tabId, entry) => {
     const list = jevHistory.get(tabId) || [];
@@ -1723,59 +1737,15 @@ export const TOOL_DOMAINS = {
 
 export { isShellCommandWhitelisted };
 
-/** 疑似提示词注入后仍可免确认的只读浏览器工具；其余工具（含本机文件读取）都要逐项确认 */
-export const INJECTION_SAFE_TOOLS = new Set([
-  "extract_page",
-  "extract_pages",
-  "get_page_info",
-  "screenshot",
-  "get_selection",
-  "get_links",
-  "find_in_page",
-  "query_dom",
-  "list_controls",
-  "snapshot_controls",
-  "wait_for",
-  "wait_for_navigation",
-  "scroll_page",
-  "list_tabs",
-  "get_captions",
-  "seek_video",
-  "highlight_quote",
-  "search_tool_artifact",
-  "read_tool_page",
-  "list_companion_extensions",
-  "request_toolsets",
-]);
-
-/** 作用于已有标签、能读写页面或代用户输入的工具：目标与用户所在 origin 不同则需确认 */
-export const ORIGIN_SCOPED_TAB_TOOLS = new Set([
-  "run_js",
-  "fill",
-  "trusted_type",
-  "trusted_click",
-  "paste_into_page",
-]);
-/** 以 URL 发起请求的工具：URL 本身就能把数据带出去 */
-export const ORIGIN_SCOPED_NAV_TOOLS = new Set(["open_tab", "navigate_tab"]);
-
-// run_js 里出现这些能力时，即使同源也可能外发数据或读凭据
-const RUN_JS_SENSITIVE_RE =
-  /\b(fetch|XMLHttpRequest|sendBeacon|WebSocket|EventSource|RTCPeerConnection|importScripts|eval|Function|postMessage|cookieStore)\b|document\s*\.\s*cookie|\b(local|session)Storage\b|\bindexedDB\b|\bimport\s*\(|\.\s*(src|href|action)\s*=(?!=)|\blocation\s*(\.\s*\w+\s*)?=(?!=)|\bwindow\s*\.\s*open\b/;
-
-export function urlOrigin(url) {
-  try {
-    const u = new URL(String(url || ""));
-    return /^https?:$/.test(u.protocol) ? u.origin : "";
-  } catch {
-    return "";
-  }
-}
+/** 只读工具：会话高污染后仍免确认；其余工具（含本机文件读取）在胶囊外都要确认 */
+export const INJECTION_SAFE_TOOLS = READ_ONLY_TOOLS;
+export { ORIGIN_SCOPED_NAV_TOOLS, ORIGIN_SCOPED_TAB_TOOLS, isToolPrivileged, urlOrigin };
 
 /** 拿到 HITL 判断所需的目标 URL；解析不出时返回空串（按跨源处理） */
 export async function resolveHitlTargetUrl(toolName, args = {}, { getTabId, getTabUrl } = {}) {
   if (ORIGIN_SCOPED_NAV_TOOLS.has(toolName)) return String(args?.url || "").trim();
-  if (!ORIGIN_SCOPED_TAB_TOOLS.has(toolName)) return "";
+  if (toolName === "download_file") return String(args?.url || "").trim();
+  if (!TAB_TARGET_TOOLS.has(toolName)) return "";
   const raw = args?.tabId;
   const tabId = raw != null && raw !== "" ? Number(raw) : getTabId?.();
   if (!tabId) return "";
@@ -1786,98 +1756,9 @@ export async function resolveHitlTargetUrl(toolName, args = {}, { getTabId, getT
   }
 }
 
-/**
- * 跨源判定：目标 origin 不明、与用户所在 origin 不同且未经用户放行时返回目标 origin（可能为空串），否则返回 null。
- */
-function crossOriginTarget({ targetUrl, userUrl, approvedOrigins } = {}) {
-  const target = urlOrigin(targetUrl);
-  const home = urlOrigin(userUrl);
-  if (target && home && target === home) return null;
-  if (target && approvedOrigins?.has?.(target)) return null;
-  return target;
-}
-
-/** 判断工具是否属于高危特权类；origin 类工具需传 { targetUrl, userUrl, approvedOrigins } */
-export function isToolPrivileged(toolName, args = {}, origin = {}) {
-  if (toolName === "run_js" && RUN_JS_SENSITIVE_RE.test(String(args?.code || ""))) return true;
-  if (ORIGIN_SCOPED_TAB_TOOLS.has(toolName) || ORIGIN_SCOPED_NAV_TOOLS.has(toolName)) {
-    return crossOriginTarget(origin) !== null;
-  }
-  if (toolName === "run_shell") return true;
-  if (toolName === "cose_publish") return true;
-  if (toolName === "close_tab" || toolName === "close_task_group") return true;
-  if (toolName === "write_library") return true;
-  if (toolName === "automa_execute") return true;
-  if (toolName === "download_file" || toolName === "upload_file") return true;
-  if (toolName === "chrome_call") {
-    const method = String(args?.method || "");
-    if (/remove|delete|update/i.test(method)) return true;
-  }
-  return false;
-}
-
-/** HITL 拦截鉴权规则计算 */
-export function checkHitlRequirement({
-  toolName,
-  args = {},
-  hitlMode = "balanced",
-  sessionOverride = false,
-  targetUrl,
-  userUrl,
-  approvedOrigins,
-  injectionSuspected = null,
-}) {
-  if (sessionOverride) return { needsConfirmation: false };
-  // 降级对全自动模式同样生效；用户在确认框里勾选“本场免确认”即重新显式信任
-  if (injectionSuspected && !INJECTION_SAFE_TOOLS.has(toolName)) {
-    const from = injectionSuspected.tool ? `（来源 ${injectionSuspected.tool}：「${String(injectionSuspected.excerpt || injectionSuspected.match || "").slice(0, 60)}」）` : "";
-    return {
-      needsConfirmation: true,
-      needsAudit: hitlMode === "balanced",
-      reason: `检测到外部内容疑似提示词注入${from}，本会话已降级为逐项确认：[${toolName}]`,
-    };
-  }
-  if (hitlMode === "autonomous") return { needsConfirmation: false };
-  const origin = { targetUrl, userUrl, approvedOrigins };
-  if (!isToolPrivileged(toolName, args, origin)) {
-    return { needsConfirmation: false };
-  }
-  const isOriginTool = ORIGIN_SCOPED_TAB_TOOLS.has(toolName) || ORIGIN_SCOPED_NAV_TOOLS.has(toolName);
-  const crossOrigin = isOriginTool ? crossOriginTarget(origin) : null;
-  if (crossOrigin !== null) {
-    const where = crossOrigin || "未知来源";
-    return {
-      needsConfirmation: true,
-      needsAudit: hitlMode !== "strict",
-      // 只有明确的 http(s) origin 才能记入“本会话已放行”
-      approveOrigin: crossOrigin || undefined,
-      reason: `跨源操作：[${toolName}] 作用于 ${where}，与你当前所在页面（${urlOrigin(userUrl) || "未知"}）不同，需手动授权`,
-    };
-  }
-  if (hitlMode === "strict") {
-    return {
-      needsConfirmation: true,
-      needsAudit: false,
-      reason: `严格模式：特权操作 [${toolName}] 需手动授权`,
-    };
-  }
-  // hitlMode === "balanced" (智能模式：支持 AI 审查中间态)
-  if (toolName === "run_shell") {
-    const cmd = args?.command;
-    if (isShellCommandWhitelisted(cmd, { cwd: args?.cwd })) {
-      return { needsConfirmation: false };
-    }
-    return {
-      needsConfirmation: true,
-      needsAudit: true,
-      reason: `智能审查模式：非白名单命令待安全审核 [${cmd || ""}]`,
-    };
-  }
-  return {
-    needsConfirmation: true,
-    needsAudit: true,
-    reason: `智能审查模式：特权操作 [${toolName}] 待安全审核`,
-  };
+/** HITL 判定：按来源授权（胶囊 / 污点 / 出站 / 不可逆清单），见 trust/decide.js */
+export function checkHitlRequirement(params) {
+  return decideToolCall(params);
 }
 
 /** 动态工具路由器：按意图裁剪工具集 */

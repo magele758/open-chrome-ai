@@ -2,6 +2,7 @@ import { normalizeUiTheme, normalizeThemeColors } from "./ui-theme.js";
 import { hydrateTextCatalog } from "./text-providers.js";
 import { normalizeJevSettings } from "./jev.js";
 import { normalizeBridgeSettings } from "./bridge/policy.js";
+import { defaultIrreversibleActions, normalizeIrreversibleActions } from "./agent/trust/irreversible.js";
 
 export const PRESETS = [
   { id: "custom", name: "自定义", baseUrl: "" },
@@ -105,6 +106,7 @@ export function defaultSettings() {
     ...normalizeBridgeSettings(),
     agentGatewayEnabled: false,
     hitlMode: "balanced",
+    irreversibleActions: defaultIrreversibleActions(),
     loopEngine: "kernel",
     hitlTimeoutSeconds: 30,
     skillsEnabled: false,
@@ -159,6 +161,7 @@ export function normalizeSettings(raw) {
   Object.assign(merged, normalizeBridgeSettings(raw));
   merged.agentGatewayEnabled = raw?.agentGatewayEnabled === true;
   merged.hitlMode = ["strict", "balanced", "autonomous"].includes(raw?.hitlMode) ? raw.hitlMode : "balanced";
+  merged.irreversibleActions = normalizeIrreversibleActions(raw?.irreversibleActions);
   merged.loopEngine = "kernel";
   const timeout = Number(raw?.hitlTimeoutSeconds);
   merged.hitlTimeoutSeconds = Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.max(timeout, 5), 300) : 30;

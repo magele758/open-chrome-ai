@@ -12,9 +12,9 @@
  */
 
 import { getCdp } from "../cdp.js";
-import { inject, restrictedUrl, runJsInTab } from "../chrome.js";
+import { inject, injectFrames, restrictedUrl, runJsInTab } from "../chrome.js";
 import { createSwClipboard } from "../clipboard-sw.js";
-import { loadSettings } from "../storage.js";
+import { loadSettings, saveSettings } from "../storage.js";
 import {
   BRIDGE_PROTOCOL,
   BridgeError,
@@ -43,8 +43,22 @@ export function createDefaultEnv() {
       query: (q) => chrome.tabs.query(q),
       create: (props) => chrome.tabs.create(props),
       update: (id, props) => chrome.tabs.update(id, props),
+      reload: (id) => chrome.tabs.reload(id),
+      goBack: (id) => chrome.tabs.goBack(id),
+      goForward: (id) => chrome.tabs.goForward(id),
+      remove: (id) => chrome.tabs.remove(id),
     },
+    windows: {
+      getAll: (q) => chrome.windows.getAll(q),
+      get: (id, q) => chrome.windows.get(id, q),
+      create: (props) => chrome.windows.create(props),
+      update: (id, props) => chrome.windows.update(id, props),
+      remove: (id) => chrome.windows.remove(id),
+    },
+    downloads: chrome.downloads,
+    saveSettings,
     inject,
+    injectFrames,
     runJs: runJsInTab,
     cdp: getCdp(),
     clipboard: createSwClipboard(),
@@ -167,13 +181,13 @@ export function createBridge(env = createDefaultEnv()) {
     };
   }
 
-  function originDenied(what, url, auth) {
+  function originDenied(what, url, auth, extra = {}) {
     const origin = originOf(url);
     return new BridgeError(ERROR_CODES.ORIGIN_NOT_ALLOWED, `${what} 的 origin 不在${auth ? ` token「${auth.record.name}」的范围` : "白名单"}：${origin}`, {
       hint: auth
         ? "在 PageLens 设置 → 外部 Agent 新建一个 origin 范围包含它的 token。"
         : "在设置里把该 origin 加入 agentBridgeOrigins（仅在专用 profile 中启用）。",
-      details: { origin },
+      details: { origin, ...extra },
     });
   }
 
@@ -183,7 +197,7 @@ export function createBridge(env = createDefaultEnv()) {
 
   function authorizeUrl(url, settings, auth) {
     const value = String(url || "");
-    if (!urlAllowed(value, settings, auth)) throw originDenied("URL", value, auth);
+    if (!urlAllowed(value, settings, auth)) throw originDenied("URL", value, auth, { url: value });
     return value;
   }
 

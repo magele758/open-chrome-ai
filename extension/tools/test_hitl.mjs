@@ -144,14 +144,31 @@ assert(isToolPrivileged("chrome_call", { method: "tabs.remove" }) === true, "des
 assert(isToolPrivileged("chrome_call", { method: "tabs.query" }) === false, "read-only chrome_call is safe");
 
 // 3. Test checkHitlRequirement across 3 modes
-// 3.1 Autonomous mode
+// 3.1 Autonomous mode: auto-runs everything except items on the user's irreversible list
+assert(
+  checkHitlRequirement({
+    toolName: "run_shell",
+    args: { command: "npm run build" },
+    hitlMode: "autonomous",
+  }).needsConfirmation === false,
+  "autonomous allows non-whitelisted commands without confirmation",
+);
 assert(
   checkHitlRequirement({
     toolName: "run_shell",
     args: { command: "rm -rf /tmp/test" },
     hitlMode: "autonomous",
+  }).needsConfirmation === true,
+  "shell writes are on the default irreversible list and confirm even in autonomous mode",
+);
+assert(
+  checkHitlRequirement({
+    toolName: "run_shell",
+    args: { command: "rm -rf /tmp/test" },
+    hitlMode: "autonomous",
+    settings: { irreversibleActions: { shell_write: false } },
   }).needsConfirmation === false,
-  "autonomous allows everything without confirmation",
+  "unchecking shell_write restores the old autonomous behaviour",
 );
 
 // 3.2 Session override

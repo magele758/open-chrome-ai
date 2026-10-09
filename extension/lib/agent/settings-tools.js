@@ -61,7 +61,13 @@ const SCHEMA_BY_KEY = new Map(AGENT_SETTINGS_SCHEMA.map((f) => [f.key, f]));
 export const AGENT_HIDDEN_SETTINGS = Object.freeze(["agentGatewayEnabled", "agentTokens"]);
 
 // Defence in depth: a future schema entry that forgets `sensitive` still gets flagged.
-const SENSITIVE_KEY = /key|secret|token|password|baseurl|endpoint|origin|allow|inbox|hitl|bridge|shell|cdp|langfuse\.enabled/i;
+const SENSITIVE_KEY = /key|secret|token|password|baseurl|endpoint|origin|allow|inbox|hitl|bridge|shell|cdp|irreversible|langfuse\.enabled/i;
+
+/**
+ * Safety settings the chat agent may never change, not even with confirmation: they decide what needs
+ * confirmation in the first place. Absent from AGENT_SETTINGS_SCHEMA, so planSettingsChange rejects them.
+ */
+export const AGENT_FORBIDDEN_SETTINGS = Object.freeze(["irreversibleActions", "agentTokens"]);
 
 export function isSensitiveSetting(key) {
   if (AGENT_HIDDEN_SETTINGS.includes(key)) return true;
@@ -312,17 +318,38 @@ export function createSettingsTools(ctx = {}) {
         required: ["changes"],
       },
       async execute(args) {
-        if (typeof ctx.confirmSettingsChange !== "function") {
-          return "当前环境无法弹出确认窗口，不能修改设置。请用户到设置页手动修改。";
-        }
         const plan = planSettingsChange(await load(), args?.changes);
         if (plan.errors.length) return `未修改任何设置：\n${plan.errors.join("\n")}`;
         if (!plan.diff.length) return "这些设置已经是目标值，无需修改。";
+        if (typeof ctx.confirmSettingsChange !== "function" && typeof ctx.autoApplySettings !== "function") {
+          return "当前环境无法弹出确认窗口，不能修改设置。请用户到设置页手动修改。";
+        }
         const diff = plan.diff.map(({ value, ...rest }) => rest);
+        const sensitive = diff.some((d) => d.sensitive);
+        if (!sensitive && typeof ctx.autoApplySettings === "function" && ctx.autoApplySettings({ diff }) === true) {
+          const before = await load();
+          const saved = await save(plan.next);
+          await ctx.onSettingsChanged?.(saved);
+          const undo = async () => {
+            const restored = planSettingsChange(
+              await load(),
+              plan.diff.map((d) => ({ key: d.key, value: currentValue(normalizeSettings(before), SCHEMA_BY_KEY.get(d.key)) })),
+            );
+            if (restored.errors.length || !restored.diff.length) return false;
+            const undone = await save(restored.next);
+            await ctx.onSettingsChanged?.(undone);
+            return true;
+          };
+          await ctx.onSettingsAutoApplied?.({ diff, text: formatSettingsDiff(diff), undo });
+          return `已按你的要求直接生效（非安全项，侧栏可一键撤销）：\n${formatSettingsDiff(diff)}`;
+        }
+        if (typeof ctx.confirmSettingsChange !== "function") {
+          return "当前环境无法弹出确认窗口，不能修改设置。请用户到设置页手动修改。";
+        }
         const decision = await ctx.confirmSettingsChange({
           diff,
           text: formatSettingsDiff(diff),
-          sensitive: diff.some((d) => d.sensitive),
+          sensitive,
           reason: String(args?.reason || "").slice(0, 200),
           signal: ctx.getAbortSignal?.(),
         });

@@ -185,6 +185,18 @@ const asWriter = { session: { token: writer.token, sessionId: "s-w", agentName: 
   assert.equal((await bridge.call({ id: "js1", tool: "job_status", args: { jobId: "job1" } }, asWriter)).result.status, "done");
   assert.equal((await bridge.call({ id: "js2", tool: "job_status", args: { jobId: "job1" } }, asReader)).error.code, "JOB_NOT_FOUND");
 
+  // browser-level tools are scope-gated too, and a token can never edit gateway auth via update_settings
+  const noWrite = await bridge.call({ id: "s1", tool: "update_settings", args: { changes: [{ key: "agentGatewayEnabled", value: false }] } }, asWriter);
+  assert.equal(noWrite.error.code, "SCOPE_DENIED");
+  const admin = await createTokenRecord({ name: "admin", scopes: ["settings:write"], origins: [] });
+  tokens.push(admin.record);
+  const asAdmin = { session: { token: admin.token, sessionId: "s-a", agentName: "admin" } };
+  for (const key of ["agentTokens", "agentGatewayEnabled"]) {
+    const res = await bridge.call({ id: `s-${key}`, tool: "update_settings", args: { changes: [{ key, value: [] }] } }, asAdmin);
+    assert.equal(res.error.code, "SETTING_PROTECTED", key);
+  }
+  tokens.pop();
+
   // revocation applies to the very next call
   tokens[1] = { ...writer.record, revokedAt: Date.now() };
   assert.equal((await bridge.call({ id: "w3", tool: "list_tabs" }, asWriter)).error.code, "UNAUTHORIZED");
