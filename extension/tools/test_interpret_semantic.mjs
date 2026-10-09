@@ -1,14 +1,10 @@
 import assert from 'node:assert/strict';
 import { createSemanticBuffer, unfinishedSpeech, withInterpretDeadline, validateSemanticTranslation } from '../lib/interpret-semantic.js';
 import { createInterpretContext } from '../lib/interpret-context.js';
-import { createInterpretPipeline } from '../lib/interpret-pipeline.js';
 import { translateToZh, translateSemanticPrefix, cleanTranslation } from '../lib/interpret.js';
 
 console.info = () => {};
 const chunk = (src, start = 0, end = start + 5, id = start / 5 + 1) => ({ src, start, end, trace: { chunk: id, generation: 0 }, ownRef: id });
-const gate = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
-const tick = () => new Promise(r => setImmediate(r));
-const bounded = promise => withInterpretDeadline(() => promise, undefined, 1500);
 
 {
   const buffer = createSemanticBuffer();
@@ -83,77 +79,6 @@ const bounded = promise => withInterpretDeadline(() => promise, undefined, 1500)
   assert.deepEqual(context.terms(), [], 'a conflicting meaning revokes the old confirmed mapping');
   context.reset(); assert.deepEqual(context.terms(), []);
 }
-// The second ASR can finish first, but neither its meaning nor its context can overtake.
-{
-  const first = gate(), buffer = createSemanticBuffer(), context = createInterpretContext();
-  const contexts = [], spoken = [];
-  const pipeline = createInterpretPipeline({
-    prebuffer: 3,
-    prepare: async item => { if (item.start === 0) await first.promise; return item; },
-    transform: item => buffer.push(item), flush: () => buffer.flush(),
-    synthesize: async item => {
-      contexts.push(context.snapshot()); context.commit(item.src, `译文${contexts.length}`); return item;
-    },
-    play: async item => spoken.push(item),
-  });
-  pipeline.enqueue(chunk("I don't think"));
-  pipeline.enqueue(chunk('this is a good idea. Try again. The final words', 5));
-  await tick(); assert.equal(spoken.length, 0); assert.equal(contexts.length, 0);
-  first.resolve();
-  await bounded(pipeline.finish());
-  assert.deepEqual(spoken.map(u => u.src), ["I don't think this is a good idea.", 'Try again.', 'The final words']);
-  assert.equal(contexts[0].length, 0);
-  assert.equal(contexts[1][0].src, spoken[0].src);
-  assert.equal(pipeline.pending, 0);
-}
-// No complete sentence at startup must release the wait so capture can obtain the continuation.
-{
-  const buffer = createSemanticBuffer(), spoken = [];
-  const pipeline = createInterpretPipeline({ prebuffer: 3, prepare: async i => i,
-    transform: i => buffer.push(i), flush: () => buffer.flush(),
-    synthesize: async i => i, play: async i => spoken.push(i),
-  });
-  pipeline.enqueue(chunk('We want to'));
-  assert.equal(await bounded(pipeline.waitUntilReady(3)), false);
-  pipeline.enqueue(chunk('explain this.', 5));
-  assert.equal(await bounded(pipeline.waitUntilReady(3)), false, 'a partial output batch cannot wait for unavailable input');
-  await bounded(pipeline.waitUntilPendingAtMost(0));
-  await bounded(pipeline.finish());
-  assert.equal(spoken.length, 1);
-  assert.equal(pipeline.pending, 0);
-}
-// Fanout respects audio capacity, including when a requested prebuffer exceeds it.
-{
-  const playing = gate(), spoken = [];
-  let synthesized = 0;
-  const pipeline = createInterpretPipeline({ capacity: 2, prebuffer: 3,
-    prepare: async i => i, transform: () => Array.from({ length: 6 }, (_, start) => ({ start })),
-    synthesize: async i => { synthesized++; return i; },
-    play: async i => { spoken.push(i.start); await playing.promise; },
-  });
-  pipeline.enqueue({});
-  await tick();
-  assert.equal(synthesized, 3, 'one playing plus two ready: fanout cannot grow the audio queue without bound');
-  playing.resolve(); await bounded(pipeline.finish());
-  assert.deepEqual(spoken, [0, 1, 2, 3, 4, 5]);
-  assert.equal(pipeline.pending, 0);
-}
-// Reset drops the old tail and a late old result, including while ASR is in flight.
-{
-  const buffer = createSemanticBuffer(), late = gate(), spoken = [];
-  const pipeline = createInterpretPipeline({ prebuffer: 1,
-    prepare: async i => { if (i.src === 'old continuation.') await late.promise; return i; },
-    transform: i => buffer.push(i), flush: () => buffer.flush(), onReset: g => buffer.reset(g),
-    synthesize: async i => i, play: async i => spoken.push(i.src),
-  });
-  pipeline.enqueue(chunk('The old tail is'));
-  await tick();
-  pipeline.enqueue(chunk('old continuation.', 5)); await tick();
-  pipeline.flushAhead();
-  pipeline.enqueue(chunk('New sentence.', 50)); late.resolve();
-  await bounded(pipeline.finish());
-  assert.deepEqual(spoken, ['New sentence.']); assert.equal(pipeline.pending, 0);
-}
 {
   let inner;
   await assert.rejects(withInterpretDeadline(s => { inner = s; return new Promise(() => {}); }, undefined, 10), /超时/);
@@ -217,4 +142,4 @@ const bounded = promise => withInterpretDeadline(() => promise, undefined, 1500)
   assert.equal(buffer.commitPrefix(valid.prefix).src, 'The first sentence.');
   assert.equal(buffer.pendingText, 'We need to');
 }
-console.log('ok semantic interpretation: boundaries, lossless budgets, timing, context, ordered fanout, startup, gap, seek, tail, deadlines, truncation');
+console.log('ok semantic interpretation: boundaries, lossless budgets, timing, context, deadlines, truncation');

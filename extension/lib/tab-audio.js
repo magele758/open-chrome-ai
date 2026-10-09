@@ -301,22 +301,6 @@ export async function beginPageCapture(tabId, { fromStart = false, autoplay = tr
   return session;
 }
 
-export async function recordPageSlice(tabId, seconds, signal) {
-  const ms = Math.max(800, (Number(seconds) || 5) * 1000);
-  const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    await sleep(200);
-  }
-  const taken = await injectPageAudio(tabId, "take");
-  if (!taken?.ok) throw new Error(taken?.error || "取声失败。");
-  return {
-    blob: b64ToBlob(taken.b64, taken.mime),
-    mime: taken.mime || "audio/webm",
-    seconds: taken.seconds || seconds,
-  };
-}
-
 export async function beginCapture(tabId, { fromStart = false, autoplay = true } = {}) {
   try {
     return await beginTabCapture(tabId);
