@@ -2,6 +2,7 @@
   "name": "pagelens",
   "version": "0.12.1",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "bundle:agent-loop": "node scripts/bundle-agent-loop.mjs",
