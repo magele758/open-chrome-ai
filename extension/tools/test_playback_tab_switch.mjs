@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-const app = fs.readFileSync(new URL('../sidepanel/app.js', import.meta.url), 'utf8');
+const app = fs.readFileSync(new URL('../sidepanel/tab-context.js', import.meta.url), 'utf8');
+const actions = fs.readFileSync(new URL('../sidepanel/video-actions.js', import.meta.url), 'utf8');
 const refreshStart = app.indexOf('async function refreshTab()');
-const refreshEnd = app.indexOf('\nasync function executeLoop');
+const refreshEnd = app.indexOf('\nexport {');
 const refresh = app.slice(refreshStart, refreshEnd);
-const captions = app.slice(app.indexOf('function applyCaptions('), app.indexOf('function stopInterpret('));
+const captions = actions.slice(actions.indexOf('function applyCaptions('), actions.indexOf('function stopInterpret('));
 
 function el() {
   return { classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } } };
@@ -71,6 +72,8 @@ function makeRefreshContext({ mode, videoTab, articleTab, loadTabPack }) {
     checkSmartRecall: async () => {},
     stopCompactPlayback: () => { throw new Error('must preserve playback'); },
     stopDubPlayback: () => { throw new Error('must preserve playback'); },
+    discardCompactProgress() {},
+    clearCompactSegments() {},
     $: () => el(),
   });
   vm.runInContext(refresh, context);

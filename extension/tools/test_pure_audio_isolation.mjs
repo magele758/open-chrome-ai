@@ -55,7 +55,7 @@ console.log('PASS: cancel during preparation prevents late startup');
 delete globalThis.chrome;
 
 // Exercise actual panel functions with a small DOM/audio harness.
-const app = fs.readFileSync(new URL('../sidepanel/app.js', import.meta.url), 'utf8');
+const app = fs.readFileSync(new URL('../sidepanel/compact-player.js', import.meta.url), 'utf8');
 const els = new Map();
 const el = id => {
   if (!els.has(id)) els.set(id, { dataset: {}, classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, textContent: '' });

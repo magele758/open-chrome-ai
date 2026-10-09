@@ -221,7 +221,7 @@ assert.equal(
   assert.equal(await resolveHitlTargetUrl("download_file", { url: " https://x.io/a " }, {}), "https://x.io/a");
   assert.equal(await resolveHitlTargetUrl("extract_page", { tabId: 2 }, { getTabUrl }), "");
 
-  const app = await readFile(new URL("../sidepanel/app.js", import.meta.url), "utf8");
+  const app = await readFile(new URL("../sidepanel/agent-loop.js", import.meta.url), "utf8");
   const send = app.slice(app.indexOf("async function sendPrompt("), app.indexOf("async function resumeInterruptedRun("));
   assert.ok(send.indexOf("extractCapsule(text)") > 0, "capsule extracted from the raw user text");
   assert.ok(send.indexOf("extractCapsule(text)") < send.indexOf("packToContext"), "capsule is built before page content is read into context");

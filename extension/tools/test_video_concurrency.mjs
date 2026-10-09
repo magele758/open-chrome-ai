@@ -5,9 +5,13 @@ import { usableTranscript } from '../lib/captions.js';
 import { estimateTokens } from '../lib/openai.js';
 
 // Exercise the actual panel handlers with deferred network/capture operations.
-const source = await readFile(new URL('../sidepanel/app.js', import.meta.url), 'utf8');
-const handlers = source.slice(source.indexOf('function applyCaptions('), source.indexOf('async function captureTab('));
-const render = source.slice(source.indexOf('const isTranscribing ='), source.indexOf('\nfunction ', source.indexOf('function renderTranscribeAction(') + 1));
+const actions = await readFile(new URL('../sidepanel/video-actions.js', import.meta.url), 'utf8');
+const chromeUi = await readFile(new URL('../sidepanel/media-chrome.js', import.meta.url), 'utf8');
+const handlers = actions.slice(actions.indexOf('function applyCaptions('), actions.indexOf('async function captureTab('));
+const renderFn = chromeUi.indexOf('function renderTranscribeAction(');
+let renderEnd = chromeUi.indexOf('\nfunction ', renderFn + 1);
+if (renderEnd < 0) renderEnd = chromeUi.indexOf('\nexport {');
+const render = chromeUi.slice(chromeUi.indexOf('const isTranscribing ='), renderEnd);
 const gate = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const full = { status: 'ready', source: 'asr-full', text: 'entire audio', cues: [], complete: true };
 function harness() {
@@ -44,7 +48,7 @@ function harness() {
     state, AbortController, usableTranscript, interpretController, compactController, estimateTokens,
     compactPlaying: false, compactSegments: [], compactStreamPlayer: null, compactPlayerAudio: null,
     compactPendingAutoplay: false, compactFullGenerating: false,
-    stopCompactPlayback() {}, getSharedAudioContext() {}, needAsrSettings() {}, toggleOriginalAudio() {},
+    stopCompactPlayback() {}, clearCompactSegments() {}, getSharedAudioContext() {}, needAsrSettings() {}, toggleOriginalAudio() {},
     document: { createElement: () => ({ classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } }, append() {}, appendChild() {}, setAttribute() {} }) },
     $: id => { if (!elements.has(id)) elements.set(id, { classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } }, appendChild() {}, append() {} }); return elements.get(id); },
     renderContext() {}, syncPackToLibrary: async () => ({}), abortRecording() {}, discardCapture: async () => {},
