@@ -25,6 +25,7 @@ import { createNativeGateway, reconnectDelay } from "../lib/native-port.js";
 import { shouldRunGateway } from "../lib/bridge/gateway.js";
 import { AGENT_HIDDEN_SETTINGS, isSensitiveSetting, planSettingsChange, settingsSnapshot } from "../lib/agent/settings-tools.js";
 import { defaultSettings, normalizeSettings } from "../lib/storage.js";
+import { describeGatewayStatus, formatAuditLine, setupCommands } from "../sidepanel/agent-gateway-panel.js";
 
 // ---- tokens ----
 {
@@ -81,6 +82,16 @@ import { defaultSettings, normalizeSettings } from "../lib/storage.js";
   assert.equal((await listAgentTokens({ storage: area }))[0].state, "revoked");
   await removeAgentToken(info.id, { storage: area });
   assert.equal((await loadAgentTokens(area)).length, 0);
+
+  const slow = {
+    data: {},
+    get: async (k) => (await new Promise((r) => setTimeout(r, 5)), { [k]: structuredClone(slow.data[k]) }),
+    set: async (v) => (await new Promise((r) => setTimeout(r, 5)), Object.assign(slow.data, structuredClone(v))),
+  };
+  const first = await addAgentToken({ name: "a", scopes: ["page:read"] }, { storage: slow });
+  await Promise.all([addAgentToken({ name: "b", scopes: ["page:read"] }, { storage: slow }), revokeAgentToken(first.info.id, { storage: slow })]);
+  const after = await listAgentTokens({ storage: slow });
+  assert.deepEqual(after.map((t) => [t.name, t.state]), [["a", "revoked"], ["b", "active"]], "concurrent add + revoke both persist");
 }
 
 // ---- every bridge tool declares a known scope ----
@@ -359,6 +370,20 @@ const asWriter = { session: { token: writer.token, sessionId: "s-w", agentName: 
   assert.ok(plan.errors.every((e) => /外部 Agent/.test(e)));
   const snap = JSON.stringify(settingsSnapshot({ ...defaultSettings(), agentGatewayEnabled: true }));
   assert.ok(!/agentGatewayEnabled|agentTokens/.test(snap), "agents cannot read gateway/token settings");
+}
+
+// ---- settings panel helpers ----
+{
+  assert.equal(describeGatewayStatus({ state: "connected", socketPath: "/s" }, false).text, "未启用");
+  assert.deepEqual(describeGatewayStatus({ state: "connected", socketPath: "/s" }, true), { text: "运行中 · /s", tone: "ok" });
+  assert.match(describeGatewayStatus({ state: "retrying", error: "未安装 Native Host", retryInMs: 4000 }, true).text, /未安装 Native Host，4s 后重试/);
+  const cmds = setupCommands("Claude Code", "abcdefghijklmnopabcdefghijklmnop");
+  assert.match(cmds, /--save-token claude-code/);
+  assert.match(cmds, /--mcp-config claude-code/);
+  assert.match(cmds, /--extension-id abcdefghijklmnopabcdefghijklmnop/);
+  assert.ok(!/plk_/.test(cmds), "setup commands never embed the token");
+  const line = formatAuditLine(auditEntry({ ts: 0, agent: "cursor", tool: "run_js", origin: "https://a.com", ok: false, code: "SCOPE_DENIED", args: { code: "x" } }));
+  assert.match(line, /ERR cursor · run_js @ https:\/\/a\.com \[SCOPE_DENIED\]/);
 }
 
 console.log("test_agent_gateway: ok");

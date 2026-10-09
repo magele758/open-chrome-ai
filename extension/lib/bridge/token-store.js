@@ -15,6 +15,15 @@ export async function loadAgentTokens(storage) {
   return normalizeTokenList(got?.[TOKENS_KEY]);
 }
 
+let tail = Promise.resolve();
+
+/** 读-改-写串行化：同一页面里快速连点“新建/吊销”不会互相覆盖。 */
+function mutate(storage, fn) {
+  const run = tail.then(async () => saveAgentTokens(await fn(await loadAgentTokens(storage)), storage));
+  tail = run.catch(() => {});
+  return run;
+}
+
 async function saveAgentTokens(list, storage) {
   const next = normalizeTokenList(list);
   await area(storage).set({ [TOKENS_KEY]: next });
@@ -24,23 +33,16 @@ async function saveAgentTokens(list, storage) {
 /** 返回 { token（明文，只此一次）, info }。 */
 export async function addAgentToken(spec, { storage, now = Date.now() } = {}) {
   const { token, record } = await createTokenRecord(spec, { now });
-  const list = await loadAgentTokens(storage);
-  await saveAgentTokens([...list, record], storage);
+  await mutate(storage, (list) => [...list, record]);
   return { token, info: publicTokenInfo(record, now) };
 }
 
 export async function revokeAgentToken(id, { storage, now = Date.now() } = {}) {
-  const list = await loadAgentTokens(storage);
-  const next = list.map((r) => (r.id === id && r.revokedAt == null ? { ...r, revokedAt: now } : r));
-  return saveAgentTokens(next, storage);
+  return mutate(storage, (list) => list.map((r) => (r.id === id && r.revokedAt == null ? { ...r, revokedAt: now } : r)));
 }
 
 export async function removeAgentToken(id, { storage } = {}) {
-  const list = await loadAgentTokens(storage);
-  return saveAgentTokens(
-    list.filter((r) => r.id !== id),
-    storage,
-  );
+  return mutate(storage, (list) => list.filter((r) => r.id !== id));
 }
 
 export async function listAgentTokens({ storage, now = Date.now() } = {}) {

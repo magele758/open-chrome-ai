@@ -240,7 +240,7 @@ export function createBridgeTools(env) {
     parameters: obj({ tabId: TAB_ID, selector: { type: "string" }, limit: { type: "integer" } }, ["tabId", "selector"]),
     needsTab: true,
     async execute(args, ctx) {
-      return page(ctx.tab.id, queryDom, [String(args.selector), args.limit]);
+      return page(ctx.tab.id, queryDom, [String(args.selector), args.limit ?? null]);
     },
   });
 
