@@ -104,6 +104,10 @@ function spawnHostAsChrome(sock = socketPath) {
         child.stdin.write(encodeMessage({ type: "bridge.result", sessionId: msg.sessionId, callId: msg.callId, response }));
         continue;
       }
+      if (msg.type === "bridge.session.closed") {
+        bridge.closeSession(msg.sessionId);
+        continue;
+      }
       const i = waiters.findIndex((w) => w.match(msg));
       if (i >= 0) waiters.splice(i, 1)[0].resolve(msg);
       else inbox.push(msg);
@@ -135,6 +139,8 @@ function spawnMcp(args, env) {
   children.push(child);
   let buf = "";
   const pending = new Map();
+  const notes = [];
+  const noteWaiters = [];
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
     buf += chunk;
@@ -144,6 +150,11 @@ function spawnMcp(args, env) {
       buf = buf.slice(nl + 1);
       if (!line.trim()) continue;
       const msg = JSON.parse(line);
+      if (msg.id == null && msg.method) {
+        notes.push(msg);
+        for (const w of noteWaiters.splice(0)) w();
+        continue;
+      }
       pending.get(msg.id)?.(msg);
       pending.delete(msg.id);
     }
@@ -156,6 +167,11 @@ function spawnMcp(args, env) {
       const p = new Promise((resolve) => pending.set(id, resolve));
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
       return withTimeout(p, 8000, `mcp ${method}`);
+    },
+    notes,
+    async waitNotes(n) {
+      while (notes.length < n) await withTimeout(new Promise((r) => noteWaiters.push(r)), 5000, `mcp notifications (${notes.length}/${n})`);
+      return notes;
     },
   };
 }
@@ -177,6 +193,7 @@ try {
 
   // ---- broker start ----
   const host = spawnHostAsChrome();
+  bridge.events.setSink((sessionId, event) => host.send({ type: "bridge.event", sessionId, event }));
   host.send({ type: "broker.start", protocol: 2 });
   const ready = await withTimeout(host.next((m) => m.type === "broker.ready" || m.type === "broker.error"), 5000, "broker.ready");
   assert.equal(ready.type, "broker.ready", JSON.stringify(ready));
@@ -223,7 +240,13 @@ try {
   const tokenFile = path.join(tmp, "cursor.token");
   fs.writeFileSync(tokenFile, `${full.token}\n`, { mode: 0o600 });
   const mcp = spawnMcp(["--token-file", tokenFile], { PAGELENS_SOCKET: socketPath });
-  await mcp.rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "cursor", version: "1" } });
+  const mcpInit = await mcp.rpc("initialize", {
+    protocolVersion: "2024-11-05",
+    capabilities: { experimental: { "pagelens/events": {} } },
+    clientInfo: { name: "cursor", version: "1" },
+  });
+  assert.deepEqual(mcpInit.result.capabilities.logging, {}, "logging capability declared for event notifications");
+  assert.ok(mcpInit.result.capabilities.experimental["pagelens/events"]);
   const list = await mcp.rpc("tools/list");
   const mcpNames = list.result.tools.map((t) => t.name);
   assert.ok(mcpNames.includes("screenshot") && mcpNames.includes("trusted_click"), mcpNames.join());
@@ -244,6 +267,66 @@ try {
 
   const bad = await mcp.rpc("tools/call", { name: "run_js", arguments: { tabId: 1, code: "1" } });
   assert.ok(bad.result.isError && /SCOPE_DENIED/.test(bad.result.content[0].text));
+
+  // ---- P3: two concurrent socket sessions + events + leases + MCP notifications ----
+  {
+    const seenR = [];
+    const seenF = [];
+    const r2 = await connectGateway({ socketPath, token: readOnly.token, agentName: "watcher", onEvent: (e) => seenR.push(e) });
+    const f2 = await connectGateway({ socketPath, token: full.token, agentName: "claude", onEvent: (e) => seenF.push(e) });
+    assert.notEqual(r2.sessionId, f2.sessionId);
+    assert.ok(r2.tools.some((t) => t.name === "events_poll") && f2.tools.some((t) => t.name === "tab_claim"));
+    const [subR, subF] = await Promise.all([
+      r2.call({ id: "s1", tool: "events_subscribe", args: { types: ["tab.updated"] } }),
+      f2.call({ id: "s1", tool: "events_subscribe", args: { types: ["tab.*", "dialog.opened"] } }),
+    ]);
+    assert.ok(subR.ok && subF.ok, JSON.stringify([subR, subF]));
+    assert.equal(subR.result.push, true);
+    const mcpSub = await mcp.rpc("tools/call", { name: "events_subscribe", arguments: { types: ["tab.updated"] } });
+    assert.equal(mcpSub.result.isError, false, JSON.stringify(mcpSub));
+
+    await bridge.events.emit({ type: "tab.updated", tabId: 3, url: "https://bank.example/", title: "Bank", status: "complete" });
+    await bridge.events.emit({ type: "tab.updated", tabId: 1, url: "http://localhost:8080/", title: "Local", status: "complete" });
+    const until = async (fn, what) => {
+      for (let i = 0; i < 100 && !fn(); i += 1) await new Promise((r) => setTimeout(r, 20));
+      assert.ok(fn(), what);
+    };
+    await until(() => seenF.length >= 2 && seenR.length >= 1, "event frames relayed to both sessions");
+    assert.deepEqual(seenR.map((e) => e.url), ["http://localhost:8080/"], "localhost token never gets the bank tab");
+    assert.deepEqual(seenF.map((e) => [e.seq, e.tabId]), [[1, 3], [2, 1]]);
+    const polled = await r2.call({ id: "p1", tool: "events_poll", args: {} });
+    assert.deepEqual(polled.result.events.map((e) => e.seq), [1], "ring buffer matches pushed frames");
+
+    const notes = await mcp.waitNotes(4);
+    const logs = notes.filter((n) => n.method === "notifications/message");
+    const custom = notes.filter((n) => n.method === "notifications/pagelens/event");
+    assert.equal(logs.length, 2);
+    assert.equal(logs[0].params.level, "info");
+    assert.equal(logs[0].params.logger, "pagelens");
+    assert.equal(logs[0].params.data.url, "https://bank.example/");
+    assert.deepEqual(custom.map((n) => n.params.event.tabId), [3, 1]);
+    const setLevel = await mcp.rpc("logging/setLevel", { level: "warning" });
+    assert.deepEqual(setLevel.result, {});
+    await bridge.events.emit({ type: "tab.updated", tabId: 1, url: "http://localhost:8080/2", status: "complete" });
+    await mcp.waitNotes(5);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(mcp.notes.slice(4).map((n) => n.method), ["notifications/pagelens/event"], "level above info mutes notifications/message");
+
+    // leases across sessions
+    const claim = await f2.call({ id: "c1", tool: "tab_claim", args: { tabId: 1 } });
+    assert.ok(claim.ok, JSON.stringify(claim));
+    const leased = await mcp.rpc("tools/call", { name: "set_input_value", arguments: { tabId: 1, selector: "#q", value: "x" } });
+    assert.ok(leased.result.isError && /TAB_LEASED/.test(leased.result.content[0].text) && /claude/.test(leased.result.content[0].text), JSON.stringify(leased));
+    const readStill = await mcp.rpc("tools/call", { name: "query_dom", arguments: { tabId: 1, selector: "h1" } });
+    assert.equal(readStill.result.isError, false, "reads ignore leases");
+
+    // closing a socket session releases its lease and subscription in the extension
+    f2.close();
+    r2.close();
+    await until(() => bridge.leases.size() === 0 && bridge.events.sessionCount() === 1, "session close propagated to the extension");
+    const freed = await mcp.rpc("tools/call", { name: "set_input_value", arguments: { tabId: 1, selector: "#q", value: "x" } });
+    assert.ok(!/TAB_LEASED/.test(freed.result.content[0].text), JSON.stringify(freed));
+  }
 
   // revoke takes effect on the next call of an open session
   tokens.splice(tokens.indexOf(full.record), 1, { ...full.record, revokedAt: Date.now() });
