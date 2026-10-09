@@ -11,8 +11,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { encodeMessage, tryReadMessage } from "./pagelens-host.mjs";
 import { connectGateway, defaultSocketPath } from "./gateway.mjs";
+import { agentSlug, mcpConfigSnippets, saveTokenFile, writeCursorConfig } from "./install-native-host.mjs";
 import { createBridge } from "../extension/lib/bridge/index.js";
-import { createTokenRecord } from "../extension/lib/bridge/auth.js";
+import { createTokenRecord, generateToken } from "../extension/lib/bridge/auth.js";
 import { createAuditLog } from "../extension/lib/bridge/audit.js";
 import { DEFAULT_ALLOWED_ORIGINS } from "../extension/lib/bridge/policy.js";
 
@@ -263,6 +264,34 @@ try {
   const after = await mcp.rpc("tools/call", { name: "list_tabs", arguments: {} });
   assert.ok(after.result.isError && /网关未运行|断开/.test(after.result.content[0].text), JSON.stringify(after));
   mcp.child.kill();
+
+  // ---- installer: token file 0600 + MCP config snippets ----
+  const fakeHome = path.join(tmp, "home");
+  const plain = generateToken();
+  assert.equal(agentSlug("My Cursor!"), "my-cursor");
+  assert.throws(() => saveTokenFile("cursor", "not-a-token", fakeHome), /plk_/);
+  const saved = saveTokenFile("Cursor", plain, fakeHome);
+  assert.equal(saved, path.join(fakeHome, ".pagelens", "agents", "cursor.token"));
+  assert.equal(fs.statSync(saved).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.dirname(saved)).mode & 0o777, 0o700);
+  assert.equal(fs.readFileSync(saved, "utf8").trim(), plain);
+  const snip = mcpConfigSnippets("cursor", { home: fakeHome, nodePath: "/usr/bin/node", host: "/opt/pl/host.mjs" });
+  assert.deepEqual(snip.cursor.mcpServers.pagelens, {
+    command: "/usr/bin/node",
+    args: ["/opt/pl/host.mjs", "--mcp", "--token-file", saved],
+  });
+  assert.equal(snip.claude, `claude mcp add --scope user pagelens -- /usr/bin/node /opt/pl/host.mjs --mcp --token-file ${saved}`);
+  assert.match(snip.codex, /^\[mcp_servers\.pagelens\]/);
+  const cursorFile = path.join(fakeHome, ".cursor", "mcp.json");
+  fs.mkdirSync(path.dirname(cursorFile), { recursive: true });
+  fs.writeFileSync(cursorFile, JSON.stringify({ mcpServers: { other: { command: "x" } }, extra: 1 }));
+  writeCursorConfig(snip.cursor, cursorFile);
+  const merged = JSON.parse(fs.readFileSync(cursorFile, "utf8"));
+  assert.equal(merged.extra, 1);
+  assert.ok(merged.mcpServers.other && merged.mcpServers.pagelens);
+  fs.writeFileSync(cursorFile, "{broken");
+  assert.throws(() => writeCursorConfig(snip.cursor, cursorFile), /不是合法 JSON/);
+  assert.equal(fs.readFileSync(cursorFile, "utf8"), "{broken");
 
   console.log("PASS native-gateway");
 } finally {
