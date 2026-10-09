@@ -12,7 +12,7 @@
 | 仅限专用 profile | 只应在**专用 Chrome profile / 专用 user-data-dir** 里开启。扩展无法自证 profile 身份，靠"显式开关 + 你只在专用 profile 里打开"保证；**不要在日常 Chrome 里开启** |
 | origin 白名单 | `settings.agentBridgeOrigins`，默认 `localhost:*`、`127.0.0.1:*`、`mp.weixin.qq.com`、知乎专栏、B 站创作中心、小红书创作、抖音创作。白名单之外的标签：`list_tabs` 看不到，任何带 `tabId` 的工具返回 `ORIGIN_NOT_ALLOWED`；`open_tab` 也校验 URL。`chrome://` 等受限页返回 `TAB_RESTRICTED` |
 | 每次调用都鉴权 | 每次调用重新读开关与白名单、重新取标签当前 URL（导航后 origin 变了立即失效）；关掉开关即时生效 |
-| 按 scope 分级 | 每个工具带 `scope`（`tabs:read` `tabs:manage` `page:read` `page:act` `page:js` `clipboard` `downloads` `upload` `settings:read` `settings:write`），见 §10。`run_js` 只在白名单 origin 的标签里可用；不提供 `run_shell` |
+| 按 scope 分级 | 每个工具带 `scope`（`tabs:read` `tabs:manage` `page:read` `page:act` `page:js` `clipboard` `downloads` `upload` `settings:read` `settings:write` `agent:delegate`），见 §10。`run_js` 只在白名单 origin 的标签里可用；不提供 `run_shell` |
 | URL 目标 | `open_tab` / `navigate_tab` / `create_window` / `download_file` 的目标 URL 都要在白名单内（`ORIGIN_NOT_ALLOWED`）；`close_window` 要求窗口内**全部**标签在白名单内 |
 | 上传硬拒绝 | `upload_file` 对密钥/凭据类路径（`.ssh`、`.aws`、`.gnupg`、`.kube`、`.env*`、`*.pem/*.key/*.p12`、`id_*`、`credentials`、浏览器 `Login Data`/`Cookies`、含 `..` 的路径等）一律返回 `PATH_NOT_ALLOWED`，与 scope 无关 |
 | 设置保护 | `get_settings` 不返回敏感项（密钥、服务地址、`hitlMode`、`nativeShell`、`cdpInput`、`agentBridge*`、`agentInbox*` 等，只在 `protected` 列出键名）；`update_settings` 含任一敏感键即整批拒绝（`SETTING_PROTECTED`） |
@@ -193,6 +193,9 @@ const { result, artifacts } = await pl.call("list_tabs");
 | `verify_editor_content {tabId, expect?, titleEquals?, titleBefore?, includeHtml?}` | page:read | 回读校验 | `stats`（chars/tables/imgs/paragraphs/headings/links）、`title`、`titlePolluted`、`checks[]`；`expect:{minChars,minTables,minImages,contains[]}` |
 | `copy_selection_trusted {tabId, selector}` | clipboard | 选中元素内容 + 可信 Meta/Ctrl+C | Chrome 自己序列化（带内联样式），随后 `paste_rich_trusted {useClipboard:true}` |
 | `paste_rich_trusted {tabId, html? / text? / source{tabId,selector} / useClipboard, titleEquals?, expect?, retries?, settleMs?, activate?, includeHtml?}` | page:act | 写剪贴板 → 点击聚焦 → 全选+清空 → 可信粘贴 → 回读校验 → 重试 | 默认从 `html` 推导断言：`minChars=85%`、`minTables`、`minImages`，可用 `expect` 覆盖；标题不得被污染或变化；失败 `VERIFY_FAILED`，**无 DataTransfer/innerHTML 兜底** |
+| `run_agent_task {prompt, capsule?, tabId?, maxSteps?, model?}` | agent:delegate | 把高层任务交给扩展内 Agent 在后台跑，立即返回 `taskId` | 见 §15；胶囊外副作用 `NEEDS_WIDER_AUTHORIZATION`，不可逆动作 `CONFIRMATION_REQUIRED` + `pendingId` |
+| `agent_task_status {taskId, sinceStep?}` | agent:delegate | 任务状态、步骤、最终回答 | `sinceStep` 做增量轮询 |
+| `agent_task_cancel {taskId}` | agent:delegate | 取消任务 | 已结束的返回 `alreadyFinished:true` |
 | `job_status` / `audit_log` / `list_tools` | — | 元工具 | |
 
 ## 11. 参考 recipe：把 Doocs 简报写入微信公众号编辑器
@@ -258,7 +261,7 @@ await pl.call("trusted_click", { tabId: wx, text: "保存为草稿" });
 - `DEBUGGER_BUSY` 的真实"已被占用"场景只有 mock 测试。
 - 剪贴板被覆盖；非 macOS 上 Native Host 兜底不可用（前两种 offscreen 方式不受影响）。
 - 仅支持顶层 frame 的编辑器（iframe 内的编辑器未处理）。
-- 任务表在 SW 内存里，SW 重启丢失。
+- `job_status` 的任务表在 SW 内存里，SW 重启丢失（委托任务除外，见 §15.5）。
 - 不提供 cookies 工具：manifest 没有 `cookies` 权限（需单独的高危 scope 再加）。
 - `snapshot_controls` 的 ref 存在 SW 内存里，按标签保存最近一次快照；SW 重启或导航后需重新快照。
 
@@ -270,7 +273,63 @@ node extension/tools/test_bridge_editor.mjs     # jsdom：挑编辑器、回读�
 node extension/tools/test_bridge_paste.mjs      # paste_rich_trusted 流程（mock CDP）：顺序、重试、不兜底、焦点
 node extension/tools/test_bridge_browser_tools.mjs  # 标签/窗口、快照 ref、对话框、下载、上传敏感路径、受保护设置
 node extension/tools/test_clipboard_sw.mjs      # 剪贴板三种方式的降级与 offscreen 让位
+node extension/tools/test_agent_delegate.mjs    # 委托：胶囊校验、胶囊内自动执行、胶囊外拒绝、不可逆进队列、取消、持久化、事件、数据指令不扩权
+node extension/tools/test_delegate_panel.mjs    # jsdom：侧栏委托任务列表与取消
 node extension/tools/e2e_bridge.mjs             # 真浏览器冒烟（专用临时 profile，见脚本头注释）
 ```
 
-前五个由 `npm test` 自动收录；`e2e_bridge.mjs` 不属于 `run-tests`，需要本机有 Chrome。
+除 `e2e_bridge.mjs` 外都由 `npm test` 自动收录；`e2e_bridge.mjs` 不属于 `run-tests`，需要本机有 Chrome。
+
+## 15. 委托扩展内 Agent（run_agent_task，scope `agent:delegate`）
+
+外部 Agent 也可以不逐步调用确定性工具，而是把**高层任务**交给 PageLens 内部的 LLM Agent（例如"总结这个视频并配音"、"把这页要点整理后发到知乎草稿"），自己只轮询进度与结果。实现：`extension/lib/agent/delegate.js`（任务管理、信任判定、持久化、事件）、`delegate-sw.js`（SW 运行环境）、`extension/lib/bridge/tools-delegate.js`（bridge 工具）。
+
+### 15.1 运行位置
+
+任务在扩展 **Service Worker** 里跑（与侧栏无关，侧栏关着也能跑），复用侧栏同一套内部工具（`createAgentTools`）、loop 内核（`loop-kernel.js`）和文本模型设置。不占用 offscreen 文档（同传/剪贴板仍可用）。运行中每 20s 调一次扩展 API 保活。
+
+已知差异：SW 里没有 DOM，PDF 文字层抽取（pdf.js 动态加载）不可用，会退回网页正文；需要侧栏页面能力的工具（截图预览、转写进度展示等）只返回结果、不渲染。
+
+### 15.2 调用
+
+```js
+await __pl.call({ v: 1, id: "t1", tool: "run_agent_task", args: {
+  prompt: "总结这个视频，并发布一条摘要到知乎",
+  tabId: 123,                       // 省略：当前窗口活动标签（需在可访问 origin 内，否则不指定标签）
+  capsule: { actions: ["publish"], platforms: ["zhihu"] },   // 可选；省略时只从 prompt 原文抽取
+  maxSteps: 12,                     // 模型轮次上限，1–40
+}});
+// → { taskId, status:"running", tabId, capsule, capsuleSource:"explicit"|"prompt", capsuleSummary[], droppedOrigins[], maxSteps }
+
+await __pl.call({ v: 1, id: "t2", tool: "agent_task_status", args: { taskId, sinceStep: 0 } });
+// → { id, status, agentName, prompt, capsule, capsuleSummary, taint, steps:[{n, kind, name, ok, code, pendingId, summary, at}],
+//     stepCount, answer, pending:[{pendingId, toolName, reason, approval}], denied:[{toolName, code, reason}], error, endReason, ... }
+
+await __pl.call({ v: 1, id: "t3", tool: "agent_task_cancel", args: { taskId } });
+```
+
+`status`：`running` → `done` | `needs_approval` | `failed` | `cancelled`。`steps[].kind`：`tool`（工具执行，`ok`）、`blocked`（被信任判定拦下，`code` / `pendingId`）、`answer`（模型输出）、`note`（使用了已批准的待办、检测到注入等）。用 `sinceStep` = 上次拿到的最大 `n` 做增量轮询。`run_agent_task` 本身立即返回，不需要 `async:true`。同时最多 3 个任务在跑，超出返回 `TOOL_FAILED`（`retryable:true`，`details.reason:"BUSY"`）；未知任务 `JOB_NOT_FOUND`；未配置文本模型时任务 `failed`，`error.code:"MODEL_NOT_READY"`。
+
+### 15.3 授权：意图胶囊 + 无人值守判定
+
+- **胶囊只来自委托人**：显式 `capsule` 经 `normalizeCapsule` 校验（未知动作/平台、非法 URL、含 `..` 的路径丢弃，`principal:"agent"`）；省略时 `extractCapsule(prompt)`。任务开始后胶囊**冻结**，页面、字幕、工具结果里的任何文字都不会并入胶囊。
+- **不越权**：胶囊里的站点必须在调用方可访问的 origin 范围内（现为 `agentBridgeOrigins`；P1 后为 token 的 origins），范围外的站点丢弃并在 `droppedOrigins` 回报；只剩被丢弃域名的平台一并去掉。
+- 每个工具调用走 P4 的 `decideToolCall`，`attended:false`（`hitlMode` 取设置里的严格/智能审查，全自动不适用于委托任务）：
+  - 胶囊内 → 自动执行（即使会话已读入数据甚至被标为高污染）；只读 → 执行。
+  - 胶囊外的副作用 → 拒绝，工具结果为 `{ok:false, code:"NEEDS_WIDER_AUTHORIZATION", reason, hint}`，记入 `denied`；出站到未声明目的地 → `EGRESS_NOT_ALLOWED`；**不会弹窗、不会挂起**。
+  - 命中用户的**不可逆清单** → 进待批准队列（与侧栏共用 `chrome.storage.local.agentApprovalQueue`），工具结果 `CONFIRMATION_REQUIRED` + `pendingId`；任务结束时状态为 `needs_approval`，`pending[].approval` 实时反映 `pending/approved/rejected`。用户在侧栏「待批准」里批准后，**同一调用（工具 + 参数一致）**下次可执行一次：委托人重新发起任务（或在 P1 后的会话里重试同一动作）即可。
+  - 改设置：委托任务没有确认通道，`update_settings` 一律不生效（且在不可逆清单里）。
+- 内部模型看到的系统提示写明了委托人、授权范围和"被拦下不要绕过、在最终回答里说明"。
+
+### 15.4 侧栏
+
+侧栏输入框上方显示"🤖 外部委托任务"：来源 Agent 名（`ctx.session.agentName`）、状态、prompt、授权范围、最近步骤；运行中的任务可「取消」。待批准的操作出现在授权条的「待批准」里。
+
+### 15.5 持久化
+
+任务存在 `chrome.storage.session` 的 `agentDelegateTasks`（保留最近 30 个，每个最多 200 步，摘要截断）。SW 重启后状态仍可查询；当时还在跑的任务标为 `failed`，`error.code:"INTERRUPTED"`，已完成的步骤保留。浏览器重启后清空。
+
+### 15.6 集成钩子（P1 / P3）
+
+- **P1 会话**：bridge 工具读 `ctx.session`（可选）：`{ agentName, sessionId, tokenId, egress[], skipIrreversible }`。`agentName` 显示在侧栏与待批准条目（`principal:"agent:<name>"`）；`tokenId || agentName` 作为任务 owner，`agent_task_status/cancel` 只对同一 owner 可见；`egress` 作为 `decideToolCall` 的 `tokenEgress`；`skipIrreversible:true` 时不可逆清单不拦。P1 只需在 `bridge/index.js` 构造 ctx 时挂上 `session`，并把 `ctx.authorizeUrl` 改成按 token origins 判定（胶囊收窄自动跟随）。
+- **P3 事件**：`import { onAgentTaskEvent, AGENT_TASK_EVENTS } from "extension/lib/agent/delegate.js"`，`onAgentTaskEvent(listener)` 返回取消订阅函数。事件 `{ type, taskId, at, ... }`：`agent_task.started {task}`、`agent_task.step {step}`、`agent_task.approval {pendingId, toolName, reason}`、`agent_task.finished {status, answer, error}`。P3 可在 SW 里订阅后转成 `bridge.event` 推给对应会话（按任务 owner 路由）。
