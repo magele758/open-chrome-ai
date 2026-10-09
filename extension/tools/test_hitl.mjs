@@ -34,6 +34,80 @@ assert(isShellCommandWhitelisted("echo 'hack' > /etc/passwd") === false, "redire
 assert(isShellCommandWhitelisted("$(cat secret)") === false, "subshell is blocked");
 assert(isShellCommandWhitelisted("") === false, "empty is blocked");
 
+for (const cmd of [
+  "git branch",
+  "git branch -a",
+  "git branch -vv",
+  "git branch --list 'feat*'",
+  "git branch --contains HEAD",
+  "git remote -v",
+  "git show HEAD~1 --stat",
+  "git log --format=%H -n 3",
+  "head -n 20 README.md",
+  "tail -n 5 /tmp/log.txt",
+  "grep -n TODO src/app.js",
+  "wc -l README.md",
+  "find . -maxdepth 2 -type f -name '*.md'",
+  "cat ~/Downloads/notes.md",
+  "ls -la ~/Desktop",
+  "node --version",
+]) {
+  assert(isShellCommandWhitelisted(cmd) === true, `read-only stays whitelisted: ${cmd}`);
+}
+
+for (const cmd of [
+  "find . -maxdepth 1 -exec rm {} +",
+  "find . -maxdepth 1 -exec rm '{}' +",
+  "find . -maxdepth 1 -delete",
+  "find . -maxdepth 1 -execdir sh -c x",
+  "find . -maxdepth 1 -fprint /tmp/out",
+  "find . -maxdepth 1 -ok rm '{}' +",
+  "git branch -D main",
+  "git branch -d main",
+  "git branch --delete main",
+  "git branch -m old new",
+  "git branch -f main HEAD~3",
+  "git branch evil",
+  "git branch --set-upstream-to=origin/x",
+  "git diff --output=/tmp/x",
+  "git log -p --output=/tmp/x",
+  "git diff --ext-diff",
+  "git diff --no-index /dev/null /etc/passwd",
+  "git -c core.pager=sh log",
+  "git -C /tmp status",
+  "git remote add evil https://evil.example",
+  "git remote set-url origin https://evil.example",
+  "cat ~/.ssh/id_rsa",
+  "cat .ssh/id_rsa",
+  "cat id_ed25519",
+  "cat ~/.s?h/id_rsa",
+  "cat ~/.{ssh,aws}/credentials",
+  "cat \"$HOME/.ssh/id_rsa\"",
+  "cat ~root/.bashrc",
+  "cat ~/.aws/credentials",
+  "cat ~/project/.env",
+  "cat /etc/shadow",
+  "cat ../../../etc/passwd",
+  "head -n 5 ~/.netrc",
+  "tail -f /tmp/log.txt",
+  "grep -r PRIVATE ~",
+  "grep -rn BEGIN .",
+  "grep -f ~/.ssh/id_rsa README.md",
+  "grep --file=/etc/shadow README.md",
+  "file -C -m /tmp/magic",
+  "wc --files0-from=/tmp/list",
+  "ls ~/.ssh",
+  "echo hi\nrm -rf /tmp/x",
+  "cat README.md < /etc/passwd",
+]) {
+  assert(isShellCommandWhitelisted(cmd) === false, `dangerous variant needs confirmation: ${cmd}`);
+}
+
+assert(isShellCommandWhitelisted("cat config", { cwd: "/Users/me/.ssh" }) === false, "sensitive cwd needs confirmation");
+assert(isShellCommandWhitelisted("cat shadow", { cwd: "/etc" }) === false, "read under system cwd needs confirmation");
+assert(isShellCommandWhitelisted("git status", { cwd: "/opt/repo" }) === true, "git status in any repo cwd is fine");
+assert(isShellCommandWhitelisted("cat README.md", { cwd: "/Users/me/proj" }) === true, "read in home project is fine");
+
 assert(isGuiLaunchCommand("open /tmp") === true, "open dir");
 assert(isGuiLaunchCommand("/usr/bin/open -W ~/Downloads") === true, "open -W");
 assert(isGuiLaunchCommand("cd /tmp && open .") === true, "open after cd");
@@ -108,6 +182,19 @@ assert(
     hitlMode: "balanced",
   }).needsConfirmation === false,
   "balanced mode auto-approves whitelisted shell commands",
+);
+
+for (const command of ["find . -maxdepth 1 -exec rm {} +", "git branch -D main", "cat ~/.ssh/id_rsa"]) {
+  const check = checkHitlRequirement({ toolName: "run_shell", args: { command }, hitlMode: "balanced" });
+  assert(check.needsConfirmation === true, `balanced mode confirms bypass case: ${command}`);
+}
+assert(
+  checkHitlRequirement({
+    toolName: "run_shell",
+    args: { command: "cat config", cwd: "/home/me/.ssh" },
+    hitlMode: "balanced",
+  }).needsConfirmation === true,
+  "balanced mode checks cwd too",
 );
 
 const nonWhiteCheck = checkHitlRequirement({

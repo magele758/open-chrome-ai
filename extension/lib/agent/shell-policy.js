@@ -99,6 +99,178 @@ export function shellPolicyBlock(cmd) {
   return "";
 }
 
+const SENSITIVE_SEG = new Set([
+  ".ssh", ".aws", ".gnupg", ".kube", ".netrc", ".docker", ".npmrc", ".pypirc",
+  ".git-credentials", ".pgpass", ".password-store", "keychains", "gcloud",
+]);
+const SENSITIVE_NAME = /^(?:\.env(?:\..*)?|id_[a-z0-9]+(?:\.pub)?|.*\.(?:pem|key|p12|pfx))$/i;
+const READ_ABS_OK = /^(?:~(?:\/|$)|\/tmp(?:\/|$)|\/private\/tmp(?:\/|$)|\/Users\/|\/home\/)/;
+
+/** Split into shell words; returns null if anything could expand, chain, or redirect. */
+function shellWords(cmd) {
+  const words = [];
+  let cur = "";
+  let has = false;
+  let quote = "";
+  for (let i = 0; i < cmd.length; i += 1) {
+    const c = cmd[i];
+    if (quote === "'") {
+      if (c === "'") quote = "";
+      else cur += c;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') quote = "";
+      else if (c === "$" || c === "`" || c === "\\") return null;
+      else cur += c;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      has = true;
+    } else if (c === " " || c === "\t") {
+      if (has) words.push(cur);
+      cur = "";
+      has = false;
+    } else if (/[;&|`$<>(){}*?[\]\\\n\r!#]/.test(c)) {
+      return null;
+    } else if (c === "~" && has && /[=:]/.test(cmd[i - 1])) {
+      return null;
+    } else {
+      cur += c;
+      has = true;
+    }
+  }
+  if (quote) return null;
+  if (has) words.push(cur);
+  return words;
+}
+
+function isSensitivePath(p) {
+  const segs = String(p || "").split(/[/\\=]/);
+  return segs.some((s) => SENSITIVE_SEG.has(s.toLowerCase()) || SENSITIVE_NAME.test(s));
+}
+
+function pathOk(p, { read = false } = {}) {
+  if (isSensitivePath(p)) return false;
+  if (/^~[^/]/.test(p)) return false;
+  if (!read) return true;
+  if (p.split("/").includes("..")) return false;
+  return !p.startsWith("/") && !p.startsWith("~") ? true : READ_ABS_OK.test(p);
+}
+
+function optionValue(tok) {
+  const i = tok.indexOf("=");
+  return i > 0 ? tok.slice(i + 1) : "";
+}
+
+function shortFlags(tok) {
+  return /^-[^-]/.test(tok) ? tok.slice(1) : "";
+}
+
+const GIT_DIFF_DENY = /^--(?:output|ext-diff|no-index)/;
+const GIT_BRANCH_FLAGS = new Set([
+  "--list", "--all", "--remotes", "--verbose", "--show-current", "--color", "--no-color",
+  "--column", "--no-column", "--ignore-case", "--abbrev", "--no-abbrev", "--omit-empty",
+]);
+const GIT_BRANCH_VALUE = new Set(["--merged", "--no-merged", "--contains", "--no-contains", "--points-at", "--sort", "--format"]);
+
+function gitBranchReadOnly(rest) {
+  let listing = false;
+  const positional = [];
+  for (let i = 0; i < rest.length; i += 1) {
+    const t = rest[i];
+    const name = t.split("=")[0];
+    if (t === "-l" || t === "--list") listing = true;
+    if (GIT_BRANCH_VALUE.has(name)) {
+      if (!t.includes("=")) i += 1;
+      continue;
+    }
+    if (GIT_BRANCH_FLAGS.has(name)) continue;
+    if (t.startsWith("--")) return false;
+    const flags = shortFlags(t);
+    if (flags) {
+      if (!/^[arvl]+$/.test(flags)) return false;
+      continue;
+    }
+    positional.push(t);
+  }
+  return positional.length === 0 || listing;
+}
+
+function gitReadOnly(words) {
+  const [, sub, ...rest] = words;
+  if (["diff", "log", "show"].includes(sub)) return !rest.some((t) => GIT_DIFF_DENY.test(t));
+  if (sub === "status" || sub === "rev-parse") return true;
+  if (sub === "branch") return gitBranchReadOnly(rest);
+  if (sub === "remote") {
+    const action = rest.find((t) => !t.startsWith("-"));
+    return !action || action === "get-url" || action === "show";
+  }
+  return false;
+}
+
+const FIND_ALLOWED = new Set([
+  "-maxdepth", "-mindepth", "-type", "-name", "-iname", "-path", "-ipath", "-size", "-mtime",
+  "-mmin", "-newer", "-empty", "-print", "-print0", "-not", "-a", "-o", "-and", "-or", "-L", "-H", "-P",
+]);
+
+function findReadOnly(words) {
+  return words.slice(1).every((t) => !t.startsWith("-") || FIND_ALLOWED.has(t));
+}
+
+const READERS = new Set(["cat", "head", "tail", "grep", "wc", "file"]);
+
+function readerOptionsOk(bin, opts) {
+  for (const t of opts) {
+    const flags = shortFlags(t);
+    if (bin === "grep" && (/^--(?:recursive|dereference-recursive|directories|file)\b/.test(t) || /[rRdf]/.test(flags))) return false;
+    if ((bin === "tail" || bin === "head") && (/^--(?:follow|retry)\b/.test(t) || /[fF]/.test(flags))) return false;
+    if (bin === "file" && (/^--(?:compile|magic-file|files-from)\b/.test(t) || /[Cmf]/.test(flags))) return false;
+    if (bin === "wc" && /^--files0-from\b/.test(t)) return false;
+  }
+  return true;
+}
+
+/** Read-only shell commands that balanced HITL mode may run without confirmation. */
+export function isShellCommandWhitelisted(cmd, { cwd } = {}) {
+  const s = String(cmd || "").trim();
+  if (!s || isUnboundedFsWalk(s)) return false;
+  const words = shellWords(s);
+  if (!words?.length) return false;
+  const [bin] = words;
+  const args = words.slice(1);
+  const read = READERS.has(bin);
+  if (cwd != null && String(cwd).trim() && !pathOk(String(cwd).trim(), { read })) return false;
+  for (const t of args) {
+    if (t.startsWith("-")) {
+      const v = optionValue(t);
+      if (v && !pathOk(v, { read })) return false;
+    } else if (!pathOk(t, { read })) {
+      return false;
+    }
+  }
+  switch (bin) {
+    case "git":
+      return gitReadOnly(words);
+    case "ls":
+      return !args.some((t) => t === "--recursive" || /R/.test(shortFlags(t)));
+    case "pwd":
+    case "uname":
+    case "which":
+    case "echo":
+      return true;
+    case "find":
+      return findReadOnly(words);
+    case "node":
+    case "python":
+    case "python3":
+      return args.length === 1 && args[0] === "--version";
+    default:
+      return read && readerOptionsOk(bin, args.filter((t) => t.startsWith("-")));
+  }
+}
+
 export function toolCallSignature(name, rawArgs) {
   const tool = String(name || "");
   let args = String(rawArgs || "{}");

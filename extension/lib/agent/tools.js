@@ -54,7 +54,7 @@ import { findSkill } from "./skills.js";
 import { ensureSkillBody } from "../skill-folder.js";
 import { execNativeShell, formatExecResult, nativeFs } from "../native-host.js";
 import { aliasAgentPath, isAllowedAgentReadName, isBlockedAgentRoot } from "./fs-policy.js";
-import { isUnboundedFsWalk, shellPolicyBlock } from "./shell-policy.js";
+import { isShellCommandWhitelisted, shellPolicyBlock } from "./shell-policy.js";
 import { debugLog } from "../debug-log.js";
 import {
   COMPANIONS,
@@ -1718,34 +1718,7 @@ export const TOOL_DOMAINS = {
   ],
 };
 
-/** 只读安全命令白名单匹配（智能模式放行） */
-export function isShellCommandWhitelisted(cmd) {
-  const s = String(cmd || "").trim();
-  if (!s) return false;
-  // 禁止命令拼接、管道、子 shell 及输出重定向
-  if (/[;&|`]|\$\(/.test(s)) return false;
-  if (/>/.test(s)) return false;
-
-  const allowed = [
-    /^git\s+(status|log|diff|branch|show|remote|rev-parse)(\s.*)?$/,
-    /^ls(\s.*)?$/,
-    /^pwd$/,
-    /^cat\s+[^-].*$/,
-    /^which\s+.*$/,
-    /^echo\s+.*$/,
-    /^head(\s.*)?$/,
-    /^tail(\s.*)?$/,
-    /^grep(\s.*)?$/,
-    /^find\s+(?!\/(?:\s|$)).*-maxdepth\s+[1-3]\b.*$/,
-    /^uname(\s.*)?$/,
-    /^file\s+.*$/,
-    /^wc(\s.*)?$/,
-    /^node\s+--version$/,
-    /^python3?\s+--version$/,
-  ];
-  if (isUnboundedFsWalk(s)) return false;
-  return allowed.some((re) => re.test(s));
-}
+export { isShellCommandWhitelisted };
 
 /** 判断工具是否属于高危特权类 */
 export function isToolPrivileged(toolName, args = {}) {
@@ -1785,7 +1758,7 @@ export function checkHitlRequirement({
   // hitlMode === "balanced" (智能模式：支持 AI 审查中间态)
   if (toolName === "run_shell") {
     const cmd = args?.command;
-    if (isShellCommandWhitelisted(cmd)) {
+    if (isShellCommandWhitelisted(cmd, { cwd: args?.cwd })) {
       return { needsConfirmation: false };
     }
     return {
