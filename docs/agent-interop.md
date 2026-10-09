@@ -12,7 +12,10 @@
 | 仅限专用 profile | 只应在**专用 Chrome profile / 专用 user-data-dir** 里开启。扩展无法自证 profile 身份，靠"显式开关 + 你只在专用 profile 里打开"保证；**不要在日常 Chrome 里开启** |
 | origin 白名单 | `settings.agentBridgeOrigins`，默认 `localhost:*`、`127.0.0.1:*`、`mp.weixin.qq.com`、知乎专栏、B 站创作中心、小红书创作、抖音创作。白名单之外的标签：`list_tabs` 看不到，任何带 `tabId` 的工具返回 `ORIGIN_NOT_ALLOWED`；`open_tab` 也校验 URL。`chrome://` 等受限页返回 `TAB_RESTRICTED` |
 | 每次调用都鉴权 | 每次调用重新读开关与白名单、重新取标签当前 URL（导航后 origin 变了立即失效）；关掉开关即时生效 |
-| 不暴露高危工具 | 不提供 `upload_file`（读本机文件）、`drag_drop`、`run_shell`、下载等；`run_js` 只在白名单 origin 的标签里可用 |
+| 按 scope 分级 | 每个工具带 `scope`（`tabs:read` `tabs:manage` `page:read` `page:act` `page:js` `clipboard` `downloads` `upload` `settings:read` `settings:write`），见 §10。`run_js` 只在白名单 origin 的标签里可用；不提供 `run_shell` |
+| URL 目标 | `open_tab` / `navigate_tab` / `create_window` / `download_file` 的目标 URL 都要在白名单内（`ORIGIN_NOT_ALLOWED`）；`close_window` 要求窗口内**全部**标签在白名单内 |
+| 上传硬拒绝 | `upload_file` 对密钥/凭据类路径（`.ssh`、`.aws`、`.gnupg`、`.kube`、`.env*`、`*.pem/*.key/*.p12`、`id_*`、`credentials`、浏览器 `Login Data`/`Cookies`、含 `..` 的路径等）一律返回 `PATH_NOT_ALLOWED`，与 scope 无关 |
+| 设置保护 | `get_settings` 不返回敏感项（密钥、服务地址、`hitlMode`、`nativeShell`、`cdpInput`、`agentBridge*`、`agentInbox*` 等，只在 `protected` 列出键名）；`update_settings` 含任一敏感键即整批拒绝（`SETTING_PROTECTED`） |
 | 无外部消息通道 | manifest **没有** `externally_connectable`，网页和其他扩展不能直接调用；入口只有下面三种 |
 | 审计 | `audit_log` 返回最近 100 次调用（工具、tabId、ok、错误码、耗时，不含参数内容） |
 
@@ -121,7 +124,9 @@ const { result, artifacts } = await pl.call("list_tabs");
 | `CLIPBOARD_FAILED` | **是** | 三种剪贴板写入方式全失败，`details` 列出每种的错误 |
 | `VERIFY_FAILED` | 否 | 回读校验不通过（已按重试上限停止）；**不要**换 innerHTML 之类手段兜底 |
 | `JOB_NOT_FOUND` | 否 | `job_status` 找不到 |
-| `TOOL_FAILED` | 否 | 其他工具失败，见 `message` |
+| `TOOL_FAILED` | 否 | 其他工具失败，见 `message`；`act_element` 目标过期时 `details.stale=true`，重新 `snapshot_controls` |
+| `SETTING_PROTECTED` | 否 | `update_settings` 触及敏感设置；`details.keys` 列出键名，需用户在设置页手动改 |
+| `PATH_NOT_ALLOWED` | 否 | `upload_file` 含敏感本机路径；`details.paths` 列出被拒路径 |
 
 ## 7. 幂等与重试约定
 
@@ -135,9 +140,9 @@ const { result, artifacts } = await pl.call("list_tabs");
 
 | 级别 | 工具 | 说明 |
 |---|---|---|
-| `none` | `list_tabs`、`open_tab`（默认 `active:false`）、`wait_for`、`query_dom`、`run_js`、`read_rendered_html`、`screenshot`、`clipboard_write`、`set_input_value`、`pick_rich_editor`/`wechat_pick_body_editor`、`verify_editor_content` | 不切标签、不动窗口焦点（`pick`/`prepare` 会在**页面内** `focus()` 编辑器） |
-| `emulated` | `trusted_click`、`trusted_type`、`press_keys`、`hover`、`copy_selection_trusted`、`paste_rich_trusted` | 调用 `Emulation.setFocusEmulationEnabled`，页面认为自己有焦点，**不抢窗口/标签焦点**。e2e 实测：后台标签里可信粘贴成功，标签保持 `active:false`。传 `activate:true` 才会切到前台 |
-| `activates` | `activate_tab`、任何传了 `activate:true` 的调用 | 会把标签切到前台（抢焦点） |
+| `none` | `list_tabs`、`open_tab`（默认 `active:false`）、`create_window`（默认 `focused:false`）、页面读取/`act_element`/`select_option`/`scroll_page`、`wait_for`、`query_dom`、`run_js`、`read_rendered_html`、`screenshot`、`clipboard_write`、`set_input_value`、`pick_rich_editor`/`wechat_pick_body_editor`、`verify_editor_content` | 不切标签、不动窗口焦点（`pick`/`prepare` 会在**页面内** `focus()` 编辑器） |
+| `emulated` | `trusted_click`、`trusted_type`、`press_keys`、`hover`、`drag_drop`、`upload_file`、`copy_selection_trusted`、`paste_rich_trusted` | 调用 `Emulation.setFocusEmulationEnabled`，页面认为自己有焦点，**不抢窗口/标签焦点**。e2e 实测：后台标签里可信粘贴成功，标签保持 `active:false`。传 `activate:true` 才会切到前台 |
+| `activates` | `activate_tab`、`focus_window`、任何传了 `activate:true` 的调用 | 会把标签切到前台（抢焦点） |
 
 注意：可信粘贴/复制走**系统剪贴板**，会覆盖用户剪贴板（专用 profile 的无人值守场景可接受；有人在用这台机器时不要跑）。
 
@@ -150,25 +155,45 @@ const { result, artifacts } = await pl.call("list_tabs");
 
 ## 10. 工具参考
 
-通用：除 `list_tools/job_status/audit_log/list_tabs/open_tab/clipboard_write` 外都需 `tabId`。
+通用：除元工具、`list_tabs/open_tab/clipboard_write`、窗口/下载/设置类工具外都需 `tabId`。scope 列出每个工具所需权限（供 per-agent token 鉴权使用；CDP `__pl` 入口目前仍只看开关 + 白名单）。
 
-| 工具 | 作用 | 要点 |
-|---|---|---|
-| `list_tabs {query?}` | 白名单内的标签 | 仅返回允许的 origin |
-| `open_tab {url, active?}` | 新开标签 | 默认后台；URL 需在白名单；返回的标签尚未加载完时，后续带 `tabId` 的调用会等它提交 URL（≤4s），页面元素仍应用 `wait_for` |
-| `activate_tab {tabId}` | 切前台 | 抢焦点 |
-| `wait_for {tabId, selector? , text?, timeoutMs?}` | 页面内轮询 | 超时 `TIMEOUT` |
-| `query_dom` / `run_js` | 读 DOM / 执行 JS | `run_js` 需 JSON 可序列化返回 |
-| `read_rendered_html {tabId, selector, removeSelectors?, keepClass?}` | 读已渲染 HTML，**用 getComputedStyle 内联样式**，转绝对链接，去 script/style/id/data-* | HTML 在 `artifacts[0]`；`result.stats` 有字数/table/img |
-| `screenshot {tabId, fullPage?, selector?}` | JPEG artifact（base64） | 走调试器，不切标签 |
-| `clipboard_write {html?, text?}` | 写剪贴板（html+plain） | 方式依次：offscreen `execCommand("copy")`（不需文档焦点，e2e 实测可用）→ offscreen Clipboard API → Native Host(macOS)；offscreen 被配音占用时不抢占 |
-| `set_input_value {tabId, selector, value}` | 原生 setter 写 input/textarea 并派发 input/change | 回读不一致 → `VERIFY_FAILED`；**标题用它** |
-| `trusted_click` / `trusted_type` / `press_keys` / `hover` | 即现有 CDP 可信输入工具 | 目标用 `selector`/`text`/`x,y`（不支持 `index`）；`press_keys` 的 `Meta/Ctrl+A/C/V/X/Z` 带原生编辑命令 |
-| `pick_rich_editor` / `wechat_pick_body_editor` | 挑正文编辑器 | 排除 `.title-editor__input`、`#title`、`[class*=title-editor]`；优先占位文案"从这里开始写正文"；候选打分在 `candidates`；返回 `domIndex` 可钉住同一编辑器 |
-| `verify_editor_content {tabId, expect?, titleEquals?, titleBefore?, includeHtml?}` | 回读校验 | `stats`（chars/tables/imgs/paragraphs/headings/links）、`title`、`titlePolluted`、`checks[]`；`expect:{minChars,minTables,minImages,contains[]}` |
-| `copy_selection_trusted {tabId, selector}` | 选中元素内容 + 可信 Meta/Ctrl+C | Chrome 自己序列化（带内联样式），随后 `paste_rich_trusted {useClipboard:true}` |
-| `paste_rich_trusted {tabId, html? / text? / source{tabId,selector} / useClipboard, titleEquals?, expect?, retries?, settleMs?, activate?, includeHtml?}` | 写剪贴板 → 点击聚焦 → 全选+清空 → 可信粘贴 → 回读校验 → 重试 | 默认从 `html` 推导断言：`minChars=85%`、`minTables`、`minImages`，可用 `expect` 覆盖；标题不得被污染或变化；失败 `VERIFY_FAILED`，**无 DataTransfer/innerHTML 兜底** |
-| `job_status` / `audit_log` / `list_tools` | 元工具 | |
+| 工具 | scope | 作用 | 要点 |
+|---|---|---|---|
+| `list_tabs {query?}` | tabs:read | 白名单内的标签 | 仅返回允许的 origin |
+| `list_windows {}` | tabs:read | 窗口 + 其中白名单内的标签 | 白名单外的标签只给 `hiddenTabs` 计数 |
+| `open_tab {url, active?}` | tabs:manage | 新开标签 | 默认后台；URL 需在白名单；返回的标签尚未加载完时，后续带 `tabId` 的调用会等它提交 URL（≤4s），页面元素仍应用 `wait_for` |
+| `activate_tab {tabId}` | tabs:manage | 切前台 | 抢焦点 |
+| `navigate_tab {tabId, url}` | tabs:manage | 标签跳转 | 当前页与目标 URL 都要在白名单 |
+| `reload_tab` / `go_back` / `go_forward {tabId}` | tabs:manage | 刷新 / 后退 / 前进 | 后退/前进的落地页若不在白名单，之后带该 `tabId` 的调用返回 `ORIGIN_NOT_ALLOWED` |
+| `close_tab {tabId}` | tabs:manage | 关标签 | 只能关白名单内的标签 |
+| `create_window {url, focused?, state?, width?, height?}` | tabs:manage | 新窗口 | URL 需在白名单；默认不抢焦点（`state:"maximized"` 时 Chrome 要求聚焦） |
+| `focus_window {windowId}` | tabs:manage | 窗口切前台 | 窗口里需至少一个白名单标签 |
+| `close_window {windowId}` | tabs:manage | 关窗口 | 窗口内全部标签都要在白名单内 |
+| `snapshot_controls {tabId, limit?, textLimit?, format?}` | page:read | 视口内可操作控件快照（含 shadow DOM、iframe），每项带 `ref` | `format:"text"` 额外给编号表；导航/翻页/弹窗后 ref 失效，需重新快照 |
+| `extract_page {tabId, maxChars?, format?}` | page:read | 干净正文 | 默认 20000 字；`format:"markdown"` 时正文在 artifact `page.md`；不拉取 PDF 文字层 |
+| `find_in_page {tabId, query, limit?}` / `get_links {tabId, limit?}` | page:read | 页内搜索 / 链接列表 | |
+| `act_element {tabId, ref?, action, value?, submit?}` | page:act | 按快照 ref 操作：`click`/`fill`/`select`/`scroll_down`/`scroll_up` | 页面内合成事件；过期返回 `TOOL_FAILED` + `details.stale` |
+| `select_option {tabId, selector, value, nth?}` | page:act | `<select>` 选项 | 顶层找不到会探测 iframe |
+| `scroll_page {tabId, selector? / percent? / y? / direction?}` | page:act | 滚动 | `direction` 为一屏 |
+| `drag_drop {tabId, from, to}` | page:act | 可信拖拽 | `from`/`to` 各用 `index`（快照 ref）/`selector`/`text`/`x,y` |
+| `handle_dialog {tabId, accept?, promptText?}` | page:act | 处理 alert/confirm/prompt/beforeunload | 页面动作触发对话框时，`act_element`/`select_option`/`drag_drop`/`upload_file` 立即返回 `result.dialog`，不再卡住 |
+| `download_file {url, filename?, timeoutMs?}` | downloads | 下载到下载目录，返回本机路径 | URL 需在白名单；大文件用 `async:true`；不校验重定向后的最终域名 |
+| `list_downloads {query?, limit?}` | downloads | 最近下载 | 只列来源在白名单内的 |
+| `upload_file {tabId, selector / index / text, paths[]}` | upload | 把本机文件交给页面 | `<input type=file>` 直接设；自定义按钮接管文件选择框；敏感路径 `PATH_NOT_ALLOWED` |
+| `get_settings {}` | settings:read | 非敏感设置及允许值 | 敏感项只在 `protected` 列键名 |
+| `update_settings {changes:[{key,value}]}` | settings:write | 改非敏感设置 | 不弹窗；任一敏感键 → `SETTING_PROTECTED`，整批不改 |
+| `wait_for {tabId, selector? , text?, timeoutMs?}` | page:read | 页面内轮询 | 超时 `TIMEOUT` |
+| `query_dom` / `run_js` | page:read / page:js | 读 DOM / 执行 JS | `run_js` 需 JSON 可序列化返回 |
+| `read_rendered_html {tabId, selector, removeSelectors?, keepClass?}` | page:read | 读已渲染 HTML，**用 getComputedStyle 内联样式**，转绝对链接，去 script/style/id/data-* | HTML 在 `artifacts[0]`；`result.stats` 有字数/table/img |
+| `screenshot {tabId, fullPage?, selector?}` | page:read | JPEG artifact（base64） | 走调试器，不切标签 |
+| `clipboard_write {html?, text?}` | clipboard | 写剪贴板（html+plain） | 方式依次：offscreen `execCommand("copy")`（不需文档焦点，e2e 实测可用）→ offscreen Clipboard API → Native Host(macOS)；offscreen 被配音占用时不抢占 |
+| `set_input_value {tabId, selector, value}` | page:act | 原生 setter 写 input/textarea 并派发 input/change | 回读不一致 → `VERIFY_FAILED`；**标题用它** |
+| `trusted_click` / `trusted_type` / `press_keys` / `hover` | page:act | 即现有 CDP 可信输入工具 | 目标用 `index`（`snapshot_controls` 的 ref）/`selector`/`text`/`x,y`；`press_keys` 的 `Meta/Ctrl+A/C/V/X/Z` 带原生编辑命令 |
+| `pick_rich_editor` / `wechat_pick_body_editor` | page:read | 挑正文编辑器 | 排除 `.title-editor__input`、`#title`、`[class*=title-editor]`；优先占位文案"从这里开始写正文"；候选打分在 `candidates`；返回 `domIndex` 可钉住同一编辑器 |
+| `verify_editor_content {tabId, expect?, titleEquals?, titleBefore?, includeHtml?}` | page:read | 回读校验 | `stats`（chars/tables/imgs/paragraphs/headings/links）、`title`、`titlePolluted`、`checks[]`；`expect:{minChars,minTables,minImages,contains[]}` |
+| `copy_selection_trusted {tabId, selector}` | clipboard | 选中元素内容 + 可信 Meta/Ctrl+C | Chrome 自己序列化（带内联样式），随后 `paste_rich_trusted {useClipboard:true}` |
+| `paste_rich_trusted {tabId, html? / text? / source{tabId,selector} / useClipboard, titleEquals?, expect?, retries?, settleMs?, activate?, includeHtml?}` | page:act | 写剪贴板 → 点击聚焦 → 全选+清空 → 可信粘贴 → 回读校验 → 重试 | 默认从 `html` 推导断言：`minChars=85%`、`minTables`、`minImages`，可用 `expect` 覆盖；标题不得被污染或变化；失败 `VERIFY_FAILED`，**无 DataTransfer/innerHTML 兜底** |
+| `job_status` / `audit_log` / `list_tools` | — | 元工具 | |
 
 ## 11. 参考 recipe：把 Doocs 简报写入微信公众号编辑器
 
@@ -234,6 +259,8 @@ await pl.call("trusted_click", { tabId: wx, text: "保存为草稿" });
 - 剪贴板被覆盖；非 macOS 上 Native Host 兜底不可用（前两种 offscreen 方式不受影响）。
 - 仅支持顶层 frame 的编辑器（iframe 内的编辑器未处理）。
 - 任务表在 SW 内存里，SW 重启丢失。
+- 不提供 cookies 工具：manifest 没有 `cookies` 权限（需单独的高危 scope 再加）。
+- `snapshot_controls` 的 ref 存在 SW 内存里，按标签保存最近一次快照；SW 重启或导航后需重新快照。
 
 ## 14. 测试
 
@@ -241,8 +268,9 @@ await pl.call("trusted_click", { tabId: wx, text: "保存为草稿" });
 node extension/tools/test_bridge_protocol.mjs   # 协议、白名单、幂等、超时、async、错误码
 node extension/tools/test_bridge_editor.mjs     # jsdom：挑编辑器、回读校验、样式内联、原生 setter
 node extension/tools/test_bridge_paste.mjs      # paste_rich_trusted 流程（mock CDP）：顺序、重试、不兜底、焦点
+node extension/tools/test_bridge_browser_tools.mjs  # 标签/窗口、快照 ref、对话框、下载、上传敏感路径、受保护设置
 node extension/tools/test_clipboard_sw.mjs      # 剪贴板三种方式的降级与 offscreen 让位
 node extension/tools/e2e_bridge.mjs             # 真浏览器冒烟（专用临时 profile，见脚本头注释）
 ```
 
-前四个由 `npm test` 自动收录；`e2e_bridge.mjs` 不属于 `run-tests`，需要本机有 Chrome。
+前五个由 `npm test` 自动收录；`e2e_bridge.mjs` 不属于 `run-tests`，需要本机有 Chrome。

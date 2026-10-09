@@ -15,6 +15,7 @@ import { queryDom, runJs } from "../agent/page-fns.js";
 import { BridgeError, ERROR_CODES, makeArtifact, toBridgeError } from "./protocol.js";
 import { isUrlAllowed } from "./policy.js";
 import { plEditor, plReadRenderedHtml, plSelectContents, plSetInputValue, plWaitFor } from "./editor-fns.js";
+import { createBrowserTools, createSnapshotRefs } from "./tools-browser.js";
 
 export const MAX_PASTE_RETRIES = 3;
 const BUSY_RETRY_DELAY_MS = 500;
@@ -151,13 +152,14 @@ export function createBridgeTools(env) {
     };
   }
 
+  const refs = createSnapshotRefs();
   const cdpToolDefs = createCdpTools(
     { settings: {} },
     {
       cdp: env.cdp,
       resolveTabId: async (args) => Number(args.tabId),
       attachTabToTask: async () => null,
-      getRefItem: () => ({ error: "桥接入口不支持 index 定位；请用 selector / text / x,y。" }),
+      getRefItem: (tabId, index) => refs.get(tabId, index),
     },
   );
   const trusted = new Map(cdpToolDefs.map((t) => [t.name, t]));
@@ -512,6 +514,8 @@ export function createBridgeTools(env) {
       });
     },
   });
+
+  for (const def of createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpTool })) add(def);
 
   return tools;
 }

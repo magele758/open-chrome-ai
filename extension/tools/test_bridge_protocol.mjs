@@ -103,8 +103,9 @@ const focusOf = Object.fromEntries(hello.tools.map((t) => [t.name, t.focus]));
 assert.equal(focusOf.trusted_click, "emulated");
 assert.equal(focusOf.activate_tab, "activates");
 assert.equal(focusOf.read_rendered_html, "none");
-assert.ok(!names.includes("upload_file"), "local file upload is not exposed");
-assert.ok(!names.includes("drag_drop"));
+const scopeOf = Object.fromEntries(bridge.tools.map((t) => [t.name, t.scope]));
+assert.equal(scopeOf.upload_file, "upload", "local file upload is gated by its own scope");
+assert.equal(scopeOf.drag_drop, "page:act");
 
 res = await bridge.call({ tool: "list_tabs" });
 assert.equal(res.error.code, ERROR_CODES.BAD_REQUEST);

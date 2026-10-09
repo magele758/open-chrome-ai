@@ -8,9 +8,9 @@
  */
 
 import { getCdp } from "../cdp.js";
-import { inject, restrictedUrl, runJsInTab } from "../chrome.js";
+import { inject, injectFrames, restrictedUrl, runJsInTab } from "../chrome.js";
 import { createSwClipboard } from "../clipboard-sw.js";
-import { loadSettings } from "../storage.js";
+import { loadSettings, saveSettings } from "../storage.js";
 import {
   BRIDGE_PROTOCOL,
   BridgeError,
@@ -36,8 +36,22 @@ export function createDefaultEnv() {
       query: (q) => chrome.tabs.query(q),
       create: (props) => chrome.tabs.create(props),
       update: (id, props) => chrome.tabs.update(id, props),
+      reload: (id) => chrome.tabs.reload(id),
+      goBack: (id) => chrome.tabs.goBack(id),
+      goForward: (id) => chrome.tabs.goForward(id),
+      remove: (id) => chrome.tabs.remove(id),
     },
+    windows: {
+      getAll: (q) => chrome.windows.getAll(q),
+      get: (id, q) => chrome.windows.get(id, q),
+      create: (props) => chrome.windows.create(props),
+      update: (id, props) => chrome.windows.update(id, props),
+      remove: (id) => chrome.windows.remove(id),
+    },
+    downloads: chrome.downloads,
+    saveSettings,
     inject,
+    injectFrames,
     runJs: runJsInTab,
     cdp: getCdp(),
     clipboard: createSwClipboard(),
@@ -141,6 +155,13 @@ export function createBridge(env = createDefaultEnv()) {
     return tab;
   }
 
+  function authorizeUrl(url, settings) {
+    if (!isUrlAllowed(url, settings.agentBridgeOrigins)) {
+      throw new BridgeError(ERROR_CODES.ORIGIN_NOT_ALLOWED, `URL 不在白名单：${url}`, { details: { url: String(url ?? "") } });
+    }
+    return String(url);
+  }
+
   function withTimeout(promise, ms, tool) {
     let timer;
     const timeout = new Promise((_, reject) => {
@@ -194,7 +215,7 @@ export function createBridge(env = createDefaultEnv()) {
       }
       checkArgs(tool, req.args);
       meta.focus = tool.focus;
-      const ctx = { settings, artifacts, meta, tab: null, authorizeTab: (id) => authorizeTab(id, settings) };
+      const ctx = { settings, artifacts, meta, tab: null, authorizeTab: (id) => authorizeTab(id, settings), authorizeUrl: (url) => authorizeUrl(url, settings) };
       const run = async () => {
         if (tool.needsTab) {
           ctx.tab = await authorizeTab(req.args.tabId, settings);
