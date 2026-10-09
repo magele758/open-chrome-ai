@@ -319,7 +319,8 @@ export function createBridge(env = createDefaultEnv()) {
               agentName: auth.record.name,
               sessionId: auth.sessionId,
               tokenId: auth.record.id,
-              egress: auth.record.egress || [],
+              // 与直调路径（trust-guard tokenEgressPolicy）一致：允许的出站目的地 = origins ∪ egress
+              egress: [...auth.record.origins, ...(auth.record.egress || [])],
               skipIrreversible: auth.record.skipIrreversible === true,
             }
           : null,

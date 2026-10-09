@@ -292,7 +292,9 @@ export function createDelegateManager({
       if (d.decision === "allow") return { allow: true };
 
       if (d.decision === "queue") {
-        const approved = await approvals?.consumeApproved?.(toolName, args).catch(() => null);
+        // 与 bridge 直调同一 principal：侧栏批准后，同一 token 的委托重跑或直调都能消费
+        const principal = session?.tokenId ? `token:${session.tokenId}` : `agent:${task.agentName || "external"}`;
+        const approved = await approvals?.consumeApproved?.(toolName, args, { principal }).catch(() => null);
         if (approved) {
           addStep(task, { kind: "note", name: toolName, summary: `使用用户已批准的待办 ${approved.id}` });
           return { allow: true };
@@ -303,7 +305,7 @@ export function createDelegateManager({
             args,
             reason: d.reason,
             item: d.irreversible,
-            principal: `agent:${task.agentName || "external"}`,
+            principal,
             sessionId: task.id,
           })
           .catch(() => null);

@@ -483,4 +483,54 @@ const toolMessages = (seen) => seen.flatMap((s) => s.messages.filter((m) => m.ro
   console.log("PASS session egress + per-call token origin check");
 }
 
+// 13. token 的 skipIrreversible / 出站范围经 bridge 传到委托任务；委托排队的批准用 token:<id>，与直调同一 principal
+{
+  const { approvalPrincipal, checkTokenCall } = await import("../lib/bridge/trust-guard.js");
+  const TABS = new Map([[7, { id: 7, windowId: 1, active: true, url: "https://www.zhihu.com/write" }]]);
+  const plain = await createTokenRecord({ name: "alice", scopes: ["agent:delegate"], origins: ["https://www.zhihu.com"] });
+  const optOut = await createTokenRecord({ name: "bot", scopes: ["agent:delegate"], origins: ["https://www.zhihu.com"], skipIrreversible: true });
+  const settings = normalizeSettings({ agentBridgeEnabled: false });
+  const approvals = createApprovalQueue({ storage: memoryAdapter() });
+  const script = [[{ name: "cose_publish", args: { platforms: ["zhihu"] } }]];
+  const task = { prompt: "把草稿发布到知乎", tabId: 7, capsule: { actions: ["publish"], origins: ["zhihu.com"], platforms: ["zhihu"] } };
+  const bridgeFor = (manager) =>
+    createBridge({
+      getSettings: async () => settings,
+      getAgentTokens: async () => [plain.record, optOut.record],
+      auditLog: { append: async () => {}, list: async () => [] },
+      approvals,
+      tabs: { get: async (id) => TABS.get(id), query: async () => [TABS.get(7)] },
+      sleep: async () => {},
+      now: () => Date.now(),
+      delegate: manager,
+    });
+  const runTask = async (tok, name) => {
+    const m = makeManager({ script, approvals });
+    const res = await bridgeFor(m.manager).call({ v: 1, id: `d-${name}`, tool: "run_agent_task", args: task }, { session: { token: tok.token, sessionId: `s-${name}`, agentName: name } });
+    assert.equal(res.ok, true, "run_agent_task itself is never queued");
+    return { ...m, done: await m.manager.wait(res.result.taskId) };
+  };
+
+  for (const name of ["run_agent_task", "agent_task_status", "agent_task_cancel"]) {
+    assert.deepEqual(checkTokenCall(name, { prompt: "发布到知乎" }, { record: plain.record }), { ok: true, irreversible: null });
+  }
+
+  const skipped = await runTask(optOut, "bot");
+  assert.equal(skipped.done.status, TASK_STATUS.DONE);
+  assert.ok(ran(skipped.log, "cose_publish"), "token skipIrreversible reaches the delegated run");
+  assert.equal((await approvals.list()).length, 0);
+
+  const first = await runTask(plain, "alice");
+  assert.equal(first.done.status, TASK_STATUS.NEEDS_APPROVAL);
+  assert.ok(!ran(first.log, "cose_publish"));
+  const [entry] = await approvals.list({ status: "pending" });
+  assert.equal(entry.principal, approvalPrincipal(plain.record), "delegated approvals use token:<id>");
+  await approvals.resolve(entry.id, true);
+  assert.equal(await approvals.consumeApproved("cose_publish", { platforms: ["zhihu"] }, { principal: approvalPrincipal(optOut.record) }), null, "another token cannot consume it");
+  const second = await runTask(plain, "alice2");
+  assert.equal(second.done.status, TASK_STATUS.DONE);
+  assert.ok(ran(second.log, "cose_publish"), "after side-panel approval the re-run executes once");
+  console.log("PASS token skipIrreversible + token:<id> approvals for delegated runs");
+}
+
 console.log("ALL PASS test_agent_delegate");

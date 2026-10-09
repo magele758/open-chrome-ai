@@ -145,6 +145,7 @@ Agent  → 再调一次相同调用                           ← CONFIRMATION_R
 - 用户拒绝后，下一次重试返回 `CONFIRMATION_REJECTED`（一次），之后再调会重新排队。
 - `CONFIRMATION_REQUIRED` 是可重试错误：同 id 重试不会命中幂等缓存的旧失败结果。
 - 旧入口（CDP `__pl` / 扩展消息 / 无 token 的 inbox）不经过这两道护栏，行为不变。
+- 委托（`run_agent_task` / `agent_task_status` / `agent_task_cancel`）本身不在清单里、不进队列；委托任务内部的每一步由扩展内的来源判定（`decideToolCall`）把关，使用同一 token 的 `skipIrreversible` 与出站范围（origins ∪ egress），排队的批准也记为 `token:<id>`，侧栏批准后重跑任务即可执行一次。
 
 ## 1. 安全模型（先读）
 
