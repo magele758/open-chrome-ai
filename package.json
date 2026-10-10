@@ -13,7 +13,7 @@
     "eval:interpret": "node extension/tools/eval_interpret_quality.mjs"
   },
   "dependencies": {
-    "@mage-ai-lab/agent-loop": "0.1.1"
+    "@mage-ai-lab/agent-loop": "0.1.3"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
