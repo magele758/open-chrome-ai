@@ -667,7 +667,7 @@ function textFromParts(parts) {
 }
 
 // node_modules/@mage-ai-lab/agent-loop/dist/session/tool-result-stub.js
-var TOOL_RESULT_STUB_MARK = "output dropped from context";
+var TOOL_RESULT_STUB_MARK = "earlier tool output was omitted to save space";
 function formatToolResultStub(name, ok, addr) {
   const head = `[previous: used ${name}${ok ? "" : " (failed)"} \u2014 ${TOOL_RESULT_STUB_MARK}]`;
   if (!addr)
@@ -805,12 +805,184 @@ function defaultPrepareView(messages, options) {
   return microCompactMessages(next, options?.microCompact ?? DEFAULT_MICRO_COMPACT_CONFIG).messages;
 }
 
+// node_modules/@mage-ai-lab/agent-loop/dist/model/token-estimate.js
+function estimateTokensFromText(text) {
+  if (!text) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+var IMAGE_PART_TOKEN_ESTIMATE = 1200;
+function estimateMessageTokens(messages) {
+  let total = 0;
+  for (const message of messages) {
+    total += 4;
+    for (const part of message.parts) {
+      if (part.type === "text" && typeof part.text === "string") {
+        total += estimateTokensFromText(part.text);
+      }
+      if (part.type === "reasoning" && typeof part.text === "string") {
+        total += estimateTokensFromText(part.text);
+      }
+      if (part.type === "image") {
+        total += IMAGE_PART_TOKEN_ESTIMATE;
+      }
+      if (part.type === "tool_call") {
+        const input = part.input;
+        const s = input !== void 0 ? JSON.stringify(input) : "";
+        total += estimateTokensFromText(s);
+      }
+      if (part.type === "tool_result" && typeof part.content === "string") {
+        total += estimateTokensFromText(part.content);
+      }
+    }
+  }
+  return total;
+}
+
+// node_modules/@mage-ai-lab/agent-loop/dist/session/session-budget.js
+var OUTPUT_RESERVE_TOKENS = 16e3;
+var TOOL_SCHEMA_FALLBACK_TOKENS = 4e3;
+var SAFETY_MARGIN_TOKENS = 2e3;
+var DEFAULT_CONTEXT_TOKENS = 131072;
+var MIN_SESSION_BUDGET_TOKENS = 8e3;
+var TOKENS_PER_TOOL_SCHEMA = 120;
+function charsToTokens(chars) {
+  return Math.ceil(Math.max(0, chars) / 4);
+}
+function resolveMaxContextTokens(env = define_process_env_default, override) {
+  if (typeof override === "number" && override > 0)
+    return Math.floor(override);
+  return envInt(env, "RAW_AGENT_MODEL_CONTEXT_TOKENS", DEFAULT_CONTEXT_TOKENS);
+}
+function calculateSessionBudget(input = {}, env = define_process_env_default) {
+  const maxContextTokens = resolveMaxContextTokens(env, input.maxContextTokens);
+  const systemPromptTokens = charsToTokens(input.systemPromptChars ?? 0);
+  const toolSchemaTokens = input.toolSchemaTokens ?? (typeof input.toolCount === "number" ? input.toolCount * TOKENS_PER_TOOL_SCHEMA : TOOL_SCHEMA_FALLBACK_TOKENS);
+  const outputReserve = input.outputReserveTokens ?? envInt(env, "RAW_AGENT_OUTPUT_RESERVE_TOKENS", OUTPUT_RESERVE_TOKENS);
+  const reservedTokens = systemPromptTokens + toolSchemaTokens + outputReserve + SAFETY_MARGIN_TOKENS;
+  const sessionBudgetTokens = Math.max(MIN_SESSION_BUDGET_TOKENS, maxContextTokens - reservedTokens);
+  return { maxContextTokens, reservedTokens, sessionBudgetTokens };
+}
+function resolveHistoryTokenBudget(envKey, input = {}, env = define_process_env_default) {
+  const explicit = Number(env[envKey]);
+  if (Number.isFinite(explicit) && explicit > 0)
+    return Math.floor(explicit);
+  return calculateSessionBudget(input, env).sessionBudgetTokens;
+}
+
 // node_modules/@mage-ai-lab/agent-loop/dist/session/fold-budget.js
 var MAX_VISIBLE_MESSAGES = 24;
-function clampFoldToVisible(folded, maxVisible = MAX_VISIBLE_MESSAGES) {
-  if (folded.length <= maxVisible)
-    return folded.slice();
-  return folded.slice(-maxVisible);
+function toolCallIds(message) {
+  const ids = [];
+  for (const part of message.parts) {
+    if (part.type === "tool_call")
+      ids.push(part.toolCallId);
+  }
+  return ids;
+}
+function toolResultIds(message) {
+  const ids = [];
+  for (const part of message.parts) {
+    if (part.type === "tool_result")
+      ids.push(part.toolCallId);
+  }
+  return ids;
+}
+function atomicRanges(messages) {
+  const ranges = [];
+  let i = 0;
+  while (i < messages.length) {
+    const calls = new Set(toolCallIds(messages[i]));
+    if (messages[i].role === "assistant" && calls.size > 0) {
+      let j = i + 1;
+      while (j < messages.length && calls.size > 0) {
+        const msg = messages[j];
+        const nextCalls = toolCallIds(msg);
+        if (msg.role === "user" || msg.role === "assistant" && nextCalls.length > 0)
+          break;
+        let matched = false;
+        for (const id of toolResultIds(msg)) {
+          if (calls.delete(id))
+            matched = true;
+        }
+        if (!matched && msg.role !== "tool")
+          break;
+        j += 1;
+      }
+      ranges.push({ start: i, end: j });
+      i = j;
+      continue;
+    }
+    ranges.push({ start: i, end: i + 1 });
+    i += 1;
+  }
+  return ranges;
+}
+function leadingSystemCount(messages) {
+  let i = 0;
+  while (i < messages.length && messages[i].role === "system")
+    i += 1;
+  return i;
+}
+function latestUserIndex(messages) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role === "user")
+      return i;
+  }
+  return -1;
+}
+function collectRanges(messages, ranges, dropped) {
+  const out = [];
+  ranges.forEach((range, idx) => {
+    if (dropped.has(idx))
+      return;
+    for (let i = range.start; i < range.end; i += 1)
+      out.push(messages[i]);
+  });
+  return out;
+}
+function stripOrphanToolMessages(messages) {
+  const open = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const message of messages) {
+    const calls = toolCallIds(message);
+    const results = toolResultIds(message);
+    const orphan = message.role === "tool" && calls.length === 0 && results.length > 0 && results.every((id) => !open.has(id));
+    if (orphan)
+      continue;
+    for (const id of calls)
+      open.add(id);
+    for (const id of results)
+      open.delete(id);
+    out.push(message);
+  }
+  return out;
+}
+function fitFoldToClosedWaves(messages, tokenBudget) {
+  const ranges = atomicRanges(messages);
+  const systemCount = leadingSystemCount(messages);
+  const userIdx = latestUserIndex(messages);
+  const pinned = ranges.map((range) => range.start < systemCount || userIdx >= range.start && userIdx < range.end);
+  const dropped = /* @__PURE__ */ new Set();
+  const tokensOf = () => estimateMessageTokens(collectRanges(messages, ranges, dropped));
+  while (tokensOf() >= tokenBudget) {
+    const next = ranges.findIndex((_, idx) => !dropped.has(idx) && !pinned[idx]);
+    if (next < 0)
+      break;
+    dropped.add(next);
+  }
+  return stripOrphanToolMessages(collectRanges(messages, ranges, dropped));
+}
+function clampFoldToVisible(folded, maxVisibleOrOpts = MAX_VISIBLE_MESSAGES) {
+  const opts = typeof maxVisibleOrOpts === "number" ? { maxVisible: maxVisibleOrOpts } : maxVisibleOrOpts;
+  const copy = folded.slice();
+  if (copy.length === 0)
+    return copy;
+  const tokenBudget = opts.tokenBudget ?? resolveHistoryTokenBudget("RAW_AGENT_COMPACT_TOKEN_THRESHOLD", { maxContextTokens: opts.maxContextTokens }, opts.env ?? define_process_env_default);
+  if (estimateMessageTokens(copy) < tokenBudget)
+    return copy;
+  return fitFoldToClosedWaves(copy, tokenBudget);
 }
 
 // node_modules/@mage-ai-lab/agent-loop/dist/turn/config.js
@@ -936,6 +1108,9 @@ var ReasoningSpinWatchdog = class {
 };
 
 // node_modules/@mage-ai-lab/agent-loop/dist/recovery/session-loop-guard.js
+function recoveryPolicyEnabled(env) {
+  return envBool(env, "RAW_AGENT_RECOVERY_POLICY", true);
+}
 function sortKeysDeep(value) {
   if (value === null || typeof value !== "object")
     return value;
@@ -1061,39 +1236,19 @@ var SessionLoopGuard = class {
   }
 };
 
-// node_modules/@mage-ai-lab/agent-loop/dist/recovery/find-similar-tool-name.js
-function normalize(s) {
-  return s.toLowerCase().replace(/[-_\s]/g, "");
-}
-function levenshtein(a, b) {
-  const dp = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_2, j) => i === 0 ? j : j === 0 ? i : 0));
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
-    }
-  }
-  return dp[a.length][b.length];
-}
-function findSimilarToolName(badName, toolNames) {
-  if (!toolNames.length)
-    return null;
-  const normBad = normalize(badName);
-  const exact = toolNames.find((n) => normalize(n) === normBad);
-  if (exact)
-    return exact;
-  let best = null;
-  let bestDist = Infinity;
-  for (const name of toolNames) {
-    const d = levenshtein(normBad, normalize(name));
-    if (d < bestDist) {
-      bestDist = d;
-      best = name;
-    }
-  }
-  return bestDist <= Math.max(3, Math.floor(normBad.length * 0.4)) ? best : null;
-}
-
 // node_modules/@mage-ai-lab/agent-loop/dist/recovery/advisory-grace.js
+function advisoryGraceEnabled(env) {
+  return envBool(env, "RAW_AGENT_RECOVERY_ADVISORY_GRACE", true);
+}
+function advisoryGraceBudget(env) {
+  const raw = env.RAW_AGENT_RECOVERY_ADVISORY_GRACE_BUDGET;
+  if (raw === void 0 || raw === "")
+    return 1;
+  const n = Number(raw);
+  if (!Number.isFinite(n))
+    return 1;
+  return Math.max(0, Math.min(5, Math.floor(n)));
+}
 var AdvisoryGrace = class {
   remaining;
   constructor(budget) {
@@ -1164,6 +1319,22 @@ var DEFAULT_RISK_CONFIG = {
   coachCooldownIters: 3,
   userQuietWindowIters: 2
 };
+function riskEngineEnabled(env) {
+  return envBool(env, "RAW_AGENT_RISK_ENGINE", true);
+}
+function riskEngineConfigFromEnv(env) {
+  return {
+    toolErrorStreakThreshold: envInt(env, "RAW_AGENT_RISK_TOOL_ERROR_STREAK", 3),
+    iterationNearLimitGap: envInt(env, "RAW_AGENT_RISK_ITERATION_NEAR_GAP", 2),
+    budgetHighRatio: (() => {
+      const n = Number(env.RAW_AGENT_RISK_BUDGET_HIGH_RATIO);
+      return Number.isFinite(n) ? Math.min(1, Math.max(0.5, n)) : 0.85;
+    })(),
+    maxCoachPerSession: envInt(env, "RAW_AGENT_RISK_MAX_COACH", 3),
+    coachCooldownIters: envInt(env, "RAW_AGENT_RISK_COACH_COOLDOWN", 3),
+    userQuietWindowIters: envInt(env, "RAW_AGENT_RISK_USER_QUIET", 2)
+  };
+}
 var RiskEngine = class {
   config;
   coachTriggered = 0;
@@ -1287,6 +1458,38 @@ function decideAutoFork(input) {
 }
 function isAutoForkUsed(metadata) {
   return metadata?.[AUTO_FORK_USED_KEY] === true;
+}
+
+// node_modules/@mage-ai-lab/agent-loop/dist/recovery/find-similar-tool-name.js
+function normalize(s) {
+  return s.toLowerCase().replace(/[-_\s]/g, "");
+}
+function levenshtein(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_2, j) => i === 0 ? j : j === 0 ? i : 0));
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[a.length][b.length];
+}
+function findSimilarToolName(badName, toolNames) {
+  if (!toolNames.length)
+    return null;
+  const normBad = normalize(badName);
+  const exact = toolNames.find((n) => normalize(n) === normBad);
+  if (exact)
+    return exact;
+  let best = null;
+  let bestDist = Infinity;
+  for (const name of toolNames) {
+    const d = levenshtein(normBad, normalize(name));
+    if (d < bestDist) {
+      bestDist = d;
+      best = name;
+    }
+  }
+  return bestDist <= Math.max(3, Math.floor(normBad.length * 0.4)) ? best : null;
 }
 
 // node_modules/@mage-ai-lab/agent-loop/dist/recovery/model-behavior-recovery.js
@@ -1698,13 +1901,13 @@ function parseRunInterrupt(metadata) {
   const obj = raw;
   if (obj.kind !== "waiting_approval")
     return void 0;
-  const toolCallIds = asStringArray(obj.toolCallIds);
+  const toolCallIds2 = asStringArray(obj.toolCallIds);
   const approvalIds = asStringArray(obj.approvalIds);
   const executedToolCallIds = asStringArray(obj.executedToolCallIds);
   const writerRunId = typeof obj.writerRunId === "string" && obj.writerRunId ? obj.writerRunId : void 0;
   return {
     kind: "waiting_approval",
-    toolCallIds,
+    toolCallIds: toolCallIds2,
     approvalIds,
     writerRunId,
     executedToolCallIds,
@@ -1971,7 +2174,7 @@ async function prepareTurnInput(sessionId, deps) {
   const budgeted = deps.applyFoldBudget ? deps.applyFoldBudget(session, folded) : folded;
   const prepared = await deps.prepareView(session, budgeted);
   const query = lastUserQueryFromMessages(prepared);
-  const compiled = deps.buildAppendix(session, { query, viewMessages: prepared });
+  const compiled = await Promise.resolve(deps.buildAppendix(session, { query, viewMessages: prepared }));
   const workingLogTail = !compiled.trim() && deps.readWorkingLogTail ? deps.readWorkingLogTail(sessionId) : "";
   const appendix = resolvePackedAppendix(compiled, workingLogTail);
   const messages = applyMemoryAppendixToMessages(prepared, appendix);
@@ -2304,10 +2507,11 @@ async function runSessionKernel(host, sessionId, options) {
       return false;
     }
   };
-  const loopGuard = loopConfig.recoveryEnabled ? new SessionLoopGuard({}) : null;
-  const advisoryGrace = new AdvisoryGrace(3);
+  const env = host.env ?? {};
+  const loopGuard = loopConfig.recoveryEnabled && recoveryPolicyEnabled(env) ? new SessionLoopGuard(env) : null;
+  const advisoryGrace = new AdvisoryGrace(loopGuard && advisoryGraceEnabled(env) ? advisoryGraceBudget(env) : 0);
   const advisoryQueue = new AdvisoryQueue();
-  const riskEngine = new RiskEngine();
+  const riskEngine = riskEngineEnabled(env) ? new RiskEngine(riskEngineConfigFromEnv(env)) : null;
   const spinWatchdog = loopConfig.spinWatchdog ? new ReasoningSpinWatchdog({
     maxConsecutiveNoProgress: loopConfig.spinWatchdogMaxConsecutive
   }) : null;
@@ -2340,7 +2544,7 @@ async function runSessionKernel(host, sessionId, options) {
       },
       claimNextStep: () => typeof host.store.claimInbox === "function" ? host.store.claimInbox(sid, "next-step") : [],
       prepareView: (sess, msgs) => host.prepareMessagesForModel ? host.prepareMessagesForModel(sess, msgs) : Promise.resolve(defaultPrepareView(msgs, { refusalPreservation: loopConfig.refusalPreservation })),
-      buildAppendix: (sess, pack) => {
+      buildAppendix: async (sess, pack) => {
         if (skipMemory)
           return "";
         return host.promptBuilder.buildMemoryAppendix({
@@ -2356,19 +2560,23 @@ async function runSessionKernel(host, sessionId, options) {
           return host.applyFoldBudget(sess, foldedMsgs);
         if (!loopConfig.foldBudgetClamp)
           return foldedMsgs;
-        return clampFoldToVisible(foldedMsgs, loopConfig.maxVisibleMessages);
+        const tokenBudget = resolveHistoryTokenBudget("RAW_AGENT_COMPACT_TOKEN_THRESHOLD", { maxContextTokens: loopConfig.maxContextTokens ?? host.maxContextTokens }, env);
+        return clampFoldToVisible(foldedMsgs, {
+          maxVisible: loopConfig.maxVisibleMessages,
+          tokenBudget
+        });
       },
       readWorkingLogTail: skipMemory || !host.readWorkingLogAppendix ? void 0 : (id) => host.readWorkingLogAppendix(id)
     });
   };
-  const pickTurnTools = (sess, messages, systemPromptChars, emptyTools) => {
+  const pickTurnTools = async (sess, messages, systemPromptChars, emptyTools) => {
     const turnProfile = host.resolveRunProfile?.(sess);
-    const turnTools = host.resolveTurnTools?.({
+    const turnTools = await Promise.resolve(host.resolveTurnTools?.({
       session: sess,
       agent,
       messages,
       systemPromptChars
-    });
+    }));
     if (turnTools?.metadataPatch) {
       host.mergeSessionMetadata(sid, turnTools.metadataPatch);
     }
@@ -2383,6 +2591,14 @@ async function runSessionKernel(host, sessionId, options) {
     const assembledForProfile = turnTools?.tools ? selectedTools : host.tools;
     const resolvedTools = emptyTools ? [] : turnProfile ? applyRunProfileToTools(selectedTools, turnProfile, assembledForProfile) : selectedTools;
     return { allowExternalAiTools, selectedTools, resolvedTools, turnTools, turnProfile };
+  };
+  const maybeChooseRecovery = async (situation, options2, defaultId) => {
+    if (!host.chooseRecovery || options2.length < 2)
+      return defaultId;
+    const picked = await host.chooseRecovery({ situation, options: options2, defaultId });
+    if (typeof picked === "string" && options2.some((o) => o.id === picked))
+      return picked;
+    return defaultId;
   };
   try {
     await host.ensureMcpLoaded?.(sid);
@@ -2417,7 +2633,7 @@ async function runSessionKernel(host, sessionId, options) {
         const remaining = unmatchedToolCallsFromFold(host.store.foldMessages(sid), interrupt.toolCallIds.filter((id) => !interrupt.executedToolCallIds.includes(id)));
         if (remaining.length > 0) {
           const folded = host.store.foldMessages(sid);
-          const picked2 = pickTurnTools(context.session, folded, 0, false);
+          const picked2 = await pickTurnTools(context.session, folded, 0, false);
           const results2 = await host.executeToolCalls(remaining, context, picked2.allowExternalAiTools, sessionId, picked2.resolvedTools);
           host.processToolResults(results2, remaining, context.session, void 0, sessionId, options?.onModelStreamChunk);
           for (const r of results2) {
@@ -2490,7 +2706,7 @@ async function runSessionKernel(host, sessionId, options) {
         host.store.appendMessage(sid, "system", [textPart3(beforeHook.systemMessage)]);
       }
       const lastTurn = isLastAnswerTurn(turn, maxTurns, loopConfig.forceAnswerOnLastTurn);
-      const picked = pickTurnTools(context.session, visibleMessages, systemPrompt.length, lastTurn);
+      const picked = await pickTurnTools(context.session, visibleMessages, systemPrompt.length, lastTurn);
       const allowExternalAiTools = picked.allowExternalAiTools;
       const resolvedTools = picked.resolvedTools;
       const turnTools = picked.turnTools;
@@ -2519,6 +2735,26 @@ ${loopConfig.lastTurnNudge}` : systemPrompt,
         resolveImageDataUrl: host.resolveImageDataUrl ? (assetId) => host.resolveImageDataUrl(assetId, context.session.id) : void 0,
         ...promptCacheKey ? { promptCacheKey } : {}
       };
+      const preTurn = await host.beforeModelTurn?.({
+        session: context.session,
+        messages: visibleMessages,
+        hasPendingToolCalls: false
+      });
+      if (preTurn === "skip_goal_done") {
+        host.store.appendMessage(sid, "system", [
+          textPart3("[jev-pre-turn] Goal assumed met; skipping deep model turn.")
+        ]);
+        if (host.waitSteeringChildrenIdle) {
+          await host.waitSteeringChildrenIdle(sid);
+        }
+        host.onSessionOutcome?.({
+          sessionId: session.id,
+          agentId: agent.id,
+          outcome: "success",
+          signals: { source: "jev-pre-turn" }
+        });
+        return host.handleTurnCompletion(session, agent).then((completed) => finishEnded(completed, "end"));
+      }
       let turnResult;
       try {
         turnResult = await host.runTurnWithRetries(turnInput, options?.onModelStreamChunk);
@@ -2528,6 +2764,18 @@ ${loopConfig.lastTurnNudge}` : systemPrompt,
             kind: "repetition_abort",
             data: { reason: error.reason, retry: true }
           });
+          const repChoice = await maybeChooseRecovery(`repetition_abort:${error.reason}`, [
+            { id: "retry", label: "Retry the model turn once with a clean stream" },
+            { id: "stop", label: "Stop the run after repetition" }
+          ], "retry");
+          if (repChoice === "stop") {
+            host.store.appendMessage(sid, "system", [
+              textPart3(`[recovery] Stopped: model output degenerated into repetition (${error.reason})`)
+            ]);
+            if (await tryAutoFork("repetition-aborted"))
+              continue;
+            return finishFailed(host.store.updateSession(session.id, { status: "idle" }), "repetition");
+          }
           try {
             turnResult = await host.runTurnWithRetries(turnInput, options?.onModelStreamChunk);
           } catch (retryError) {
@@ -2713,7 +2961,7 @@ ${loopConfig.lastTurnNudge}` : systemPrompt,
         } catch {
         }
       }
-      const recovery = decideTurnRecovery({
+      let recovery = decideTurnRecovery({
         stopReason: turnResult.stopReason,
         finishReason: turnResult.finishReason,
         truncated: turnResult.truncated,
@@ -2721,6 +2969,40 @@ ${loopConfig.lastTurnNudge}` : systemPrompt,
         state: recoveryState,
         userAborted: signal.aborted
       });
+      if (recovery.action !== "continue" || turnResult.truncated || turnResult.assistantParts.length === 0) {
+        const recoveryOpts = [
+          { id: recovery.action, label: `Default: ${recovery.action}` }
+        ];
+        if (recovery.action === "retry-same-input" || recovery.action === "retry-after-nudge") {
+          recoveryOpts.push({ id: "abort", label: "Stop instead of retrying" });
+          recoveryOpts.push({ id: "end", label: "End the turn without retry" });
+        } else if (recovery.action === "abort") {
+          recoveryOpts.push({ id: "retry-after-nudge", label: "Nudge and retry once more" });
+          recoveryOpts.push({ id: "end", label: "End cleanly without abort label" });
+        } else if (recovery.action === "end") {
+          recoveryOpts.push({ id: "continue", label: "Continue the loop" });
+        }
+        const chosen = await maybeChooseRecovery(`turn_recovery:${turnResult.stopReason}:${turnResult.finishReason ?? ""}`, recoveryOpts, recovery.action);
+        if (chosen !== recovery.action) {
+          if (chosen === "continue")
+            recovery = { action: "continue" };
+          else if (chosen === "end")
+            recovery = { action: "end" };
+          else if (chosen === "retry-same-input")
+            recovery = { action: "retry-same-input" };
+          else if (chosen === "retry-after-nudge") {
+            recovery = {
+              action: "retry-after-nudge",
+              nudge: recovery.action === "retry-after-nudge" ? recovery.nudge : "[recovery] Retry after Jev recovery choice."
+            };
+          } else if (chosen === "abort") {
+            recovery = {
+              action: "abort",
+              reason: recovery.action === "abort" ? recovery.reason : "jev_recovery_choice"
+            };
+          }
+        }
+      }
       if (discardedAssistant(recovery)) {
         void host.emitTrace(sid, {
           kind: "recovery_advisory",
@@ -2780,46 +3062,54 @@ ${loopConfig.lastTurnNudge}` : systemPrompt,
       let pendingRecoveryAdvisory;
       const rep = loopGuard?.checkAssistantRepetition(turnResult.assistantParts) ?? { abort: false };
       const graceOut = advisoryGrace.apply(rep);
-      if (graceOut.action === "advise") {
-        const strike = noteCriticalHit(recoveryState);
-        if (strike.action === "abort") {
+      if (graceOut.action === "advise" || graceOut.action === "abort") {
+        const guardChoice = await maybeChooseRecovery(`loop_guard_repetition:${graceOut.reason}`, [
+          { id: "advise", label: "Inject advisory and continue" },
+          { id: "abort", label: "Stop the run for repetition" },
+          { id: "continue", label: "Ignore and continue" }
+        ], graceOut.action);
+        if (guardChoice === "abort") {
           host.store.appendMessage(session.id, "assistant", turnResult.assistantParts);
+          await host.injectRecoveryCoach?.({
+            session,
+            agent,
+            trigger: "repetition",
+            reason: graceOut.reason
+          });
           host.store.appendMessage(session.id, "system", [
-            textPart3(`[recovery] Stopped: ${graceOut.reason} (critical strike)`)
+            textPart3(`[recovery] Stopped: ${graceOut.reason}`)
           ]);
+          void host.emitTrace(sid, {
+            kind: "recovery_abort",
+            data: { reason: graceOut.reason, trigger: "repetition" }
+          });
+          host.onSessionOutcome?.({
+            sessionId: session.id,
+            agentId: agent.id,
+            outcome: "failure",
+            signals: { trigger: "repetition", reason: graceOut.reason }
+          });
           if (await tryAutoFork("repetition-aborted"))
             continue;
           return finishFailed(host.store.updateSession(session.id, { status: "idle" }), "repetition");
         }
-        pendingRecoveryAdvisory = graceOut.advisory;
-        void host.emitTrace(sid, {
-          kind: "recovery_advisory",
-          data: { reason: graceOut.reason, trigger: "repetition" }
-        });
-      } else if (graceOut.action === "abort") {
-        host.store.appendMessage(session.id, "assistant", turnResult.assistantParts);
-        await host.injectRecoveryCoach?.({
-          session,
-          agent,
-          trigger: "repetition",
-          reason: graceOut.reason
-        });
-        host.store.appendMessage(session.id, "system", [
-          textPart3(`[recovery] Stopped: ${graceOut.reason}`)
-        ]);
-        void host.emitTrace(sid, {
-          kind: "recovery_abort",
-          data: { reason: graceOut.reason, trigger: "repetition" }
-        });
-        host.onSessionOutcome?.({
-          sessionId: session.id,
-          agentId: agent.id,
-          outcome: "failure",
-          signals: { trigger: "repetition", reason: graceOut.reason }
-        });
-        if (await tryAutoFork("repetition-aborted"))
-          continue;
-        return finishFailed(host.store.updateSession(session.id, { status: "idle" }), "repetition");
+        if (guardChoice === "advise") {
+          const strike = noteCriticalHit(recoveryState);
+          if (strike.action === "abort") {
+            host.store.appendMessage(session.id, "assistant", turnResult.assistantParts);
+            host.store.appendMessage(session.id, "system", [
+              textPart3(`[recovery] Stopped: ${graceOut.reason} (critical strike)`)
+            ]);
+            if (await tryAutoFork("repetition-aborted"))
+              continue;
+            return finishFailed(host.store.updateSession(session.id, { status: "idle" }), "repetition");
+          }
+          pendingRecoveryAdvisory = graceOut.action === "advise" ? graceOut.advisory : `[recovery-advisory] ${graceOut.reason}`;
+          void host.emitTrace(sid, {
+            kind: "recovery_advisory",
+            data: { reason: graceOut.reason, trigger: "repetition" }
+          });
+        }
       }
       const modelStep = stepInfo(turn, "model_done");
       await host.stepTx?.beginStep?.(modelStep);
@@ -2887,7 +3177,7 @@ ${loopConfig.lastTurnNudge}` : systemPrompt,
         await rollbackOpenStep("abort");
         return finishFailed(host.store.updateSession(session.id, { status: "failed" }), "abort");
       }
-      const approvalResult = host.checkToolApprovals?.(toolCalls, context, session, {
+      const approvalResult = await host.checkToolApprovals?.(toolCalls, context, session, {
         filePolicy,
         turnTools: resolvedTools
       }) ?? "proceed";
@@ -2975,27 +3265,29 @@ ${loopConfig.lastTurnNudge}` : systemPrompt,
           return finishEnded(host.store.updateSession(session.id, { status: "idle" }), `stop_at:${hit.name}`);
         }
       }
-      for (const r of results) {
-        riskEngine.observeTool({ toolName: r.name, success: r.ok, errorMessage: r.ok ? void 0 : r.content });
-      }
-      const usageTotals = host.store.getSession(sid)?.metadata?.usageTotals;
       const toolRoundKey = toolCalls.map((tc) => `${tc.name}:${JSON.stringify(tc.input ?? {})}`).join("|");
       sameToolStreak = toolRoundKey === lastToolRoundKey ? sameToolStreak + 1 : 1;
       lastToolRoundKey = toolRoundKey;
-      const tick = riskEngine.tick({
-        iteration: turn,
-        iterationLimit: maxTurns,
-        usedTokens: usageTotals?.totalTokens,
-        budgetTokens: loopConfig.budgetTokens,
-        sameToolStreak,
-        sameToolThreshold: loopGuard?.sameToolThreshold ?? 5
-      });
-      if (tick.shouldAdvise) {
-        const draft = advisoryQueue.enqueue(formatRiskAdvisory(tick.signals), "risk");
-        void host.emitTrace(sid, {
-          kind: "risk_advisory",
-          data: { reason: tick.reason, signals: tick.signals, advisoryId: draft.id }
+      if (riskEngine) {
+        for (const r of results) {
+          riskEngine.observeTool({ toolName: r.name, success: r.ok, errorMessage: r.ok ? void 0 : r.content });
+        }
+        const usageTotals = host.store.getSession(sid)?.metadata?.usageTotals;
+        const tick = riskEngine.tick({
+          iteration: turn,
+          iterationLimit: maxTurns,
+          usedTokens: usageTotals?.totalTokens,
+          budgetTokens: loopConfig.budgetTokens,
+          sameToolStreak,
+          sameToolThreshold: loopGuard?.sameToolThreshold ?? 5
         });
+        if (tick.shouldAdvise) {
+          const draft = advisoryQueue.enqueue(formatRiskAdvisory(tick.signals), "risk");
+          void host.emitTrace(sid, {
+            kind: "risk_advisory",
+            data: { reason: tick.reason, signals: tick.signals, advisoryId: draft.id }
+          });
+        }
       }
       const toolRep = loopGuard?.afterToolRound(toolCalls.map((tc) => ({ name: tc.name, input: tc.input })), results.map((r) => ({ name: r.name, ok: r.ok }))) ?? { abort: false };
       const toolRepDecision = toolRep.abort ? { abort: true, reason: toolRep.reason } : { abort: false, reason: "" };
@@ -3097,6 +3389,10 @@ function applyIoOverrides(host, io) {
     host.resolveRunProfile = io.resolveRunProfile;
   if (io.evaluateGoalGate)
     host.evaluateGoalGate = io.evaluateGoalGate;
+  if (io.beforeModelTurn)
+    host.beforeModelTurn = io.beforeModelTurn;
+  if (io.chooseRecovery)
+    host.chooseRecovery = io.chooseRecovery;
   if (io.runLifecycleHook)
     host.runLifecycleHook = io.runLifecycleHook;
   if (io.handleTurnCompletion)
@@ -3212,6 +3508,7 @@ function createMiniAssembledLoop(input = {}) {
     tools,
     maxTurnsPerRun: io.maxTurns ?? input.config?.maxTurns ?? 8,
     loopConfig: resolveLoopConfig(io.loopConfig, input.config),
+    env: io.env,
     promptCacheEpoch: io.promptCacheEpoch,
     sessionAbortControllers,
     emitTrace: io.emitTrace ?? (() => void 0),
