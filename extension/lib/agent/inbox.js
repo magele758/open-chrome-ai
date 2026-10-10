@@ -29,6 +29,8 @@ import { auditEntry, getAuditLog, originOfUrl } from "../bridge/audit.js";
 import { enforceTokenGuards } from "../bridge/trust-guard.js";
 import { chromeStorageAdapter, createApprovalQueue } from "./trust/approval-queue.js";
 import { offscreenDoc } from "../offscreen-doc.js";
+import { markJobStarted, recordJobFinished } from "./inbox-activity.js";
+import { cancelAgentPrompt, startAgentPrompt, takeCompletion, takeExpired } from "./inbox-agent.js";
 
 export const INBOX_ROOT = "~/.pagelens/agent-inbox";
 export const OUTBOX_ROOT = "~/.pagelens/agent-outbox";
@@ -674,6 +676,11 @@ export async function executeJob(
         .catch(() => {});
     }
   }
+  if (action === "agent_cancel") {
+    const { result, output } = await cancelAgentPrompt(job.targetId);
+    if (output) await writeAgentPromptOutput(output);
+    return result;
+  }
   if (action === "bridge_call") {
     const bridge = getBridge();
     if (!bridge) return { ok: false, error: "bridge 未安装" };
@@ -687,6 +694,74 @@ export async function executeJob(
 
 let polling = false;
 
+async function claimJob(jobName, job) {
+  await writeJson(INBOX_ROOT, `${PROCESSED_REL}/${jobName}`, redactJobToken(job));
+  await deleteRel(INBOX_ROOT, jobName).catch(() => {});
+}
+
+async function writeAgentPromptOutput(out) {
+  await writeJson(OUTBOX_ROOT, `${out.id}.json`, out);
+  await recordJobFinished(
+    { id: out.id, action: "agent_prompt" },
+    out,
+    Date.now() - (out.meta?.ms || 0),
+  );
+}
+
+/** Returns the finished outbox payload, or null when the job started (async) or stays queued. */
+async function dispatchAgentPrompt(jobName, job) {
+  const jobId = String(job.id || jobName.replace(/\.json$/i, ""));
+  let started;
+  try {
+    if (job?.token != null) {
+      const auth = await authorizeJobToken(job, "agent_prompt", loadAgentTokens, () => Date.now());
+      if (auth.error) {
+        started = {
+          done: {
+            ok: false,
+            errorCode: auth.error.code || "UNAUTHORIZED",
+            error: auth.error.error || "unauthorized",
+          },
+        };
+      }
+    }
+    if (!started) started = await startAgentPrompt(job, jobId);
+  } catch (err) {
+    started = { done: { ok: false, errorCode: "DISPATCH_FAILED", error: err?.message || String(err) } };
+  }
+  if (started.queued) return null;
+  if (started.started) {
+    markJobStarted();
+    await claimJob(jobName, job);
+    return null;
+  }
+  const out = {
+    id: jobId,
+    ...started.done,
+    finishedAt: new Date().toISOString(),
+    action: "agent_prompt",
+    metadata: job.metadata ?? null,
+    meta: { action: "agent_prompt", ms: 0 },
+  };
+  await claimJob(jobName, job);
+  await writeAgentPromptOutput(out);
+  return out;
+}
+
+/** Called when the side panel reports that an agent_prompt run finished. */
+export async function completeAgentPrompt(msg) {
+  const out = await takeCompletion(msg);
+  if (!out) return { ok: false, error: "no matching active run" };
+  await writeAgentPromptOutput(out);
+  return { ok: true };
+}
+
+async function expireAgentPrompt() {
+  if (!chrome.storage?.session) return;
+  const out = await takeExpired();
+  if (out) await writeAgentPromptOutput(out);
+}
+
 /**
  * 每轮只调一次 Native Host（readdir）；目录在首次成功后不再重复创建。
  * Host 不可用时指数退避（1 分钟起、最长 30 分钟），期间轮询直接跳过、不拉起进程。
@@ -695,6 +770,7 @@ export async function pollAgentInboxOnce(deps = {}) {
   if (polling) return { skipped: true, reason: "busy" };
   polling = true;
   try {
+    await expireAgentPrompt();
     const settings = await loadSettings();
     if (settings.agentInboxEnabled !== true) return { skipped: true, reason: "disabled" };
     if (!gate.canPoll()) return { skipped: true, reason: "backoff", retryInMs: gate.retryInMs() };
@@ -726,14 +802,21 @@ export async function pollAgentInboxOnce(deps = {}) {
         }).catch(() => {});
         continue;
       }
-      try {
-        const result = await executeJob(job, { ...deps, settings });
-        results.push(await finishJob(name, job, result));
-      } catch (err) {
-        results.push(
-          await finishJob(name, job, { ok: false, error: err?.message || String(err) }),
-        );
+      if (job?.action === "agent_prompt") {
+        const outcome = await dispatchAgentPrompt(name, job);
+        if (outcome) results.push(outcome);
+        continue;
       }
+      const startedAt = Date.now();
+      markJobStarted();
+      let result;
+      try {
+        result = await executeJob(job, { ...deps, settings });
+      } catch (err) {
+        result = { ok: false, error: err?.message || String(err) };
+      }
+      await recordJobFinished(job, result, startedAt);
+      results.push(await finishJob(name, job, result));
     }
     return { ok: true, processed: results.length, results };
   } finally {

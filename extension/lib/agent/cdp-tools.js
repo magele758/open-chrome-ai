@@ -6,6 +6,7 @@
 import { dragMoveEvents, keyEvents, mouseClickEvents } from "../cdp-input.js";
 import { inject, injectFrames, toToolText } from "../chrome.js";
 import { requireOptionalFeature } from "../optional-permissions.js";
+import { checkStates } from "./page-fns.js";
 import { iframeRect, locateElement } from "./page-snapshot.js";
 
 const MAX_SHOT_HEIGHT = 16000;
@@ -19,6 +20,7 @@ const DIALOG_GUARDED = new Set([
   "jev_next_action",
   "paste_into_page",
   "trusted_click",
+  "set_checks",
   "hover",
   "trusted_type",
   "press_keys",
@@ -176,6 +178,55 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
           await mouse(tabId, mouseClickEvents(p.x, p.y, { button: args.button || "left", clickCount: args.double ? 2 : 1 }));
           await sleep(60);
           return toToolText({ ok: true, action: args.double ? "double_click" : `${args.button || "left"}_click`, at: { x: p.x, y: p.y }, match: p.match });
+        } catch (err) {
+          return toToolText({ ok: false, error: err?.message || String(err) });
+        }
+      },
+    },
+    {
+      name: "set_checks",
+      description:
+        "按标签文字批量勾选/取消复选框、开关、单选（含 Radix/shadcn 的 button[role=checkbox]），一次调用处理多项，用真实鼠标点击并回读确认。labels 写选项名或其前缀即可（如 [\"知乎\",\"B站专栏\"]）。不传 labels 则只列出页面上所有复选项及状态。多选平台/权限/筛选项时优先用它，不要逐个 click 再逐个验证。",
+      parameters: obj({
+        tabId: { type: "integer", minimum: 1 },
+        labels: { type: "array", items: { type: "string" }, description: "要设置的选项文字" },
+        checked: { type: "boolean", description: "目标状态，默认 true（勾选）；false 为取消" },
+        exact: { type: "boolean", description: "true 则标签必须完全相等" },
+      }),
+      async execute(args) {
+        const tabId = await prepare(args);
+        const labels = (Array.isArray(args.labels) ? args.labels : []).map(String).filter(Boolean);
+        try {
+          if (!labels.length) {
+            const listed = await inject(tabId, checkStates, [{}]);
+            return toToolText({ ok: true, items: listed?.items || [] });
+          }
+          const want = args.checked !== false;
+          const read = async (label) =>
+            (await inject(tabId, checkStates, [{ labels: [label], exact: args.exact === true, scroll: true }]))?.results?.[0];
+          const results = [];
+          for (const label of labels) {
+            let st = await read(label);
+            if (!st?.found) {
+              results.push({ label, ok: false, error: "页面上没有匹配的复选项" });
+              continue;
+            }
+            if (st.ambiguous) {
+              results.push({ label, ok: false, matched: st.label, error: "匹配到多个选项，请写得更完整或设 exact" });
+              continue;
+            }
+            if (st.disabled && st.checked !== want) {
+              results.push({ label, ok: false, matched: st.label, checked: st.checked, error: "该选项被禁用" });
+              continue;
+            }
+            for (let attempt = 0; attempt < 2 && st.checked !== want; attempt += 1) {
+              await mouse(tabId, mouseClickEvents(st.x, st.y));
+              await sleep(150);
+              st = (await read(label)) || st;
+            }
+            results.push({ label, ok: st.checked === want, matched: st.label, checked: st.checked });
+          }
+          return toToolText({ ok: results.every((r) => r.ok), results });
         } catch (err) {
           return toToolText({ ok: false, error: err?.message || String(err) });
         }

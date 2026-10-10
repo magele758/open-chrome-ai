@@ -131,6 +131,8 @@ conda run -n pagelens-media python tools/media_helper.py --ensure
 
 YouTube 下载还需要可用的 Deno 或 Node.js，服务会自动检测并传给下载器。若旧版下载器出现 HTTP 403，更新实际使用的 yt-dlp 及其 EJS 组件（pip 安装使用 `python -m pip install -U 'yt-dlp[default]'`）。服务会忽略用户级下载器配置，避免额外字幕下载或输出格式覆盖。
 
+站点要求登录或人机验证时，可启动前设置 `PAGELENS_COOKIES_FROM_BROWSER=chrome`（或 `safari`、`firefox`，macOS 首次会弹钥匙串授权）或 `PAGELENS_COOKIES_FILE=/path/cookies.txt`，让下载器携带登录态；默认不启用。
+
 默认地址 `http://127.0.0.1:18789`。点「一键总结」时若服务未就绪会尝试自动拉起。媒体服务 v5 支持字幕文稿专用任务：优先读取完整字幕，只有字幕不可用才下载完整音轨；音频分段发往设置里的 ASR，原音轨不发给文本模型。更新后需重启旧媒体服务并重新加载扩展，已有完整文稿可直接复用。成功、失败或取消后清理临时音频；意外关闭侧栏留下的任务一小时后清理。若本机已启动仍提示未连接，到扩展详情的网站设置允许「本地网络」。站点需登录或 yt-dlp 不支持时会失败，不回退到播放录音。完整文稿保留在扩展缓存；装了 Native Host 时字幕和转写稿还会写入 `~/.cache/pagelens-docs`，不会进 Obsidian 文稿文件夹。长文稿总结会阅读全文，旧录音缓存完整性未知时会重新提取。
 
 ### 文稿文件夹

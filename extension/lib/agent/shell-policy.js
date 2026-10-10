@@ -299,9 +299,55 @@ export function countCompletedToolRunsBy(history, match) {
   return n;
 }
 
+// 只读观察类工具：页面被操作过之后，同样参数再读一次是在验证新状态，不算重复。
+const OBSERVE_TOOLS = new Set([
+  "run_js",
+  "list_controls",
+  "snapshot_controls",
+  "query_dom",
+  "find_in_page",
+  "get_page_info",
+  "extract_page",
+  "get_links",
+  "screenshot",
+]);
+const MUTATING_TOOLS = new Set([
+  "click",
+  "fill",
+  "select_option",
+  "press_key",
+  "scroll_page",
+  "trusted_click",
+  "trusted_type",
+  "press_keys",
+  "set_checks",
+  "hover",
+  "drag_drop",
+  "upload_file",
+  "act_element",
+  "jev_next_action",
+  "paste_into_page",
+  "navigate_tab",
+  "reload_tab",
+  "switch_tab",
+  "open_tab",
+  "handle_dialog",
+]);
+
+function sinceLastMutation(history) {
+  const list = history || [];
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const m = list[i];
+    if (m.role !== "assistant" || !Array.isArray(m.tool_calls)) continue;
+    if (m.tool_calls.some((c) => MUTATING_TOOLS.has(c.function?.name || c.name || ""))) return list.slice(i + 1);
+  }
+  return list;
+}
+
 export function countCompletedToolRuns(history, name, rawArgs) {
   const sig = toolCallSignature(name, rawArgs);
-  return countCompletedToolRunsBy(history, (n, _args, raw) => toolCallSignature(n, raw) === sig);
+  const scope = OBSERVE_TOOLS.has(String(name)) ? sinceLastMutation(history) : history;
+  return countCompletedToolRunsBy(scope, (n, _args, raw) => toolCallSignature(n, raw) === sig);
 }
 
 export function countDirectoryBrowseRuns(history) {

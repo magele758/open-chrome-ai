@@ -657,6 +657,14 @@
                     <span class="field-label">以下操作无论谁要求都先让我确认</span>
                     <div id="irreversible-list" class="irreversible-list"></div>
                   </div>
+                  <details class="plain-detail" id="inbox-activity-detail">
+                    <summary>外部 Agent 活动（最近 50 条）</summary>
+                    <div class="row-btns" style="margin-top:6px">
+                      <button class="compact secondary" type="button" id="btn-inbox-poll">立即检查 inbox</button>
+                      <button class="compact secondary" type="button" id="btn-inbox-clear">清空记录</button>
+                    </div>
+                    <div id="inbox-activity-list" class="hint" style="margin-top:6px"></div>
+                  </details>
                   <details class="plain-detail">
                     <summary>安装与诊断</summary>
                     <p class="hint">Agent 循环：<code id="loop-engine-label">@mage-ai-lab/agent-loop/mini</code>（npm）</p>

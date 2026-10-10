@@ -398,10 +398,10 @@ export function createAgentTools(ctx) {
     },
     {
       name: "list_controls",
-      description: "列出当前页可见的按钮、链接、输入框，带建议选择器（含 shadow DOM）。要点击或填写前先看这个。找不到元素时加 allFrames=true 一并查 iframe。",
+      description: "列出当前页可见的按钮、链接、输入框，带建议选择器（含 shadow DOM）。要点击或填写前先看这个。复选框/开关/单选也会列出（带 checked 和标签文字）；有弹窗时弹窗内控件排在最前。找不到元素时加 allFrames=true 一并查 iframe。",
       parameters: obj({
         tabId: tabIdProp(),
-        limit: { type: "integer", description: "默认 40" },
+        limit: { type: "integer", description: "默认 60，最大 150" },
         allFrames: { type: "boolean", description: "同时列出所有 iframe（含跨域）里的控件" },
       }),
       async execute(args) {
@@ -1707,6 +1707,7 @@ export const TOOL_DOMAINS = {
     "act_element",
     "jev_next_action",
     "trusted_click",
+    "set_checks",
     "hover",
     "trusted_type",
     "press_keys",

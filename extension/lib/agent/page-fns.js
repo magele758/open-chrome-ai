@@ -189,7 +189,7 @@ export function queryDom(selector, limit) {
 }
 
 export function listControls(limit) {
-  const max = Math.min(Number(limit) || 40, 80);
+  const max = Math.min(Number(limit) || 60, 150);
   const visible = (el) => {
     if (!el) return false;
     const st = window.getComputedStyle(el);
@@ -207,26 +207,138 @@ export function listControls(limit) {
     if (testid) return `[data-testid="${testid}"]`;
     return el.tagName.toLowerCase();
   };
+  const checkRoles = "[role='checkbox'], [role='switch'], [role='radio']";
   const controlSelector =
-    "a[href], button, [role='button'], input, textarea, select, [role='tab'], [role='menuitem'], [role='link']";
+    `a[href], button, [role='button'], input, textarea, select, [role='tab'], [role='menuitem'], [role='link'], ${checkRoles}`;
   const all = [];
   const gather = (root) => {
     all.push(...root.querySelectorAll(controlSelector));
     for (const host of root.querySelectorAll("*")) if (host.shadowRoot) gather(host.shadowRoot);
   };
   gather(document);
-  const nodes = all.filter(visible);
-  return nodes.slice(0, max).map((el, i) => ({
-    i,
-    tag: el.tagName.toLowerCase(),
-    type: el.getAttribute("type") || "",
-    selector: hint(el),
-    text: (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "")
-      .trim()
-      .replace(/\s+/g, " ")
-      .slice(0, 80),
-    href: el.href || "",
+  const seen = new Set();
+  const nodes = all.filter((el) => (seen.has(el) ? false : (seen.add(el), visible(el))));
+  // 打开的弹窗优先：弹窗里的控件排前面，避免被页面主体的上百个控件挤出 limit。
+  const modals = [...document.querySelectorAll("[role='dialog'], [aria-modal='true'], dialog[open]")].filter(visible);
+  const inModal = (el) => modals.some((m) => m.contains(el));
+  const ordered = modals.length ? [...nodes.filter(inModal), ...nodes.filter((el) => !inModal(el))] : nodes;
+  const clean = (s) => String(s || "").trim().replace(/\s+/g, " ");
+  const isCheck = (el) =>
+    (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) || el.matches(checkRoles);
+  const checkedOf = (el) =>
+    el instanceof HTMLInputElement
+      ? el.checked
+      : el.getAttribute("aria-checked") === "true" || el.getAttribute("data-state") === "checked";
+  const labelOf = (el) => {
+    const aria = clean(el.getAttribute("aria-label"));
+    if (aria) return aria;
+    if (el.labels?.length) {
+      const t = clean([...el.labels].map((l) => l.innerText).join(" "));
+      if (t) return t;
+    }
+    let node = el;
+    for (let n = 0; n < 4 && node.parentElement; n += 1) {
+      node = node.parentElement;
+      if (node.querySelectorAll(`input[type='checkbox'], input[type='radio'], ${checkRoles}`).length > 1) break;
+      const t = clean(node.innerText);
+      if (t && t.length <= 120) return t;
+    }
+    return "";
+  };
+  return ordered.slice(0, max).map((el, i) => {
+    const item = {
+      i,
+      tag: el.tagName.toLowerCase(),
+      type: el.getAttribute("type") || "",
+      selector: hint(el),
+      text: clean(el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").slice(0, 80),
+      href: el.href || "",
+    };
+    if (isCheck(el)) {
+      item.checked = checkedOf(el);
+      item.text = item.text || labelOf(el).slice(0, 80);
+    }
+    if (modals.length && inModal(el)) item.modal = true;
+    return item;
+  });
+}
+
+/**
+ * 读/定位复选框、开关、单选（原生 input 与 role=checkbox|switch|radio，含 shadow DOM）。
+ * spec: { labels?: string[], exact?: boolean, scroll?: boolean }
+ * 不传 labels 返回全部可见项；传了则按标签文字（精确 > 前缀 > 包含）匹配并返回视口中心坐标。
+ * 必须自包含（会被注入页面）。
+ */
+export function checkStates(spec) {
+  const o = spec || {};
+  const visible = (el) => {
+    const st = window.getComputedStyle(el);
+    if (st.display === "none" || st.visibility === "hidden") return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const roles = "[role='checkbox'], [role='switch'], [role='radio']";
+  const selector = `input[type='checkbox'], input[type='radio'], ${roles}`;
+  const all = [];
+  const gather = (root) => {
+    all.push(...root.querySelectorAll(selector));
+    for (const host of root.querySelectorAll("*")) if (host.shadowRoot) gather(host.shadowRoot);
+  };
+  gather(document);
+  const clean = (s) => String(s || "").trim().replace(/\s+/g, " ");
+  const checkedOf = (el) =>
+    el instanceof HTMLInputElement
+      ? el.checked
+      : el.getAttribute("aria-checked") === "true" || el.getAttribute("data-state") === "checked";
+  const labelOf = (el) => {
+    const aria = clean(el.getAttribute("aria-label"));
+    if (aria) return aria;
+    if (el.labels?.length) {
+      const t = clean([...el.labels].map((l) => l.innerText).join(" "));
+      if (t) return t;
+    }
+    let node = el;
+    for (let n = 0; n < 4 && node.parentElement; n += 1) {
+      node = node.parentElement;
+      if (node.querySelectorAll(selector).length > 1) break;
+      const t = clean(node.innerText);
+      if (t && t.length <= 120) return t;
+    }
+    return "";
+  };
+  const rows = [...new Set(all)].filter(visible).map((el) => ({
+    el,
+    label: labelOf(el),
+    checked: checkedOf(el),
+    disabled: Boolean(el.disabled) || el.getAttribute("aria-disabled") === "true",
   }));
+  const labels = Array.isArray(o.labels) ? o.labels.map(clean).filter(Boolean) : [];
+  if (!labels.length) {
+    return { items: rows.map((r) => ({ label: r.label, checked: r.checked, disabled: r.disabled })) };
+  }
+  const lower = (s) => s.toLowerCase();
+  const results = labels.map((want) => {
+    const w = lower(want);
+    const exact = rows.filter((r) => lower(r.label) === w);
+    const starts = rows.filter((r) => lower(r.label).startsWith(w));
+    const includes = rows.filter((r) => lower(r.label).includes(w));
+    const pool = exact.length ? exact : o.exact ? [] : starts.length ? starts : includes;
+    if (!pool.length) return { want, found: false };
+    const hit = pool[0];
+    if (o.scroll) hit.el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    const r = hit.el.getBoundingClientRect();
+    return {
+      want,
+      found: true,
+      label: hit.label,
+      checked: hit.checked,
+      disabled: hit.disabled,
+      ambiguous: pool.length > 1,
+      x: Math.round(r.left + r.width / 2),
+      y: Math.round(r.top + r.height / 2),
+    };
+  });
+  return { results };
 }
 
 /**

@@ -173,7 +173,8 @@ def run(job, args):
         if '403' in detail and ('forbidden' in detail or 'http' in detail):
             reason = '下载音轨被站点拒绝（HTTP 403）。请更新 yt-dlp 及 yt-dlp-ejs，并确认 Node.js 或 Deno 可用。'
         elif 'sign in' in detail or 'login' in detail:
-            reason = '站点要求登录或人机验证，当前下载服务无法获取该视频。'
+            reason = ('站点要求登录或人机验证，当前下载服务无法获取该视频。'
+                      '可用环境变量 PAGELENS_COOKIES_FROM_BROWSER=chrome（或 PAGELENS_COOKIES_FILE=cookies.txt）重启服务以携带登录态。')
         elif 'javascript' in detail or 'challenge' in detail or 'ejs' in detail:
             reason = 'YouTube JavaScript 解析失败。请更新 yt-dlp[default]，并安装 Node.js 或 Deno。'
         else:
@@ -203,6 +204,13 @@ def downloader_args():
         if binary:
             args.extend(['--js-runtimes', f'{runtime}:{binary}'])
             break
+    # Opt-in login state for sites that demand sign-in / bot verification.
+    cookies_file = os.environ.get('PAGELENS_COOKIES_FILE', '').strip()
+    cookies_browser = os.environ.get('PAGELENS_COOKIES_FROM_BROWSER', '').strip()
+    if cookies_file:
+        args.extend(['--cookies', cookies_file])
+    elif cookies_browser:
+        args.extend(['--cookies-from-browser', cookies_browser])
     return args
 
 

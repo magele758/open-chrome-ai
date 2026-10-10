@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 旧同传引擎 `runInterpret`（`lib/interpret.js`）及只服务它的 `interpret-sync.js`、`interpret-pipeline.js`、`live-audio-playback.js`；`test_interpret_flow` 改测生产路径（侧栏 → SW → offscreen → `runPlannedInterpret`）。
 
 ### Added
+- **`set_checks` 工具**: 按标签文字批量勾选/取消复选框、开关、单选（含 Radix/shadcn 的 `button[role=checkbox]`），真实点击 + 回读确认；侧栏 Agent 与 bridge 均可用。
+- **`tools/doocs-publish.mjs`**: Doocs/COSE 多平台发布的确定性脚本（inbox `bridge_call`，不走 LLM，默认 dry-run，`--confirm` 才点确定）。
+
+- **inbox `agent_cancel`**: 外部 agent 可停止运行中的 `agent_prompt`（CLI：`agent-inbox.mjs cancel [id] [--all]`），被取消任务 outbox 为 `CANCELLED`；排队中的任务可直接撤销。JEV 服务地址为本机/内网时，模型名与 API Key 可留空。
+- **inbox `agent_prompt`**: 外部总控写文件即可让侧栏 chrome-agent（LLM）执行自然语言任务并回写 outbox（`summary` / `steps` / `metadata`）；不依赖 bridge 与 9222；需侧栏保持打开，错误码 `SIDEPANEL_NOT_OPEN` / `AGENT_BUSY` / `TIMEOUT` 等；开关 `agentPromptEnabled`（默认开）。CLI 增加 `--prompt` / `--prompt-file` 等参数。
+- **inbox 活动记录**: 任务执行时图标角标（`...` / `OK` / `ERR`），侧栏设置新增「外部 Agent 活动」列表（最近 50 条，不含参数正文）。
+- 媒体助手支持 `PAGELENS_COOKIES_FROM_BROWSER` / `PAGELENS_COOKIES_FILE`，让 yt-dlp 携带登录态。
 - **外部 Agent 控制入口（bridge，默认关闭）**: CDP → Service Worker `__pl.call()`（另有扩展页消息、inbox `bridge_call`）；握手/能力发现、幂等、async 任务、结构化错误码、origin 白名单、`DEBUGGER_BUSY` 重试策略；新增确定性工具 `read_rendered_html`（内联样式）、`pick_rich_editor` / `wechat_pick_body_editor`、`verify_editor_content`、`copy_selection_trusted`、`paste_rich_trusted`（可信粘贴 + 回读校验 + 重试，无 innerHTML/合成事件兜底）、`set_input_value`；剪贴板在 SW 里经 offscreen `execCommand("copy")` 写入；参考客户端 `tools/pl-bridge.mjs`，规范见 `docs/agent-interop.md`，e2e 见 `extension/tools/e2e_bridge.mjs`。inbox 改用共享的 `getCdp()`，避免与 bridge 对同一标签重复 attach。
 - **Agent file inbox（外部 Agent ↔ PageLens）**: `~/.pagelens/agent-inbox` / `agent-outbox` 协议；SW 用 `chrome.alarms` 轮询；支持 `clipboard_write` / `paste_html`（优先 CDP 可信 Meta+V，禁止仅 insertHTML 冒充成功）/ `wechat_fill_draft` / `cose_publish`；CLI `tools/agent-inbox.mjs`；说明见 `docs/agent-inbox.md`。
 
@@ -46,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 智能回显（Smart Recall / Footprint Recall）：在用户二次访问曾剪藏过的网页时，侧栏上下文自动弹出轻量回显横幅（`💡 本页曾剪藏过 N 条笔记：“...”`），支持一键点击查看完整历史笔记卡片，形成双向知识闭环。
   - 新增单条 Assistant 消息底部「⭐ 剪藏」按钮及简洁交互弹窗（支持编辑标题、URL、备注、标签与独立选项开关）。
   - 新增单元测试 `extension/tools/test_clippings.mjs`，覆盖 URL 规范化过滤、Frontmatter 结构与书签标题组装校验。
+
+### Fixed
+- 多选类任务过慢：`list_controls` 现在包含复选框/开关/单选（带 `checked` 与标签文字），弹窗内控件排在最前，默认 60、上限 150；工具结果归档阈值 1800→6000 字符、分页 3000→6000，避免小结果被迫分页多轮读取；页面被操作后再次读取同样参数不再被当作重复调用拦截；系统提示加入"并行调用 / 批量勾选"指引。
 
 ## [0.12.0] - 2026-09-11
 

@@ -6,7 +6,7 @@
 
 import { idbAvailable, idbDel, idbGet, idbSet } from "../idb-kv.js";
 
-export const DEFAULT_PAGE_SIZE = 3000;
+export const DEFAULT_PAGE_SIZE = 6000;
 export const ARTIFACT_PREFIX = "pl.art.";
 export const SESSION_INDEX_PREFIX = "pl.art.idx.";
 

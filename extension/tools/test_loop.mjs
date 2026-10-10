@@ -215,7 +215,7 @@ console.log("PASS similar rg circuit breaker");
 
 let fatExec = 0;
 let fatTurns = 0;
-const fat = "x".repeat(2400);
+const fat = "x".repeat(7000);
 const archived = await createAgentLoop({
   maxTurns: 0,
   systemPrompt: "test",

@@ -5,7 +5,7 @@
 
 import { saveArtifact } from "./artifact-store.js";
 
-export const DEFAULT_ARCHIVE_THRESHOLD = 1800;
+export const DEFAULT_ARCHIVE_THRESHOLD = 6000;
 export const PREVIEW_CHARS = 900;
 
 export const SKIP_GUARDIAN_TOOLS = new Set([

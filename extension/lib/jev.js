@@ -12,28 +12,41 @@ export function normalizeJevSettings(raw = {}) {
   };
 }
 
+function isLocalHost(hostname) {
+  const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return h === "localhost" || h === "::1" || h.endsWith(".local")
+    || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+}
+
+// 本机/内网自托管服务（如 Laya）常无需模型名与密钥，只在这类地址上放宽。
 export function isJevConfigured(config) {
-  if (!config?.model?.trim() || !config?.apiKey?.trim()) return false;
-  try {
-    const url = new URL(config.baseUrl);
-    return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password;
-  } catch { return false; }
+  let url;
+  try { url = new URL(config?.baseUrl); } catch { return false; }
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) return false;
+  if (isLocalHost(url.hostname)) return true;
+  return Boolean(config?.model?.trim() && config?.apiKey?.trim());
+}
+
+function jevHeaders(settings) {
+  const headers = { "Content-Type": "application/json" };
+  if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
+  return headers;
 }
 
 export async function testJevConnection(config, { fetchImpl = fetch, timeoutMs = 15000 } = {}) {
   const settings = normalizeJevSettings(config);
-  if (!isJevConfigured(settings)) throw new Error("请填写模型名称、API Key 和有效的 HTTP(S) 服务地址。");
+  if (!isJevConfigured(settings)) throw new Error("请填写有效的 HTTP(S) 服务地址；非本机/内网地址还需填写模型名称和 API Key。");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const start = Date.now();
   try {
     const response = await fetchImpl(settings.baseUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+      headers: jevHeaders(settings),
       redirect: "error",
       signal: controller.signal,
       body: JSON.stringify({
-        model: settings.model,
+        ...(settings.model ? { model: settings.model } : {}),
         state: "PageLens connection test. The status is ready.",
         questions: { ready: { type: "noul", instructions: "Does the state say the status is ready?" } },
       }),
@@ -71,10 +84,10 @@ export async function askJev(config, { state, questions }, { fetchImpl = fetch, 
     try {
       const response = await fetchImpl(settings.baseUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+        headers: jevHeaders(settings),
         redirect: "error",
         signal: controller.signal,
-        body: JSON.stringify({ model: settings.model, state, questions }),
+        body: JSON.stringify({ ...(settings.model ? { model: settings.model } : {}), state, questions }),
       });
       if (RETRY_STATUS.has(response.status) && attempt < retries) {
         await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));

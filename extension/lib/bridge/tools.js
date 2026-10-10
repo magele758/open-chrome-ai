@@ -156,7 +156,10 @@ export function createBridgeTools(env) {
           } catch {
             throw new BridgeError(ERROR_CODES.BAD_ARGS, String(text).slice(0, 300));
           }
-          if (parsed?.ok === false) throw toBridgeError(new Error(parsed.error || "工具失败"));
+          if (parsed?.ok === false) {
+            const failed = Array.isArray(parsed.results) ? parsed.results.filter((r) => !r.ok) : [];
+            throw toBridgeError(new Error(parsed.error || (failed.length ? JSON.stringify(failed) : "工具失败")));
+          }
           return parsed;
         };
         return withBusyRetry(run);
@@ -338,7 +341,7 @@ export function createBridgeTools(env) {
     },
   });
 
-  for (const name of ["trusted_click", "trusted_type", "press_keys", "hover"]) {
+  for (const name of ["trusted_click", "set_checks", "trusted_type", "press_keys", "hover"]) {
     const inner = trusted.get(name);
     if (inner) add(wrapCdpTool(inner));
   }

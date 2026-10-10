@@ -103,6 +103,7 @@ export function defaultSettings() {
     cdpInput: true,
     agentInboxEnabled: false,
     agentInboxVersion: 1,
+    agentPromptEnabled: true,
     ...normalizeBridgeSettings(),
     agentGatewayEnabled: false,
     hitlMode: "balanced",
@@ -158,6 +159,7 @@ export function normalizeSettings(raw) {
   // Before v1 the inbox was on by default and that implicit `true` got persisted; only an explicit opt-in counts.
   merged.agentInboxEnabled = raw?.agentInboxVersion >= 1 && raw?.agentInboxEnabled === true;
   merged.agentInboxVersion = 1;
+  merged.agentPromptEnabled = raw?.agentPromptEnabled !== false;
   Object.assign(merged, normalizeBridgeSettings(raw));
   merged.agentGatewayEnabled = raw?.agentGatewayEnabled === true;
   merged.hitlMode = ["strict", "balanced", "autonomous"].includes(raw?.hitlMode) ? raw.hitlMode : "balanced";

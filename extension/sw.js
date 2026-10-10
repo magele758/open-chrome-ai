@@ -6,6 +6,7 @@ import {
   syncAgentInboxAlarm,
   wireAgentInboxAlarm,
   pollAgentInboxOnce,
+  completeAgentPrompt,
 } from "./lib/agent/inbox.js";
 import { installInboxConfirm } from "./lib/agent/inbox-confirm.js";
 import { installDelegate } from "./lib/agent/delegate-sw.js";
@@ -50,6 +51,13 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "pl.agentInbox.poll") {
     pollAgentInboxOnce()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
+    return true;
+  }
+  if (msg?.type === "pl.agentPrompt.done") {
+    if (_sender?.id !== chrome.runtime.id) return false;
+    completeAgentPrompt(msg)
       .then(sendResponse)
       .catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
     return true;

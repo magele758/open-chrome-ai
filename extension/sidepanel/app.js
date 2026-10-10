@@ -1,6 +1,6 @@
 import "./panel-log.js";
 import { createAgentGatewayPanel } from "./agent-gateway-panel.js";
-import { lastUserAskedForSkill, resumeInterruptedRun } from "./agent-loop.js";
+import { lastUserAskedForSkill, resumeInterruptedRun, sendPrompt } from "./agent-loop.js";
 import {
   closeClipModal,
   closeClipViewModal,
@@ -82,6 +82,7 @@ import {
   startTranscribe,
   toggleOriginalAudio,
 } from "./video-actions.js";
+import { ACTIVITY_KEY, clearActivity, readActivity } from "../lib/agent/inbox-activity.js";
 import { isResumableRun } from "../lib/agent/context.js";
 import { DELEGATE_STORAGE_KEY } from "../lib/agent/delegate.js";
 import { APPROVAL_STORAGE_KEY } from "../lib/agent/trust/approval-queue.js";
@@ -104,6 +105,77 @@ import {
 } from "../lib/storage.js";
 import { getSharedAudioContext } from "../lib/streaming-audio-player.js";
 import { abortRecording } from "../lib/tab-audio.js";
+
+async function runExternalPrompt(id, prompt) {
+  const t0 = Date.now();
+  let payload;
+  try {
+    await refreshTab().catch(() => {});
+    const before = state.messages.length;
+    await sendPrompt(prompt);
+    const bot = state.messages.slice(before).reverse().find((m) => m.role === "bot");
+    const aborted = bot?.metrics?.finishReason === "abort";
+    const steps = (bot?.trace || [])
+      .filter((t) => t.kind === "tool")
+      .map((t) => ({ name: t.name, ok: t.ok !== false, preview: String(t.preview || "").slice(0, 200) }));
+    payload = {
+      ok: Boolean(bot) && !bot.error && !aborted,
+      summary: bot?.text || "",
+      steps,
+      error: !bot ? "Agent 没有产生回复" : aborted ? "任务被中止" : bot.error ? bot.text : "",
+      code: aborted ? "ABORTED" : bot?.error ? "AGENT_FAILED" : "",
+    };
+  } catch (err) {
+    payload = { ok: false, summary: "", steps: [], error: err?.message || String(err), code: "AGENT_FAILED" };
+  }
+  await chrome.runtime
+    .sendMessage({ type: "pl.agentPrompt.done", id, ms: Date.now() - t0, ...payload })
+    .catch(() => {});
+}
+
+function bindExternalPromptBridge() {
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (sender?.id !== chrome.runtime.id) return false;
+    if (msg?.type === "pl.agentPrompt.ping") {
+      resolveWindowId().then((windowId) => sendResponse({ ok: true, busy: state.busy, windowId }));
+      return true;
+    }
+    if (msg?.type === "pl.agentPrompt.run") {
+      if (state.busy) {
+        sendResponse({ ok: false, code: "AGENT_BUSY", error: "侧栏 Agent 正在执行其他任务" });
+        return false;
+      }
+      sendResponse({ ok: true });
+      runExternalPrompt(String(msg.id), String(msg.prompt || ""));
+      return false;
+    }
+    if (msg?.type === "pl.agentPrompt.cancel") {
+      state.stopIntent = "user";
+      state.abort?.abort();
+      sendResponse({ ok: true });
+      return false;
+    }
+    return false;
+  });
+}
+
+async function paintInboxActivity() {
+  const box = $("inbox-activity-list");
+  if (!box) return;
+  const list = await readActivity().catch(() => []);
+  box.replaceChildren();
+  if (!list.length) {
+    box.textContent = "暂无记录";
+    return;
+  }
+  for (const item of list) {
+    const row = document.createElement("div");
+    const time = new Date(item.startedAt).toLocaleTimeString();
+    const name = item.tool ? `${item.action}/${item.tool}` : item.action;
+    row.textContent = `${item.ok ? "✓" : "✗"} ${time} ${name} ${item.ms}ms${item.error ? ` — ${item.error}` : ""}`;
+    box.append(row);
+  }
+}
 
 function wire() {
   if (!settingsPage) bindSettingsPage(createSettingsPage({
@@ -548,6 +620,7 @@ function wire() {
   chrome.storage?.onChanged?.addListener((changes, area) => {
     if (area === "local" && changes[APPROVAL_STORAGE_KEY]) trustPanel.render();
     if (area === "session" && changes[DELEGATE_STORAGE_KEY]) delegatePanel.render();
+    if (area === "local" && changes[ACTIVITY_KEY]) paintInboxActivity();
   });
   trustPanel.render();
   delegatePanel.render();
@@ -577,6 +650,16 @@ function wire() {
   $("btn-native-test")?.addEventListener("click", async () => {
     await refreshNativeHost();
   });
+  $("btn-inbox-poll")?.addEventListener("click", async () => {
+    await chrome.runtime.sendMessage({ type: "pl.agentInbox.poll" }).catch(() => {});
+    await paintInboxActivity();
+  });
+  $("btn-inbox-clear")?.addEventListener("click", async () => {
+    await clearActivity();
+    await paintInboxActivity();
+  });
+  paintInboxActivity();
+  bindExternalPromptBridge();
   createAgentGatewayPanel({
     root: $("view-settings"),
     copyText,

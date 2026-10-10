@@ -4,6 +4,8 @@
  *
  *   node tools/agent-inbox.mjs enqueue --action clipboard_write --text 'hi'
  *   node tools/agent-inbox.mjs enqueue --action wechat_fill_draft --title '...' --html-file ./body.html
+ *   node tools/agent-inbox.mjs enqueue --action agent_prompt --prompt-file ./task.txt [--tab-url-includes localhost:8080] [--timeout-ms 300000]
+ *   node tools/agent-inbox.mjs cancel [<promptId>] [--all]   # stop running agent_prompt / drop queued ones
  *   node tools/agent-inbox.mjs enqueue --action paste_html --html-file ./a.html --token-file ~/.pagelens/agents/cli.token
  *   node tools/agent-inbox.mjs wait <id>
  *   node tools/agent-inbox.mjs status
@@ -62,6 +64,15 @@ function enqueue(opts) {
     job.tabUrlIncludes = String(opts["tab-url-includes"] || opts.tabUrlIncludes);
   }
   if (opts["request-json"]) job.request = JSON.parse(String(opts["request-json"]));
+  if (opts.prompt && opts.prompt !== true) job.prompt = String(opts.prompt);
+  if (opts["prompt-file"]) job.prompt = readMaybeFile(opts["prompt-file"]);
+  if (action === "agent_prompt" && !String(job.prompt || "").trim()) {
+    throw new Error("agent_prompt requires --prompt or --prompt-file");
+  }
+  if (opts["tab-id"]) job.tabId = Number(opts["tab-id"]);
+  if (opts.url && opts.url !== true) job.url = String(opts.url);
+  if (opts["timeout-ms"]) job.timeoutMs = Number(opts["timeout-ms"]);
+  if (opts["metadata-json"]) job.metadata = JSON.parse(String(opts["metadata-json"]));
   if (opts.title) job.title = String(opts.title);
   if (opts.text) job.text = String(opts.text);
   if (opts.markdown) job.markdown = String(opts.markdown);
@@ -159,11 +170,66 @@ function status() {
   );
 }
 
+function dropPending(id, reason) {
+  const jobPath = path.join(INBOX, `${id}.json`);
+  if (!fs.existsSync(jobPath)) return false;
+  fs.renameSync(jobPath, path.join(PROCESSED, `${id}.json`));
+  fs.writeFileSync(
+    path.join(OUTBOX, `${id}.json`),
+    JSON.stringify({
+      id,
+      ok: false,
+      finishedAt: new Date().toISOString(),
+      action: "agent_prompt",
+      errorCode: "CANCELLED",
+      error: reason,
+    }, null, 2),
+    "utf8",
+  );
+  return true;
+}
+
+/** Stop a running agent_prompt (via agent_cancel job) and/or drop jobs still waiting in the inbox. */
+function cancel(args) {
+  ensureDirs();
+  const targetId = args._[1] ? String(args._[1]) : "";
+  const dropped = [];
+  if (targetId) {
+    if (dropPending(targetId, "排队中被取消")) dropped.push(targetId);
+  } else if (args.all) {
+    for (const name of fs.readdirSync(INBOX).filter((n) => n.endsWith(".json"))) {
+      const file = path.join(INBOX, name);
+      let job = null;
+      try { job = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* skip */ }
+      if (job?.action === "agent_prompt" && dropPending(name.replace(/\.json$/, ""), "排队中被取消")) {
+        dropped.push(name.replace(/\.json$/, ""));
+      }
+    }
+  }
+  const needRunningCancel = !targetId || !dropped.includes(targetId);
+  const cancelId = `cancel-${crypto.randomUUID()}`;
+  if (needRunningCancel) {
+    const job = { id: cancelId, createdAt: new Date().toISOString(), action: "agent_cancel" };
+    if (targetId) job.targetId = targetId;
+    fs.writeFileSync(path.join(INBOX, `${cancelId}.json`), JSON.stringify(job, null, 2), "utf8");
+  }
+  console.log(JSON.stringify({
+    ok: true,
+    droppedPending: dropped,
+    cancelJobId: needRunningCancel ? cancelId : null,
+    note: "运行中的任务约 6s 内被中止；用 wait <cancelJobId> 查看结果，原任务 outbox 为 errorCode=CANCELLED",
+  }, null, 2));
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0] || "status";
   if (cmd === "enqueue") {
     enqueue(args);
+    return;
+  }
+  if (cmd === "cancel") {
+    cancel(args);
     return;
   }
   if (cmd === "wait") {
