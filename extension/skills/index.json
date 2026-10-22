@@ -1,3 +1,9 @@
 {
-  "skills": []
+  "skills": [
+    {
+      "id": "pagelens",
+      "name": "PageLens",
+      "when": "其他 agent 要操作用户的 Chrome：开标签、读页面、可信点击或粘贴、或把任务交给扩展内的 chrome-agent"
+    }
+  ]
 }
