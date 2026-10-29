@@ -30,7 +30,7 @@ import { enforceTokenGuards } from "../bridge/trust-guard.js";
 import { chromeStorageAdapter, createApprovalQueue } from "./trust/approval-queue.js";
 import { offscreenDoc } from "../offscreen-doc.js";
 import { markJobStarted, recordJobFinished } from "./inbox-activity.js";
-import { cancelAgentPrompt, startAgentPrompt, takeCompletion, takeExpired } from "./inbox-agent.js";
+import { cancelAgentPrompt, settleHeadless, startAgentPrompt, takeCompletion, takeExpired } from "./inbox-agent.js";
 
 export const INBOX_ROOT = "~/.pagelens/agent-inbox";
 export const OUTBOX_ROOT = "~/.pagelens/agent-outbox";
@@ -713,8 +713,9 @@ async function dispatchAgentPrompt(jobName, job) {
   const jobId = String(job.id || jobName.replace(/\.json$/i, ""));
   let started;
   try {
+    let auth = null;
     if (job?.token != null) {
-      const auth = await authorizeJobToken(job, "agent_prompt", loadAgentTokens, () => Date.now());
+      auth = await authorizeJobToken(job, "agent_prompt", loadAgentTokens, () => Date.now());
       if (auth.error) {
         started = {
           done: {
@@ -725,7 +726,7 @@ async function dispatchAgentPrompt(jobName, job) {
         };
       }
     }
-    if (!started) started = await startAgentPrompt(job, jobId);
+    if (!started) started = await startAgentPrompt(job, jobId, { auth });
   } catch (err) {
     started = { done: { ok: false, errorCode: "DISPATCH_FAILED", error: err?.message || String(err) } };
   }
@@ -756,8 +757,18 @@ export async function completeAgentPrompt(msg) {
   return { ok: true };
 }
 
+/** Called when a headless (service-worker) agent_prompt run may have finished. */
+export async function completeHeadlessAgentPrompt() {
+  if (!chrome.storage?.session) return { ok: false };
+  const out = await settleHeadless();
+  if (!out) return { ok: false };
+  await writeAgentPromptOutput(out);
+  return { ok: true };
+}
+
 async function expireAgentPrompt() {
   if (!chrome.storage?.session) return;
+  await completeHeadlessAgentPrompt();
   const out = await takeExpired();
   if (out) await writeAgentPromptOutput(out);
 }

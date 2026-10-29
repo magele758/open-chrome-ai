@@ -1,11 +1,21 @@
 /**
- * Inbox action `agent_prompt`: hand a natural-language task to the side panel's LLM agent.
- * The agent loop lives in the side panel page, so the panel must be open; the SW only
- * dispatches the prompt and later receives `pl.agentPrompt.done`. Run state is kept in
- * storage.session so a recycled SW can still finish or time out the job.
+ * Inbox action `agent_prompt`: hand a natural-language task to PageLens' LLM agent.
+ *
+ * Two runtimes:
+ *  - panel: the side panel's own session (same path as a user typing). Needs the panel open;
+ *    the SW only dispatches the prompt and later receives `pl.agentPrompt.done`.
+ *  - headless: the Service Worker delegate runner (agent/delegate.js). No side panel UI needed,
+ *    but runs unattended under the trust rules (capsule / origin allowlist / approval queue).
+ *
+ * `runtime: "auto"` (default) uses the panel when it answers a ping and otherwise falls back to
+ * headless: Chrome refuses `chrome.sidePanel.open()` without a user gesture, so the SW can never
+ * open the panel by itself. Run state is kept in storage.session so a recycled SW can still
+ * finish or time out the job.
  */
 
+import { isUrlAllowed } from "../bridge/policy.js";
 import { loadSettings } from "../storage.js";
+import { TASK_STATUS, getDelegateManager } from "./delegate.js";
 
 const ACTIVE_KEY = "agentPromptActive";
 const DEFAULT_TIMEOUT_MS = 180000;
@@ -13,6 +23,7 @@ const MIN_TIMEOUT_MS = 5000;
 const MAX_TIMEOUT_MS = 600000;
 const PANEL_WAIT_MS = 6000;
 const TAB_LOAD_WAIT_MS = 15000;
+const RUNTIMES = Object.freeze(["auto", "panel", "headless"]);
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -73,39 +84,117 @@ async function waitTabComplete(tabId) {
   }
 }
 
-/** Returns a failure object, or null when the requested tab is now active (or none was requested). */
+/**
+ * Activates the requested tab (if any). `windowId` pins the lookup to the side panel's window;
+ * headless runs pass null and may use any window.
+ * Returns { error } on failure, otherwise { tab } (tab is null when no tab was requested).
+ */
 async function focusTarget(job, windowId) {
   const wantsTab = Number.isInteger(job.tabId) || job.tabUrlIncludes;
-  if (!wantsTab) return null;
+  if (!wantsTab) return { tab: null };
+  const scoped = windowId != null;
   let tab = null;
   if (Number.isInteger(job.tabId)) {
     tab = await chrome.tabs.get(job.tabId).catch(() => null);
   } else {
     const needle = String(job.tabUrlIncludes);
-    const tabs = await chrome.tabs.query({ windowId });
+    const tabs = await chrome.tabs.query(scoped ? { windowId } : {});
     tab = tabs.find((t) => String(t.url || "").includes(needle)) || null;
     if (!tab && job.url) {
-      tab = await chrome.tabs.create({ windowId, url: String(job.url), active: true });
+      tab = await chrome.tabs.create({ ...(scoped ? { windowId } : {}), url: String(job.url), active: true });
       await waitTabComplete(tab.id);
     }
   }
-  if (!tab) return failure("TAB_NOT_FOUND", "没有找到匹配的标签页（需与侧栏在同一窗口）");
-  if (tab.windowId !== windowId) {
-    return failure("WRONG_WINDOW", "目标标签页与已打开的侧栏不在同一窗口");
+  if (!tab) {
+    return {
+      error: failure(
+        "TAB_NOT_FOUND",
+        scoped ? "没有找到匹配的标签页（需与侧栏在同一窗口）" : "没有找到匹配的标签页",
+      ),
+    };
+  }
+  if (scoped && tab.windowId !== windowId) {
+    return { error: failure("WRONG_WINDOW", "目标标签页与已打开的侧栏不在同一窗口") };
   }
   await chrome.tabs.update(tab.id, { active: true });
-  return null;
+  return { tab };
+}
+
+function clampTimeout(job) {
+  return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, Number(job.timeoutMs) || DEFAULT_TIMEOUT_MS));
+}
+
+/** Session handed to the delegate runner: token jobs use the token's origins, others the bridge allowlist. */
+function headlessSession(jobId, settings, auth) {
+  const record = auth?.record;
+  const origins = record ? record.origins || [] : settings.agentBridgeOrigins || [];
+  return {
+    agentName: record?.name || "inbox",
+    sessionId: `inbox:${jobId}`,
+    tokenId: record?.id || "",
+    egress: [...origins, ...(record?.egress || [])],
+    skipIrreversible: record?.skipIrreversible === true,
+    allowUrl: (url) => isUrlAllowed(url, origins),
+  };
+}
+
+async function startHeadless(job, jobId, prompt, settings, auth) {
+  const manager = getDelegateManager();
+  if (!manager) {
+    return {
+      done: failure("HEADLESS_UNAVAILABLE", "后台 Agent 运行环境未就绪（Service Worker 尚未安装委托模块）", {
+        hint: "重载扩展后重试；或点一次扩展图标打开侧栏。",
+      }),
+    };
+  }
+  const focus = await focusTarget(job, null);
+  if (focus.error) return { done: focus.error };
+
+  const timeoutMs = clampTimeout(job);
+  const startedAt = Date.now();
+  let task;
+  try {
+    task = await manager.start({
+      prompt,
+      capsule: job.capsule,
+      tabId: focus.tab?.id ?? null,
+      sourceUrl: focus.tab?.url || "",
+      maxSteps: job.maxSteps,
+      model: job.model,
+      session: headlessSession(jobId, settings, auth),
+    });
+  } catch (err) {
+    if (err?.code === "BUSY") return { queued: true };
+    const code = err?.code === "BAD_ARGS" ? "BAD_JOB" : err?.code || "HEADLESS_FAILED";
+    return { done: failure(code, String(err?.message || err)) };
+  }
+  await setActive({
+    id: jobId,
+    action: "agent_prompt",
+    runtime: "headless",
+    taskId: task.id,
+    startedAt,
+    deadline: startedAt + timeoutMs,
+    metadata: job.metadata ?? null,
+  });
+  return { started: true, runtime: "headless" };
 }
 
 /**
  * Start a job. Resolves to one of:
  *   { queued: true }  another agent_prompt is running; leave the job in the inbox
  *   { done: result }  failed before the agent started; write this result
- *   { started: true } the panel accepted the prompt; completion arrives via message
+ *   { started: true, runtime } the run began; completion arrives via panel message (panel)
+ *                     or is collected by settleHeadless() (headless)
  */
-export async function startAgentPrompt(job, jobId) {
+export async function startAgentPrompt(job, jobId, { auth = null } = {}) {
   const prompt = String(job?.prompt || "").trim();
   if (!prompt) return { done: failure("BAD_JOB", "agent_prompt 需要非空 prompt") };
+
+  const runtime = job?.runtime == null ? "auto" : String(job.runtime);
+  if (!RUNTIMES.includes(runtime)) {
+    return { done: failure("BAD_JOB", `runtime 只能是 ${RUNTIMES.join(" / ")}`) };
+  }
 
   const settings = await loadSettings();
   if (settings.agentPromptEnabled === false) {
@@ -115,13 +204,18 @@ export async function startAgentPrompt(job, jobId) {
   const active = await getActive();
   if (active) return { queued: true };
 
-  const pong = await ensurePanel();
+  if (runtime === "headless") return startHeadless(job, jobId, prompt, settings, auth);
+
+  // Only an explicit `panel` run waits for a panel to appear; sidePanel.open() cannot succeed
+  // without a user gesture, so `auto` just pings once and falls back.
+  const pong = runtime === "panel" ? await ensurePanel() : await pingPanel();
   if (!pong) {
+    if (runtime === "auto") return startHeadless(job, jobId, prompt, settings, auth);
     return {
       done: failure(
         "SIDEPANEL_NOT_OPEN",
         "侧栏未打开，扩展无法在后台拉起侧栏。",
-        { hint: "请先点一次扩展图标打开侧栏并保持打开。" },
+        { hint: 'Chrome 不允许无手势打开侧栏。去掉 runtime:"panel"（或设为 "auto" / "headless"）可在后台运行；或先点一次扩展图标打开侧栏。' },
       ),
     };
   }
@@ -129,13 +223,10 @@ export async function startAgentPrompt(job, jobId) {
     return { done: failure("AGENT_BUSY", "侧栏 Agent 正在执行其他任务（可能是用户手动对话）") };
   }
 
-  const focusError = await focusTarget(job, pong.windowId);
-  if (focusError) return { done: focusError };
+  const focus = await focusTarget(job, pong.windowId);
+  if (focus.error) return { done: focus.error };
 
-  const timeoutMs = Math.min(
-    MAX_TIMEOUT_MS,
-    Math.max(MIN_TIMEOUT_MS, Number(job.timeoutMs) || DEFAULT_TIMEOUT_MS),
-  );
+  const timeoutMs = clampTimeout(job);
   const startedAt = Date.now();
   const accepted = await sendToPanel({ type: "pl.agentPrompt.run", id: jobId, prompt });
   if (!accepted?.ok) {
@@ -146,11 +237,12 @@ export async function startAgentPrompt(job, jobId) {
   await setActive({
     id: jobId,
     action: "agent_prompt",
+    runtime: "panel",
     startedAt,
     deadline: startedAt + timeoutMs,
     metadata: job.metadata ?? null,
   });
-  return { started: true };
+  return { started: true, runtime: "panel" };
 }
 
 function buildOutput(active, payload) {
@@ -174,7 +266,7 @@ function buildOutput(active, payload) {
 /** Match a `pl.agentPrompt.done` message to the active run; returns the outbox payload or null. */
 export async function takeCompletion(msg) {
   const active = await getActive();
-  if (!active || active.id !== msg?.id) return null;
+  if (!active || active.runtime === "headless" || active.id !== msg?.id) return null;
   await setActive(null);
   return buildOutput(active, {
     ok: msg.ok === true,
@@ -182,6 +274,90 @@ export async function takeCompletion(msg) {
     errorCode: msg.code,
     result: { summary: String(msg.summary || ""), steps: Array.isArray(msg.steps) ? msg.steps : [] },
   });
+}
+
+function headlessSteps(task) {
+  return (task.steps || [])
+    .filter((st) => st.kind === "tool")
+    .map((st) => ({ name: st.name, ok: st.ok !== false, preview: String(st.summary || "").slice(0, 200) }));
+}
+
+function headlessPayload(task) {
+  const result = {
+    summary: String(task.answer || ""),
+    steps: headlessSteps(task),
+    runtime: "headless",
+    taskId: task.id,
+  };
+  if (task.pending?.length) {
+    result.pending = task.pending.map(({ pendingId, toolName, reason }) => ({ pendingId, toolName, reason }));
+  }
+  if (task.denied?.length) result.denied = task.denied;
+  switch (task.status) {
+    case TASK_STATUS.DONE:
+      return { ok: true, result };
+    case TASK_STATUS.NEEDS_APPROVAL:
+      return {
+        ok: false,
+        errorCode: "CONFIRMATION_REQUIRED",
+        error: "有不可逆操作等待用户批准（侧栏待批准队列）；批准后重新投递同一任务",
+        result,
+      };
+    case TASK_STATUS.CANCELLED:
+      return { ok: false, errorCode: "CANCELLED", error: "任务被取消", result };
+    case TASK_STATUS.FAILED:
+      return {
+        ok: false,
+        errorCode: task.error?.code || "AGENT_FAILED",
+        error: task.error?.message || "failed",
+        result,
+      };
+    case TASK_STATUS.RUNNING:
+      return null;
+    default:
+      return { ok: false, errorCode: "AGENT_FAILED", error: `未知任务状态 ${task.status}`, result };
+  }
+}
+
+/**
+ * If the active run is headless and its delegate task has finished, clear it and return the outbox
+ * payload; otherwise null. Called from the delegate FINISHED event and from every inbox poll (the poll
+ * also covers a Service Worker that was recycled before the event fired).
+ */
+let settling = false;
+
+export async function settleHeadless() {
+  if (settling) return null;
+  settling = true;
+  try {
+    return await settleHeadlessOnce();
+  } finally {
+    settling = false;
+  }
+}
+
+async function settleHeadlessOnce() {
+  const active = await getActive();
+  if (!active || active.runtime !== "headless") return null;
+  const manager = getDelegateManager();
+  let payload;
+  try {
+    const task = manager ? await manager.status(active.taskId) : null;
+    payload = task ? headlessPayload(task) : { ok: false, errorCode: "AGENT_FAILED", error: "后台任务记录丢失" };
+  } catch (err) {
+    payload = { ok: false, errorCode: err?.code || "AGENT_FAILED", error: String(err?.message || err) };
+  }
+  if (!payload) return null;
+  await setActive(null);
+  return buildOutput(active, payload);
+}
+
+async function stopRun(active) {
+  if (active.runtime === "headless") {
+    await getDelegateManager()?.cancel(active.taskId).catch(() => {});
+  } else {
+    await sendToPanel({ type: "pl.agentPrompt.cancel", id: active.id });
+  }
 }
 
 async function waitPanelIdle(maxMs = 3000) {
@@ -215,8 +391,8 @@ export async function cancelAgentPrompt(targetId) {
     };
   }
   await setActive(null);
-  await sendToPanel({ type: "pl.agentPrompt.cancel", id: active.id });
-  await waitPanelIdle();
+  await stopRun(active);
+  if (active.runtime !== "headless") await waitPanelIdle();
   return {
     result: { ok: true, cancelled: true, id: active.id },
     output: buildOutput(active, {
@@ -233,7 +409,7 @@ export async function takeExpired() {
   const active = await getActive();
   if (!active || Date.now() < active.deadline) return null;
   await setActive(null);
-  await sendToPanel({ type: "pl.agentPrompt.cancel", id: active.id });
+  await stopRun(active);
   return buildOutput(active, {
     ok: false,
     errorCode: "TIMEOUT",
