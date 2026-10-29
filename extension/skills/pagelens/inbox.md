@@ -95,7 +95,7 @@ node tools/agent-inbox.mjs wait <id> --timeout 300000
 node tools/agent-inbox.mjs cancel <id>
 ```
 
-`agent_prompt` 走侧栏当前会话，和用户打字是同一条路。侧栏必须已经打开，否则 `SIDEPANEL_NOT_OPEN`。侧栏正在对话则 `AGENT_BUSY`，不要重试打断。同一时刻只跑一个，其余排队。解包扩展大约 6 秒轮询一次，商店安装大约 30 秒。
+`agent_prompt` 默认 `runtime:"auto"`：侧栏开着就走侧栏当前会话（和用户打字同一条路），没开就在后台 Service Worker 里跑，不需要人点图标。后台运行无人值守：只访问白名单 / token origins，副作用动作要在 `capsule`（`--capsule-json`，省略则从 prompt 抽取）内，发布等不可逆动作会 `CONFIRMATION_REQUIRED`（除非 token 免清单确认）。`runtime:"panel"` 才会在侧栏没开时返回 `SIDEPANEL_NOT_OPEN`。侧栏正在对话则 `AGENT_BUSY`，不要重试打断（或用 `--runtime headless`）。同一时刻只跑一个，其余排队。解包扩展大约 6 秒轮询一次，商店安装大约 30 秒。
 
 `agent_prompt` 不需要 `agentBridgeEnabled`。`paste_html`、`wechat_fill_draft`、`cose_publish`、`bridge_call` 需要白名单（或 token 的 origins）覆盖目标站点。
 

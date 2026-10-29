@@ -50,11 +50,29 @@ Then reload PageLens on `chrome://extensions`.
 - **`wechat_fill_draft`** — set `#title` with native value setter; focus body ProseMirror excluding `.title-editor__input`; clipboard + trusted Cmd+V; verify title exact and body text length > 500. Does **not** click 发表.
 - **`cose_publish`** — `companions.cosePublish` in MAIN world on an allowlisted https tab where `$cose` exists.
 
-- **`agent_prompt`** — 把自然语言任务交给**侧栏 chrome-agent（LLM）**，与用户在侧栏手动输入走同一条 `sendPrompt` 路径，跑完把回复写回 outbox。**不依赖** `agentBridgeEnabled`，也不需要 remote-debugging / 9222。需要先打开「启用文件 inbox」（默认关），否则服务工作线程不会轮询。
+- **`agent_prompt`** — 把自然语言任务交给 PageLens 的 LLM Agent，跑完把回复写回 outbox。侧栏开着时走侧栏会话（与用户手动输入同一条 `sendPrompt` 路径）；**侧栏没开时自动改在后台（Service Worker）运行，不需要有人点图标**（见下文 `runtime`）。**不依赖** `agentBridgeEnabled`，也不需要 remote-debugging / 9222。需要先打开「启用文件 inbox」（默认关），否则服务工作线程不会轮询。
 
-## agent_prompt（外部总控 → 侧栏 Agent）
+## agent_prompt（外部总控 → PageLens Agent）
 
-Job 字段：`id`、`prompt`（必填）、可选 `tabUrlIncludes` / `tabId`（先切到该标签；需与侧栏同窗口）、`url`（配合 `tabUrlIncludes`，找不到则新开）、`timeoutMs`（默认 180000，范围 5000–600000）、`metadata`（原样回传）。
+Job 字段：`id`、`prompt`（必填）、可选 `tabUrlIncludes` / `tabId`（先切到该标签；`panel` 运行需与侧栏同窗口，`headless` 任意窗口）、`url`（配合 `tabUrlIncludes`，找不到则新开）、`timeoutMs`（默认 180000，范围 5000–600000）、`metadata`（原样回传）、`runtime`、`capsule`、`maxSteps`（后两者仅 `headless`）。
+
+### runtime：侧栏运行 vs 后台运行
+
+Chrome 不允许扩展在没有用户手势时调用 `chrome.sidePanel.open()`，所以 Service Worker 无法自己把侧栏拉起来（`launchd` / 登录项 / 原生助手也不行：手势必须发生在浏览器里）。因此 `agent_prompt` 不再依赖侧栏：
+
+| `runtime` | 行为 |
+|---|---|
+| `auto`（默认） | 侧栏已打开 → 在侧栏会话里跑；没打开 → 改在 Service Worker 里后台跑 |
+| `panel` | 只用侧栏；没打开返回 `SIDEPANEL_NOT_OPEN`（旧行为） |
+| `headless` | 只在后台跑，即使侧栏开着也不占用它 |
+
+后台运行复用「委托任务」运行器（`lib/agent/delegate.js`），关掉侧栏、最小化窗口都不影响，只要 Chrome 进程在、扩展已启用、「启用文件 inbox」已开。它是**无人值守**的，和侧栏会话的差别：
+
+- 不带前文上下文，不出现在侧栏聊天记录里；结果只在 outbox（`result.runtime:"headless"`、`result.taskId`）。
+- 授权按委托规则：只能访问 `agentBridgeOrigins`（带 `token` 的 job 用 token 的 origins ∪ 出站白名单）；有副作用的动作需在**意图胶囊**内——胶囊来自 job 的 `capsule`，省略则只从 `prompt` 原文抽取。例：`{"actions":["publish"],"platforms":["zhihu","wechat"]}`。
+- 胶囊外的副作用动作被拦下，记在 `result.denied`（`NEEDS_WIDER_AUTHORIZATION`）。
+- 命中不可逆清单（发布 / 删除 / 上传等）→ 进侧栏待批准队列，job 以 `ok:false, errorCode:"CONFIRMATION_REQUIRED"` 结束，`result.pending` 给出 `pendingId`。**无人值守的 9:45 发布请用带「免不可逆清单确认」的 token**（设置 → 外部 Agent；审计记 `optOut`），并配上明确的 `capsule`，否则每次都会停在待批准。
+- 同一时刻仍只跑一个 `agent_prompt`；`maxSteps` 默认 12、上限 40；`hitlMode` 不适用。
 
 ```bash
 node tools/agent-inbox.mjs enqueue --action agent_prompt \
@@ -74,9 +92,11 @@ Outbox：
 
 | errorCode | 含义 |
 |---|---|
-| `SIDEPANEL_NOT_OPEN` | 侧栏没打开。Chrome 不允许后台无手势拉起侧栏，**需要人先点一次扩展图标打开侧栏并保持打开**（切标签不会关，全局侧栏） |
-| `AGENT_BUSY` | 侧栏 Agent 正在跑别的（如用户正在手动对话）。不会打断它 |
-| `TAB_NOT_FOUND` / `WRONG_WINDOW` | 指定的标签找不到 / 不在侧栏所在窗口 |
+| `SIDEPANEL_NOT_OPEN` | 仅 `runtime:"panel"`：侧栏没打开。Chrome 不允许后台无手势拉起侧栏；去掉 `runtime`（默认 `auto`）即可后台运行 |
+| `HEADLESS_UNAVAILABLE` | 后台运行环境未就绪（SW 刚重启 / 扩展需重载） |
+| `CONFIRMATION_REQUIRED` | 后台运行遇到不可逆动作，已进待批准队列（见 `result.pending`） |
+| `AGENT_BUSY` | 侧栏开着且 Agent 正在跑别的（如用户正在手动对话）。不会打断它；要避开这类冲突用 `runtime:"headless"` |
+| `TAB_NOT_FOUND` / `WRONG_WINDOW` | 指定的标签找不到 / 不在侧栏所在窗口（`WRONG_WINDOW` 仅侧栏运行） |
 | `TIMEOUT` | 超过 `timeoutMs`，已让侧栏 Agent 停止 |
 | `CANCELLED` | 被外部 agent 用 `agent_cancel` / `cancel` 取消（见下） |
 | `ABORTED` / `AGENT_FAILED` | 被中止 / 模型或工具失败（`error` 为原因，含"未配置模型"） |
@@ -84,8 +104,8 @@ Outbox：
 
 约定与限制：
 - **串行**：同一时刻只跑一个 `agent_prompt`；后面的留在 inbox 排队，前一个结束后下一轮轮询（解包约 6s，打包安装 30s）再启动。
-- 任务在**当前侧栏会话**里执行（会出现在聊天记录中，带前文上下文），页面内容取被激活标签。
-- 授权模式沿用设置里的 `hitlMode`：`strict`/`balanced` 遇到需确认的操作会等人点，直到超时；无人值守请评估是否用 `autonomous`。
+- 侧栏运行：任务在**当前侧栏会话**里执行（会出现在聊天记录中，带前文上下文），页面内容取被激活标签。
+- 侧栏运行的授权模式沿用设置里的 `hitlMode`：`strict`/`balanced` 遇到需确认的操作会等人点，直到超时；无人值守请评估是否用 `autonomous`。
 - `steps` 只含工具名/成败/预览；截图不单独落盘。
 - 进度和结果同样显示在侧栏设置的「外部 Agent 活动」与图标角标。
 - 提示词里的"不要宣称成功失败、只报事实"之类约束由总控写进 `prompt`，扩展不做改写。
@@ -102,6 +122,23 @@ node tools/agent-inbox.mjs cancel --all        # 同上，并撤销 inbox 里所
 - 运行中的任务在下一轮轮询（解包约 6s，打包安装 30s）内中止，与侧栏「停止」按钮同一路径；被取消任务的 outbox 为 `ok:false, errorCode:"CANCELLED"`，`agent_cancel` 自己的 outbox 为 `{ ok:true, cancelled:true|false }`（没有在跑则 `cancelled:false`）。
 - 中止是在工具调用边界生效：已经发出的单次点击/输入无法撤回，已执行的页面副作用（如已点「确定」发布）不会回滚。
 - 兜底：`timeoutMs` 到期自动取消（`TIMEOUT`）；人也可以直接点侧栏的停止按钮。
+
+### 每天 9:45 无人值守发布（建议配置）
+
+1. 设置里打开「启用文件 inbox」，Native Host 已登记（见上）；Chrome 要在运行（登录项里加 Chrome 即可开机自启，**不需要**打开侧栏）。
+2. 设置 → 外部 Agent：建一个 token，origins 只放发布页（如 `http://localhost:8080`），勾选「免不可逆清单确认」。`~/.pagelens/agents/<name>.token` 用 `--save-token` 保存（0600）。
+3. 定时任务（cron / launchd）里投递：
+
+```bash
+node tools/agent-inbox.mjs enqueue --action agent_prompt --runtime headless \
+  --prompt-file ~/.pagelens/publish-prompt.txt --tab-url-includes localhost:8080 --url http://localhost:8080/ \
+  --capsule-json '{"actions":["publish"],"platforms":["wechat","zhihu","bilibili","xiaohongshu","douyin"]}' \
+  --max-steps 30 --timeout-ms 600000 --token-file ~/.pagelens/agents/<name>.token
+node tools/agent-inbox.mjs wait <id> --timeout 660000
+```
+
+4. 读 outbox：`ok:true` 才算成功；`CONFIRMATION_REQUIRED` / `result.denied` 表示被拦下，不要当成功处理。
+5. 不需要 LLM 摸索的固定流程仍优先用下面的 `doocs-publish.mjs`（`bridge_call`，同样不需要侧栏）。
 
 ## Doocs 多平台发布（不走 LLM）
 

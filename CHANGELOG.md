@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 旧同传引擎 `runInterpret`（`lib/interpret.js`）及只服务它的 `interpret-sync.js`、`interpret-pipeline.js`、`live-audio-playback.js`；`test_interpret_flow` 改测生产路径（侧栏 → SW → offscreen → `runPlannedInterpret`）。
 
 ### Added
+- **inbox `agent_prompt` 后台运行**: 新增 `runtime`（`auto` 默认 / `panel` / `headless`）。侧栏没打开时不再返回 `SIDEPANEL_NOT_OPEN`，而是改用 Service Worker 里的委托运行器执行（Chrome 不允许无手势打开侧栏，所以不再依赖它）；无人值守，受 origin 白名单 / 意图胶囊 / 待批准队列约束，新增 job 字段 `capsule` / `maxSteps` 与错误码 `HEADLESS_UNAVAILABLE` / `CONFIRMATION_REQUIRED`。CLI 增加 `--runtime` / `--capsule-json` / `--max-steps`。
 - **`set_checks` 工具**: 按标签文字批量勾选/取消复选框、开关、单选（含 Radix/shadcn 的 `button[role=checkbox]`），真实点击 + 回读确认；侧栏 Agent 与 bridge 均可用。
 - **`tools/doocs-publish.mjs`**: Doocs/COSE 多平台发布的确定性脚本（inbox `bridge_call`，不走 LLM，默认 dry-run，`--confirm` 才点确定）。
 

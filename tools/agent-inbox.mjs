@@ -5,6 +5,7 @@
  *   node tools/agent-inbox.mjs enqueue --action clipboard_write --text 'hi'
  *   node tools/agent-inbox.mjs enqueue --action wechat_fill_draft --title '...' --html-file ./body.html
  *   node tools/agent-inbox.mjs enqueue --action agent_prompt --prompt-file ./task.txt [--tab-url-includes localhost:8080] [--timeout-ms 300000]
+ *                 [--runtime auto|panel|headless] [--capsule-json '{"actions":["publish"],"platforms":["zhihu"]}'] [--max-steps 20]
  *   node tools/agent-inbox.mjs cancel [<promptId>] [--all]   # stop running agent_prompt / drop queued ones
  *   node tools/agent-inbox.mjs enqueue --action paste_html --html-file ./a.html --token-file ~/.pagelens/agents/cli.token
  *   node tools/agent-inbox.mjs wait <id>
@@ -72,6 +73,9 @@ function enqueue(opts) {
   if (opts["tab-id"]) job.tabId = Number(opts["tab-id"]);
   if (opts.url && opts.url !== true) job.url = String(opts.url);
   if (opts["timeout-ms"]) job.timeoutMs = Number(opts["timeout-ms"]);
+  if (opts.runtime && opts.runtime !== true) job.runtime = String(opts.runtime);
+  if (opts["capsule-json"]) job.capsule = JSON.parse(String(opts["capsule-json"]));
+  if (opts["max-steps"]) job.maxSteps = Number(opts["max-steps"]);
   if (opts["metadata-json"]) job.metadata = JSON.parse(String(opts["metadata-json"]));
   if (opts.title) job.title = String(opts.title);
   if (opts.text) job.text = String(opts.text);
