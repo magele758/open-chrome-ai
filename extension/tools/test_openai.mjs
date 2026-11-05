@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chatCompletionsUrl, completeChat, expandChatTokens, messageText, streamTurn } from "../lib/openai.js";
+import { chatCompletionsUrl, completeChat, expandChatTokens, listRemoteModels, messageText, streamChat, streamTurn, testConnection } from "../lib/openai.js";
+import { resetPermissionPrompter, setPermissionPrompter } from "../lib/optional-permissions.js";
 import { summarizeTranscript } from "../lib/summarize-transcript.js";
 
 assert.equal(
@@ -220,4 +221,44 @@ globalThis.fetch = async () => Response.json({
 });
 assert.equal((await streamTurn(model, { messages: [] })).content, "非流式正文");
 
-console.log("PASS openai content parse, thinking-budget retry, stream fallback");
+const localModel = { baseUrl: "http://127.0.0.1:3425/v1", model: "auto/gpt-6.1-sol" };
+const requests = [
+  () => listRemoteModels(localModel),
+  () => testConnection(localModel),
+  () => completeChat(localModel, { messages: [] }),
+  () => streamChat(localModel, { messages: [] }, () => {}),
+  () => streamTurn(localModel, { messages: [] }),
+];
+let allowed = false;
+let fetches = 0;
+globalThis.chrome = {
+  permissions: {
+    contains: async () => allowed,
+    request: async (query) => {
+      assert.deepEqual(query, { origins: ["http://127.0.0.1:3425/*"] });
+      allowed = true;
+      return true;
+    },
+  },
+};
+globalThis.fetch = async () => {
+  assert.equal(allowed, true, "model requests wait for host permission");
+  fetches++;
+  return Response.json({ data: [{ id: localModel.model }], choices: [{ message: { content: "OK" } }] });
+};
+for (const request of requests) {
+  resetPermissionPrompter();
+  allowed = false;
+  setPermissionPrompter(() => false);
+  const before = fetches;
+  await assert.rejects(request, /未授予权限/);
+  assert.equal(fetches, before, "denied requests do not fetch");
+  resetPermissionPrompter();
+  setPermissionPrompter(() => true);
+  await request();
+  assert.equal(fetches, before + 1);
+}
+resetPermissionPrompter();
+delete globalThis.chrome;
+
+console.log("PASS openai content parse, thinking-budget retry, stream fallback, host permissions");
