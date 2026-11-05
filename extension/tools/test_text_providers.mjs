@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { normalizeSettings } from "../lib/storage.js";
+import { isModelReady, normalizeSettings } from "../lib/storage.js";
 import {
   addProviderModel,
   enabledModelOptions,
@@ -86,6 +86,17 @@ const saved = normalizeSettings({
 assert.equal(saved.textProviders.length, 1);
 assert.equal(saved.text.model, "deepseek-chat");
 assert.equal(saved.textRef.modelId, "deepseek-chat");
+
+for (const baseUrl of ["http://127.0.0.1:3425/v1", "http://localhost:11434/v1", "http://[::1]:3425/v1"]) {
+  const local = normalizeSettings({ text: { baseUrl, model: "local-model", apiKey: "" } });
+  assert.equal(isModelReady(local.text), true, "local models can be used without an API key");
+  assert.equal(isModelReady({ ...local.text, model: "" }), false);
+}
+for (const baseUrl of ["https://api.tokenpony.cn/v1", "https://localhost.example/v1", "file:///tmp/model", "invalid"]) {
+  assert.equal(isModelReady({ baseUrl, model: "model", apiKey: "" }), false);
+}
+assert.equal(isModelReady(saved.text), true);
+assert.equal(isModelReady({ ...saved.text, apiKey: " " }), false);
 
 const empty = normalizeSettings({});
 assert.equal(empty.textProviders.length, 0);
