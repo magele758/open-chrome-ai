@@ -229,7 +229,15 @@ export function resolveModel(settings, kind) {
 }
 
 export function isModelReady(model) {
-  return Boolean(model?.baseUrl?.trim() && model?.model?.trim() && model?.apiKey?.trim());
+  if (!model?.baseUrl?.trim() || !model?.model?.trim()) return false;
+  if (model.apiKey?.trim()) return true;
+  try {
+    const url = new URL(model.baseUrl);
+    return ["http:", "https:"].includes(url.protocol)
+      && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 export function isAsrReady(model) {

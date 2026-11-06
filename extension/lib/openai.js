@@ -1,5 +1,6 @@
 import { modelsUrl, parseRemoteModelList } from "./text-providers.js";
 import { debugLog } from "./debug-log.js";
+import { requireHostUrl } from "./optional-permissions.js";
 
 function trimSlash(url) {
   return String(url || "").trim().replace(/\/+$/, "");
@@ -206,6 +207,8 @@ async function readError(response) {
 }
 
 async function postChat(model, body, signal) {
+  const denied = await requireHostUrl(model.baseUrl);
+  if (denied) throw new Error(denied);
   const response = await fetch(chatCompletionsUrl(model.baseUrl), {
     method: "POST",
     headers: headersFor(model),
@@ -272,6 +275,8 @@ export async function completeChat(model, { messages, temperature = 0.2, maxToke
 
 export async function testConnection(model) {
   const url = chatCompletionsUrl(model.baseUrl);
+  const denied = await requireHostUrl(url);
+  if (denied) throw new Error(denied);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   const started = Date.now();
@@ -301,6 +306,8 @@ export async function testConnection(model) {
 
 export async function listRemoteModels(model, { timeoutMs = 15000 } = {}) {
   const url = modelsUrl(model.baseUrl);
+  const denied = await requireHostUrl(url);
+  if (denied) throw new Error(denied);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const started = Date.now();
@@ -393,6 +400,8 @@ export async function streamTurn(model, input, onTextDelta) {
     messages: input.messages?.length || 0,
   });
   const url = chatCompletionsUrl(model.baseUrl);
+  const denied = await requireHostUrl(url);
+  if (denied) throw new Error(denied);
   const body = {
     model: model.model.trim(),
     stream: true,
