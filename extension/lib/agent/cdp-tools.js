@@ -30,6 +30,72 @@ const DIALOG_GUARDED = new Set([
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const BLOCKED_UPLOAD_ELEMENT_ERROR =
+  "目标位置命中文件上传控件（点击会弹出系统文件选择框），已拦截；如需上传文件请使用 upload_file 工具，如系滚动后坐标偏移请改用 selector 定位目标控件";
+const BLOCKED_CHOOSER_OPENED_ERROR =
+  "点击触发了文件选择框（已自动拦截，未打开系统窗口）；如需上传文件请使用 upload_file 工具，如系坐标偏移请改用 selector 定位目标控件";
+
+/** 自包含注入探测：按局部视口坐标或 CSS 选择器检查命中节点是否为文件上传触发器。 */
+export function inspectFileUploadTarget(spec) {
+  const o = spec || {};
+  const isFileUploadTrigger = (node) => {
+    if (!node || node.nodeType !== 1) return false;
+    if (
+      node.tagName === "INPUT" &&
+      String(node.type || node.getAttribute("type") || "").toLowerCase() === "file" &&
+      !node.disabled
+    ) {
+      return true;
+    }
+    for (
+      let cur = node;
+      cur && cur !== document.body && cur !== document.documentElement;
+      cur = cur.parentElement || cur.getRootNode?.()?.host || null
+    ) {
+      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
+      if (cur.tagName === "LABEL") {
+        const forId = cur.getAttribute?.("for");
+        const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
+        if (
+          (ctrl?.tagName === "INPUT" &&
+            String(ctrl.type || ctrl.getAttribute?.("type") || "").toLowerCase() === "file" &&
+            !ctrl.disabled) ||
+          cur.querySelector?.('input[type="file"]:not([disabled])')
+        ) {
+          return true;
+        }
+      }
+      if (
+        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
+        (cur.classList?.contains("ant-upload") &&
+          !cur.classList.contains("ant-upload-wrapper") &&
+          !cur.classList.contains("ant-upload-picture-card-wrapper"))
+      ) {
+        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
+      }
+    }
+    return false;
+  };
+  if (o.selector) {
+    try {
+      const nodes = [...document.querySelectorAll(String(o.selector))];
+      return { blocked: nodes.some(isFileUploadTrigger) };
+    } catch {
+      return { blocked: false };
+    }
+  }
+  const x = Number(o.x);
+  const y = Number(o.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return { blocked: false };
+  let hit = document.elementFromPoint(x, y);
+  while (hit?.shadowRoot && typeof hit.shadowRoot.elementFromPoint === "function") {
+    const inner = hit.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === hit) break;
+    hit = inner;
+  }
+  return { blocked: isFileUploadTrigger(hit) };
+}
+
 function obj(properties, required = []) {
   return { type: "object", properties, additionalProperties: false, required };
 }
@@ -114,7 +180,9 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
 
   async function resolvePoint(tabId, spec) {
     if (Number.isFinite(Number(spec?.x)) && Number.isFinite(Number(spec?.y)) && spec.x != null && spec.y != null) {
-      return { x: Math.round(Number(spec.x)), y: Math.round(Number(spec.y)), match: "坐标" };
+      const x = Math.round(Number(spec.x));
+      const y = Math.round(Number(spec.y));
+      return { x, y, localX: x, localY: y, frameId: 0, fromCoords: true, match: "坐标" };
     }
     let frameId = 0;
     let target;
@@ -140,7 +208,15 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
       throw new Error(`${hit?.error || "定位失败"}${extra}`);
     }
     const offset = await frameOffset(tabId, frameId);
-    return { x: hit.x + offset.x, y: hit.y + offset.y, match: `${hit.tag} ${hit.text}`.trim(), frameId };
+    return {
+      x: hit.x + offset.x,
+      y: hit.y + offset.y,
+      localX: hit.x,
+      localY: hit.y,
+      fileUpload: Boolean(hit.fileUpload),
+      match: `${hit.tag} ${hit.text}`.trim(),
+      frameId,
+    };
   }
 
   const mouse = (tabId, events) =>
@@ -174,10 +250,59 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
         if (!hasTarget(args)) return "需要 index、selector、text 或 x,y 之一。";
         const tabId = await prepare(args);
         try {
-          const p = await resolvePoint(tabId, args);
-          await mouse(tabId, mouseClickEvents(p.x, p.y, { button: args.button || "left", clickCount: args.double ? 2 : 1 }));
-          await sleep(60);
-          return toToolText({ ok: true, action: args.double ? "double_click" : `${args.button || "left"}_click`, at: { x: p.x, y: p.y }, match: p.match });
+          let p;
+          try {
+            p = await resolvePoint(tabId, args);
+          } catch (err) {
+            if (args.selector && args.index == null) {
+              const hiddenUpload = await inject(tabId, inspectFileUploadTarget, [{ selector: String(args.selector) }]).catch(
+                () => null,
+              );
+              if (hiddenUpload?.blocked) {
+                return toToolText({ ok: false, blockedFileChooser: true, error: BLOCKED_UPLOAD_ELEMENT_ERROR });
+              }
+            }
+            throw err;
+          }
+          if (p.fileUpload) {
+            return toToolText({ ok: false, blockedFileChooser: true, error: BLOCKED_UPLOAD_ELEMENT_ERROR });
+          }
+          if (p.fromCoords) {
+            const pointUpload = await inject(
+              tabId,
+              inspectFileUploadTarget,
+              [{ x: p.localX, y: p.localY }],
+              { frameId: p.frameId || 0 },
+            ).catch(() => null);
+            if (pointUpload?.blocked) {
+              return toToolText({ ok: false, blockedFileChooser: true, error: BLOCKED_UPLOAD_ELEMENT_ERROR });
+            }
+          }
+          let chooserOpened = false;
+          const chooserWatch = cdp.watchFileChooser?.(tabId) || null;
+          chooserWatch?.promise?.then(() => {
+            chooserOpened = true;
+          });
+          await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: true }).catch(() => {});
+          try {
+            await mouse(
+              tabId,
+              mouseClickEvents(p.x, p.y, { button: args.button || "left", clickCount: args.double ? 2 : 1 }),
+            );
+            await sleep(60);
+          } finally {
+            chooserWatch?.cancel?.();
+            await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+          }
+          if (chooserOpened) {
+            return toToolText({ ok: false, blockedFileChooser: true, error: BLOCKED_CHOOSER_OPENED_ERROR });
+          }
+          return toToolText({
+            ok: true,
+            action: args.double ? "double_click" : `${args.button || "left"}_click`,
+            at: { x: p.x, y: p.y },
+            match: p.match,
+          });
         } catch (err) {
           return toToolText({ ok: false, error: err?.message || String(err) });
         }

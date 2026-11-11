@@ -102,6 +102,17 @@ export function createCdp({
     return data;
   }
 
+  /** 返回 { promise, cancel }：文件选择框弹出（Page.fileChooserOpened）时 resolve 参数，不抛超时异常。 */
+  function watchFileChooser(tabId) {
+    const s = session(tabId);
+    let waiter;
+    const promise = new Promise((resolve) => {
+      waiter = (event) => resolve(event || {});
+      s.chooserWaiters.add(waiter);
+    });
+    return { promise, cancel: () => s.chooserWaiters.delete(waiter) };
+  }
+
   function waitFileChooser(tabId, timeoutMs = 5000) {
     const s = session(tabId);
     return new Promise((resolve, reject) => {
@@ -152,7 +163,17 @@ export function createCdp({
   api?.onEvent?.addListener?.(onEvent);
   api?.onDetach?.addListener?.(onDetach);
 
-  return { ensure, send, detach, pendingDialog, watchDialog, waitFileChooser, takeDragData, isAttached: (id) => Boolean(sessions.get(id)?.attached) };
+  return {
+    ensure,
+    send,
+    detach,
+    pendingDialog,
+    watchDialog,
+    watchFileChooser,
+    waitFileChooser,
+    takeDragData,
+    isAttached: (id) => Boolean(sessions.get(id)?.attached),
+  };
 }
 
 let shared = null;

@@ -194,9 +194,52 @@ export async function actOnRef(kind, spec) {
   const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
   const cache = window.__pagelensSnap;
   const stale = (why) => ({ ok: false, stale: true, error: `${why}，请重新 snapshot_controls 后再操作` });
+  const FILE_CHOOSER_BLOCKED_MSG =
+    "目标位置命中文件上传控件（点击会弹出系统文件选择框），已拦截；如需上传文件请使用 upload_file 工具，如系滚动后坐标偏移请改用 selector 定位目标控件";
+  const isFileUploadTrigger = (node) => {
+    if (!node || node.nodeType !== 1) return false;
+    if (
+      node.tagName === "INPUT" &&
+      String(node.type || node.getAttribute("type") || "").toLowerCase() === "file" &&
+      !node.disabled
+    ) {
+      return true;
+    }
+    for (
+      let cur = node;
+      cur && cur !== document.body && cur !== document.documentElement;
+      cur = cur.parentElement || cur.getRootNode?.()?.host || null
+    ) {
+      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
+      if (cur.tagName === "LABEL") {
+        const forId = cur.getAttribute?.("for");
+        const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
+        if (
+          (ctrl?.tagName === "INPUT" &&
+            String(ctrl.type || ctrl.getAttribute?.("type") || "").toLowerCase() === "file" &&
+            !ctrl.disabled) ||
+          cur.querySelector?.('input[type="file"]:not([disabled])')
+        ) {
+          return true;
+        }
+      }
+      if (
+        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
+        (cur.classList?.contains("ant-upload") &&
+          !cur.classList.contains("ant-upload-wrapper") &&
+          !cur.classList.contains("ant-upload-picture-card-wrapper"))
+      ) {
+        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
+      }
+    }
+    return false;
+  };
 
   const el = cache?.nodes.get(Number(o.node));
   if (!el || !el.isConnected) return stale("目标元素已不在页面上");
+  if (kind === "click" && isFileUploadTrigger(el)) {
+    return { ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MSG };
+  }
   if (!cache.visible(el)) return stale("目标元素已不可见");
   if (o.label != null) {
     const now = clean(cache.name(el)).slice(0, 80) || cache.role(el);
@@ -257,6 +300,9 @@ export async function actOnRef(kind, spec) {
   };
 
   if (kind === "click") {
+    if (hit && isFileUploadTrigger(hit)) {
+      return { ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MSG };
+    }
     el.focus?.();
     const init = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
     for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
@@ -320,6 +366,8 @@ export async function actOnRef(kind, spec) {
 
   return { ok: false, error: `未知动作 ${kind}` };
 }
+
+export const actOnElement = actOnRef;
 
 export function scrollViewport(dir, amount) {
   const step = Math.round(window.innerHeight * Math.min(Math.max(Number(amount) || 0.8, 0.1), 1));
@@ -468,6 +516,44 @@ export function locateElement(spec) {
       blocker: { tag: hit.tagName.toLowerCase(), text: clean(hit.innerText || "").slice(0, 60) },
     };
   }
+  const isFileUploadTrigger = (node) => {
+    if (!node || node.nodeType !== 1) return false;
+    if (
+      node.tagName === "INPUT" &&
+      String(node.type || node.getAttribute("type") || "").toLowerCase() === "file" &&
+      !node.disabled
+    ) {
+      return true;
+    }
+    for (
+      let cur = node;
+      cur && cur !== document.body && cur !== document.documentElement;
+      cur = cur.parentElement || cur.getRootNode?.()?.host || null
+    ) {
+      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
+      if (cur.tagName === "LABEL") {
+        const forId = cur.getAttribute?.("for");
+        const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
+        if (
+          (ctrl?.tagName === "INPUT" &&
+            String(ctrl.type || ctrl.getAttribute?.("type") || "").toLowerCase() === "file" &&
+            !ctrl.disabled) ||
+          cur.querySelector?.('input[type="file"]:not([disabled])')
+        ) {
+          return true;
+        }
+      }
+      if (
+        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
+        (cur.classList?.contains("ant-upload") &&
+          !cur.classList.contains("ant-upload-wrapper") &&
+          !cur.classList.contains("ant-upload-picture-card-wrapper"))
+      ) {
+        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
+      }
+    }
+    return false;
+  };
   return {
     ok: true,
     x,
@@ -481,6 +567,7 @@ export function locateElement(spec) {
     tag: el.tagName.toLowerCase(),
     text: clean(el.innerText || el.value || el.getAttribute("aria-label")).slice(0, 60),
     count,
+    fileUpload: Boolean(isFileUploadTrigger(hit || el) || isFileUploadTrigger(el)),
   };
 }
 

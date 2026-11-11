@@ -393,6 +393,46 @@ export async function pageAct(kind, spec) {
     href: el.href || el.getAttribute("href") || "",
     type: el.getAttribute("type") || "",
   });
+  const FILE_CHOOSER_BLOCKED_MSG =
+    "目标位置命中文件上传控件（点击会弹出系统文件选择框），已拦截；如需上传文件请使用 upload_file 工具，如系滚动后坐标偏移请改用 selector 定位目标控件";
+  const isFileUploadTrigger = (node) => {
+    if (!node || node.nodeType !== 1) return false;
+    if (
+      node.tagName === "INPUT" &&
+      String(node.type || node.getAttribute("type") || "").toLowerCase() === "file" &&
+      !node.disabled
+    ) {
+      return true;
+    }
+    for (
+      let cur = node;
+      cur && cur !== document.body && cur !== document.documentElement;
+      cur = cur.parentElement || cur.getRootNode?.()?.host || null
+    ) {
+      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
+      if (cur.tagName === "LABEL") {
+        const forId = cur.getAttribute?.("for");
+        const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
+        if (
+          (ctrl?.tagName === "INPUT" &&
+            String(ctrl.type || ctrl.getAttribute?.("type") || "").toLowerCase() === "file" &&
+            !ctrl.disabled) ||
+          cur.querySelector?.('input[type="file"]:not([disabled])')
+        ) {
+          return true;
+        }
+      }
+      if (
+        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
+        (cur.classList?.contains("ant-upload") &&
+          !cur.classList.contains("ant-upload-wrapper") &&
+          !cur.classList.contains("ant-upload-picture-card-wrapper"))
+      ) {
+        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
+      }
+    }
+    return false;
+  };
 
   const CONTROLS =
     "a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem']";
@@ -440,7 +480,12 @@ export async function pageAct(kind, spec) {
           nodes = [...new Set(raw.map(resolveProxy).filter(Boolean))];
         }
       }
-      if (!nodes.length) return { error: `没有可见元素：${o.selector}`, notFound: true };
+      if (!nodes.length) {
+        if (kind === "click" && raw.some(isFileUploadTrigger)) {
+          return { error: FILE_CHOOSER_BLOCKED_MSG, blockedFileChooser: true };
+        }
+        return { error: `没有可见元素：${o.selector}`, notFound: true };
+      }
       return { el: nodes[Math.min(nth, nodes.length - 1)], count: nodes.length };
     }
     const needle = String(o.text || "").trim();
@@ -527,11 +572,20 @@ export async function pageAct(kind, spec) {
   }
 
   const hit = find();
-  if (hit.error) return { ok: false, error: hit.error, notFound: hit.notFound === true };
+  if (hit.error) {
+    return {
+      ok: false,
+      error: hit.error,
+      ...(hit.blockedFileChooser ? { blockedFileChooser: true } : { notFound: hit.notFound === true }),
+    };
+  }
 
   if (kind === "probe" || kind === "waitProbe") return { ok: true, count: hit.count, match: describe(hit.el) };
 
   const el = hit.el;
+  if (kind === "click" && isFileUploadTrigger(el)) {
+    return { ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MSG };
+  }
   (hit.scrollTarget || el).scrollIntoView({ block: "center", behavior: "auto" });
 
   if (kind === "click") {

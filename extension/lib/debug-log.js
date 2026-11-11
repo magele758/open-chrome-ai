@@ -2,7 +2,7 @@
 // sidepanel reloads in the same Chrome session. No credentials or audio bodies.
 
 export const DEBUG_BUILD = "agent-debug-v1";
-export const DEBUG_LIMIT = 1200;
+export const DEBUG_LIMIT = 4000;
 const STORAGE_KEY = "pl.debug.log";
 const MEDIA_EVENT = /^(translation\.|audio\.|playback\.|tts\.|asr\.|transcript\.|interpret\.|semantic\.)/;
 
