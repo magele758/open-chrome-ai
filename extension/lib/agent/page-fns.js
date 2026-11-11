@@ -192,8 +192,27 @@ export function listControls(limit) {
   const max = Math.min(Number(limit) || 60, 150);
   const visible = (el) => {
     if (!el) return false;
-    const st = window.getComputedStyle(el);
-    if (st.display === "none" || st.visibility === "hidden") return false;
+    let cur = el;
+    while (cur && cur.nodeType === 1) {
+      if (
+        cur.hidden ||
+        cur.classList?.contains("ant-select-dropdown-hidden") ||
+        cur.classList?.contains("ant-dropdown-hidden") ||
+        cur.classList?.contains("ant-popover-hidden")
+      ) {
+        return false;
+      }
+      const st = window.getComputedStyle(cur);
+      if (st.display === "none" || st.visibility === "hidden") return false;
+      if (
+        cur !== el &&
+        cur.style?.overflow === "hidden" &&
+        (cur.style?.width === "0px" || cur.style?.height === "0px")
+      ) {
+        return false;
+      }
+      cur = cur.parentElement;
+    }
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
@@ -209,7 +228,7 @@ export function listControls(limit) {
   };
   const checkRoles = "[role='checkbox'], [role='switch'], [role='radio']";
   const controlSelector =
-    `a[href], button, [role='button'], input, textarea, select, [role='tab'], [role='menuitem'], [role='link'], ${checkRoles}`;
+    `a[href], button, [role='button'], input, textarea, select, [role='tab'], [role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio'], [role='option'], [role='treeitem'], [role='link'], ${checkRoles}`;
   const all = [];
   const gather = (root) => {
     all.push(...root.querySelectorAll(controlSelector));
@@ -362,9 +381,23 @@ export async function pageAct(kind, spec) {
     if (!el) return false;
     let cur = el;
     while (cur && cur.nodeType === 1) {
-      if (cur.hidden) return false;
+      if (
+        cur.hidden ||
+        cur.classList?.contains("ant-select-dropdown-hidden") ||
+        cur.classList?.contains("ant-dropdown-hidden") ||
+        cur.classList?.contains("ant-popover-hidden")
+      ) {
+        return false;
+      }
       const st = window.getComputedStyle(cur);
       if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+      if (
+        cur !== el &&
+        cur.style?.overflow === "hidden" &&
+        (cur.style?.width === "0px" || cur.style?.height === "0px")
+      ) {
+        return false;
+      }
       cur = cur.parentElement;
     }
     const r = el.getBoundingClientRect();
@@ -435,9 +468,12 @@ export async function pageAct(kind, spec) {
   };
 
   const CONTROLS =
-    "a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem']";
+    "a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio'], [role='option'], [role='treeitem'], [role='checkbox'], [role='radio'], [role='switch'], [onclick]";
   const TEXT_CONTAINERS =
     "h1, h2, h3, h4, h5, h6, [role='heading'], [role='dialog'], [aria-modal='true'], .ant-modal-title, .ant-drawer-title, th, td, li, p, span, div";
+  const POPUP_LAYER_SEL =
+    ".ant-select-dropdown:not(.ant-select-dropdown-hidden), .ant-cascader-dropdown:not(.ant-select-dropdown-hidden), .ant-dropdown:not(.ant-dropdown-hidden), .el-select-dropdown, .el-cascader__dropdown, [role='listbox'], [role='menu'], [role='tree']";
+  const DIALOG_LAYER_SEL = "[role='dialog'], [aria-modal='true'], dialog[open], .ant-modal, .ant-drawer, .el-dialog";
   const collect = (selector, deep) => {
     const out = [...document.querySelectorAll(selector)];
     if (!deep) return out;
@@ -453,9 +489,73 @@ export async function pageAct(kind, spec) {
   };
 
   const isWaitKind = kind === "wait" || kind === "waitProbe";
+  const notDisabled = (el) =>
+    Boolean(el) && !el.disabled && el.getAttribute("aria-disabled") !== "true" && !el.closest?.("[aria-disabled='true']");
+  const textFieldsOf = (el) => {
+    const rawText = el.innerText ?? el.textContent ?? "";
+    return [rawText, el.value, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("title")]
+      .filter(Boolean)
+      .map((s) => String(s).replace(/\s+/g, " ").trim().toLowerCase())
+      .filter(Boolean);
+  };
+  const prioritizeTopLayer = (items) => {
+    if (items.length <= 1) return items;
+    const inPopup = (el) => {
+      const p = el.closest?.(POPUP_LAYER_SEL);
+      return Boolean(p && visible(p) && !p.closest?.("[aria-hidden='true']"));
+    };
+    const rawDialogs = [...document.querySelectorAll(DIALOG_LAYER_SEL)].filter(
+      (d) => visible(d) && !d.closest?.("[aria-hidden='true']"),
+    );
+    const outerDialogs = rawDialogs
+      .filter((d) => !rawDialogs.some((other) => other !== d && other.contains(d)))
+      .map((d, idx) => {
+        let bestZ = 0;
+        let cur = d;
+        while (cur && cur !== document.documentElement) {
+          const z = Number.parseInt(window.getComputedStyle(cur).zIndex, 10);
+          if (Number.isFinite(z) && z > bestZ) bestZ = z;
+          cur = cur.parentElement;
+        }
+        return { d, idx, z: bestZ };
+      })
+      .sort((a, b) => (b.z !== a.z ? b.z - a.z : b.idx - a.idx));
+    return items
+      .map((el, order) => {
+        let tier = 1 + outerDialogs.length;
+        if (inPopup(el)) {
+          tier = 0;
+        } else {
+          const mIdx = outerDialogs.findIndex(({ d }) => d.contains(el));
+          if (mIdx >= 0) tier = 1 + mIdx;
+        }
+        return { el, order, tier };
+      })
+      .sort((a, b) => (a.tier !== b.tier ? a.tier - b.tier : a.order - b.order))
+      .map((x) => x.el);
+  };
+  const rankByText = (candidates, rawNeedle, preferTopLayer = true) => {
+    const lower = String(rawNeedle || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const cLower = compactCjk(lower);
+    const exact = [];
+    const partial = [];
+    for (const item of candidates) {
+      const targetEl = item.el || item;
+      const fields = textFieldsOf(targetEl);
+      if (fields.some((f) => f === lower || (Boolean(cLower) && compactCjk(f) === cLower))) {
+        exact.push(item);
+      } else if (fields.some((f) => f.includes(lower) || (Boolean(cLower) && compactCjk(f).includes(cLower)))) {
+        partial.push(item);
+      }
+    }
+    const pool = exact.length ? exact : partial;
+    if (!preferTopLayer || pool.length <= 1 || pool[0]?.el) return pool;
+    return prioritizeTopLayer(pool);
+  };
 
   const find = () => {
     const nth = Math.max(0, Number(o.nth) || 0);
+    const needle = String(o.text || "").trim();
     if (o.selector) {
       let raw;
       try {
@@ -467,10 +567,13 @@ export async function pageAct(kind, spec) {
       let nodes = raw.filter(visible);
       if (!nodes.length && raw.length) {
         if (kind === "fill" || kind === "press" || kind === "select") {
-          const proxyInputs = [];
+          let proxyInputs = [];
           for (const n of raw) {
             const wrap = resolveProxy(n);
             if (wrap) proxyInputs.push({ el: n, scrollTarget: wrap });
+          }
+          if (needle && proxyInputs.length) {
+            proxyInputs = rankByText(proxyInputs, needle, false);
           }
           if (proxyInputs.length) {
             const picked = proxyInputs[Math.min(nth, proxyInputs.length - 1)];
@@ -486,32 +589,24 @@ export async function pageAct(kind, spec) {
         }
         return { error: `没有可见元素：${o.selector}`, notFound: true };
       }
+      if (needle) {
+        nodes = rankByText(nodes, needle, true);
+        if (!nodes.length) {
+          return { error: `选择器 ${o.selector} 中没有匹配「${needle}」的可见元素`, notFound: true };
+        }
+      }
       return { el: nodes[Math.min(nth, nodes.length - 1)], count: nodes.length };
     }
-    const needle = String(o.text || "").trim();
     if (!needle) {
       if (kind === "press") return { el: document.activeElement || document.body, count: 1 };
       return { error: "需要 selector 或 text" };
     }
-    const lower = needle.toLowerCase();
-    const cLower = compactCjk(lower);
-    const matches = (el) => {
-      const rawText = el.innerText ?? el.textContent ?? "";
-      const t = [rawText, el.value, el.getAttribute("aria-label"), el.getAttribute("placeholder")]
-        .filter(Boolean)
-        .map((s) => String(s).replace(/\s+/g, " ").trim())
-        .join(" | ")
-        .toLowerCase();
-      if (t === lower || t.includes(lower)) return true;
-      if (!cLower) return false;
-      const ct = compactCjk(t);
-      return ct === cLower || ct.includes(cLower);
-    };
-    let nodes = collect(CONTROLS, false).filter(visible).filter(matches);
-    if (!nodes.length) nodes = collect(CONTROLS, true).filter(visible).filter(matches);
+    const filterCtrl = (el) => visible(el) && (isWaitKind || notDisabled(el));
+    let nodes = rankByText(collect(CONTROLS, false).filter(filterCtrl), needle, true);
+    if (!nodes.length) nodes = rankByText(collect(CONTROLS, true).filter(filterCtrl), needle, true);
     if (!nodes.length && isWaitKind) {
-      let candidates = collect(TEXT_CONTAINERS, false).filter(visible).filter(matches);
-      if (!candidates.length) candidates = collect(TEXT_CONTAINERS, true).filter(visible).filter(matches);
+      let candidates = rankByText(collect(TEXT_CONTAINERS, false).filter(visible), needle, false);
+      if (!candidates.length) candidates = rankByText(collect(TEXT_CONTAINERS, true).filter(visible), needle, false);
       if (candidates.length) {
         const ancestorsWithMatch = new Set();
         for (const c of candidates) {
@@ -522,7 +617,7 @@ export async function pageAct(kind, spec) {
           }
         }
         const deepest = candidates.filter((el) => !ancestorsWithMatch.has(el));
-        nodes = deepest.length ? deepest : candidates;
+        nodes = prioritizeTopLayer(deepest.length ? deepest : candidates);
       }
     }
     if (!nodes.length) {
@@ -1465,9 +1560,23 @@ export function scrollPage(opts) {
     if (!el) return false;
     let cur = el;
     while (cur && cur.nodeType === 1) {
-      if (cur.hidden) return false;
+      if (
+        cur.hidden ||
+        cur.classList?.contains("ant-select-dropdown-hidden") ||
+        cur.classList?.contains("ant-dropdown-hidden") ||
+        cur.classList?.contains("ant-popover-hidden")
+      ) {
+        return false;
+      }
       const st = window.getComputedStyle(cur);
       if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+      if (
+        cur !== el &&
+        cur.style?.overflow === "hidden" &&
+        (cur.style?.width === "0px" || cur.style?.height === "0px")
+      ) {
+        return false;
+      }
       cur = cur.parentElement;
     }
     const r = el.getBoundingClientRect();

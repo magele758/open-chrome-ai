@@ -395,9 +395,23 @@ export function locateElement(spec) {
     if (!el) return false;
     let cur = el;
     while (cur && cur.nodeType === 1) {
-      if (cur.hidden) return false;
+      if (
+        cur.hidden ||
+        cur.classList?.contains("ant-select-dropdown-hidden") ||
+        cur.classList?.contains("ant-dropdown-hidden") ||
+        cur.classList?.contains("ant-popover-hidden")
+      ) {
+        return false;
+      }
       const st = getComputedStyle(cur);
       if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+      if (
+        cur !== el &&
+        cur.style?.overflow === "hidden" &&
+        (cur.style?.width === "0px" || cur.style?.height === "0px")
+      ) {
+        return false;
+      }
       cur = cur.parentElement;
     }
     const r = el.getBoundingClientRect();
@@ -433,6 +447,70 @@ export function locateElement(spec) {
     return out;
   };
 
+  const CONTROLS =
+    "a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio'], [role='option'], [role='treeitem'], [role='checkbox'], [role='radio'], [role='switch'], [onclick]";
+  const POPUP_LAYER_SEL =
+    ".ant-select-dropdown:not(.ant-select-dropdown-hidden), .ant-cascader-dropdown:not(.ant-select-dropdown-hidden), .ant-dropdown:not(.ant-dropdown-hidden), .el-select-dropdown, .el-cascader__dropdown, [role='listbox'], [role='menu'], [role='tree']";
+  const DIALOG_LAYER_SEL = "[role='dialog'], [aria-modal='true'], dialog[open], .ant-modal, .ant-drawer, .el-dialog";
+  const notDisabled = (n) =>
+    Boolean(n) && !n.disabled && n.getAttribute("aria-disabled") !== "true" && !n.closest?.("[aria-disabled='true']");
+  const textFieldsOf = (n) =>
+    [n.innerText ?? n.textContent ?? "", n.value, n.getAttribute("aria-label"), n.getAttribute("placeholder"), n.getAttribute("title")]
+      .filter(Boolean)
+      .map((s) => clean(s).toLowerCase())
+      .filter(Boolean);
+  const prioritizeTopLayer = (items) => {
+    if (items.length <= 1) return items;
+    const inPopup = (n) => {
+      const p = n.closest?.(POPUP_LAYER_SEL);
+      return Boolean(p && visible(p) && !p.closest?.("[aria-hidden='true']"));
+    };
+    const rawDialogs = [...document.querySelectorAll(DIALOG_LAYER_SEL)].filter(
+      (d) => visible(d) && !d.closest?.("[aria-hidden='true']"),
+    );
+    const outerDialogs = rawDialogs
+      .filter((d) => !rawDialogs.some((other) => other !== d && other.contains(d)))
+      .map((d, idx) => {
+        let bestZ = 0;
+        let cur = d;
+        while (cur && cur !== document.documentElement) {
+          const z = Number.parseInt(getComputedStyle(cur).zIndex, 10);
+          if (Number.isFinite(z) && z > bestZ) bestZ = z;
+          cur = cur.parentElement;
+        }
+        return { d, idx, z: bestZ };
+      })
+      .sort((a, b) => (b.z !== a.z ? b.z - a.z : b.idx - a.idx));
+    return items
+      .map((n, order) => {
+        let tier = 1 + outerDialogs.length;
+        if (inPopup(n)) {
+          tier = 0;
+        } else {
+          const mIdx = outerDialogs.findIndex(({ d }) => d.contains(n));
+          if (mIdx >= 0) tier = 1 + mIdx;
+        }
+        return { n, order, tier };
+      })
+      .sort((a, b) => (a.tier !== b.tier ? a.tier - b.tier : a.order - b.order))
+      .map((x) => x.n);
+  };
+  const rankByText = (candidates, rawNeedle) => {
+    const needle = clean(rawNeedle).toLowerCase();
+    const cNeedle = compactCjk(needle);
+    const exact = [];
+    const partial = [];
+    for (const n of candidates) {
+      const fields = textFieldsOf(n);
+      if (fields.some((f) => f === needle || (Boolean(cNeedle) && compactCjk(f) === cNeedle))) {
+        exact.push(n);
+      } else if (fields.some((f) => f.includes(needle) || (Boolean(cNeedle) && compactCjk(f).includes(cNeedle)))) {
+        partial.push(n);
+      }
+    }
+    return prioritizeTopLayer(exact.length ? exact : partial);
+  };
+
   let el = null;
   let count = 1;
   if (o.node != null) {
@@ -440,6 +518,7 @@ export function locateElement(spec) {
     if (!el || !el.isConnected) return { ok: false, stale: true, error: "目标元素已不在页面上，请重新 snapshot_controls" };
   } else {
     const nth = Math.max(0, Number(o.nth) || 0);
+    const rawTextFilter = clean(o.text);
     let nodes;
     if (o.selector) {
       let raw;
@@ -453,23 +532,15 @@ export function locateElement(spec) {
         nodes = [...new Set(raw.map(resolveProxy).filter(Boolean))];
       }
       if (!nodes.length) return { ok: false, notFound: true, error: `没有可见元素：${o.selector}` };
+      if (rawTextFilter) {
+        nodes = rankByText(nodes, rawTextFilter);
+        if (!nodes.length) {
+          return { ok: false, notFound: true, error: `选择器 ${o.selector} 中没有匹配「${o.text}」的可见元素` };
+        }
+      }
     } else {
-      const needle = clean(o.text).toLowerCase();
-      if (!needle) return { ok: false, error: "需要 node、selector 或 text" };
-      const cNeedle = compactCjk(needle);
-      nodes = collect("a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem'], [onclick]")
-        .filter(visible)
-        .filter((n) => {
-          const t = [n.innerText, n.value, n.getAttribute("aria-label"), n.getAttribute("placeholder")]
-            .filter(Boolean)
-            .map(clean)
-            .join(" | ")
-            .toLowerCase();
-          if (t === needle || t.includes(needle)) return true;
-          if (!cNeedle) return false;
-          const ct = compactCjk(t);
-          return ct === cNeedle || ct.includes(cNeedle);
-        });
+      if (!rawTextFilter) return { ok: false, error: "需要 node、selector 或 text" };
+      nodes = rankByText(collect(CONTROLS).filter((n) => visible(n) && notDisabled(n)), rawTextFilter);
       if (!nodes.length) return { ok: false, notFound: true, error: `没有匹配「${o.text}」的可见控件` };
     }
     count = nodes.length;

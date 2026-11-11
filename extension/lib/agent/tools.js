@@ -445,11 +445,12 @@ export function createAgentTools(ctx) {
     },
     {
       name: "click",
-      description: "点击页面上的按钮或链接。用 selector（CSS）或 text（可见文字）。操作前可用 list_controls / query_dom 定位。",
+      description:
+        "点击页面上的按钮、链接、菜单项或级联选项。可单传 selector（CSS）或 text（可见文字，精确匹配优先且顶层浮层/弹窗优先），也可同时传 selector + text 在匹配选择器的可见元素中按文字精确筛选。",
       parameters: obj({
         tabId: tabIdProp(),
-        selector: { type: "string", description: "CSS 选择器" },
-        text: { type: "string", description: "按钮/链接上的可见文字" },
+        selector: { type: "string", description: "CSS 选择器（可单独使用，或与 text 组合过滤）" },
+        text: { type: "string", description: "控件上的可见文字（精确匹配优先）" },
         nth: { type: "integer", description: "多个匹配时取第几个，从 0 开始" },
       }),
       async execute(args) {

@@ -23,7 +23,7 @@ export function locatePointLabel(pt) {
     return { ok: false, text: "" };
   }
   const matchedControl = hit.closest?.(
-    "button, a, [role='button'], label, [role='menuitem'], [role='tab'], input, summary",
+    "button, a, [role='button'], label, [role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio'], [role='option'], [role='treeitem'], [role='tab'], input, summary",
   );
   const el = matchedControl || hit;
   const bits = [];
@@ -50,7 +50,12 @@ export function locatePointLabel(pt) {
 
 export async function readSelectorLabel(tabId, spec, { inject, injectFrames } = {}) {
   if (!spec?.selector || typeof inject !== "function") return "";
-  const target = { selector: spec.selector, nth: spec.nth, labelOnly: true };
+  const target = {
+    selector: spec.selector,
+    ...(typeof spec.text === "string" && spec.text.trim() ? { text: spec.text } : {}),
+    nth: spec.nth,
+    labelOnly: true,
+  };
   let hit;
   try {
     hit = await inject(tabId, locateElement, [target]);
@@ -93,11 +98,11 @@ export async function resolveClickElementText({ toolName, args = {}, tabId, refL
     const label = String(refLabel(tabId, index) || "").trim();
     if (label) return label;
   }
-  if (typeof args.text === "string" && args.text.trim()) return "";
   if (args.selector) {
     if (!tabId) return "";
     return readSelectorLabel(tabId, args, { inject, injectFrames });
   }
+  if (typeof args.text === "string" && args.text.trim()) return "";
   if (
     args.x != null &&
     args.y != null &&
