@@ -600,3 +600,281 @@ const LARGE_FAKE_PNG_DATA_URL =
   }
   console.log("PASS 6. ADR-020/021 real page-fns.runJs code-length, document.body scopeText & depth-6 contract");
 }
+
+// ── 7. ADR-022 已保存态图片分配幂等短路 vs 新建修改态完整提交 + 瞬时错误提示捕获 ──
+{
+  // 7a. 已保存未改动商品（priorMutations === 0，且列级存在 "待确认" 但已有 1 张已确认卡片 + 1 张衍生推荐卡片）
+  //     -> 跳过确认推荐、confirmed_cards_min_count 通过、commit_or_shortcircuit_modals 走取消短路关闭双层窗
+  let openModals7a = ["编辑弹窗", "子分配弹窗"];
+  const clickedTexts7a = [];
+  const trace7a = [];
+  const res7a = await runDeterministicWorkflow({
+    rawText:
+      `/workflow\n` +
+      JSON.stringify({
+        schemaVersion: "1.0",
+        id: "idempotent-shortcircuit-7a",
+        binds: {},
+        forbidClickTexts: ["发布", "移除"],
+        steps: [
+          {
+            id: "F1",
+            op: "fill_input",
+            params: { selector: "input#title", value: "稳定标题" },
+          },
+          {
+            id: "I1",
+            op: "ensure_pending_recommendations",
+            params: {
+              topmostModal: true,
+              cardButtonText: "移除",
+              pendingText: "待确认",
+              acceptButtonText: "确认推荐",
+              minConfirmedCards: 1,
+              skipWhenUnmodifiedAndConfirmed: true,
+            },
+          },
+          {
+            id: "I2",
+            op: "assert_state",
+            params: {
+              checks: [
+                {
+                  id: "confirmed_cards",
+                  kind: "confirmed_cards_min_count",
+                  topmostModal: true,
+                  cardButtonText: "移除",
+                  pendingText: "待确认",
+                  minCount: 1,
+                },
+              ],
+            },
+          },
+          {
+            id: "I3",
+            op: "commit_or_shortcircuit_modals",
+            params: {
+              confirmText: "确认提交",
+              cancelText: "取消",
+              singleShotKey: "commit_once",
+              shortCircuitWhenUnmodified: true,
+              topmostModal: true,
+              cardButtonText: "移除",
+              pendingText: "待确认",
+              minConfirmedCards: 1,
+              waitModalsCount: 0,
+            },
+          },
+        ],
+      }),
+    rawTools: {
+      run_js: async ({ code }) => {
+        if (code.includes("input#title")) {
+          return JSON.stringify({ ok: true, result: { exists: true, count: 1, value: "稳定标题" } });
+        }
+        if (code.includes("acceptVisible")) {
+          return JSON.stringify({
+            ok: true,
+            result: {
+              scopeFound: true,
+              confirmedCount: 1,
+              pendingCount: 1,
+              scopeHasPendingText: true,
+              confirmedCards: ["1350 × 1800 移除"],
+              pendingCards: ["800 × 800 移除"],
+              acceptVisible: true,
+            },
+          });
+        }
+        if (code.includes("confirmed_cards_min_count")) {
+          return JSON.stringify({
+            ok: true,
+            result: {
+              pass: true,
+              checkedCount: 1,
+              evidence: [
+                {
+                  index: 0,
+                  id: "confirmed_cards",
+                  kind: "confirmed_cards_min_count",
+                  actual: {
+                    confirmedCount: 1,
+                    pendingCount: 1,
+                    scopeHasPendingText: true,
+                    confirmedCards: ["1350 × 1800 移除"],
+                    pendingCards: ["800 × 800 移除"],
+                  },
+                },
+              ],
+            },
+          });
+        }
+        if (code.includes("foundCancel")) {
+          if (openModals7a.length === 0) return JSON.stringify({ ok: true, result: { count: 0 } });
+          return JSON.stringify({
+            ok: true,
+            result: {
+              count: openModals7a.length,
+              title: openModals7a[openModals7a.length - 1],
+              foundCancel: true,
+              buttonText: "取消",
+            },
+          });
+        }
+        if (code.includes("removeAttribute")) {
+          return JSON.stringify({ ok: true, result: true });
+        }
+        return JSON.stringify({ ok: true, result: openModals7a.length });
+      },
+      click: async ({ text, selector }) => {
+        clickedTexts7a.push(text || selector);
+        if (text === "取消" && openModals7a.length > 0) {
+          openModals7a.pop();
+        }
+        return JSON.stringify({ ok: true });
+      },
+    },
+    resolvePageSnapshot: async () => ({ tabId: 12, url: "https://portal.example.org/list", title: "List" }),
+    traceSteps: trace7a,
+  });
+  assert.equal(res7a.ok, true, `7a 应幂等短路成功: ${JSON.stringify(res7a.failure)}`);
+  assert.equal(clickedTexts7a.includes("确认推荐"), false, "未改动已保存态不得点击确认推荐");
+  assert.equal(clickedTexts7a.includes("确认提交"), false, "未改动已保存态不得点击确认提交");
+  assert.deepEqual(clickedTexts7a, ["取消", "取消"], "应按栈序两次点击取消关闭双层弹窗");
+  assert.equal(JSON.parse(trace7a[3].resultSummary).mode, "idempotent_short_circuit");
+
+  // 7b. 新建或字段发生修改的商品（priorMutations > 0）-> 点击确认推荐 + 点击确认提交落库
+  let acceptVis7b = true;
+  let openModals7b = 2;
+  const clickedTexts7b = [];
+  const trace7b = [];
+  const res7b = await runDeterministicWorkflow({
+    rawText:
+      `/workflow\n` +
+      JSON.stringify({
+        schemaVersion: "1.0",
+        id: "fresh-commit-7b",
+        binds: {},
+        forbidClickTexts: ["发布", "移除"],
+        steps: [
+          {
+            id: "F1",
+            op: "fill_input",
+            params: { selector: "input#title", value: "新标题" },
+          },
+          {
+            id: "I1",
+            op: "ensure_pending_recommendations",
+            params: {
+              topmostModal: true,
+              cardButtonText: "移除",
+              pendingText: "待确认",
+              acceptButtonText: "确认推荐",
+              minConfirmedCards: 1,
+              skipWhenUnmodifiedAndConfirmed: true,
+            },
+          },
+          {
+            id: "I2",
+            op: "commit_or_shortcircuit_modals",
+            params: {
+              confirmText: "确认提交",
+              cancelText: "取消",
+              singleShotKey: "commit_once",
+              shortCircuitWhenUnmodified: true,
+              topmostModal: true,
+              cardButtonText: "移除",
+              pendingText: "待确认",
+              minConfirmedCards: 1,
+              waitModalsCount: 0,
+            },
+          },
+        ],
+      }),
+    rawTools: {
+      run_js: async ({ code }) => {
+        if (code.includes("exists: true")) {
+          return JSON.stringify({ ok: true, result: { exists: true, count: 1, value: "旧标题" } });
+        }
+        if (code.includes("input#title")) {
+          return JSON.stringify({ ok: true, result: "新标题" });
+        }
+        if (code.includes("acceptVisible")) {
+          return JSON.stringify({
+            ok: true,
+            result: {
+              scopeFound: true,
+              confirmedCount: acceptVis7b ? 0 : 1,
+              pendingCount: acceptVis7b ? 1 : 0,
+              scopeHasPendingText: acceptVis7b,
+              confirmedCards: acceptVis7b ? [] : ["1350 × 1800 移除"],
+              pendingCards: acceptVis7b ? ["1350 × 1800 移除"] : [],
+              acceptVisible: acceptVis7b,
+            },
+          });
+        }
+        return JSON.stringify({
+          ok: true,
+          result: { count: openModals7b, titles: [], alerts: [], errorAlerts: [], loadingCount: 0 },
+        });
+      },
+      fill: async () => JSON.stringify({ ok: true }),
+      click: async ({ text }) => {
+        clickedTexts7b.push(text);
+        if (text === "确认推荐") acceptVis7b = false;
+        if (text === "确认提交") openModals7b = 0;
+        return JSON.stringify({ ok: true });
+      },
+    },
+    resolvePageSnapshot: async () => ({ tabId: 13, url: "https://portal.example.org/list", title: "List" }),
+    traceSteps: trace7b,
+  });
+  assert.equal(res7b.ok, true, `7b 应完整提交成功: ${JSON.stringify(res7b.failure)}`);
+  assert.deepEqual(clickedTexts7b, ["确认推荐", "确认提交"]);
+  assert.equal(JSON.parse(trace7b[2].resultSummary).mode, "committed_via_confirm");
+
+  // 7c. 瞬时错误提示捕获：提交后弹出 3 秒即消退的错误提示且按钮结束 loading -> 立即捕获并快速失败
+  let pollCount7c = 0;
+  const res7c = await runDeterministicWorkflow({
+    rawText:
+      `/workflow\n` +
+      JSON.stringify({
+        schemaVersion: "1.0",
+        id: "transient-toast-7c",
+        binds: {},
+        steps: [
+          {
+            id: "C1",
+            op: "click_and_wait",
+            params: { text: "确认提交", waitModalsCount: 0, timeoutMs: 12000 },
+          },
+        ],
+      }),
+    rawTools: {
+      click: async () => JSON.stringify({ ok: true }),
+      run_js: async () => {
+        pollCount7c += 1;
+        // 第 1 次轮询出现瞬时错误 toast，第 2 次轮询 toast 已消退但弹窗仍未关
+        const hasToast = pollCount7c === 1;
+        return JSON.stringify({
+          ok: true,
+          result: {
+            count: 2,
+            titles: ["父弹窗", "子弹窗"],
+            alerts: hasToast ? ["1 张图片处理失败: Failed to fetch"] : [],
+            errorAlerts: hasToast ? ["1 张图片处理失败: Failed to fetch"] : [],
+            loadingCount: 0,
+          },
+        });
+      },
+    },
+    resolvePageSnapshot: async () => ({ tabId: 14, url: "https://portal.example.org/list", title: "List" }),
+  });
+  assert.equal(res7c.ok, false);
+  assert.equal(res7c.failure.code, "WORKFLOW_ACTION_ERROR_TOAST");
+  assert.ok(
+    res7c.failure.actual.includes("1 张图片处理失败: Failed to fetch"),
+    `即使第 2 次轮询后提示已消退，也必须保留首次捕获到的瞬时错误文本: ${res7c.failure.actual}`,
+  );
+  console.log("PASS 7. ADR-022 idempotent modal short-circuit vs modified commit & transient error toast fast-fail");
+}

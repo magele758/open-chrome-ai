@@ -555,6 +555,16 @@ const min=Number(c.minCount??1);
 if(imgs.length<min)return{pass:false,index:idx,kind:c.kind,expected:(c.selector||"img")+" 有效图片数 >= "+min,actual:"实读有效图片数 === "+imgs.length};
 evidence.push({index:idx,id:checkId,kind:c.kind,actual:{count:imgs.length,samples:imgs.slice(0,4).map(img=>({alt:img.alt||"",w:img.naturalWidth||0,h:img.naturalHeight||0}))}});`,
 
+  confirmed_cards_min_count: `const btnTxt=normBtn(c.cardButtonText||""),pendTxt=norm(c.pendingText||""),scopeTxt=scopeText(scope),hasScopePend=Boolean(pendTxt&&scopeTxt.includes(pendTxt));
+const rmBtns=[...scope.querySelectorAll("button")].filter(b=>{const r=b.getBoundingClientRect();return r.width>0&&r.height>0&&(!btnTxt||normBtn(b.innerText)===btnTxt);});
+const cards=rmBtns.map(b=>{let el=b.parentElement,best=b.parentElement;while(el&&el!==scope){if(el.querySelectorAll("button").length>1)break;if(el.querySelectorAll("img").length>1)break;if(el.querySelectorAll("img").length>=1)best=el;el=el.parentElement;}return norm((best||b).innerText);});
+let confirmed=pendTxt?cards.filter(t=>!t.includes(pendTxt)):cards;
+let pending=pendTxt?cards.filter(t=>t.includes(pendTxt)):[];
+if(hasScopePend&&pending.length===0&&cards.length>0){pending=[cards[cards.length-1]];confirmed=cards.slice(0,cards.length-1);}
+const minC=Number(c.minCount??1);
+if(confirmed.length<minC)return{pass:false,index:idx,kind:c.kind,expected:"已确认卡片数 >= "+minC,actual:"实读已确认 === "+confirmed.length+"，待确认 === "+pending.length+" ("+JSON.stringify(cards.slice(0,8))+")"};
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:{confirmedCount:confirmed.length,pendingCount:pending.length,scopeHasPendingText:hasScopePend,confirmedCards:confirmed,pendingCards:pending}});`,
+
   row_state: `const rows=[...scope.querySelectorAll(c.rowSelector||"tr")].filter(r=>{const rc=r.getBoundingClientRect();return rc.width>0&&rc.height>0;});
 const allK=c.mustIncludeAll||[],exK=c.excludeSubstrings||[];
 const matched=rows.filter(r=>{const t=norm(r.innerText);return allK.every(k=>t.includes(String(k)))&&!exK.some(ex=>ex&&t.includes(String(ex)));});
@@ -912,7 +922,276 @@ export async function runDeterministicWorkflow({
     }
   }
 
-  async function executeStepOp(step, params, stepCtx, currentUrl) {
+  async function closeModalsStack({
+    modalSelector = ".ant-modal",
+    cancelText = "取消",
+    maxAttempts = 5,
+    settleMs = 1500,
+    stepCtx,
+    currentUrl = "",
+  }) {
+    let closedCount = 0;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const nonce = `close_${++nonceCounter}`;
+      const probe = await evalJs(
+        `const sel = ${JSON.stringify(modalSelector)};
+        const wantCancel = ${JSON.stringify(normalizeCjkText(cancelText))};
+        const nonce = ${JSON.stringify(nonce)};
+        const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim().replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
+        const visible = [...document.querySelectorAll(sel)].filter((m) => {
+          const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+          const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+          const ms = getComputedStyle(m);
+          const r = m.getBoundingClientRect();
+          if (ws.display === "none" || ws.visibility === "hidden" || ms.display === "none" || ms.visibility === "hidden") return false;
+          if ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || "")) return false;
+          return r.width > 0 && r.height > 0;
+        });
+        if (!visible.length) return { count: 0 };
+        const topModal = visible[visible.length - 1];
+        const title = norm((topModal.querySelector(".ant-modal-title") || {}).innerText || "");
+        const btns = [...topModal.querySelectorAll("button")].filter((b) => {
+          const r = b.getBoundingClientRect();
+          return !b.disabled && r.width > 0 && r.height > 0;
+        });
+        const hit = btns.find((b) => norm(b.innerText) === wantCancel);
+        if (!hit) {
+          return { count: visible.length, title, foundCancel: false, buttons: btns.map((b) => norm(b.innerText)).slice(0, 12) };
+        }
+        hit.setAttribute("data-pl-wf-act", nonce);
+        return { count: visible.length, title, foundCancel: true, buttonText: norm(hit.innerText) };`,
+        stepCtx,
+      );
+
+      if (!probe || probe.count === 0) {
+        return { ok: true, closedCount, remainingModals: 0 };
+      }
+      if (!probe.foundCancel) {
+        throw new WorkflowError({
+          code: "WORKFLOW_MODAL_CANCEL_NOT_FOUND",
+          blame: "workflow",
+          stepIndex: stepCtx.stepIndex,
+          stepId: stepCtx.stepId,
+          op: stepCtx.op,
+          expected: `弹窗 "${probe.title || modalSelector}" 存在可点击 "${cancelText}" 按钮`,
+          actual: `可见按钮: ${JSON.stringify(probe.buttons || [])}`,
+          message: `弹窗未找到 "${cancelText}" 按钮`,
+        });
+      }
+      await clickMarkedElement({
+        markNonce: nonce,
+        buttonText: cancelText,
+        stepCtx,
+        targetUrl: currentUrl,
+      });
+      closedCount += 1;
+
+      const waitDeadline = Date.now() + settleMs;
+      while (Date.now() < waitDeadline) {
+        const after = await evalJs(
+          `const visible = [...document.querySelectorAll(${JSON.stringify(modalSelector)})].filter((m) => {
+            const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+            const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+            const ms = getComputedStyle(m);
+            const r = m.getBoundingClientRect();
+            if (ws.display === "none" || ws.visibility === "hidden" || ms.display === "none" || ms.visibility === "hidden") return false;
+            if ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || "")) return false;
+            return r.width > 0 && r.height > 0;
+          });
+          return visible.length;`,
+          stepCtx,
+        );
+        if (after < probe.count) break;
+        await sleepWithAbort(120, signal);
+      }
+    }
+
+    const finalCount = await evalJs(
+      `return [...document.querySelectorAll(${JSON.stringify(modalSelector)})].filter((m) => {
+        const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+        const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+        const ms = getComputedStyle(m);
+        const r = m.getBoundingClientRect();
+        if (ws.display === "none" || ws.visibility === "hidden" || ms.display === "none" || ms.visibility === "hidden") return false;
+        if ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || "")) return false;
+        return r.width > 0 && r.height > 0;
+      }).length;`,
+      stepCtx,
+    );
+    if (finalCount !== 0) {
+      throw new WorkflowError({
+        code: "WORKFLOW_MODAL_STILL_OPEN",
+        blame: "工具",
+        stepIndex: stepCtx.stepIndex,
+        stepId: stepCtx.stepId,
+        op: stepCtx.op,
+        expected: "所有弹窗已关闭 (remainingModals === 0)",
+        actual: `仍余 ${finalCount} 个可见弹窗`,
+        message: `关闭弹窗后仍残留 ${finalCount} 个弹窗`,
+      });
+    }
+    return { ok: true, closedCount, remainingModals: 0 };
+  }
+
+  async function waitForModalsCountWithAlerts({
+    wantModals = 0,
+    modalSelector = ".ant-modal",
+    timeoutMs = 12000,
+    actionLabel = "",
+    stepCtx,
+  }) {
+    const waitDeadline = Date.now() + timeoutMs;
+    const seenAlerts = new Set();
+    const seenErrorAlerts = new Set();
+    let lastInfo = null;
+    let errorSettledPolls = 0;
+
+    while (true) {
+      lastInfo = await evalJs(
+        `const visible = [...document.querySelectorAll(${JSON.stringify(modalSelector)})].filter((m) => {
+          const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+          const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+          const ms = getComputedStyle(m);
+          const r = m.getBoundingClientRect();
+          if (ws.display === "none" || ws.visibility === "hidden" || ms.display === "none" || ms.visibility === "hidden") return false;
+          if ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || "")) return false;
+          return r.width > 0 && r.height > 0;
+        });
+        const noticeNodes = [...document.querySelectorAll(".ant-message-notice, .ant-notification-notice, [role='alert']")];
+        const alerts = [];
+        const errorAlerts = [];
+        for (const n of noticeNodes) {
+          const t = (n.innerText || n.textContent || "").replace(/\\s+/g, " ").trim();
+          if (!t) continue;
+          alerts.push(t);
+          const cls = String(n.className || "") + " " + String((n.firstElementChild || {}).className || "");
+          const isErr = /error|danger/i.test(cls) || Boolean(n.querySelector(".ant-message-error, .ant-notification-notice-icon-error, .anticon-close-circle"));
+          if (isErr) errorAlerts.push(t);
+        }
+        const loadingCount = visible.reduce((acc, m) => acc + m.querySelectorAll(".ant-btn-loading").length, 0);
+        return {
+          count: visible.length,
+          titles: visible.map((m) => ((m.querySelector(".ant-modal-title") || {}).innerText || "").trim()),
+          alerts,
+          errorAlerts,
+          loadingCount
+        };`,
+        stepCtx,
+      );
+
+      for (const a of lastInfo?.alerts || []) seenAlerts.add(a);
+      for (const ea of lastInfo?.errorAlerts || []) seenErrorAlerts.add(ea);
+
+      if (lastInfo?.count === wantModals) {
+        return { seenAlerts: [...seenAlerts] };
+      }
+
+      if (seenErrorAlerts.size > 0 && Number(lastInfo?.loadingCount || 0) === 0) {
+        errorSettledPolls += 1;
+        if (errorSettledPolls >= 2) {
+          throw new WorkflowError({
+            code: "WORKFLOW_ACTION_ERROR_TOAST",
+            blame: "workflow",
+            stepIndex: stepCtx.stepIndex,
+            stepId: stepCtx.stepId,
+            op: stepCtx.op,
+            expected: `${actionLabel ? `点击 "${actionLabel}" 后` : ""}无错误提示且可见弹窗数变为 ${wantModals}`,
+            actual: `当前可见弹窗 ${lastInfo?.count} (${JSON.stringify(lastInfo?.titles || [])})，捕获瞬时错误提示: ${JSON.stringify([...seenErrorAlerts])}`,
+            message: `页面返回瞬时错误提示: ${[...seenErrorAlerts].join("；")}`,
+          });
+        }
+      } else {
+        errorSettledPolls = 0;
+      }
+
+      if (Date.now() >= waitDeadline) {
+        throw new WorkflowError({
+          code: "WORKFLOW_WAIT_MODALS_COUNT_TIMEOUT",
+          blame: "workflow",
+          stepIndex: stepCtx.stepIndex,
+          stepId: stepCtx.stepId,
+          op: stepCtx.op,
+          expected: `可见弹窗数变为 ${wantModals}`,
+          actual: `当前可见弹窗 ${lastInfo?.count} (${JSON.stringify(lastInfo?.titles || [])})，提示消息: ${JSON.stringify([...seenAlerts])}`,
+          message: `等待弹窗数量变为 ${wantModals} 超时`,
+        });
+      }
+      await sleepWithAbort(150, signal);
+    }
+  }
+
+  async function probeModalCardCounts({
+    topmostModal = true,
+    containerSelector = "",
+    cardButtonText = "",
+    pendingText = "",
+    acceptButtonText = "",
+    stepCtx,
+  }) {
+    return evalJs(
+      `const useTop = ${JSON.stringify(Boolean(topmostModal))};
+      const containerSel = ${JSON.stringify(String(containerSelector || ""))};
+      const cardBtnWant = ${JSON.stringify(normalizeCjkText(cardButtonText))};
+      const pendWant = ${JSON.stringify(normalizeSpaces(pendingText))};
+      const acceptWant = ${JSON.stringify(normalizeCjkText(acceptButtonText))};
+      const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+      const normBtn = (s) => norm(s).replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
+      const visibleModals = [...document.querySelectorAll(".ant-modal")].filter((m) => {
+        const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+        const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+        const ms = getComputedStyle(m);
+        const r = m.getBoundingClientRect();
+        if (ws.display === "none" || ws.visibility === "hidden" || ms.display === "none" || ms.visibility === "hidden") return false;
+        if ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || "")) return false;
+        return r.width > 0 && r.height > 0;
+      });
+      const scope = useTop
+        ? (visibleModals[visibleModals.length - 1] || null)
+        : (containerSel ? document.querySelector(containerSel) : (document.body || document.documentElement));
+      if (!scope) return { scopeFound: false, confirmedCount: 0, pendingCount: 0, scopeHasPendingText: false, acceptVisible: false, cards: [] };
+      const scopeTxt = norm(scope.innerText || "");
+      const hasScopePend = Boolean(pendWant && scopeTxt.includes(pendWant));
+      const rmBtns = [...scope.querySelectorAll("button")].filter((b) => {
+        const r = b.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && (!cardBtnWant || normBtn(b.innerText) === cardBtnWant);
+      });
+      const cards = rmBtns.map((b) => {
+        let el = b.parentElement;
+        let best = b.parentElement;
+        while (el && el !== scope) {
+          if (el.querySelectorAll("button").length > 1) break;
+          if (el.querySelectorAll("img").length > 1) break;
+          if (el.querySelectorAll("img").length >= 1) best = el;
+          el = el.parentElement;
+        }
+        return norm((best || b).innerText);
+      });
+      let confirmed = pendWant ? cards.filter((t) => !t.includes(pendWant)) : cards;
+      let pending = pendWant ? cards.filter((t) => t.includes(pendWant)) : [];
+      if (hasScopePend && pending.length === 0 && cards.length > 0) {
+        pending = [cards[cards.length - 1]];
+        confirmed = cards.slice(0, cards.length - 1);
+      }
+      const acceptHit = acceptWant
+        ? [...scope.querySelectorAll("button, [role='button'], a")].find((el) => {
+            const r = el.getBoundingClientRect();
+            return !el.disabled && r.width > 0 && r.height > 0 && normBtn(el.innerText) === acceptWant;
+          })
+        : null;
+      return {
+        scopeFound: true,
+        confirmedCount: confirmed.length,
+        pendingCount: pending.length,
+        scopeHasPendingText: hasScopePend,
+        confirmedCards: confirmed,
+        pendingCards: pending,
+        acceptVisible: Boolean(acceptHit)
+      };`,
+      stepCtx,
+    );
+  }
+
+  async function executeStepOp(step, params, stepCtx, currentUrl, priorMutations = 0) {
     switch (step.op) {
       case "assert_url": {
         const mustStartWith = params.mustStartWith ? String(params.mustStartWith) : "";
@@ -971,106 +1250,16 @@ export async function runDeterministicWorkflow({
       case "close_modals_if_present": {
         const modalSelector = String(params.modalSelector || ".ant-modal");
         const cancelText = String(params.cancelText || "取消");
-        const maxAttempts = Math.max(1, Number(params.maxAttempts) || 5);
+        const maxAttempts = Math.max(1, Number(params.maxAttempts ?? params.maxRounds) || 5);
         const settleMs = Math.max(200, Number(params.settleMs) || 1500);
-        let closedCount = 0;
-
-        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-          const nonce = `close_${++nonceCounter}`;
-          const probe = await evalJs(
-            `const sel = ${JSON.stringify(modalSelector)};
-            const wantCancel = ${JSON.stringify(normalizeCjkText(cancelText))};
-            const nonce = ${JSON.stringify(nonce)};
-            const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim().replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
-            const visible = [...document.querySelectorAll(sel)].filter((m) => {
-              const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
-              const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
-              const ms = getComputedStyle(m);
-              const r = m.getBoundingClientRect();
-              if (ws.display === "none" || ws.visibility === "hidden" || ms.display === "none" || ms.visibility === "hidden") return false;
-              if ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || "")) return false;
-              return r.width > 0 && r.height > 0;
-            });
-            if (!visible.length) return { count: 0 };
-            const topModal = visible[visible.length - 1];
-            const title = norm((topModal.querySelector(".ant-modal-title") || {}).innerText || "");
-            const btns = [...topModal.querySelectorAll("button")].filter((b) => {
-              const r = b.getBoundingClientRect();
-              return !b.disabled && r.width > 0 && r.height > 0;
-            });
-            const hit = btns.find((b) => norm(b.innerText) === wantCancel);
-            if (!hit) {
-              return { count: visible.length, title, foundCancel: false, buttons: btns.map((b) => norm(b.innerText)).slice(0, 12) };
-            }
-            hit.setAttribute("data-pl-wf-act", nonce);
-            return { count: visible.length, title, foundCancel: true, buttonText: norm(hit.innerText) };`,
-            stepCtx,
-          );
-
-          if (!probe || probe.count === 0) {
-            return { ok: true, closedCount, remainingModals: 0 };
-          }
-          if (!probe.foundCancel) {
-            throw new WorkflowError({
-              code: "WORKFLOW_MODAL_CANCEL_NOT_FOUND",
-              blame: "workflow",
-              stepIndex: stepCtx.stepIndex,
-              stepId: stepCtx.stepId,
-              op: stepCtx.op,
-              expected: `遗留弹窗 "${probe.title || modalSelector}" 存在可点击 "${cancelText}" 按钮`,
-              actual: `可见按钮: ${JSON.stringify(probe.buttons || [])}`,
-              message: `遗留弹窗未找到 "${cancelText}" 按钮`,
-            });
-          }
-          await clickMarkedElement({
-            markNonce: nonce,
-            buttonText: cancelText,
-            stepCtx,
-            targetUrl: currentUrl,
-          });
-          closedCount += 1;
-
-          const waitDeadline = Date.now() + settleMs;
-          while (Date.now() < waitDeadline) {
-            const after = await evalJs(
-              `const visible = [...document.querySelectorAll(${JSON.stringify(modalSelector)})].filter((m) => {
-                const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
-                const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
-                const r = m.getBoundingClientRect();
-                if (ws.display === "none" || ws.visibility === "hidden") return false;
-                if ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || "")) return false;
-                return r.width > 0 && r.height > 0;
-              });
-              return visible.length;`,
-              stepCtx,
-            );
-            if (after < probe.count) break;
-            await sleepWithAbort(120, signal);
-          }
-        }
-
-        const finalCount = await evalJs(
-          `return [...document.querySelectorAll(${JSON.stringify(modalSelector)})].filter((m) => {
-            const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
-            const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
-            const r = m.getBoundingClientRect();
-            return ws.display !== "none" && ws.visibility !== "hidden" && r.width > 0 && r.height > 0;
-          }).length;`,
+        return closeModalsStack({
+          modalSelector,
+          cancelText,
+          maxAttempts,
+          settleMs,
           stepCtx,
-        );
-        if (finalCount !== 0) {
-          throw new WorkflowError({
-            code: "WORKFLOW_MODAL_STILL_OPEN",
-            blame: "工具",
-            stepIndex: stepCtx.stepIndex,
-            stepId: stepCtx.stepId,
-            op: stepCtx.op,
-            expected: "所有弹窗已关闭 (remainingModals === 0)",
-            actual: `仍余 ${finalCount} 个可见弹窗`,
-            message: `关闭弹窗后仍残留 ${finalCount} 个弹窗`,
-          });
-        }
-        return { ok: true, closedCount, remainingModals: 0 };
+          currentUrl,
+        });
       }
 
       case "row_action": {
@@ -1916,6 +2105,7 @@ export async function runDeterministicWorkflow({
         const labelSelector = String(params.labelSelector || ".ant-form-item-label, label");
         const rules = Array.isArray(params.rules) ? params.rules : [];
         const summary = [];
+        let mutatedCount = 0;
 
         if (params.navButtonSelector && params.navButtonText) {
           assertClickTargetSafe({
@@ -1970,6 +2160,7 @@ export async function runDeterministicWorkflow({
                   message: `新增成分行失败`,
                 });
               }
+              mutatedCount += 1;
               await invokeRawTool("wait_for", { selector: matSel, timeoutMs: 5000 }, stepCtx);
             }
             const { parsed: selRes, text: selTxt } = await invokeRawTool(
@@ -1989,6 +2180,7 @@ export async function runDeterministicWorkflow({
                 message: `成分材质选择失败`,
               });
             }
+            if (!selRes.alreadySelected) mutatedCount += 1;
             const propSel = String(rule.proportionSelector);
             const propVal = String(rule.proportionValue);
             const curProp = await evalJs(
@@ -2014,6 +2206,7 @@ export async function runDeterministicWorkflow({
                   message: `成分比例输入失败`,
                 });
               }
+              mutatedCount += 1;
             }
             if (rule.summaryMustInclude) {
               const bodyHas = await evalJs(
@@ -2054,6 +2247,7 @@ export async function runDeterministicWorkflow({
                   message: `类目属性 "${rule.label}" 选择失败`,
                 });
               }
+              if (!sRes.alreadySelected) mutatedCount += 1;
             }
             summary.push({ label: rule.label, values: vals });
           } else if (rule.kind === "number") {
@@ -2095,6 +2289,7 @@ export async function runDeterministicWorkflow({
                   message: `数值属性填写失败`,
                 });
               }
+              mutatedCount += 1;
             }
             if (rule.expectedUnit) {
               const unitCheck = await evalJs(
@@ -2171,6 +2366,7 @@ export async function runDeterministicWorkflow({
                     message: `属性 "${labelKey}" 填写失败`,
                   });
                 }
+                mutatedCount += 1;
               } finally {
                 await invokeRawTool(
                   "run_js",
@@ -2223,9 +2419,9 @@ export async function runDeterministicWorkflow({
               message: `存在未配置的必填属性: ${audit.missing.join("、")}`,
             });
           }
-          return { ok: true, starredCount: audit?.starredCount || 0, configuredCount: summary.length };
+          return { ok: true, starredCount: audit?.starredCount || 0, configuredCount: summary.length, mutatedCount };
         }
-        return { ok: true, configuredCount: summary.length };
+        return { ok: true, configuredCount: summary.length, mutatedCount };
       }
 
       case "ensure_modal_entity": {
@@ -2520,44 +2716,263 @@ export async function runDeterministicWorkflow({
           }
         }
 
+        let seenAlerts = [];
         if (params.waitModalsCount !== undefined) {
           const wantModals = Number(params.waitModalsCount);
           const modalSelector = String(params.modalSelector || ".ant-modal");
-          const waitDeadline = Date.now() + timeoutMs;
-          let lastInfo = null;
-          while (true) {
-            lastInfo = await evalJs(
-              `const visible = [...document.querySelectorAll(${JSON.stringify(modalSelector)})].filter((m) => {
-                const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
-                const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
-                const r = m.getBoundingClientRect();
-                if (ws.display === "none" || ws.visibility === "hidden") return false;
-                if ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || "")) return false;
-                return r.width > 0 && r.height > 0;
-              });
-              const alerts = [...document.querySelectorAll(".ant-message-notice, .ant-notification-notice")]
-                .map((n) => (n.innerText || "").replace(/\\s+/g, " ").trim())
-                .filter(Boolean);
-              return { count: visible.length, titles: visible.map((m) => ((m.querySelector(".ant-modal-title") || {}).innerText || "").trim()), alerts };`,
+          const waitRes = await waitForModalsCountWithAlerts({
+            wantModals,
+            modalSelector,
+            timeoutMs,
+            actionLabel: text || selector,
+            stepCtx,
+          });
+          seenAlerts = waitRes.seenAlerts || [];
+        }
+        return {
+          ok: true,
+          skipped: false,
+          clicked: text || selector,
+          ...(seenAlerts.length > 0 ? { alerts: seenAlerts } : {}),
+        };
+      }
+
+      case "ensure_pending_recommendations": {
+        const topmostModal = params.topmostModal !== false;
+        const containerSelector = params.containerSelector ? String(params.containerSelector) : "";
+        const cardButtonText = String(params.cardButtonText || "");
+        const pendingText = String(params.pendingText || "");
+        const acceptButtonText = String(params.acceptButtonText || "");
+        const minConfirmedCards = Math.max(0, Number(params.minConfirmedCards ?? 1));
+        const skipWhenUnmodifiedAndConfirmed = Boolean(params.skipWhenUnmodifiedAndConfirmed);
+        const timeoutMs = Math.max(1000, Number(params.timeoutMs) || 8000);
+
+        const probe = await probeModalCardCounts({
+          topmostModal,
+          containerSelector,
+          cardButtonText,
+          pendingText,
+          acceptButtonText,
+          stepCtx,
+        });
+        if (!probe?.scopeFound) {
+          throw new WorkflowError({
+            code: "WORKFLOW_RECOMMENDATION_SCOPE_MISSING",
+            blame: "workflow",
+            stepIndex: stepCtx.stepIndex,
+            stepId: stepCtx.stepId,
+            op: stepCtx.op,
+            expected: topmostModal ? "顶层可见弹窗存在" : `容器存在: ${containerSelector}`,
+            actual: "未找到目标容器",
+            message: "待确认推荐检测容器不存在",
+          });
+        }
+
+        if (
+          skipWhenUnmodifiedAndConfirmed &&
+          priorMutations === 0 &&
+          probe.confirmedCount >= minConfirmedCards
+        ) {
+          return {
+            ok: true,
+            skipped: true,
+            reason: "unmodified_and_confirmed",
+            priorMutations,
+            confirmedCount: probe.confirmedCount,
+            pendingCount: probe.pendingCount,
+            acceptVisible: probe.acceptVisible,
+          };
+        }
+
+        if (!probe.acceptVisible) {
+          return {
+            ok: true,
+            skipped: true,
+            reason: "accept_button_not_visible",
+            priorMutations,
+            confirmedCount: probe.confirmedCount,
+            pendingCount: probe.pendingCount,
+          };
+        }
+
+        assertClickTargetSafe({
+          labelText: acceptButtonText,
+          domElementText: acceptButtonText,
+          forbidClickTexts: directive.forbidClickTexts,
+          settings,
+          targetUrl: currentUrl,
+          stepCtx,
+        });
+
+        const { parsed: cRes, text: cTxt } = await invokeRawTool(
+          "click",
+          { text: acceptButtonText },
+          stepCtx,
+        );
+        if (!cRes || cRes.ok !== true) {
+          throw new WorkflowError({
+            code: "WORKFLOW_ACCEPT_RECOMMENDATION_FAILED",
+            blame: "工具",
+            stepIndex: stepCtx.stepIndex,
+            stepId: stepCtx.stepId,
+            op: stepCtx.op,
+            expected: `点击 "${acceptButtonText}" 确认待定推荐卡片`,
+            actual: cTxt.slice(0, 350),
+            message: `点击 "${acceptButtonText}" 失败`,
+          });
+        }
+
+        const deadline = Date.now() + timeoutMs;
+        let after = null;
+        while (true) {
+          after = await probeModalCardCounts({
+            topmostModal,
+            containerSelector,
+            cardButtonText,
+            pendingText,
+            acceptButtonText,
+            stepCtx,
+          });
+          if (after?.scopeFound && !after.acceptVisible && (!pendingText || !after.scopeHasPendingText)) {
+            break;
+          }
+          if (Date.now() >= deadline) {
+            throw new WorkflowError({
+              code: "WORKFLOW_ACCEPT_RECOMMENDATION_VERIFY_TIMEOUT",
+              blame: "工具",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `点击 "${acceptButtonText}" 后按钮消失且无 "${pendingText}" 待确认状态`,
+              actual: JSON.stringify(after),
+              message: `确认推荐后状态未收敛`,
+            });
+          }
+          await sleepWithAbort(120, signal);
+        }
+
+        return {
+          ok: true,
+          skipped: false,
+          clicked: acceptButtonText,
+          priorMutations,
+          confirmedCount: after.confirmedCount,
+          pendingCount: after.pendingCount,
+        };
+      }
+
+      case "commit_or_shortcircuit_modals": {
+        const confirmText = String(params.confirmText || "确认");
+        const cancelText = String(params.cancelText || "取消");
+        const modalSelector = String(params.modalSelector || ".ant-modal");
+        const singleShotKey = params.singleShotKey ? String(params.singleShotKey) : "";
+        const shortCircuitWhenUnmodified = Boolean(params.shortCircuitWhenUnmodified);
+        const topmostModal = params.topmostModal !== false;
+        const containerSelector = params.containerSelector ? String(params.containerSelector) : "";
+        const cardButtonText = String(params.cardButtonText || "");
+        const pendingText = String(params.pendingText || "");
+        const minConfirmedCards = Math.max(0, Number(params.minConfirmedCards ?? 1));
+        const waitModalsCount = Number(params.waitModalsCount ?? 0);
+        const maxCancelAttempts = Math.max(1, Number(params.maxCancelAttempts ?? 5));
+        const timeoutMs = Math.max(1000, Number(params.timeoutMs) || 15000);
+
+        if (singleShotKey && executedSingleShots.has(singleShotKey)) {
+          throw new WorkflowError({
+            code: "WORKFLOW_SINGLE_SHOT_VIOLATION",
+            blame: "workflow",
+            stepIndex: stepCtx.stepIndex,
+            stepId: stepCtx.stepId,
+            op: stepCtx.op,
+            expected: `单次门禁动作 "${singleShotKey}" 单轮最多执行 1 次`,
+            actual: `尝试第 2 次触发 "${singleShotKey}"`,
+            message: `违反单次执行门禁: ${singleShotKey}`,
+          });
+        }
+
+        if (shortCircuitWhenUnmodified && priorMutations === 0) {
+          const probe = await probeModalCardCounts({
+            topmostModal,
+            containerSelector,
+            cardButtonText,
+            pendingText,
+            acceptButtonText: "",
+            stepCtx,
+          });
+          if (probe?.scopeFound && probe.confirmedCount >= minConfirmedCards) {
+            assertClickTargetSafe({
+              labelText: cancelText,
+              domElementText: cancelText,
+              forbidClickTexts: directive.forbidClickTexts,
+              settings,
+              targetUrl: currentUrl,
               stepCtx,
-            );
-            if (lastInfo?.count === wantModals) break;
-            if (Date.now() >= waitDeadline) {
-              throw new WorkflowError({
-                code: "WORKFLOW_WAIT_MODALS_COUNT_TIMEOUT",
-                blame: "workflow",
-                stepIndex: stepCtx.stepIndex,
-                stepId: stepCtx.stepId,
-                op: stepCtx.op,
-                expected: `可见弹窗数变为 ${wantModals}`,
-                actual: `当前可见弹窗 ${lastInfo?.count} (${JSON.stringify(lastInfo?.titles || [])})，提示消息: ${JSON.stringify(lastInfo?.alerts || [])}`,
-                message: `等待弹窗数量变为 ${wantModals} 超时`,
-              });
-            }
-            await sleepWithAbort(150, signal);
+            });
+            const closeRes = await closeModalsStack({
+              modalSelector,
+              cancelText,
+              maxAttempts: maxCancelAttempts,
+              settleMs: 1500,
+              stepCtx,
+              currentUrl,
+            });
+            return {
+              ok: true,
+              mode: "idempotent_short_circuit",
+              skippedConfirm: true,
+              priorMutations,
+              confirmedCount: probe.confirmedCount,
+              pendingCount: probe.pendingCount,
+              closedCount: closeRes.closedCount,
+              remainingModals: closeRes.remainingModals,
+            };
           }
         }
-        return { ok: true, skipped: false, clicked: text || selector };
+
+        assertClickTargetSafe({
+          labelText: confirmText,
+          domElementText: confirmText,
+          forbidClickTexts: directive.forbidClickTexts,
+          settings,
+          targetUrl: currentUrl,
+          stepCtx,
+        });
+
+        const { parsed: cRes, text: cTxt } = await invokeRawTool(
+          "click",
+          { text: confirmText },
+          stepCtx,
+        );
+        if (!cRes || cRes.ok !== true) {
+          throw new WorkflowError({
+            code: "WORKFLOW_COMMIT_CLICK_FAILED",
+            blame: "工具",
+            stepIndex: stepCtx.stepIndex,
+            stepId: stepCtx.stepId,
+            op: stepCtx.op,
+            expected: `点击提交按钮 "${confirmText}" 成功`,
+            actual: cTxt.slice(0, 350),
+            message: `点击 "${confirmText}" 失败`,
+          });
+        }
+
+        if (singleShotKey) executedSingleShots.add(singleShotKey);
+
+        const waitRes = await waitForModalsCountWithAlerts({
+          wantModals: waitModalsCount,
+          modalSelector,
+          timeoutMs,
+          actionLabel: confirmText,
+          stepCtx,
+        });
+
+        return {
+          ok: true,
+          mode: "committed_via_confirm",
+          skippedConfirm: false,
+          clicked: confirmText,
+          priorMutations,
+          ...(waitRes.seenAlerts?.length > 0 ? { alerts: waitRes.seenAlerts } : {}),
+        };
       }
 
       case "assert_state": {
@@ -2614,8 +3029,35 @@ export async function runDeterministicWorkflow({
     }
   }
 
+  function countStepMutations(op, out) {
+    if (!out || typeof out !== "object") return 0;
+    if (op === "ensure_select") {
+      return Array.isArray(out.results)
+        ? out.results.filter((r) => !r?.alreadySelected).length
+        : 0;
+    }
+    if (op === "ensure_cascader" || op === "ensure_radio" || op === "ensure_modal_entity") {
+      return out.skipped === false ? 1 : 0;
+    }
+    if (op === "fill_input") {
+      if (Array.isArray(out.items)) {
+        return out.items.reduce(
+          (acc, it) => acc + (typeof it?.changed === "number" ? it.changed : it?.skipped === false ? 1 : 0),
+          0,
+        );
+      }
+      if (typeof out.changed === "number") return out.changed;
+      return out.skipped === false ? 1 : 0;
+    }
+    if (op === "ensure_attr_fields") {
+      return Number(out.mutatedCount) || 0;
+    }
+    return 0;
+  }
+
   let executedSteps = 0;
   let skippedSteps = 0;
+  let mutationsCount = 0;
 
   for (let i = 0; i < directive.steps.length; i += 1) {
     checkAbort(signal);
@@ -2669,7 +3111,8 @@ export async function runDeterministicWorkflow({
       startedEmitted = true;
 
       const preSnap = await checkEnvironmentAndUrl(directive, stepCtx);
-      const out = await executeStepOp(step, params, stepCtx, preSnap?.url || "");
+      const out = await executeStepOp(step, params, stepCtx, preSnap?.url || "", mutationsCount);
+      mutationsCount += countStepMutations(step.op, out);
       const postSnap = await checkEnvironmentAndUrl(directive, stepCtx);
 
       let shotDataUrl = null;
