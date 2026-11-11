@@ -523,7 +523,7 @@ if(c.allEqual!==undefined){const w=String(c.allEqual),m=Number(c.minCount??1);if
 else{const w=(c.equals||[]).map(String);if(JSON.stringify(list)!==JSON.stringify(w))return{pass:false,index:idx,kind:c.kind,expected:'placeholder="'+c.placeholder+'" 输入值序列 === '+JSON.stringify(w),actual:"实读序列 === "+JSON.stringify(list)};}
 evidence.push({index:idx,id:checkId,kind:c.kind,placeholder:c.placeholder,actual:list});`,
 
-  text_matches_regex: `const full=norm(scope.innerText||""),m=new RegExp(String(c.pattern),c.flags||"").exec(full);
+  text_matches_regex: `const full=scopeText(scope),m=new RegExp(String(c.pattern),c.flags||"").exec(full);
 if(!m)return{pass:false,index:idx,kind:c.kind,expected:"文本匹配正则 /"+c.pattern+"/"+(c.flags||""),actual:"实读片段: "+JSON.stringify(full.slice(0,260))};
 evidence.push({index:idx,id:checkId,kind:c.kind,actual:m[0]});`,
 
@@ -541,12 +541,12 @@ const blocks=[...scope.querySelectorAll(fSel)].map(b=>({label:norm((b.querySelec
 for(const exp of c.expectedFields||[]){const hit=blocks.find(b=>b.label.includes(String(exp.labelIncludes)));if(!hit)return{pass:false,index:idx,kind:c.kind,expected:"存在属性块包含 "+JSON.stringify(exp.labelIncludes),actual:"当前属性块标签: "+JSON.stringify(blocks.map(b=>b.label))};if(exp.items&&JSON.stringify(hit.items)!==JSON.stringify(exp.items))return{pass:false,index:idx,kind:c.kind,expected:hit.label+" 已选项 === "+JSON.stringify(exp.items),actual:"实读已选项 === "+JSON.stringify(hit.items)};if(exp.inputs&&JSON.stringify(hit.inputs)!==JSON.stringify(exp.inputs))return{pass:false,index:idx,kind:c.kind,expected:hit.label+" 输入值 === "+JSON.stringify(exp.inputs),actual:"实读输入值 === "+JSON.stringify(hit.inputs)};}
 evidence.push({index:idx,id:checkId,kind:c.kind,actual:blocks});`,
 
-  text_includes: `const full=norm(scope.innerText||""),missing=(c.mustInclude||[]).filter(sub=>!full.includes(norm(sub)));
+  text_includes: `const full=scopeText(scope),missing=(c.mustInclude||[]).filter(sub=>!full.includes(norm(sub)));
 if(missing.length)return{pass:false,index:idx,kind:c.kind,expected:"文本包含 "+JSON.stringify(c.mustInclude),actual:"缺少 "+JSON.stringify(missing)+"；实读片段: "+JSON.stringify(full.slice(0,260))};
 const snippets=(c.mustInclude||[]).map(sub=>{const n=norm(sub),p=full.indexOf(n);return p>=0?full.slice(Math.max(0,p-16),p+n.length+64):"";});
 evidence.push({index:idx,id:checkId,kind:c.kind,actual:snippets});`,
 
-  text_excludes: `const full=norm(scope.innerText||""),found=(c.forbid||[]).find(sub=>sub&&full.includes(norm(sub)));
+  text_excludes: `const full=scopeText(scope),found=(c.forbid||[]).find(sub=>sub&&full.includes(norm(sub)));
 if(found)return{pass:false,index:idx,kind:c.kind,expected:"文本不包含 "+JSON.stringify(c.forbid),actual:"命中禁止文本: "+JSON.stringify(found)};
 evidence.push({index:idx,id:checkId,kind:c.kind,actual:{excludedAll:c.forbid||[],sample:full.slice(0,180)}});`,
 
@@ -587,9 +587,10 @@ const baseIdx=${Number(baseIndex) || 0};
 const norm=s=>String(s||"").replace(/\\s+/g," ").trim();
 const normBtn=s=>norm(s).replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g,"$1");
 const visibleModals=()=>[...document.querySelectorAll(".ant-modal")].filter(m=>{const w=m.closest(".ant-modal-wrap")||m.parentElement,ws=w?getComputedStyle(w):getComputedStyle(m),r=m.getBoundingClientRect();if(ws.display==="none"||ws.visibility==="hidden")return false;if((w&&/leave/.test(w.className||""))||/leave/.test(m.className||""))return false;return r.width>0&&r.height>0;});
-const defaultScope=containerSel?document.querySelector(containerSel):document;
+const defaultScope=containerSel?document.querySelector(containerSel):(document.body||document.documentElement||document);
 if(containerSel&&!defaultScope)return{pass:false,failedCheck:"container",expected:"容器存在: "+containerSel,actual:"容器不存在"};
 const pickScope=c=>c.topmostModal?(visibleModals().slice(-1)[0]||null):(c.scopeSelector?document.querySelector(c.scopeSelector):defaultScope);
+const scopeText=s=>{const el=(s===document?(document.body||document.documentElement):s);return norm(el?(el.innerText??el.textContent??""):"");};
 const itemText=el=>((el.querySelector(".ant-select-selection-item-content")||el).textContent||"").replace(/\\s+/g," ").trim();
 const evidence=[];
 for(let i=0;i<checks.length;i+=1){

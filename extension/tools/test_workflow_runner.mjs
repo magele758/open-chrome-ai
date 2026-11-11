@@ -556,12 +556,29 @@ const LARGE_FAKE_PNG_DATA_URL =
       querySelector: () => null,
       querySelectorAll: (sel) => (sel === ".attr-block" ? [fakeBlock] : []),
     };
-    globalThis.getComputedStyle = () => ({ display: "block", visibility: "visible" });
-    globalThis.document = {
-      innerText: "全部 30 未发布 30",
+    const fakeBody = {
+      innerText: "全部 30 未发布 30 发布中 0 已发布 0 批量发布",
       querySelector: (sel) => (sel === ".modal-root" ? fakeRoot : null),
       querySelectorAll: () => [],
     };
+    globalThis.getComputedStyle = () => ({ display: "block", visibility: "visible" });
+    // 真实浏览器 Document 节点无 innerText（undefined），文本在 document.body.innerText
+    globalThis.document = {
+      body: fakeBody,
+      documentElement: fakeBody,
+      querySelector: (sel) => (sel === ".modal-root" ? fakeRoot : null),
+      querySelectorAll: () => [],
+    };
+
+    const docScopeBatch = buildAssertStateBatches("", [
+      { id: "doc_regex", kind: "text_matches_regex", pattern: "全部\\s*30\\s*未发布\\s*30\\s*发布中\\s*0\\s*已发布\\s*0" },
+      { id: "doc_inc", kind: "text_includes", mustInclude: ["批量发布"] },
+      { id: "doc_exc", kind: "text_excludes", forbid: ["异常报错"] },
+    ]);
+    const docOut = await runJs(docScopeBatch[0].code);
+    assert.equal(docOut.ok, true);
+    assert.equal(docOut.result.pass, true, `默认整页作用域必须读取 document.body.innerText，实际=${JSON.stringify(docOut.result)}`);
+    assert.equal(docOut.result.evidence[0].actual, "全部 30 未发布 30 发布中 0 已发布 0");
 
     const realBatch = buildAssertStateBatches(".modal-root", [
       {
@@ -581,5 +598,5 @@ const LARGE_FAKE_PNG_DATA_URL =
     globalThis.document = prevDoc;
     globalThis.getComputedStyle = prevStyle;
   }
-  console.log("PASS 6. ADR-020 real page-fns.runJs code-length batching & depth-6 lossless evidence contract");
+  console.log("PASS 6. ADR-020/021 real page-fns.runJs code-length, document.body scopeText & depth-6 contract");
 }
