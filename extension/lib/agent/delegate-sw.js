@@ -4,9 +4,11 @@
  */
 
 import { captureTab, restrictedUrl } from "../chrome.js";
+import { debugLog } from "../debug-log.js";
 import { loadTabPack } from "../page-pack.js";
 import { streamTurn } from "../openai.js";
 import { systemPrompt } from "../prompts.js";
+import { persistRunBundle } from "../run-recorder.js";
 import { isModelReady, loadSettings, resolveModel } from "../storage.js";
 import { createAgentTools, resolveActiveTools } from "./tools.js";
 import { describeCapsule } from "./trust/capsule.js";
@@ -30,6 +32,110 @@ export function delegateSystemPrompt(settings, task) {
   ].join("\n\n");
 }
 
+async function readTabPageSnapshot(tabId, fallbackUrl = "", fallbackTitle = "") {
+  const tid =
+    tabId != null && tabId !== "" && Number.isInteger(Number(tabId))
+      ? Number(tabId)
+      : null;
+  if (tid != null && typeof globalThis.chrome?.tabs?.get === "function") {
+    try {
+      const tab = await chrome.tabs.get(tid);
+      if (tab) {
+        return {
+          tabId: Number.isInteger(tab.id) ? tab.id : tid,
+          url: String(tab.url || fallbackUrl || ""),
+          title: String(tab.title || fallbackTitle || ""),
+        };
+      }
+    } catch {
+      /* tab may have closed */
+    }
+  }
+  if (tid == null && !fallbackUrl && !fallbackTitle) return null;
+  return {
+    tabId: tid,
+    url: String(fallbackUrl || ""),
+    title: String(fallbackTitle || ""),
+  };
+}
+
+export async function recordDelegateTaskFinish(
+  { task, status, endReason, runContext } = {},
+  recorderDeps = {},
+) {
+  if (!task) return null;
+  let finalPage = runContext?.initialPage || null;
+  if (typeof runContext?.getFinalPage === "function") {
+    try {
+      const snap = await runContext.getFinalPage();
+      if (snap) finalPage = snap;
+    } catch {
+      /* keep fallback */
+    }
+  } else if (task.tabId != null || task.sourceUrl) {
+    finalPage = await readTabPageSnapshot(task.tabId, task.sourceUrl, "");
+  }
+  const startedAtMs = Number(task.createdAt) || Date.now();
+  const endedAtMs = Number(task.finishedAt) || Date.now();
+  const durationMs = Math.max(
+    0,
+    Number(runContext?.metrics?.durationMs) || (endedAtMs - startedAtMs),
+  );
+  const resolvedEndReason =
+    endReason ||
+    task.endReason ||
+    (status === "cancelled"
+      ? "abort"
+      : status === "needs_approval"
+        ? "needs_approval"
+        : status === "failed"
+          ? "error"
+          : "stop");
+
+  return persistRunBundle(
+    {
+      runId: task.id,
+      source: "sw-delegate",
+      taskId: task.id,
+      sessionId: task.sessionId || task.id,
+      startedAt: new Date(startedAtMs).toISOString(),
+      endedAt: new Date(endedAtMs).toISOString(),
+      status,
+      endReason: resolvedEndReason,
+      model: runContext?.modelName || task.model || "unknown",
+      durationMs,
+      metrics: runContext?.metrics || {
+        durationMs,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        finishReason: resolvedEndReason,
+      },
+      initialPage: runContext?.initialPage || finalPage,
+      finalPage,
+      userPrompt: task.prompt || "",
+      thinking: runContext?.thinking || "",
+      botResponse: task.answer || "",
+      error: task.error || null,
+      trace: Array.isArray(task.steps) ? task.steps : [],
+      steps: Array.isArray(runContext?.runTraceSteps) ? runContext.runTraceSteps : [],
+      history: Array.isArray(runContext?.latestHistory) ? runContext.latestHistory : [],
+      systemPrompt: runContext?.systemPrompt || "",
+      conversationContext: {
+        sessionId: task.sessionId || task.id,
+        taskId: task.id,
+        agentName: task.agentName || "",
+        owner: task.owner || null,
+        taint: task.taint || "clean",
+        pending: Array.isArray(task.pending) ? task.pending : [],
+        denied: Array.isArray(task.denied) ? task.denied : [],
+        page: finalPage || runContext?.initialPage || null,
+      },
+    },
+    recorderDeps,
+  );
+}
+
 async function createSwRun({ task, settings, signal }) {
   const base = resolveModel(settings, "text");
   const model = task.model ? { ...base, model: task.model } : base;
@@ -37,9 +143,21 @@ async function createSwRun({ task, settings, signal }) {
 
   let windowId = null;
   let hasVideo = false;
+  let lastKnownTabId = task.tabId;
+  let initialPage =
+    task.tabId != null || task.sourceUrl
+      ? { tabId: task.tabId, url: String(task.sourceUrl || ""), title: "" }
+      : null;
   if (task.tabId) {
     const tab = await chrome.tabs.get(task.tabId).catch(() => null);
     windowId = tab?.windowId ?? null;
+    if (tab) {
+      initialPage = {
+        tabId: Number.isInteger(tab.id) ? tab.id : task.tabId,
+        url: String(tab.url || task.sourceUrl || ""),
+        title: String(tab.title || ""),
+      };
+    }
     if (tab?.url && !restrictedUrl(tab.url)) {
       const pack = await loadTabPack(task.tabId).catch(() => null);
       hasVideo = Boolean(pack?.hasVideo);
@@ -48,6 +166,7 @@ async function createSwRun({ task, settings, signal }) {
   let refLabel = null;
   let taskGroupId = null;
   const requestedDomains = new Set();
+  const sysPrompt = delegateSystemPrompt(settings, task);
   const tools = createAgentTools({
     getTabId: () => task.tabId,
     getWindowId: () => windowId,
@@ -81,7 +200,20 @@ async function createSwRun({ task, settings, signal }) {
     tools,
     activeTools: (wrapped) =>
       resolveActiveTools({ userText: task.prompt, tools: wrapped, hasVideo, requestedDomains: [...requestedDomains] }),
-    systemPrompt: delegateSystemPrompt(settings, task),
+    systemPrompt: sysPrompt,
+    modelName: String(model?.model || task.model || "unknown"),
+    initialPage,
+    getToolPageContext: async ({ args }) => {
+      const tid = args?.tabId != null && args?.tabId !== "" ? Number(args.tabId) : lastKnownTabId;
+      if (Number.isInteger(tid)) lastKnownTabId = tid;
+      return readTabPageSnapshot(tid, initialPage?.url || task.sourceUrl || "", initialPage?.title || "");
+    },
+    getFinalPage: () =>
+      readTabPageSnapshot(
+        lastKnownTabId ?? task.tabId,
+        initialPage?.url || task.sourceUrl || "",
+        initialPage?.title || "",
+      ),
     getTabUrl: async (tabId) => (await chrome.tabs.get(tabId))?.url,
     refLabel: (tabId, index) => (refLabel ? refLabel(tabId, index) : ""),
     model: {
@@ -113,6 +245,12 @@ export function installDelegate() {
     loadSettings,
     createRun: createSwRun,
     onActivityChange: keepAlive,
+    onTaskFinished: (payload) =>
+      recordDelegateTaskFinish(payload).catch((err) => {
+        const reason = String(err?.message || err);
+        console.info("[PageLens] delegate persistRunBundle fallback:", reason);
+        debugLog("runRecorder.delegateError", { taskId: payload?.task?.id || "", reason });
+      }),
   });
   setDelegateManager(installed);
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

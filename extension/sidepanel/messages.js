@@ -14,9 +14,22 @@ import { highlightQuote } from "../lib/extract.js";
 import { isLangfuseConfigured, sendTraceToLangfuse } from "../lib/langfuse.js";
 import { bindMarkdownLinks, decorateInlines, enhanceMermaid, formatAnswer, splitThinking } from "../lib/markdown.js";
 import { visibleSkills } from "../lib/prompts.js";
+import {
+  TRACE_SCHEMA_VERSION,
+  buildRunRecord,
+  downloadFileBestEffort,
+  encodeUtf8DataUrl,
+  formatTimestampForFilename,
+  sanitizeTraceValue,
+} from "../lib/run-recorder.js";
 import { isModelReady, resolveModel } from "../lib/storage.js";
 
 const thinkingScrolls = new WeakMap();
+let uiErrorObserver = null;
+
+function setUiErrorObserver(fn) {
+  uiErrorObserver = typeof fn === "function" ? fn : null;
+}
 
 function hostOf(url) {
   try {
@@ -328,45 +341,54 @@ function createMessageFooter(msg) {
 }
 
 function downloadMessageTrace(msg) {
-  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const ts = formatTimestampForFilename();
   const sid = state.sessionId ? state.sessionId.slice(0, 8) : "session";
-  const filename = `pagelens-trace-${sid}-${ts}.json`;
+  const filename = `pagelens-runs/pagelens-trace-manual-${ts}-${sid}.json`;
 
-  const traceData = msg.traceLog || {
-    version: "1.0",
-    sessionId: state.sessionId,
-    timestamp: new Date().toISOString(),
-    metrics: msg.metrics,
-    trace: msg.trace,
-    content: msg.text,
-    steps: [],
-  };
+  const pageSnapshot = state.tab
+    ? { tabId: state.tab.id ?? null, url: state.tab.url || "", title: state.tab.title || "" }
+    : null;
+  const messagesSummary = (state.messages || []).map((m) => ({
+    role: m.role,
+    textPreview: String(m.text || "").slice(0, 100),
+    metrics: m.metrics,
+  }));
 
-  const exportPayload = {
-    ...traceData,
-    conversationContext: {
-      sessionId: state.sessionId,
-      sessionTitle: state.sessionTitle,
-      page: state.tab ? { url: state.tab.url, title: state.tab.title } : null,
-      messagesSummary: (state.messages || []).map((m) => ({
-        role: m.role,
-        textPreview: String(m.text || "").slice(0, 100),
-        metrics: m.metrics,
-      })),
-    },
-  };
+  const exportPayload =
+    msg.traceLog?.version === TRACE_SCHEMA_VERSION
+      ? sanitizeTraceValue({
+          ...msg.traceLog,
+          conversationContext: {
+            ...(msg.traceLog.conversationContext || {}),
+            sessionId: state.sessionId,
+            sessionTitle: state.sessionTitle,
+            page: pageSnapshot,
+            messagesSummary,
+          },
+        })
+      : buildRunRecord({
+          ...(msg.traceLog || {}),
+          source: "sidepanel",
+          sessionId: state.sessionId,
+          sessionTitle: state.sessionTitle,
+          metrics: msg.metrics,
+          trace: msg.trace,
+          botResponse: msg.text,
+          content: msg.text,
+          steps: msg.traceLog?.steps || [],
+          initialPage: pageSnapshot,
+          finalPage: pageSnapshot,
+          messagesSummary,
+        }).traceRecord;
 
-  const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: "application/json;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => {
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, 1000);
+  const jsonText = JSON.stringify(exportPayload, null, 2);
+  downloadFileBestEffort({
+    url: encodeUtf8DataUrl(jsonText, "application/json;charset=utf-8"),
+    filename,
+    rawText: jsonText,
+    mimeType: "application/json;charset=utf-8",
+    conflictAction: "uniquify",
+  }).catch(() => {});
 }
 
 function maybeUploadTraceToLangfuse(traceLog) {
@@ -594,8 +616,16 @@ function bindAnswerActions(root) {
 }
 
 function pushError(text) {
+  const message = String(text ?? "");
+  if (uiErrorObserver) {
+    try {
+      uiErrorObserver(message);
+    } catch {
+      /* ignore observer error */
+    }
+  }
   messageScroll?.reset();
-  state.messages.push({ role: "bot", text, error: true });
+  state.messages.push({ role: "bot", text: message, error: true });
   renderMessages();
 }
 
@@ -605,6 +635,7 @@ function pushNotice(text) {
 
 
 export {
+  setUiErrorObserver,
   thinkingScrolls,
   hostOf,
   renderSkills,

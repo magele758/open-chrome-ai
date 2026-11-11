@@ -55,7 +55,7 @@ async function runKernelLoop(host, userText, options) {
   const onEvent = options.onEvent || (() => {});
   const sessionId = options.sessionId || host.sessionId || "default";
   const gate = createChromeToolGate();
-  const traceSteps = [];
+  const traceSteps = Array.isArray(options.traceSteps) ? options.traceSteps : [];
   const startTime = Date.now();
   let turnsUsed = Number(options.turnsUsed) || 0;
   let lastText = options.lastText || "";
@@ -233,6 +233,7 @@ async function runKernelLoop(host, userText, options) {
             totalOutputTokens += mapped.usage.outputTokens;
           }
           const turnIdx = turnsUsed;
+          const modelEndTs = Date.now();
           traceSteps.push({
             type: "model_turn",
             turn: turnIdx,
@@ -244,7 +245,8 @@ async function runKernelLoop(host, userText, options) {
             toolCalls: (result?.toolCalls || []).map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })),
             finishReason: result?.finishReason || mapped.stopReason || (result?.toolCalls?.length ? "tool_calls" : "stop"),
             usage: result?.usage || (mapped.usage ? { promptTokens: mapped.usage.inputTokens, completionTokens: mapped.usage.outputTokens, totalTokens: mapped.usage.inputTokens + mapped.usage.outputTokens } : { promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
-            timestamp: Date.now(),
+            timestamp: modelEndTs,
+            isoTime: new Date(modelEndTs).toISOString(),
           });
           return mapped;
         },
@@ -268,7 +270,8 @@ async function runKernelLoop(host, userText, options) {
         lastTurnFallback: CHROME_LAST_TURN_FALLBACK,
       },
       emitTrace(sid, event) {
-        traceSteps.push({ ...event, timestamp: Date.now(), sessionId: sid });
+        const ts = Date.now();
+        traceSteps.push({ ...event, timestamp: ts, isoTime: new Date(ts).toISOString(), sessionId: sid });
       },
       resolveTurnTools() {
         if (gate.forceAnswer) return { tools: [], allowExternalAiTools: false };
@@ -301,7 +304,8 @@ async function runKernelLoop(host, userText, options) {
             maxTurns: Number.isFinite(maxTurns) ? maxTurns : 0,
             sessionId,
           });
-          traceSteps.push({ type: "turn_start", turn: turnsUsed - 1, timestamp: Date.now() });
+          const ts = Date.now();
+          traceSteps.push({ type: "turn_start", turn: turnsUsed - 1, timestamp: ts, isoTime: new Date(ts).toISOString() });
         } else if (ev.type === "model_done") {
           const content =
             (ev.assistant?.parts || [])
@@ -380,6 +384,19 @@ async function runKernelLoop(host, userText, options) {
         traceSteps,
         engine: LOOP_ENGINE_ID,
       };
+    }
+    if (err && typeof err === "object") {
+      try {
+        const folded = store.foldMessages(session.id);
+        Object.defineProperties(err, {
+          traceSteps: { value: traceSteps, configurable: true, writable: true },
+          history: { value: foldedToChromeHistory(folded), configurable: true, writable: true },
+          turnsUsed: { value: turnsUsed, configurable: true, writable: true },
+          metrics: { value: buildMetrics("error"), configurable: true, writable: true },
+        });
+      } catch {
+        Object.defineProperty(err, "traceSteps", { value: traceSteps, configurable: true, writable: true });
+      }
     }
     throw err;
   }

@@ -65,7 +65,7 @@ async function runLoop(host, userText, options) {
   const startTime = Date.now();
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
-  const traceSteps = [];
+  const traceSteps = Array.isArray(options.traceSteps) ? options.traceSteps : [];
 
   const buildMetrics = (finishReason) => ({
     durationMs: Math.max(1, Date.now() - startTime),
@@ -174,6 +174,14 @@ async function runLoop(host, userText, options) {
           onReasoningDelta: options.onReasoningDelta,
         });
       } else {
+        if (err && typeof err === "object") {
+          Object.defineProperties(err, {
+            traceSteps: { value: traceSteps, configurable: true, writable: true },
+            history: { value: cloneHistory(history), configurable: true, writable: true },
+            turnsUsed: { value: turnsUsed, configurable: true, writable: true },
+            metrics: { value: buildMetrics("error"), configurable: true, writable: true },
+          });
+        }
         throw err;
       }
     }
