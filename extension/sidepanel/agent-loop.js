@@ -3,7 +3,6 @@ import { $ } from "./dom.js";
 import { flagInjection, ingestTaint, showHitlModal, updateHitlBadge } from "./hitl-ui.js";
 import { renderContext } from "./media-chrome.js";
 import {
-  createMessageFooter,
   createThinkingBox,
   fillBotBody,
   fillToolTrace,
@@ -130,11 +129,7 @@ function paintBot(botMsg) {
     body.innerHTML = "";
   }
 
-  if (botMsg.metrics) {
-    const existing = wrap.querySelector(".msg-footer");
-    if (existing) existing.remove();
-    wrap.appendChild(createMessageFooter(botMsg));
-  }
+  wrap.querySelector(".msg-footer")?.remove();
   messageScroll?.onContentGrow();
 }
 
