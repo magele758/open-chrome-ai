@@ -494,7 +494,7 @@ function summarizeStepArgs(stepId, params = {}) {
 }
 
 const ASSERT_KIND_SNIPPETS = Object.freeze({
-  modals_count: `const ms=visibleModals(),titles=ms.map(m=>norm((m.querySelector(".ant-modal-title")||{}).innerText));
+  modals_count: `const ms=modals(Number(c.equals)===0?1:0),titles=ms.map(m=>norm((m.querySelector(".ant-modal-title")||{}).innerText));
 if(ms.length!==Number(c.equals))return{pass:false,index:idx,kind:c.kind,expected:"可见弹窗数 === "+c.equals,actual:"实读弹窗数 === "+ms.length+" ("+JSON.stringify(titles)+")"};
 evidence.push({index:idx,id:checkId,kind:c.kind,actual:{count:ms.length,titles}});`,
 
@@ -509,12 +509,12 @@ const want=(c.equals||[]).map(String);
 if(JSON.stringify(checked)!==JSON.stringify(want))return{pass:false,index:idx,kind:c.kind,expected:"已勾选复选框 === "+JSON.stringify(want),actual:"实读已勾选 === "+JSON.stringify(checked)};
 evidence.push({index:idx,id:checkId,kind:c.kind,actual:checked});`,
 
-  cascader_or_select_equals: `const inp=scope.querySelector(c.inputSelector)||document.querySelector(c.inputSelector);
+  cascader_or_select_equals: `const inp=scope.querySelector(c.inputSelector);
 const sel=inp?inp.closest(".ant-select"):null,it=sel?sel.querySelector(".ant-select-selection-item"):null,got=it?itemText(it):"";
 if(got!==String(c.equals))return{pass:false,index:idx,kind:c.kind,expected:c.inputSelector+" 选中值 === "+JSON.stringify(c.equals),actual:"实读选中值 === "+JSON.stringify(got)};
 evidence.push({index:idx,id:checkId,kind:c.kind,actual:got});`,
 
-  input_equals: `const nth=Number(c.nth)||0,el=scope.querySelectorAll(c.selector)[nth]||document.querySelectorAll(c.selector)[nth],got=el?String(el.value??""):null;
+  input_equals: `const nth=Number(c.nth)||0,el=scope.querySelectorAll(c.selector)[nth],got=el?String(el.value??""):null;
 if(got!==String(c.equals))return{pass:false,index:idx,kind:c.kind,expected:c.selector+" 值 === "+JSON.stringify(c.equals),actual:"实读值 === "+JSON.stringify(got)};
 evidence.push({index:idx,id:checkId,kind:c.kind,actual:got});`,
 
@@ -596,10 +596,13 @@ const checks=${JSON.stringify(subChecks)};
 const baseIdx=${Number(baseIndex) || 0};
 const norm=s=>String(s||"").replace(/\\s+/g," ").trim();
 const normBtn=s=>norm(s).replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g,"$1");
-const visibleModals=()=>[...document.querySelectorAll(".ant-modal")].filter(m=>{const w=m.closest(".ant-modal-wrap")||m.parentElement,ws=w?getComputedStyle(w):getComputedStyle(m),r=m.getBoundingClientRect();if(ws.display==="none"||ws.visibility==="hidden")return false;if((w&&/leave/.test(w.className||""))||/leave/.test(m.className||""))return false;return r.width>0&&r.height>0;});
-const defaultScope=containerSel?document.querySelector(containerSel):(document.body||document.documentElement||document);
-if(containerSel&&!defaultScope)return{pass:false,failedCheck:"container",expected:"容器存在: "+containerSel,actual:"容器不存在"};
-const pickScope=c=>c.topmostModal?(visibleModals().slice(-1)[0]||null):(c.scopeSelector?document.querySelector(c.scopeSelector):defaultScope);
+const leaveRe=/\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/;
+const isBox=(el,al)=>{if(!el)return false;for(let p=el;p&&p.nodeType===1;p=p.parentElement){if(p.hidden||(!al&&leaveRe.test(String(p.className||""))))return false;const s=getComputedStyle(p);if(s&&(s.display==="none"||s.visibility==="hidden"))return false;}if(!el.getBoundingClientRect)return true;const r=el.getBoundingClientRect();return r.width>0&&r.height>0;};
+const qBox=sel=>{const a=[...document.querySelectorAll(sel)].filter(e=>isBox(e,0));if(a.length)return a.slice(-1)[0];const o=document.querySelector(sel);return isBox(o,0)?o:null;};
+const modals=al=>[...document.querySelectorAll(".ant-modal")].filter(m=>isBox(m,al));
+const defaultScope=containerSel?qBox(containerSel):(document.body||document.documentElement||document);
+if(containerSel&&!defaultScope)return{pass:false,failedCheck:"container",expected:"容器存在: "+containerSel,actual:"容器不存在或正处于关闭离场动画"};
+const pickScope=c=>c.topmostModal?(modals(0).slice(-1)[0]||null):(c.scopeSelector?qBox(c.scopeSelector):defaultScope);
 const scopeText=s=>{const el=(s===document?(document.body||document.documentElement):s);return norm(el?(el.innerText??el.textContent??""):"");};
 const itemText=el=>((el.querySelector(".ant-select-selection-item-content")||el).textContent||"").replace(/\\s+/g," ").trim();
 const evidence=[];
@@ -964,7 +967,7 @@ export async function runDeterministicWorkflow({
       );
 
       if (!probe || probe.count === 0) {
-        return { ok: true, closedCount, remainingModals: 0 };
+        break;
       }
       if (!probe.foundCancel) {
         throw new WorkflowError({
@@ -1006,18 +1009,25 @@ export async function runDeterministicWorkflow({
       }
     }
 
-    const finalCount = await evalJs(
-      `return [...document.querySelectorAll(${JSON.stringify(modalSelector)})].filter((m) => {
-        const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
-        const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
-        const ms = getComputedStyle(m);
-        const r = m.getBoundingClientRect();
-        if (ws.display === "none" || ws.visibility === "hidden" || ms.display === "none" || ms.visibility === "hidden") return false;
-        if ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || "")) return false;
-        return r.width > 0 && r.height > 0;
-      }).length;`,
-      stepCtx,
-    );
+    // 关键契约：不仅等待非离场态弹窗归零，还必须等待离场动画态（*-leave）弹窗彻底卸载或 display:none，
+    // 防止下一步重开同类名弹窗时 wait_for / assert_state 误命中尚未销毁的旧弹窗 DOM。
+    const settleDeadline = Date.now() + Math.max(settleMs, 2500);
+    let finalCount = 0;
+    while (true) {
+      finalCount = await evalJs(
+        `return [...document.querySelectorAll(${JSON.stringify(modalSelector)})].filter((m) => {
+          const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+          const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+          const ms = getComputedStyle(m);
+          const r = m.getBoundingClientRect();
+          if (ws.display === "none" || ws.visibility === "hidden" || ms.display === "none" || ms.visibility === "hidden") return false;
+          return r.width > 0 && r.height > 0;
+        }).length;`,
+        stepCtx,
+      );
+      if (finalCount === 0 || Date.now() >= settleDeadline) break;
+      await sleepWithAbort(80, signal);
+    }
     if (finalCount !== 0) {
       throw new WorkflowError({
         code: "WORKFLOW_MODAL_STILL_OPEN",
@@ -1025,8 +1035,8 @@ export async function runDeterministicWorkflow({
         stepIndex: stepCtx.stepIndex,
         stepId: stepCtx.stepId,
         op: stepCtx.op,
-        expected: "所有弹窗已关闭 (remainingModals === 0)",
-        actual: `仍余 ${finalCount} 个可见弹窗`,
+        expected: "所有弹窗已彻底关闭并完成离场销毁 (remainingModals === 0)",
+        actual: `仍余 ${finalCount} 个可见或离场中弹窗`,
         message: `关闭弹窗后仍残留 ${finalCount} 个弹窗`,
       });
     }
@@ -1041,6 +1051,7 @@ export async function runDeterministicWorkflow({
     stepCtx,
   }) {
     const waitDeadline = Date.now() + timeoutMs;
+    const excludeLeave = wantModals > 0;
     const seenAlerts = new Set();
     const seenErrorAlerts = new Set();
     let lastInfo = null;
@@ -1048,13 +1059,14 @@ export async function runDeterministicWorkflow({
 
     while (true) {
       lastInfo = await evalJs(
-        `const visible = [...document.querySelectorAll(${JSON.stringify(modalSelector)})].filter((m) => {
+        `const excludeLeave = ${JSON.stringify(excludeLeave)};
+        const visible = [...document.querySelectorAll(${JSON.stringify(modalSelector)})].filter((m) => {
           const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
           const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
           const ms = getComputedStyle(m);
           const r = m.getBoundingClientRect();
           if (ws.display === "none" || ws.visibility === "hidden" || ms.display === "none" || ms.visibility === "hidden") return false;
-          if ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || "")) return false;
+          if (excludeLeave && ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || ""))) return false;
           return r.width > 0 && r.height > 0;
         });
         const noticeNodes = [...document.querySelectorAll(".ant-message-notice, .ant-notification-notice, [role='alert']")];
@@ -1648,15 +1660,33 @@ export async function runDeterministicWorkflow({
           );
         }
 
-        const current = await evalJs(
-          `const el = document.querySelector(${JSON.stringify(selector)});
-          if (!el) return { exists: false, itemText: "" };
-          const wrap = el.closest(".ant-select");
-          const item = wrap ? wrap.querySelector(".ant-select-selection-item") : null;
-          const text = item ? ((item.querySelector(".ant-select-selection-item-content") || item).textContent || "") : "";
-          return { exists: true, itemText: text.replace(/\\s+/g, " ").trim() };`,
-          stepCtx,
-        );
+        const mountDeadline = Date.now() + Math.min(timeoutMs, 6000);
+        let current = null;
+        while (true) {
+          current = await evalJs(
+            `const isLiveNode = (n) => {
+              for (let p = n; p && p.nodeType === 1; p = p.parentElement) {
+                const cl = typeof p.className === "string" ? p.className : "";
+                if (p.hidden || /\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cl)) return false;
+                if (typeof getComputedStyle === "function") {
+                  const st = getComputedStyle(p);
+                  if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+                }
+              }
+              return true;
+            };
+            const list = [...(document.querySelectorAll ? document.querySelectorAll(${JSON.stringify(selector)}) : [])].filter(isLiveNode);
+            const el = list[list.length - 1] || (isLiveNode(document.querySelector(${JSON.stringify(selector)})) ? document.querySelector(${JSON.stringify(selector)}) : null);
+            if (!el) return { exists: false, itemText: "" };
+            const wrap = el.closest(".ant-select");
+            const item = wrap ? wrap.querySelector(".ant-select-selection-item") : null;
+            const text = item ? ((item.querySelector(".ant-select-selection-item-content") || item).textContent || "") : "";
+            return { exists: true, itemText: text.replace(/\\s+/g, " ").trim() };`,
+            stepCtx,
+          );
+          if (current?.exists || Date.now() >= mountDeadline) break;
+          await sleepWithAbort(120, signal);
+        }
 
         if (!current?.exists) {
           throw new WorkflowError({
@@ -1886,11 +1916,28 @@ export async function runDeterministicWorkflow({
           const blur = spec.blur !== false;
 
           if (fillAll) {
-            const allInfo = await evalJs(
-              `const list = [...document.querySelectorAll(${JSON.stringify(selector)})];
-              return { count: list.length, values: list.map((el) => String(el.value ?? "")) };`,
-              stepCtx,
-            );
+            const mountDeadline = Date.now() + Math.min(Math.max(1000, Number(params.timeoutMs) || 5000), 8000);
+            let allInfo = null;
+            while (true) {
+              allInfo = await evalJs(
+                `const isLiveNode = (n) => {
+                  for (let p = n; p && p.nodeType === 1; p = p.parentElement) {
+                    const cl = typeof p.className === "string" ? p.className : "";
+                    if (p.hidden || /\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cl)) return false;
+                    if (typeof getComputedStyle === "function") {
+                      const st = getComputedStyle(p);
+                      if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+                    }
+                  }
+                  return true;
+                };
+                const list = [...document.querySelectorAll(${JSON.stringify(selector)})].filter(isLiveNode);
+                return { count: list.length, values: list.map((el) => String(el.value ?? "")) };`,
+                stepCtx,
+              );
+              if (allInfo?.count > 0 || Date.now() >= mountDeadline) break;
+              await sleepWithAbort(120, signal);
+            }
             if (!allInfo?.count) {
               throw new WorkflowError({
                 code: "WORKFLOW_INPUT_MISSING",
@@ -1926,7 +1973,19 @@ export async function runDeterministicWorkflow({
               changed += 1;
             }
             const afterValues = await evalJs(
-              `return [...document.querySelectorAll(${JSON.stringify(selector)})].map((el) => String(el.value ?? ""));`,
+              `return [...document.querySelectorAll(${JSON.stringify(selector)})]
+                .filter((n) => {
+                  for (let p = n; p && p.nodeType === 1; p = p.parentElement) {
+                    const cl = typeof p.className === "string" ? p.className : "";
+                    if (p.hidden || /\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cl)) return false;
+                    if (typeof getComputedStyle === "function") {
+                      const st = getComputedStyle(p);
+                      if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+                    }
+                  }
+                  return true;
+                })
+                .map((el) => String(el.value ?? ""));`,
               stepCtx,
             );
             if (!Array.isArray(afterValues) || afterValues.some((v) => v !== expectedValue)) {
@@ -1945,13 +2004,30 @@ export async function runDeterministicWorkflow({
             continue;
           }
 
-          const pre = await evalJs(
-            `const list = [...document.querySelectorAll(${JSON.stringify(selector)})];
-            const el = list[${nth}];
-            if (!el) return { exists: false, count: list.length, value: "" };
-            return { exists: true, count: list.length, value: String(el.value ?? "") };`,
-            stepCtx,
-          );
+          const mountDeadline = Date.now() + Math.min(Math.max(1000, Number(params.timeoutMs) || 5000), 8000);
+          let pre = null;
+          while (true) {
+            pre = await evalJs(
+              `const isLiveNode = (n) => {
+                for (let p = n; p && p.nodeType === 1; p = p.parentElement) {
+                  const cl = typeof p.className === "string" ? p.className : "";
+                  if (p.hidden || /\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cl)) return false;
+                  if (typeof getComputedStyle === "function") {
+                    const st = getComputedStyle(p);
+                    if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+                  }
+                }
+                return true;
+              };
+              const list = [...document.querySelectorAll(${JSON.stringify(selector)})].filter(isLiveNode);
+              const el = list[${nth}];
+              if (!el) return { exists: false, count: list.length, value: "" };
+              return { exists: true, count: list.length, value: String(el.value ?? "") };`,
+              stepCtx,
+            );
+            if (pre?.exists || Date.now() >= mountDeadline) break;
+            await sleepWithAbort(120, signal);
+          }
           if (!pre?.exists) {
             throw new WorkflowError({
               code: "WORKFLOW_INPUT_MISSING",

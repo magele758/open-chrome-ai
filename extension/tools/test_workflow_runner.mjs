@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 import { extractCapsule } from "../lib/agent/trust/capsule.js";
-import { runJs } from "../lib/agent/page-fns.js";
+import { pageAct, runJs } from "../lib/agent/page-fns.js";
 import {
   WORKFLOW_MODEL_ID,
   buildAssertStateBatches,
@@ -877,4 +877,170 @@ const LARGE_FAKE_PNG_DATA_URL =
     `即使第 2 次轮询后提示已消退，也必须保留首次捕获到的瞬时错误文本: ${res7c.failure.actual}`,
   );
   console.log("PASS 7. ADR-022 idempotent modal short-circuit vs modified commit & transient error toast fast-fail");
+}
+
+// ── 8. ADR-023 弹窗取消离场动画（*-leave）销毁等待契约与新弹窗延迟水合轮询保护 ──
+{
+  // 8a. close_modals_if_present 点击取消后若旧弹窗仍处于 ant-zoom-leave 离场动画（尚未从 DOM 卸载），
+  //     必须等待离场节点彻底消失后才返回；随后 ensure_cascader 遇到新弹窗内控件延迟 1 拍水合也能平滑轮询通过。
+  let leavePollsRemaining = 2;
+  let cascaderHydratePolls = 2;
+  let cancelClicked = 0;
+
+  const res8a = await runDeterministicWorkflow({
+    rawText:
+      `/workflow\n` +
+      JSON.stringify({
+        schemaVersion: "1.0",
+        id: "leave-animation-settle-8a",
+        binds: {},
+        steps: [
+          {
+            id: "C_CLOSE",
+            op: "close_modals_if_present",
+            params: { modalSelector: ".ant-modal", cancelText: "取消", settleMs: 1200 },
+          },
+          {
+            id: "C_CASC",
+            op: "ensure_cascader",
+            params: {
+              selector: "input#cat",
+              expectedText: "一级 / 二级",
+              mode: "search",
+              searchValue: "二级",
+              timeoutMs: 3000,
+            },
+          },
+        ],
+      }),
+    rawTools: {
+      run_js: async ({ code }) => {
+        if (code.includes("foundCancel")) {
+          if (cancelClicked === 0) {
+            return JSON.stringify({
+              ok: true,
+              result: { count: 1, title: "旧编辑弹窗", foundCancel: true, buttonText: "取消" },
+            });
+          }
+          // 点击取消后非离场弹窗数立即归 0，但离场动画尚未结束
+          return JSON.stringify({ ok: true, result: { count: 0 } });
+        }
+        if (code.includes("removeAttribute")) {
+          return JSON.stringify({ ok: true, result: true });
+        }
+        if (code.includes("input#cat")) {
+          if (cascaderHydratePolls > 0) {
+            cascaderHydratePolls -= 1;
+            return JSON.stringify({ ok: true, result: { exists: false, itemText: "" } });
+          }
+          return JSON.stringify({ ok: true, result: { exists: true, itemText: "一级 / 二级" } });
+        }
+        // 非离场轮询 vs 全量离场彻底销毁轮询
+        if (code.includes("/leave/")) {
+          return JSON.stringify({ ok: true, result: 0 });
+        }
+        if (leavePollsRemaining > 0) {
+          leavePollsRemaining -= 1;
+          return JSON.stringify({ ok: true, result: 1 });
+        }
+        return JSON.stringify({ ok: true, result: 0 });
+      },
+      click: async () => {
+        cancelClicked += 1;
+        return JSON.stringify({ ok: true });
+      },
+    },
+    resolvePageSnapshot: async () => ({ tabId: 15, url: "https://portal.example.org/list", title: "List" }),
+  });
+
+  assert.equal(res8a.ok, true, `8a 应等待离场动画结束并容忍新控件异步水合: ${JSON.stringify(res8a.failure)}`);
+  assert.equal(cancelClicked, 1, "不应向离场动画中的旧弹窗重复点击取消");
+  assert.equal(leavePollsRemaining, 0, "close_modals_if_present 必须等到离场动画弹窗彻底归零才返回");
+  assert.equal(cascaderHydratePolls, 0, "ensure_cascader 必须轮询等待新弹窗内部输入控件挂载完成");
+
+  // 8b. buildAssertStateBatches 的容器作用域解析与 pageAct(wait) 均必须忽略处于 ant-zoom-leave 离场态的旧弹窗
+  const prevDoc = globalThis.document;
+  const prevWin = globalThis.window;
+  const prevStyle = globalThis.getComputedStyle;
+  try {
+    const leavingModal = {
+      nodeType: 1,
+      tagName: "DIV",
+      id: "",
+      hidden: false,
+      className: "ant-modal editor-dialog-modal ant-zoom-leave ant-zoom-leave-active",
+      classList: { contains: () => false },
+      parentElement: null,
+      innerText: "旧弹窗标题",
+      textContent: "旧弹窗标题",
+      getAttribute: () => null,
+      getBoundingClientRect: () => ({ left: 10, top: 10, right: 500, bottom: 400, width: 490, height: 390 }),
+      querySelector: () => null,
+      querySelectorAll: () => [{ textContent: "旧脏数据" }],
+    };
+    let mountFresh = false;
+    const freshModal = {
+      nodeType: 1,
+      tagName: "DIV",
+      id: "",
+      hidden: false,
+      className: "ant-modal editor-dialog-modal",
+      classList: { contains: () => false },
+      parentElement: null,
+      innerText: "新弹窗标题",
+      textContent: "新弹窗标题",
+      getAttribute: () => null,
+      getBoundingClientRect: () => ({ left: 10, top: 10, right: 500, bottom: 400, width: 490, height: 390 }),
+      querySelector: () => null,
+      querySelectorAll: (sel) =>
+        sel === ".ant-select-selection-item"
+          ? [{ querySelector: () => null, textContent: "新挂载选项" }]
+          : [],
+    };
+    const fakeStyle = () => ({ display: "block", visibility: "visible", opacity: "0.4", zIndex: "1000" });
+    globalThis.getComputedStyle = fakeStyle;
+    globalThis.window = {
+      getComputedStyle: fakeStyle,
+      innerHeight: 900,
+      innerWidth: 1440,
+    };
+    globalThis.document = {
+      documentElement: { clientHeight: 900, clientWidth: 1440 },
+      body: { innerText: "" },
+      querySelector: (sel) => (sel === ".editor-dialog-modal" ? leavingModal : null),
+      querySelectorAll: (sel) => {
+        if (sel.includes("editor-dialog-modal")) {
+          return mountFresh ? [leavingModal, freshModal] : [leavingModal];
+        }
+        return [];
+      },
+    };
+
+    // 旧弹窗处于 ant-zoom-leave 时，assert_state 容器解析必须判定“容器不存在或正处于关闭离场动画”
+    const scopeBatch = buildAssertStateBatches(".editor-dialog-modal", [
+      { id: "s_items", kind: "select_items_include", mustInclude: ["新挂载选项"] },
+    ]);
+    const staleAssert = await runJs(scopeBatch[0].code);
+    assert.equal(staleAssert.result.pass, false, "不得读取正处于 ant-zoom-leave 离场动画的旧弹窗数据");
+
+    // pageAct("wait") 同样不得立即误命中 ant-zoom-leave 旧弹窗，而应等到 180ms 后新弹窗挂载才返回
+    setTimeout(() => {
+      mountFresh = true;
+    }, 180);
+    const waitOut = await pageAct("wait", {
+      selector: ".editor-dialog-modal",
+      text: "弹窗标题",
+      timeoutMs: 1500,
+    });
+    assert.equal(waitOut.ok, true, `pageAct wait 应在新弹窗挂载后成功: ${JSON.stringify(waitOut)}`);
+    assert.ok(waitOut.waitedMs >= 140, `pageAct wait 不得 0ms 误命中离场旧弹窗，实测 waitedMs=${waitOut.waitedMs}`);
+
+    const freshAssert = await runJs(scopeBatch[0].code);
+    assert.equal(freshAssert.result.pass, true, `新弹窗挂载后应读取新弹窗数据: ${JSON.stringify(freshAssert.result)}`);
+  } finally {
+    globalThis.document = prevDoc;
+    globalThis.window = prevWin;
+    globalThis.getComputedStyle = prevStyle;
+  }
+  console.log("PASS 8. ADR-023 modal leave-transition teardown settle, active scope & delayed input hydration");
 }

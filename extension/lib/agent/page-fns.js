@@ -194,11 +194,13 @@ export function listControls(limit) {
     if (!el) return false;
     let cur = el;
     while (cur && cur.nodeType === 1) {
+      const cls = typeof cur.className === "string" ? cur.className : "";
       if (
         cur.hidden ||
         cur.classList?.contains("ant-select-dropdown-hidden") ||
         cur.classList?.contains("ant-dropdown-hidden") ||
-        cur.classList?.contains("ant-popover-hidden")
+        cur.classList?.contains("ant-popover-hidden") ||
+        (cls && /\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\b/.test(cls))
       ) {
         return false;
       }
@@ -381,11 +383,13 @@ export async function pageAct(kind, spec) {
     if (!el) return false;
     let cur = el;
     while (cur && cur.nodeType === 1) {
+      const cls = typeof cur.className === "string" ? cur.className : "";
       if (
         cur.hidden ||
         cur.classList?.contains("ant-select-dropdown-hidden") ||
         cur.classList?.contains("ant-dropdown-hidden") ||
-        cur.classList?.contains("ant-popover-hidden")
+        cur.classList?.contains("ant-popover-hidden") ||
+        (cls && /\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\b/.test(cls))
       ) {
         return false;
       }
@@ -769,7 +773,8 @@ export async function prepareSelectOption(spec) {
     if (!el || el.nodeType !== 1) return false;
     let cur = el;
     while (cur && cur.nodeType === 1) {
-      if (cur.hidden) return false;
+      const cls = typeof cur.className === "string" ? cur.className : "";
+      if (cur.hidden || (cls && /\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\b/.test(cls))) return false;
       const st = window.getComputedStyle(cur);
       if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
       cur = cur.parentElement;
@@ -1560,11 +1565,13 @@ export function scrollPage(opts) {
     if (!el) return false;
     let cur = el;
     while (cur && cur.nodeType === 1) {
+      const cls = typeof cur.className === "string" ? cur.className : "";
       if (
         cur.hidden ||
         cur.classList?.contains("ant-select-dropdown-hidden") ||
         cur.classList?.contains("ant-dropdown-hidden") ||
-        cur.classList?.contains("ant-popover-hidden")
+        cur.classList?.contains("ant-popover-hidden") ||
+        (cls && /\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\b/.test(cls))
       ) {
         return false;
       }
