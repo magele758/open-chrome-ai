@@ -216,12 +216,60 @@ function neutralizePassiveActionPhrases(src) {
     );
 }
 
+function collectBindStrings(node, out, depth = 0) {
+  if (depth > 12 || node == null) return;
+  if (typeof node === "string") {
+    out.push(node);
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) collectBindStrings(item, out, depth + 1);
+    return;
+  }
+  if (typeof node === "object") {
+    for (const val of Object.values(node)) collectBindStrings(val, out, depth + 1);
+  }
+}
+
+function extractWorkflowCapsule(rawText, principal = "user") {
+  const raw = String(rawText || "");
+  if (!/^\s*\/workflow(?:\s|$)/i.test(raw)) return null;
+  const capsule = emptyCapsule(principal);
+  let body = raw.replace(/^\s*\/workflow\b/i, "").trim();
+  const fenced = /^```(?:json)?[ \t]*\r?\n?([\s\S]*?)\r?\n?```$/i.exec(body);
+  if (fenced) body = fenced[1].trim();
+  if (!body) return capsule;
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return capsule;
+  }
+  if (!parsed || typeof parsed !== "object") return capsule;
+  const bindStrings = [];
+  if (parsed.binds && typeof parsed.binds === "object") {
+    collectBindStrings(parsed.binds, bindStrings);
+  }
+  const joined = bindStrings.join("\n");
+  const urls = uniq(
+    [...joined.matchAll(URL_RE)]
+      .map((m) => m[0].replace(/[.,;:!?]+$/, ""))
+      .filter((u) => urlOrigin(u)),
+  );
+  capsule.actions = ["navigate", "input"];
+  capsule.urls = urls;
+  capsule.origins = uniq(urls.map(normalizeDomain));
+  return capsule;
+}
+
 /**
  * 从委托人指令确定性地抽取胶囊。只能传用户/委托人本人写的文字，不能拼入页面内容。
  * @param {string} text
  * @param {{ principal?: "user"|"agent" }} [opts]
  */
 export function extractCapsule(text, { principal = "user", allowBareTickCommands = false } = {}) {
+  const wfCapsule = extractWorkflowCapsule(text, principal);
+  if (wfCapsule) return wfCapsule;
   const capsule = emptyCapsule(principal);
   const src = String(text || "").slice(0, 20000);
   if (!src.trim()) return capsule;

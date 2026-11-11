@@ -367,6 +367,20 @@ function createImageDetacher({ tsSlug, safeSource, safeRunId, threshold = IMAGE_
   };
 }
 
+export function predictDetachedImagePaths(
+  steps = [],
+  { tsSlug, source = "sidepanel", runId = "run", threshold = IMAGE_DETACH_THRESHOLD } = {},
+) {
+  const resolvedSlug = tsSlug || formatTimestampForFilename(Date.now());
+  const safeSource = sanitizeFileSlug(source === "sw-delegate" ? "sw-delegate" : "sidepanel", "sidepanel");
+  const safeRunId = sanitizeFileSlug(runId, "run");
+  const detacher = createImageDetacher({ tsSlug: resolvedSlug, safeSource, safeRunId, threshold });
+  for (const s of Array.isArray(steps) ? steps : []) {
+    detacher.transform(s);
+  }
+  return detacher.detachedImages.map((img) => img.filename);
+}
+
 function messageSignature(msg) {
   if (!msg || typeof msg !== "object") return String(msg);
   const role = String(msg.role || "");
@@ -578,6 +592,12 @@ export function buildRunRecord(input = {}) {
       pageUrl: s.pageUrl ?? null,
       pageTitle: s.pageTitle ?? null,
       archiveHandle: s.archiveHandle || null,
+      ...(s.workflowStepId ? { workflowStepId: String(s.workflowStepId) } : {}),
+      ...(s.expected !== undefined ? { expected: String(s.expected) } : {}),
+      ...(s.actual !== undefined ? { actual: String(s.actual) } : {}),
+      ...(s.actualReadback !== undefined ? { actualReadback: s.actualReadback } : {}),
+      ...(s.blame ? { blame: String(s.blame) } : {}),
+      ...(s.screenshotDataUrl ? { screenshotArtifact: String(s.screenshotDataUrl) } : {}),
     });
   }
 

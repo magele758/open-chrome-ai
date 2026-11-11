@@ -47,11 +47,23 @@ import { splitThinking } from "../lib/markdown.js";
 import { multimodalUserContent, streamTurn } from "../lib/openai.js";
 import { loadTabPack } from "../lib/page-pack.js";
 import { packToContext, systemPrompt } from "../lib/prompts.js";
-import { createRunId, persistRunBundle, stripAttachedPageContext } from "../lib/run-recorder.js";
+import {
+  createRunId,
+  formatTimestampForFilename,
+   persistRunBundle,
+  predictDetachedImagePaths,
+  stripAttachedPageContext,
+} from "../lib/run-recorder.js";
 import { ensureSkillBody } from "../lib/skill-folder.js";
 import { composeSkillPrompt, userInvokedSkill } from "../lib/slash.js";
 import { isModelReady, resolveModel } from "../lib/storage.js";
 import { detectInjection, withUntrustedOutput } from "../lib/untrusted.js";
+import {
+  WORKFLOW_MODEL_ID,
+  formatWorkflowSummary,
+  isWorkflowDirectiveText,
+  runDeterministicWorkflow,
+} from "../lib/agent/workflow-runner.js";
 
 const AGENT_BUSY_SESSION_KEY = "pl.agent.busy";
 
@@ -244,14 +256,15 @@ async function executeLoop({
   botMsg,
   model,
   clearImage,
+  workflowMode = false,
 }) {
   const strippedPromptInfo = stripAttachedPageContext(userText || "");
   const cleanLoopUserText =
     rawUserText !== undefined ? String(rawUserText) : strippedPromptInfo.cleanPrompt;
-  const effectiveAttachedContextChars = Math.max(
-    0,
-    Number(attachedContextChars) || strippedPromptInfo.strippedChars || 0,
-  );
+  const isWorkflowRun = Boolean(workflowMode) || isWorkflowDirectiveText(cleanLoopUserText);
+  const effectiveAttachedContextChars = isWorkflowRun
+    ? 0
+    : Math.max(0, Number(attachedContextChars) || strippedPromptInfo.strippedChars || 0);
   const runId = createRunId("run");
   const runStartTime = Date.now();
   const startedAtIso = new Date(runStartTime).toISOString();
@@ -266,6 +279,9 @@ async function executeLoop({
   let result = null;
   let failed = false;
   let setupFailed = false;
+  let lastCapturedImageUrl = null;
+  let lockedEndedAtIso = null;
+  let lockedTsSlug = null;
 
   const initialPage = await resolveSidepanelPageSnapshot();
   setUiErrorObserver((msg) => {
@@ -280,14 +296,15 @@ async function executeLoop({
   writeAgentBusyState(true, runId);
 
   try {
-    const useSkills = skillsOn() && lastUserAskedForSkill();
+    const useSkills = !isWorkflowRun && skillsOn() && lastUserAskedForSkill();
     const hitlUserUrl = state.tab?.url || state.pack?.url || "";
     const skills = useSkills ? [...(state.skills || []), ...shortcutsAsSkills(state.settings)] : [];
+    let rawTools;
     let tools;
     let loop;
     try {
       const requestedDomains = new Set(state.activeToolDomains || []);
-      tools = createAgentTools({
+      rawTools = createAgentTools({
         getTabId: () => state.tab?.id,
         getWindowId: () => state.tab?.windowId,
         refreshPack: async (tabId) => {
@@ -299,6 +316,7 @@ async function executeLoop({
         },
         capture: captureTab,
         setImage: (url) => {
+          lastCapturedImageUrl = url;
           state.image = url;
           renderAttach();
         },
@@ -357,16 +375,17 @@ async function executeLoop({
           trustPanel.showUndo({ text, undo });
         },
       });
-      tools = withUntrustedOutput(tools, {
+      tools = withUntrustedOutput(rawTools, {
         onInjection: (hit) => flagInjection(hit, botMsg),
         onIngest: ingestTaint,
       });
 
-      systemPromptText = [systemPrompt(state.settings, { useSkills }), useSkills ? skillCatalogText(skills) : ""]
-        .filter(Boolean)
-        .join("\n\n");
+      if (!isWorkflowRun) {
+        systemPromptText = [systemPrompt(state.settings, { useSkills }), useSkills ? skillCatalogText(skills) : ""]
+          .filter(Boolean)
+          .join("\n\n");
 
-      loop = createKernelAgentLoop({
+        loop = createKernelAgentLoop({
         maxTurns: 0,
         allTools: tools,
         systemPrompt: systemPromptText,
@@ -511,6 +530,7 @@ async function executeLoop({
         useSkills,
         loopEngine: LOOP_ENGINE_ID,
       });
+      }
     } catch (err) {
       setupFailed = true;
       failed = true;
@@ -531,13 +551,17 @@ async function executeLoop({
 
     if (!setupFailed) {
       state.abort = new AbortController();
-      state.run = {
-        status: "running",
-        history: history || [],
-        lastText: lastText || "",
-        turnsUsed: turnsUsed || 0,
-        startedAt: resume && state.run?.startedAt ? state.run.startedAt : Date.now(),
-      };
+      if (isWorkflowRun) {
+        state.run = null;
+      } else {
+        state.run = {
+          status: "running",
+          history: history || [],
+          lastText: lastText || "",
+          turnsUsed: turnsUsed || 0,
+          startedAt: resume && state.run?.startedAt ? state.run.startedAt : Date.now(),
+        };
+      }
       setSendButton(true);
 
       const loopStartTime = Date.now();
@@ -549,6 +573,90 @@ async function executeLoop({
         }
         ensureSessionId();
         persistSession();
+        if (isWorkflowRun) {
+          const wfRes = await runDeterministicWorkflow({
+            rawText: cleanLoopUserText,
+            rawTools,
+            getLastCapturedImage: () => lastCapturedImageUrl,
+            clearLastCapturedImage: () => {
+              lastCapturedImageUrl = null;
+            },
+            resolvePageSnapshot: resolveSidepanelPageSnapshot,
+            settings: state.settings,
+            signal: state.abort.signal,
+            traceSteps: runTraceSteps,
+            onStepStart: (ev) => {
+              try {
+                pushTraceItem(botMsg, {
+                  kind: "tool",
+                  name: ev.name,
+                  args: ev.args || {},
+                  status: "running",
+                  ok: null,
+                  preview: "",
+                });
+                paintBot(botMsg);
+              } catch (err) {
+                console.warn("[pagelens] workflow onStepStart", err);
+              }
+            },
+            onStepDone: (ev) => {
+              try {
+                finishTraceTool(botMsg, {
+                  name: ev.name,
+                  ok: ev.ok,
+                  args: ev.args,
+                  content: ev.result || "",
+                  durationMs: ev.durationMs || 0,
+                });
+                paintBot(botMsg);
+              } catch (err) {
+                console.warn("[pagelens] workflow onStepDone", err);
+              }
+            },
+          });
+          lockedEndedAtIso = new Date().toISOString();
+          lockedTsSlug = formatTimestampForFilename(lockedEndedAtIso);
+          const shotPaths = predictDetachedImagePaths(runTraceSteps, {
+            tsSlug: lockedTsSlug,
+            source: "sidepanel",
+            runId,
+          });
+          botMsg.text = formatWorkflowSummary({
+            ...wfRes,
+            allShotPaths: shotPaths,
+            lastShotPath: shotPaths[shotPaths.length - 1] || "",
+          });
+          const wfAborted = Boolean(wfRes.aborted) || state.stopIntent === "user";
+          runEndReason = wfAborted ? "abort" : (wfRes.ok ? "stop" : "error");
+          runStatus = wfAborted ? "cancelled" : (wfRes.ok ? "done" : "failed");
+          botMsg.error = !wfRes.ok && !wfAborted;
+          failed = Boolean(botMsg.error);
+          errorText = wfRes.ok || wfAborted ? null : (wfRes.errorMessage || botMsg.text);
+          botMsg.metrics = {
+            durationMs: Math.max(1, Date.now() - loopStartTime),
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            finishReason: runEndReason,
+          };
+          latestHistory = [
+            ...(history || []),
+            { role: "user", content: cleanLoopUserText },
+            { role: "assistant", content: botMsg.text },
+          ];
+          result = {
+            reason: runEndReason,
+            turnsUsed: 0,
+            text: botMsg.text,
+            metrics: botMsg.metrics,
+          };
+          try {
+            paintBot(botMsg);
+          } catch (err) {
+            console.warn("[pagelens] paintBot", err);
+          }
+        } else {
         result = await loop.run(userText, {
           sessionId: state.sessionId,
           history,
@@ -665,6 +773,7 @@ async function executeLoop({
           totalTokens: 0,
           finishReason: runEndReason,
         };
+        }
       } catch (err) {
         const durMs = Math.max(1, Date.now() - loopStartTime);
         const isAbort = err?.name === "AbortError" || state.stopIntent === "user";
@@ -734,10 +843,13 @@ async function executeLoop({
         sessionId: state.sessionId || "default",
         sessionTitle: state.sessionTitle || undefined,
         startedAt: startedAtIso,
-        endedAt: new Date().toISOString(),
+        endedAt: lockedEndedAtIso || new Date().toISOString(),
+        ...(lockedTsSlug ? { tsSlug: lockedTsSlug } : {}),
         status: runStatus,
         endReason: runEndReason,
-        model: (typeof model === "object" ? model?.model : String(model || "")) || "unknown",
+        model: isWorkflowRun
+          ? WORKFLOW_MODEL_ID
+          : ((typeof model === "object" ? model?.model : String(model || "")) || "unknown"),
         durationMs: botMsg.metrics?.durationMs,
         metrics: botMsg.metrics,
         initialPage,
@@ -751,6 +863,7 @@ async function executeLoop({
         trace: botMsg.trace ? [...botMsg.trace] : [],
         steps: runTraceSteps,
         history: latestHistory,
+        ...(isWorkflowRun ? { conversationMessages: latestHistory } : {}),
         systemPrompt: systemPromptText,
         messagesSummary,
       });
@@ -838,9 +951,10 @@ async function sendPrompt(userText, options = {}) {
     console.error("[pagelens] renderMessages", err);
   }
 
+  const isWorkflow = isWorkflowDirectiveText(text);
   const wantImage = Boolean(image);
   const kind = currentKind(wantImage);
-  const model = requireModel(kind);
+  const model = isWorkflow ? { model: WORKFLOW_MODEL_ID } : requireModel(kind);
   if (!model) {
     console.warn("[pagelens] sendPrompt no-model");
     botMsg.text = needModelMessage(kind);
@@ -851,6 +965,30 @@ async function sendPrompt(userText, options = {}) {
 
   try {
     console.info("[pagelens] sendPrompt executeLoop");
+    if (isWorkflow) {
+      trustPanel.render();
+      botMsg.sourceTitle = state.share ? (state.pack?.title || state.tab?.title || "") : "";
+      const prior = [];
+      for (const m of state.messages.slice(0, -2)) {
+        if (m.error || (m.role === "bot" && !m.text)) continue;
+        if (m.role === "user") prior.push({ role: "user", content: m.text });
+        if (m.role === "bot") prior.push({ role: "assistant", content: m.text });
+      }
+      const rawPromptText = text || String(userText || "");
+      await executeLoop({
+        userText: rawPromptText,
+        rawUserText: rawPromptText,
+        attachedContextChars: 0,
+        history: prior,
+        resume: false,
+        botMsg,
+        model,
+        clearImage: options.clearImage,
+        workflowMode: true,
+      });
+      console.info("[pagelens] sendPrompt workflow ok");
+      return;
+    }
     if (state.share && state.tab) {
       try {
         await withTimeout(refreshTab(), 8000, "读当前页超时，先用已缓存内容。");

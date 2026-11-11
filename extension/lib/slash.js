@@ -21,14 +21,20 @@ export function slashItemsFromSkills(skills) {
     }));
 }
 
+export function isWorkflowSlashCommand(text) {
+  return /^\s*\/workflow(?:\s|$)/i.test(String(text ?? ""));
+}
+
 export function parseSlashToken(text, cursor) {
   const s = String(text ?? "");
+  if (isWorkflowSlashCommand(s)) return null;
   const pos = Math.max(0, Math.min(s.length, Number.isFinite(cursor) ? cursor : s.length));
   const before = s.slice(0, pos);
   const m = before.match(/(^|\s)\/([^\s]*)$/);
   if (!m) return null;
   const query = m[2];
   const start = pos - query.length - 1;
+  if (start === 0 && /^workflow$/i.test(query)) return null;
   return { start, end: pos, query };
 }
 
@@ -66,6 +72,7 @@ export function applySlashItem(text, token, item) {
 
 export function userInvokedSkill(text) {
   const s = String(text || "");
+  if (isWorkflowSlashCommand(s)) return false;
   if (/使用\s+\S+\s+skill/i.test(s)) return true;
   return /^\s*\/[A-Za-z0-9_\-\u4e00-\u9fff]/.test(s);
 }
