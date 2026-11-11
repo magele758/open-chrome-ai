@@ -269,16 +269,17 @@ async function startInterpret() {
   }
 }
 
-async function captureTab(tabId) {
+async function captureTab(tabId, { silent = false } = {}) {
   if (!tabId && !state.tab) await refreshTab();
   const id = tabId || state.tab?.id;
   if (!id && state.tab?.windowId == null) {
-    pushError("没有可截取的标签");
+    if (!silent) pushError("没有可截取的标签");
     return null;
   }
   try {
     return await captureVisible(id, state.tab?.windowId);
   } catch (err) {
+    if (silent) throw err;
     pushError("截图失败：" + err.message);
     return null;
   }

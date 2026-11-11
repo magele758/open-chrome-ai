@@ -275,8 +275,9 @@ async function runKernelLoop(host, userText, options) {
       },
       resolveTurnTools() {
         if (gate.forceAnswer) return { tools: [], allowExternalAiTools: false };
+        const active = Array.isArray(host.tools) ? host.tools : listChromeTools();
         return {
-          tools: chromeToolsToContracts(listChromeTools()),
+          tools: chromeToolsToContracts(active),
           allowExternalAiTools: false,
         };
       },

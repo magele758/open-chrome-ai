@@ -108,4 +108,21 @@ const historyTools = resolveActiveTools({
 const histNames = historyTools.map((t) => t.name);
 assert(histNames.includes("library_info"), "has library_info when previous history mentioned obsidian/授权");
 
+// 9. Negation / passive field nouns do not bloat unrelated domains (ADR-005)
+const r1WebTools = resolveActiveTools({
+  userText: [
+    "在当前采集箱页面逐步执行填写商品标题与价格设置；商品视频保持空白，检查已选标签与标签文本，完成后结束运行。",
+    "绝对禁止点击发布或删除；严禁打开其他站点或运行 shell 命令；不要修改插件设置。",
+  ].join(" "),
+  tools: allTools,
+  hasVideo: false,
+});
+const r1WebNames = r1WebTools.map((t) => t.name);
+assert(r1WebNames.includes("extract_page") && r1WebNames.includes("screenshot"), "keeps core_reader");
+assert(r1WebNames.includes("click") && r1WebNames.includes("fill"), "keeps dom_interact");
+assert(!r1WebNames.includes("seek_video") && !r1WebNames.includes("transcribe_video"), "does not activate media_player on 视频保持空白");
+assert(!r1WebNames.includes("open_tab") && !r1WebNames.includes("list_tabs"), "does not activate browser_mgmt on 已选标签/标签文本");
+assert(!r1WebNames.includes("run_shell") && !r1WebNames.includes("write_library"), "does not activate system_ops on 逐步执行/结束运行/禁令");
+assert(!r1WebNames.includes("update_settings"), "does not activate settings on 价格设置/禁令");
+
 console.log("PASS test_tool_router.mjs");

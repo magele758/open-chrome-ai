@@ -382,7 +382,9 @@ export function createDelegateManager({
       const loop = createLoop({
         maxTurns: task.maxSteps,
         allTools: tools,
-        tools: run.activeTools ? run.activeTools(tools) : tools,
+        get tools() {
+          return run.activeTools ? run.activeTools(tools) : tools;
+        },
         systemPrompt: run.systemPrompt,
         getToolPageContext: run.getToolPageContext,
         interceptToolCall: interceptorFor(task, run, settings, session, () => taint),

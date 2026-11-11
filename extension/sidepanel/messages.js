@@ -148,15 +148,24 @@ function pushTraceItem(botMsg, item) {
 
 function finishTraceTool(botMsg, ev) {
   const running = [...(botMsg.trace || [])].reverse().find((t) => t.name === ev.name && t.status === "running");
+  const ts = Date.now();
   const next = {
     kind: "tool",
     name: ev.name,
     ok: ev.ok,
+    jsOk: ev.jsOk !== undefined ? Boolean(ev.jsOk) : Boolean(ev.ok),
     status: ev.ok ? "ok" : "fail",
     args: pickToolArgs(ev, running?.args),
     preview: ev.content || "",
     durationMs: ev.durationMs || 0,
     archived: Boolean(ev.archived),
+    timestamp: ts,
+    isoTime: new Date(ts).toISOString(),
+    tabId: ev.tabId ?? null,
+    pageUrl: ev.pageUrl ?? null,
+    pageTitle: ev.pageTitle ?? null,
+    failureReason: ev.ok ? null : (ev.failureReason ?? null),
+    archiveHandle: ev.archiveHandle ?? null,
   };
   if (running) Object.assign(running, next);
   else pushTraceItem(botMsg, next);

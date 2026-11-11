@@ -34,20 +34,25 @@ const ACTION_KEYWORDS = {
   send: /发送|发给|寄给|转发给|回复|回信|私信|邮件|\b(?:send|e-?mail|mail\s+to|reply|forward|dm)\b/i,
   download: /下载|保存到本地|\bdownload\b/i,
   upload: /上传|附件|\b(?:upload|attach)\b/i,
-  shell: /运行|执行|终端|命令行|\b(?:run|execute|exec|shell|terminal|bash)\b/i,
+  shell: /终端|命令行|(?:运行|执行)\s*(?:shell|bash|zsh|sh|cmd|脚本|命令|终端|本机命令)|\b(?:shell|terminal|bash)\b|\b(?:run|execute|exec)\s+(?:command|commands|script|shell|bash)\b/i,
   write: /保存|存到|存成|写入|记下|记到|笔记|收藏|书签|入库|\b(?:save|write|note|bookmark|remember)\b/i,
   clipboard: /复制|拷贝|剪贴板|\b(?:copy|clipboard)\b/i,
   close: /关闭|关掉|关了|\bclose\b/i,
   delete: /删除|删掉|清除|清空|移除|\b(?:delete|remove|clear|erase)\b/i,
   settings: /设置|配置|设定|偏好|主题|字体|深色|暗色|浅色|回答语言|切换模型|换个模型|\b(?:settings?|config|preference|theme|font)\b/i,
-  automation: /automa|工作流|\bworkflow\b/i,
+  automation: /automa|(?:运行|执行|调用|跑)\s*(?:工作流|workflow)|\bautoma\b/i,
   purchase: /购买|下单|付款|支付|结账|\b(?:buy|order|checkout|pay|purchase)\b/i,
 };
+
+const PROHIBIT_RE =
+  /(?:绝对|严|切)?(?:禁止|严禁|切勿|请勿|不可|不得|不准|不许|不要|绝不|决不|禁按|禁点|勿点|勿按|不点击|不打开|不跳转|不保存|不提交|不发布|不发送|不上传|不删除|不关闭|\bdo\s+not\b|\bdon't\b|\bnever\b|\bmust\s+not\b|\bforbid(?:den)?\b)/i;
+const PAREN_REMARK_RE = /[（(](?:[^（）()\n]|[（(][^（）()\n]{0,120}[）)]){1,300}[）)]/g;
 
 const URL_RE = /\bhttps?:\/\/[^\s<>"'`，。、；！？）】」』]+/gi;
 const EMAIL_RE = /[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
 const TLDS = "com|cn|net|org|io|dev|ai|app|co|me|tv|xyz|info|edu|gov|so|cc|jp|uk|de|fr|hk|tw|us|ly|gg|site|tech|top|vip|wiki|blog|news|page|cloud|link|im|to";
 const DOMAIN_RE = new RegExp(`(?<![\\w.@/-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:${TLDS}))(?::\\d+)?(?![\\w-])`, "gi");
+const IPV4_RE = /(?<![\w.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?::\d+)?(?![\w.])/g;
 const HANDLE_RE = /(?<![\w@])@([A-Za-z0-9_][\w.-]{1,38})/g;
 const PATH_RE = /(?<![\w:/.~])((?:~\/|\/)(?:[\w.@%+=-]+\/?)+|[A-Za-z]:\\[^\s"'”」)）]+)/g;
 const FENCE_RE = /```[\w-]*\n?([\s\S]*?)```/g;
@@ -110,6 +115,36 @@ function extractCommands(text) {
   return uniq(out.map(normalizeCommand).filter((c) => c.length <= 500));
 }
 
+/** 剥离委托人明确表达禁止/否定的括号备注与分句，防止禁令中的动作词或域名误入授权胶囊 */
+export function stripProhibitedClauses(raw) {
+  const input = String(raw || "");
+  if (!input) return "";
+  const fences = [];
+  let text = input.replace(FENCE_RE, (m) => {
+    const idx = fences.push(m) - 1;
+    return `__PL_FENCE_${idx}__`;
+  });
+  text = text.replace(PAREN_REMARK_RE, (m) => (PROHIBIT_RE.test(m) ? " " : m));
+  const parts = text.split(/([\n。！？!?；;，,])/);
+  const kept = parts.map((part, idx) => {
+    if (idx % 2 === 1) return part;
+    const hit = PROHIBIT_RE.exec(part);
+    return hit ? part.slice(0, hit.index) : part;
+  });
+  return kept
+    .join("")
+    .replace(/__PL_FENCE_(\d+)__/g, (_m, i) => fences[Number(i)] || "");
+}
+
+function neutralizePassiveActionPhrases(src) {
+  return String(src || "")
+    .replace(/未发布|已发布|发布中|预发布|发布站点|发布记录|未保存|已保存/g, " ")
+    .replace(/停在[^\n。！？!?；;，,]{0,40}?(?:发布|提交|保存)[^\n。！？!?；;，,]{0,15}?前(?:一步)?/g, " ")
+    .replace(/[^\n。！？!?；;，,]{0,20}?未点击/g, " ")
+    .replace(/清空(?:改搜|输入|搜索框?)/g, " ")
+    .replace(/关闭(?:抽屉|弹窗|浮层|对话框|提示)/g, " ");
+}
+
 /**
  * 从委托人指令确定性地抽取胶囊。只能传用户/委托人本人写的文字，不能拼入页面内容。
  * @param {string} text
@@ -120,17 +155,21 @@ export function extractCapsule(text, { principal = "user" } = {}) {
   const src = String(text || "").slice(0, 20000);
   if (!src.trim()) return capsule;
 
-  const commands = extractCommands(src);
-  const urls = uniq([...src.matchAll(URL_RE)].map((m) => m[0].replace(/[.,;:!?]+$/, "")).filter((u) => urlOrigin(u)));
-  const emails = uniq([...src.matchAll(EMAIL_RE)].map((m) => m[0].toLowerCase()));
-  const noUrls = src.replace(URL_RE, " ").replace(EMAIL_RE, " ");
+  const affirmativeSrc = stripProhibitedClauses(src);
+  const actionSrc = neutralizePassiveActionPhrases(affirmativeSrc);
+
+  const commands = extractCommands(affirmativeSrc);
+  const urls = uniq([...affirmativeSrc.matchAll(URL_RE)].map((m) => m[0].replace(/[.,;:!?]+$/, "")).filter((u) => urlOrigin(u)));
+  const emails = uniq([...affirmativeSrc.matchAll(EMAIL_RE)].map((m) => m[0].toLowerCase()));
+  const noUrls = affirmativeSrc.replace(URL_RE, " ").replace(EMAIL_RE, " ");
   const domains = [...noUrls.matchAll(DOMAIN_RE)].map((m) => normalizeDomain(m[1]));
+  const ipv4Hosts = [...noUrls.matchAll(IPV4_RE)].map((m) => normalizeDomain(m[1]));
   const handles = [...noUrls.matchAll(HANDLE_RE)].map((m) => `@${m[1]}`);
-  const pathSrc = src.replace(URL_RE, " ");
+  const pathSrc = affirmativeSrc.replace(URL_RE, " ");
   const paths = uniq([...pathSrc.matchAll(PATH_RE)].map((m) => m[1].replace(/[.,;:!?]+$/, "")).filter((p) => p.length > 1));
 
-  const platforms = KNOWN_PLATFORMS.filter((p) => p.re.test(src));
-  const actions = ACTION_CATEGORIES.filter((a) => ACTION_KEYWORDS[a]?.test(src));
+  const platforms = KNOWN_PLATFORMS.filter((p) => p.re.test(affirmativeSrc));
+  const actions = ACTION_CATEGORIES.filter((a) => ACTION_KEYWORDS[a]?.test(actionSrc));
   if (urls.length && !actions.includes("navigate")) actions.push("navigate");
   if (commands.length && !actions.includes("shell")) actions.push("shell");
 
@@ -139,6 +178,7 @@ export function extractCapsule(text, { principal = "user" } = {}) {
   capsule.origins = uniq([
     ...urls.map(normalizeDomain),
     ...domains,
+    ...ipv4Hosts,
     ...platforms.flatMap((p) => p.domains),
   ]);
   capsule.platforms = platforms.map((p) => p.id);

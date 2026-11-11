@@ -59,6 +59,7 @@ import { requireHostUrl, requireOptionalFeature } from "../optional-permissions.
 import { aliasAgentPath, isAllowedAgentReadName, isBlockedAgentRoot } from "./fs-policy.js";
 import { isShellCommandWhitelisted, shellPolicyBlock } from "./shell-policy.js";
 import { debugLog } from "../debug-log.js";
+import { stripProhibitedClauses } from "./trust/capsule.js";
 import { decideToolCall } from "./trust/decide.js";
 import {
   ORIGIN_SCOPED_NAV_TOOLS,
@@ -323,10 +324,37 @@ export function createAgentTools(ctx) {
             ctx.setImage?.(dataUrl);
             return `已截取${args.selector ? "元素" : "整页"}画面（${clip?.width}×${clip?.height}），已附加到本轮对话。请描述关键信息，或继续回答用户。`;
           }
-          const dataUrl = ctx.capture
-            ? await ctx.capture(tabId)
-            : await captureTab(tabId, ctx.getWindowId?.());
-          if (!dataUrl) return "截图失败：未获取到页面画面。";
+          let dataUrl = null;
+          let primaryErr = null;
+          let cdpErr = null;
+          try {
+            dataUrl = ctx.capture
+              ? await ctx.capture(tabId, { silent: Boolean(cdpEnabled && tabId) })
+              : await captureTab(tabId, ctx.getWindowId?.());
+          } catch (err) {
+            primaryErr = err;
+          }
+          const isRestrictedPage = /受限页/.test(String(primaryErr?.message || ""));
+          if (!dataUrl && cdpEnabled && tabId && !isRestrictedPage) {
+            try {
+              console.info("[PageLens] screenshot falling back to CDP", {
+                tabId,
+                reason: primaryErr?.message || "empty_capture",
+              });
+              debugLog("screenshot.cdpFallback", {
+                tabId,
+                reason: String(primaryErr?.message || "empty_capture").slice(0, 200),
+              });
+              const cdpShot = await cdpScreenshot(cdp, tabId, {});
+              dataUrl = cdpShot?.dataUrl || null;
+            } catch (err) {
+              cdpErr = err;
+            }
+          }
+          if (!dataUrl) {
+            const reason = cdpErr?.message || primaryErr?.message || "未获取到页面画面。";
+            return `截图失败：${reason}`;
+          }
           ctx.setImage?.(dataUrl);
           return "已截取当前画面，已附加到本轮对话。请用文字描述你看到的关键信息，或继续回答用户。";
         } catch (err) {
@@ -1812,14 +1840,18 @@ export function resolveActiveTools({
     if (TOOL_DOMAINS[d]) activeDomains.add(d);
   }
 
-  let text = String(userText || "").toLowerCase();
+  let text = stripProhibitedClauses(String(userText || "")).toLowerCase();
   if (Array.isArray(history) && history.length > 0) {
-    const recent = history.slice(-4).map((m) => (typeof m?.content === "string" ? m.content : "")).join(" ");
+    const recent = history
+      .slice(-4)
+      .map((m) => (typeof m?.content === "string" ? stripProhibitedClauses(m.content) : ""))
+      .join(" ");
     text += " " + recent.toLowerCase();
   }
 
-  // 视频意图或当前页含视频
-  if (hasVideo || /视频|字幕|同传|播放|时间戳|video|transcript|caption/i.test(text)) {
+  // 视频意图或当前页含视频（排除表单字段「视频留空/保持空白」类静态描述）
+  const mediaText = text.replace(/视频[^\n。！？!?；;，,]{0,16}?(?:留空|保持空白|不填|无需|跳过|为空)/g, " ");
+  if (hasVideo || /视频|字幕|同传|播放|时间戳|video|transcript|caption/i.test(mediaText)) {
     activeDomains.add("media_player");
   }
 
@@ -1832,27 +1864,30 @@ export function resolveActiveTools({
     activeDomains.add("dom_interact");
   }
 
-  // 标签管理意图
+  // 标签管理意图（排除商品表单中的「已选标签」「标签文本」等非浏览器标签词）
+  const browserText = text.replace(/(?:已选|商品|特征|属性|类目|价格)标签|标签(?:文本|内容|字段|值|名|栏)/g, " ");
   if (
-    /标签|窗口|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|tab|bookmark|history|window|download|restore|search/i.test(
-      text,
+    /标签(?!文本)|窗口|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|\btabs?\b|bookmark|history|window|download|restore|search/i.test(
+      browserText,
     )
   ) {
     activeDomains.add("browser_mgmt");
   }
 
-  // 系统/Shell/Skill/文件/文稿/Obsidian/授权意图
+  // 系统/Shell/Skill/文件/文稿/Obsidian/授权意图（排除「逐步执行」「结束运行」等通用流程措辞）
+  const sysText = text.replace(/逐步执行|按步(?:骤)?执行|依次执行|执行结果|执行状态|结束运行|正在运行/g, " ");
   if (
-    /shell|命令|终端|运行|执行|脚本|skill|obsidian|文稿|入库|保存|note|library|exec|bash|zsh|授权|权限|未授权|重新授权|文件|文件夹|目录|路径|知识库|笔记|读写/i.test(
-      text,
+    /\bshell\b|命令|终端|(?:运行|执行)\s*(?:shell|bash|zsh|sh|cmd|脚本|命令|终端|本机|skill)|`[^`\n]+`|脚本|\bskill\b|obsidian|文稿|入库|保存|\bnote\b|\blibrary\b|\bexec\b|\bbash\b|\bzsh\b|授权|权限|未授权|重新授权|文件|文件夹|目录|路径|知识库|笔记|读写/i.test(
+      sysText,
     )
   ) {
     activeDomains.add("system_ops");
   }
 
+  const settingsText = text.replace(/(?:价格|库存|运费|规格|属性|物流|发货|站点)设置/g, " ");
   if (
     /设置|配置|设定|偏好|主题|字体|深色|暗色|浅色|回答语言|确认模式|免确认|全自动|严格模式|智能模式|切换模型|换个模型|换成.*模型|setting|config|preference|theme|font/i.test(
-      text,
+      settingsText,
     )
   ) {
     activeDomains.add("settings");

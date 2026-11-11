@@ -578,7 +578,46 @@ export function buildRunRecord(input = {}) {
   const botResponse = detacher.transform(String(input.botResponse ?? input.content ?? ""));
   const userPrompt = detacher.transform(String(input.userPrompt ?? ""));
   const thinking = detacher.transform(String(input.thinking ?? ""));
-  const trace = detacher.transform(Array.isArray(input.trace) ? input.trace : []);
+  const rawTrace = Array.isArray(input.trace) ? input.trace : [];
+  let toolStepCursor = 0;
+  const enrichedRawTrace = rawTrace.map((item) => {
+    if (!item || typeof item !== "object") return item;
+    if (item.kind === "tool" || item.kind === "blocked") {
+      let matched = null;
+      if (toolStepCursor < toolSteps.length) {
+        const candidate = toolSteps[toolStepCursor];
+        if (!item.name || candidate.toolName === item.name) {
+          matched = candidate;
+          toolStepCursor += 1;
+        } else {
+          const lookahead = toolSteps.findIndex(
+            (ts, idx) => idx >= toolStepCursor && ts.toolName === item.name,
+          );
+          if (lookahead >= 0) {
+            matched = toolSteps[lookahead];
+            toolStepCursor = lookahead + 1;
+          }
+        }
+      }
+      if (matched) {
+        return {
+          ...item,
+          ok: matched.ok,
+          jsOk: matched.jsOk,
+          timestamp: item.timestamp ?? matched.timestamp,
+          isoTime: item.isoTime ?? matched.isoTime,
+          tabId: item.tabId ?? matched.tabId,
+          pageUrl: item.pageUrl ?? matched.pageUrl,
+          pageTitle: item.pageTitle ?? matched.pageTitle,
+          failureReason:
+            item.failureReason !== undefined ? item.failureReason : matched.failureReason,
+          archiveHandle: item.archiveHandle ?? matched.archiveHandle,
+        };
+      }
+    }
+    return item;
+  });
+  const trace = detacher.transform(enrichedRawTrace);
   const sidepanelErrors = detacher.transform(
     Array.isArray(input.sidepanelErrors) ? input.sidepanelErrors : [],
   );
