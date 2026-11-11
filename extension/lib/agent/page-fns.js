@@ -343,28 +343,35 @@ export function checkStates(spec) {
 
 /**
  * Operate the page. Must stay self-contained.
- * kind: click | fill | press | select | wait | probe（只查找不操作，用于跨 frame 定位）
+ * kind: click | fill | press | select | wait | probe | waitProbe（只查找不操作，用于跨 frame 定位）
  */
 export async function pageAct(kind, spec) {
   const o = spec || {};
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const visible = (el) => {
     if (!el) return false;
-    const st = window.getComputedStyle(el);
-    if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+    let cur = el;
+    while (cur && cur.nodeType === 1) {
+      if (cur.hidden) return false;
+      const st = window.getComputedStyle(cur);
+      if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+      cur = cur.parentElement;
+    }
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
   const describe = (el) => ({
     tag: el.tagName.toLowerCase(),
     id: el.id || "",
-    text: (el.innerText || el.value || "").trim().replace(/\s+/g, " ").slice(0, 80),
+    text: (el.innerText || el.textContent || el.value || "").trim().replace(/\s+/g, " ").slice(0, 80),
     href: el.href || el.getAttribute("href") || "",
     type: el.getAttribute("type") || "",
   });
 
   const CONTROLS =
     "a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem']";
+  const TEXT_CONTAINERS =
+    "h1, h2, h3, h4, h5, h6, [role='heading'], [role='dialog'], [aria-modal='true'], .ant-modal-title, .ant-drawer-title, th, td, li, p, span, div";
   const collect = (selector, deep) => {
     const out = [...document.querySelectorAll(selector)];
     if (!deep) return out;
@@ -378,6 +385,8 @@ export async function pageAct(kind, spec) {
     walk(document);
     return out;
   };
+
+  const isWaitKind = kind === "wait" || kind === "waitProbe";
 
   const find = () => {
     const nth = Math.max(0, Number(o.nth) || 0);
@@ -396,7 +405,8 @@ export async function pageAct(kind, spec) {
     if (!needle) return { error: "需要 selector 或 text" };
     const lower = needle.toLowerCase();
     const matches = (el) => {
-      const t = `${el.innerText || ""} ${el.value || ""} ${el.getAttribute("aria-label") || ""} ${el.getAttribute("placeholder") || ""}`
+      const rawText = el.innerText ?? el.textContent ?? "";
+      const t = `${rawText} ${el.value || ""} ${el.getAttribute("aria-label") || ""} ${el.getAttribute("placeholder") || ""}`
         .replace(/\s+/g, " ")
         .trim()
         .toLowerCase();
@@ -404,7 +414,28 @@ export async function pageAct(kind, spec) {
     };
     let nodes = collect(CONTROLS, false).filter(visible).filter(matches);
     if (!nodes.length) nodes = collect(CONTROLS, true).filter(visible).filter(matches);
-    if (!nodes.length) return { error: `没有匹配「${needle}」的可见控件`, notFound: true };
+    if (!nodes.length && isWaitKind) {
+      let candidates = collect(TEXT_CONTAINERS, false).filter(visible).filter(matches);
+      if (!candidates.length) candidates = collect(TEXT_CONTAINERS, true).filter(visible).filter(matches);
+      if (candidates.length) {
+        const ancestorsWithMatch = new Set();
+        for (const c of candidates) {
+          let p = c.parentElement || (c.getRootNode?.() instanceof ShadowRoot ? c.getRootNode().host : null);
+          while (p) {
+            ancestorsWithMatch.add(p);
+            p = p.parentElement || (p.getRootNode?.() instanceof ShadowRoot ? p.getRootNode().host : null);
+          }
+        }
+        const deepest = candidates.filter((el) => !ancestorsWithMatch.has(el));
+        nodes = deepest.length ? deepest : candidates;
+      }
+    }
+    if (!nodes.length) {
+      return {
+        error: isWaitKind ? `没有匹配「${needle}」的可见元素或文字` : `没有匹配「${needle}」的可见控件`,
+        notFound: true,
+      };
+    }
     return { el: nodes[Math.min(nth, nodes.length - 1)], count: nodes.length };
   };
 
@@ -429,14 +460,25 @@ export async function pageAct(kind, spec) {
       hit = find();
     }
     if (hit.error) return { ok: false, error: hit.error, notFound: hit.notFound === true, waitedMs: Date.now() - t0 };
-    hit.el.scrollIntoView({ block: "center", behavior: "auto" });
+    const rect = hit.el.getBoundingClientRect();
+    const vh = window.innerHeight || document.documentElement?.clientHeight || 0;
+    const vw = window.innerWidth || document.documentElement?.clientWidth || 0;
+    const inViewport =
+      vh > 0 &&
+      rect.bottom > 0 &&
+      rect.top < vh &&
+      (vw <= 0 || (rect.right > 0 && rect.left < vw));
+    const oversized = vh > 0 && rect.height > vh * 0.6;
+    if (!inViewport && !oversized) {
+      hit.el.scrollIntoView({ block: "nearest", behavior: "auto" });
+    }
     return { ok: true, waitedMs: Date.now() - t0, match: describe(hit.el), count: hit.count };
   }
 
   const hit = find();
   if (hit.error) return { ok: false, error: hit.error, notFound: hit.notFound === true };
 
-  if (kind === "probe") return { ok: true, count: hit.count, match: describe(hit.el) };
+  if (kind === "probe" || kind === "waitProbe") return { ok: true, count: hit.count, match: describe(hit.el) };
 
   const el = hit.el;
   el.scrollIntoView({ block: "center", behavior: "auto" });
@@ -492,17 +534,76 @@ export function scrollPage(opts) {
   if (o.selector) {
     const el = document.querySelector(String(o.selector));
     if (!el) return { ok: false, error: "没有匹配元素" };
-    el.scrollIntoView({ block: o.block || "center", behavior: "smooth" });
+    el.scrollIntoView({ block: o.block || "center", behavior: "auto" });
     return { ok: true, via: "selector" };
   }
+  const visible = (el) => {
+    if (!el) return false;
+    let cur = el;
+    while (cur && cur.nodeType === 1) {
+      if (cur.hidden) return false;
+      const st = window.getComputedStyle(cur);
+      if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+      cur = cur.parentElement;
+    }
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const isScrollableY = (el) => {
+    if (!el) return false;
+    const oy = window.getComputedStyle(el).overflowY;
+    return (oy === "auto" || oy === "scroll" || oy === "overlay") && el.scrollHeight > el.clientHeight + 20;
+  };
+  const maxZIndex = (el) => {
+    let best = 0;
+    let cur = el;
+    while (cur && cur !== document.documentElement) {
+      const z = Number.parseInt(window.getComputedStyle(cur).zIndex, 10);
+      if (Number.isFinite(z) && z > best) best = z;
+      cur = cur.parentElement;
+    }
+    return best;
+  };
+  const findModalScroller = () => {
+    const rawModals = [
+      ...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .ant-modal, .ant-drawer'),
+    ].filter((el) => visible(el) && !el.closest('[aria-hidden="true"]'));
+    if (!rawModals.length) return null;
+    const topModals = rawModals
+      .filter((m) => !rawModals.some((other) => other !== m && other.contains(m)))
+      .map((m, idx) => ({ m, idx, z: maxZIndex(m) }))
+      .sort((a, b) => (b.z !== a.z ? b.z - a.z : b.idx - a.idx));
+    for (const { m } of topModals) {
+      const scrollers = [m, ...m.querySelectorAll("*")].filter((el) => visible(el) && isScrollableY(el));
+      if (scrollers.length) {
+        scrollers.sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+        return scrollers[0];
+      }
+    }
+    return null;
+  };
   if (typeof o.percent === "number") {
+    const scroller = findModalScroller();
+    if (scroller) {
+      const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const y = max * (o.percent / 100);
+      if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top: y, behavior: "auto" });
+      scroller.scrollTop = y;
+      return { ok: true, via: "modal-percent", y, scrollTop: scroller.scrollTop };
+    }
     const max = Math.max(0, document.documentElement.scrollHeight - innerHeight);
     const y = max * (o.percent / 100);
-    scrollTo({ top: y, behavior: "smooth" });
+    scrollTo({ top: y, behavior: "auto" });
     return { ok: true, via: "percent", y };
   }
   if (typeof o.y === "number") {
-    scrollTo({ top: o.y, behavior: "smooth" });
+    const scroller = findModalScroller();
+    if (scroller) {
+      if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top: o.y, behavior: "auto" });
+      scroller.scrollTop = o.y;
+      return { ok: true, via: "modal-y", y: o.y, scrollTop: scroller.scrollTop };
+    }
+    scrollTo({ top: o.y, behavior: "auto" });
     return { ok: true, via: "y" };
   }
   return { ok: false, error: "需要 selector、percent 或 y" };
@@ -590,15 +691,30 @@ export function runJs(code) {
   const raw = String(code || "");
   if (!raw.trim()) return { ok: false, error: "空代码" };
   if (raw.length > 8000) return { ok: false, error: "代码过长" };
-  const wrapped = /^\s*return\b/.test(raw) || /[;{}]/.test(raw) ? raw : `return (${raw})`;
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
   const failure = (err) => {
     const message = err?.message || String(err);
     const csp = err instanceof EvalError || /unsafe-eval|Content Security Policy|Trusted ?Script/i.test(message);
     return csp ? { ok: false, cspBlocked: true, error: message } : { ok: false, error: message };
   };
+  let fn;
+  if (!/^\s*return\b/.test(raw)) {
+    const exprCandidate = raw
+      .trim()
+      .replace(/;+(\s*(?:\/\/[^\n]*)?)$/, "$1")
+      .replace(/;+\s*$/, "");
+    if (exprCandidate) {
+      try {
+        fn = new AsyncFunction(`return (\n${exprCandidate}\n)`);
+      } catch (err) {
+        const isSyntax = err instanceof SyntaxError || err?.name === "SyntaxError";
+        if (!isSyntax) return failure(err);
+      }
+    }
+  }
   try {
-    const result = new AsyncFunction(wrapped)();
+    if (!fn) fn = new AsyncFunction(raw);
+    const result = fn();
     return Promise.resolve(result).then((value) => ({ ok: true, result: dump(value) }), failure);
   } catch (err) {
     return failure(err);

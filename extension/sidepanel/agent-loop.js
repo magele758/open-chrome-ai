@@ -47,7 +47,7 @@ import { splitThinking } from "../lib/markdown.js";
 import { multimodalUserContent, streamTurn } from "../lib/openai.js";
 import { loadTabPack } from "../lib/page-pack.js";
 import { packToContext, systemPrompt } from "../lib/prompts.js";
-import { createRunId, persistRunBundle } from "../lib/run-recorder.js";
+import { createRunId, persistRunBundle, stripAttachedPageContext } from "../lib/run-recorder.js";
 import { ensureSkillBody } from "../lib/skill-folder.js";
 import { composeSkillPrompt, userInvokedSkill } from "../lib/slash.js";
 import { isModelReady, resolveModel } from "../lib/storage.js";
@@ -233,7 +233,25 @@ async function resolveSidepanelPageSnapshot(preferredTabId = null) {
   };
 }
 
-async function executeLoop({ userText, history, resume, turnsUsed, lastText, botMsg, model, clearImage }) {
+async function executeLoop({
+  userText,
+  rawUserText,
+  attachedContextChars = 0,
+  history,
+  resume,
+  turnsUsed,
+  lastText,
+  botMsg,
+  model,
+  clearImage,
+}) {
+  const strippedPromptInfo = stripAttachedPageContext(userText || "");
+  const cleanLoopUserText =
+    rawUserText !== undefined ? String(rawUserText) : strippedPromptInfo.cleanPrompt;
+  const effectiveAttachedContextChars = Math.max(
+    0,
+    Number(attachedContextChars) || strippedPromptInfo.strippedChars || 0,
+  );
   const runId = createRunId("run");
   const runStartTime = Date.now();
   const startedAtIso = new Date(runStartTime).toISOString();
@@ -356,7 +374,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         get tools() {
           const lastUser = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
           return resolveActiveTools({
-            userText: userText || lastUser?.text || "",
+            userText: cleanLoopUserText || lastUser?.text || "",
             history,
             tools,
             hasVideo: Boolean(state.pack?.hasVideo),
@@ -427,7 +445,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             const audit = await auditToolCall({
               toolName: tool.name,
               args,
-              userText: lastUser?.text || userText || "",
+              userText: cleanLoopUserText || lastUser?.text || "",
               model: resolveModel(state.settings, "text"),
               signal,
             });
@@ -705,6 +723,11 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             error: Boolean(m.error),
           }))
         : [];
+      const lastUserMsg = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
+      const cleanPersistedPrompt =
+        rawUserText !== undefined
+          ? String(rawUserText)
+          : (cleanLoopUserText || lastUserMsg?.text || "");
       const persisted = await persistRunBundle({
         runId,
         source: "sidepanel",
@@ -719,7 +742,8 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         metrics: botMsg.metrics,
         initialPage,
         finalPage,
-        userPrompt: userText || "",
+        userPrompt: cleanPersistedPrompt,
+        attachedContextChars: effectiveAttachedContextChars,
         thinking: botMsg.thinking || "",
         botResponse: botMsg.text || "",
         error: errorText,
@@ -872,8 +896,11 @@ async function sendPrompt(userText, options = {}) {
         pushTraceItem(botMsg, { kind: "meta", name: "读取 skill", ok: false });
       }
     }
+    const rawPromptText = text || String(userText || "");
     await executeLoop({
       userText: context ? `${loopText}\n\n${context}` : loopText,
+      rawUserText: rawPromptText,
+      attachedContextChars: context ? String(context).length : 0,
       history: prior,
       resume: false,
       botMsg,

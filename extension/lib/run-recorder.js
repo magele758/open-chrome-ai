@@ -34,7 +34,34 @@ const DATA_IMAGE_GLOBAL_RE = /data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9
 const UNTRUSTED_WRAPPER_RE = /^<untrusted_page(?:\s+source="[^"]*")?>\r?\n?([\s\S]*?)\r?\n?<\/untrusted_page>$/i;
 
 const TEXT_TOOL_FAILURE_RE =
-  /^(截图失败[：:]|当前页面受系统安全策略保护|已拦截|\[安全拦截\]|unknown tool:|请求失败[：:]|执行失败[：:]|页面上没有匹配的|没有匹配.*的可见控件|(?:NEEDS_WIDER_AUTHORIZATION|EGRESS_NOT_ALLOWED|CONFIRMATION_REQUIRED|ORIGIN_NOT_ALLOWED):)/i;
+  /^(截图失败[：:]|当前页面受系统安全策略保护|已拦截|\[安全拦截\]|unknown tool:|请求失败[：:]|执行失败[：:]|页面上没有匹配的|没有匹配.*的可见(?:控件|元素)|(?:NEEDS_WIDER_AUTHORIZATION|EGRESS_NOT_ALLOWED|CONFIRMATION_REQUIRED|ORIGIN_NOT_ALLOWED):)/i;
+
+const ATTACHED_CONTEXT_TAIL_RE =
+  /\n\n(?:（用户未分享页面）|【(?:用户选区|视频|页面正文|PDF\s*正文|X\s*长文章|X\s*帖子|PDF)】[\s\S]*)$/;
+
+/**
+ * 剥离侧栏自动拼接在用户原文末尾的 `【页面正文】<untrusted_page>...` 等附加上下文，
+ * 返回纯净用户原文与被剥离的附加上下文字符数。
+ */
+export function stripAttachedPageContext(raw) {
+  const s = String(raw ?? "");
+  if (!s) return { cleanPrompt: "", strippedChars: 0 };
+  const m = ATTACHED_CONTEXT_TAIL_RE.exec(s);
+  if (!m) return { cleanPrompt: s, strippedChars: 0 };
+  const tail = m[0];
+  if (
+    tail.includes("（用户未分享页面）") ||
+    tail.includes("<untrusted_page") ||
+    tail.includes("【PDF】未能抽取：") ||
+    tail.includes("【音频文稿】")
+  ) {
+    return {
+      cleanPrompt: s.slice(0, m.index),
+      strippedChars: Math.max(0, tail.length - 2),
+    };
+  }
+  return { cleanPrompt: s, strippedChars: 0 };
+}
 
 export function createRunId(prefix = "run") {
   const ts = Date.now().toString(36);
@@ -576,7 +603,14 @@ export function buildRunRecord(input = {}) {
   const initialPage = detacher.transform(normalizePageSnapshot(input.initialPage));
   const finalPage = detacher.transform(normalizePageSnapshot(input.finalPage ?? input.initialPage));
   const botResponse = detacher.transform(String(input.botResponse ?? input.content ?? ""));
-  const userPrompt = detacher.transform(String(input.userPrompt ?? ""));
+  const { cleanPrompt: cleanUserPrompt, strippedChars: autoStrippedChars } = stripAttachedPageContext(
+    String(input.userPrompt ?? ""),
+  );
+  const userPrompt = detacher.transform(cleanUserPrompt);
+  const attachedContextChars = Math.max(
+    0,
+    Number(input.attachedContextChars) || autoStrippedChars || 0,
+  );
   const thinking = detacher.transform(String(input.thinking ?? ""));
   const rawTrace = Array.isArray(input.trace) ? input.trace : [];
   let toolStepCursor = 0;
@@ -656,6 +690,7 @@ export function buildRunRecord(input = {}) {
     initialPage,
     finalPage,
     userPrompt,
+    attachedContextChars,
     thinking,
     botResponse,
     content: botResponse,

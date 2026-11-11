@@ -59,6 +59,7 @@ import { requireHostUrl, requireOptionalFeature } from "../optional-permissions.
 import { aliasAgentPath, isAllowedAgentReadName, isBlockedAgentRoot } from "./fs-policy.js";
 import { isShellCommandWhitelisted, shellPolicyBlock } from "./shell-policy.js";
 import { debugLog } from "../debug-log.js";
+import { stripAttachedPageContext } from "../run-recorder.js";
 import { stripProhibitedClauses } from "./trust/capsule.js";
 import { decideToolCall } from "./trust/decide.js";
 import {
@@ -194,9 +195,10 @@ async function loadNotes() {
 async function actInFrames(tabId, kind, spec) {
   const first = await injectMain(tabId, pageAct, [kind, spec]);
   if (!first || first.ok !== false || !first.notFound) return first;
+  const probeKind = kind === "wait" ? "waitProbe" : "probe";
   let probes = [];
   try {
-    probes = await injectFrames(tabId, pageAct, ["probe", spec], { world: "MAIN" });
+    probes = await injectFrames(tabId, pageAct, [probeKind, spec], { world: "MAIN" });
   } catch {
     return first;
   }
@@ -537,10 +539,11 @@ export function createAgentTools(ctx) {
       }),
       async execute(args) {
         return toToolText(
-          await injectMain(await resolveTabId(ctx, args), pageAct, [
-            "wait",
-            { selector: args.selector, text: args.text, timeoutMs: args.timeoutMs },
-          ]),
+          await actInFrames(await resolveTabId(ctx, args), "wait", {
+            selector: args?.selector,
+            text: args?.text,
+            timeoutMs: args?.timeoutMs,
+          }),
         );
       },
     },
@@ -1840,17 +1843,24 @@ export function resolveActiveTools({
     if (TOOL_DOMAINS[d]) activeDomains.add(d);
   }
 
-  let text = stripProhibitedClauses(String(userText || "")).toLowerCase();
+  const sanitizeRouterText = (raw) => {
+    const noAttached = stripAttachedPageContext(String(raw || "")).cleanPrompt;
+    const noUntrusted = noAttached.replace(/<untrusted_page[\s\S]*?(?:<\/untrusted_page>|$)/gi, " ");
+    return stripProhibitedClauses(noUntrusted);
+  };
+
+  let text = sanitizeRouterText(userText).toLowerCase();
   if (Array.isArray(history) && history.length > 0) {
     const recent = history
+      .filter((m) => m?.role !== "tool")
       .slice(-4)
-      .map((m) => (typeof m?.content === "string" ? stripProhibitedClauses(m.content) : ""))
+      .map((m) => (typeof m?.content === "string" ? sanitizeRouterText(m.content) : ""))
       .join(" ");
     text += " " + recent.toLowerCase();
   }
 
   // 视频意图或当前页含视频（排除表单字段「视频留空/保持空白」类静态描述）
-  const mediaText = text.replace(/视频[^\n。！？!?；;，,]{0,16}?(?:留空|保持空白|不填|无需|跳过|为空)/g, " ");
+  const mediaText = text.replace(/视频[^\n。！？!?；;，,]{0,30}?(?:留空|保持空白|不填|无需|跳过|为空)/g, " ");
   if (hasVideo || /视频|字幕|同传|播放|时间戳|video|transcript|caption/i.test(mediaText)) {
     activeDomains.add("media_player");
   }
@@ -1864,8 +1874,15 @@ export function resolveActiveTools({
     activeDomains.add("dom_interact");
   }
 
-  // 标签管理意图（排除商品表单中的「已选标签」「标签文本」等非浏览器标签词）
-  const browserText = text.replace(/(?:已选|商品|特征|属性|类目|价格)标签|标签(?:文本|内容|字段|值|名|栏)/g, " ");
+  // 标签管理意图（排除商品表单中的「已选标签」「标签文本」、页内弹窗关闭、下拉框搜索与左侧栏导航词）
+  const browserText = text
+    .replace(/(?:已选|商品|特征|属性|类目|价格)标签|标签(?:文本|内容|字段|值|名|栏)/g, " ")
+    .replace(
+      /(?:关闭|关掉|关了)[^\n。！？!?；;，,]{0,28}?(?:弹窗|抽屉|浮层|对话框|模态框|下拉|提示|遮罩|面板)|(?:两层)?(?:弹窗|抽屉|浮层|对话框|模态框|下拉)[^\n。！？!?；;，,]{0,16}?(?:关闭|关掉|关了)|关窗动画|已关闭/g,
+      " ",
+    )
+    .replace(/搜索(?:框|输入词?|候选|下拉|并点击|选项)|清空改搜|改搜/g, " ")
+    .replace(/左侧[^\n。！？!?；;，,]{0,48}?导航|」导航|导航(?:栏|菜单|按钮|项|区)/g, " ");
   if (
     /标签(?!文本)|窗口|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|\btabs?\b|bookmark|history|window|download|restore|search/i.test(
       browserText,
@@ -1874,8 +1891,11 @@ export function resolveActiveTools({
     activeDomains.add("browser_mgmt");
   }
 
-  // 系统/Shell/Skill/文件/文稿/Obsidian/授权意图（排除「逐步执行」「结束运行」等通用流程措辞）
-  const sysText = text.replace(/逐步执行|按步(?:骤)?执行|依次执行|执行结果|执行状态|结束运行|正在运行/g, " ");
+  // 系统/Shell/Skill/文件/文稿/Obsidian/授权意图（排除「逐步执行」「自动保存」「类目路径」等通用网页流程措辞）
+  const sysText = text
+    .replace(/逐步执行|按步(?:骤)?执行|依次执行|执行结果|执行状态|结束运行|正在运行/g, " ")
+    .replace(/(?:系统|图片分配)?自动保存|保存(?:商品|草稿|成功|失败|状态|结果|核验|提示|按钮)/g, " ")
+    .replace(/(?:类目|完整|目标全?|所选|候选|分类|导航|面包屑|上述|该|此|两条)路径|路径匹配/g, " ");
   if (
     /\bshell\b|命令|终端|(?:运行|执行)\s*(?:shell|bash|zsh|sh|cmd|脚本|命令|终端|本机|skill)|`[^`\n]+`|脚本|\bskill\b|obsidian|文稿|入库|保存|\bnote\b|\blibrary\b|\bexec\b|\bbash\b|\bzsh\b|授权|权限|未授权|重新授权|文件|文件夹|目录|路径|知识库|笔记|读写/i.test(
       sysText,
@@ -1884,7 +1904,13 @@ export function resolveActiveTools({
     activeDomains.add("system_ops");
   }
 
-  const settingsText = text.replace(/(?:价格|库存|运费|规格|属性|物流|发货|站点)设置/g, " ");
+  const hasExplicitModeMutation =
+    /(?:切换|修改|改成|改为|开启|打开|设为|调成|启用|换到|切到)[^\n。！？!?；;，,]{0,14}?(?:全自动|确认模式|严格模式|智能模式|免确认)|(?:全自动|确认模式|严格模式|智能模式|免确认)[^\n。！？!?；;，,]{0,8}?(?:开启|打开|关闭)/.test(
+      text,
+    );
+  const settingsText = text
+    .replace(/(?:价格|库存|运费|规格|属性|物流|发货|站点)设置/g, " ")
+    .replace(hasExplicitModeMutation ? /(?!x)x/ : /全自动(?:模式)?/g, " ");
   if (
     /设置|配置|设定|偏好|主题|字体|深色|暗色|浅色|回答语言|确认模式|免确认|全自动|严格模式|智能模式|切换模型|换个模型|换成.*模型|setting|config|preference|theme|font/i.test(
       settingsText,

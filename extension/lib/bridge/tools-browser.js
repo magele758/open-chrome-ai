@@ -104,7 +104,8 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
   async function actInFrames(tabId, kind, spec) {
     const first = await env.inject(tabId, pageAct, [kind, spec], { world: "MAIN" });
     if (!first || first.ok !== false || !first.notFound || !env.injectFrames) return first;
-    const probes = await env.injectFrames(tabId, pageAct, ["probe", spec], { world: "MAIN" }).catch(() => []);
+    const probeKind = kind === "wait" ? "waitProbe" : "probe";
+    const probes = await env.injectFrames(tabId, pageAct, [probeKind, spec], { world: "MAIN" }).catch(() => []);
     const hit = probes.find((p) => p.frameId > 0 && p.result?.ok);
     if (!hit) return first;
     const res = await env.inject(tabId, pageAct, [kind, spec], { world: "MAIN", frameId: hit.frameId });
