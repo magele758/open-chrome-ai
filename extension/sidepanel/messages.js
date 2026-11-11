@@ -16,8 +16,12 @@ import { bindMarkdownLinks, decorateInlines, enhanceMermaid, formatAnswer, split
 import { visibleSkills } from "../lib/prompts.js";
 import { isModelReady, resolveModel } from "../lib/storage.js";
 import { messageShowsActionRow } from "../lib/turn-end-actions.js";
+import { charsPerSecond, liveLines, noteLiveSample, runningToolName } from "./live-status.js";
 
 const thinkingScrolls = new WeakMap();
+const liveSamples = new WeakMap();
+const liveStarts = new WeakMap();
+let liveTick = 0;
 
 function hostOf(url) {
   try {
@@ -236,25 +240,25 @@ function createMessageFooter(msg) {
     const dur = document.createElement("span");
     dur.className = "stat-item stat-duration";
     dur.title = `运行时长：${msg.metrics.durationMs}ms`;
-    dur.innerHTML = `<span class="stat-icon">⏱️</span><span class="stat-val">${formatDuration(msg.metrics.durationMs)}</span>`;
+    dur.textContent = formatDuration(msg.metrics.durationMs);
     stats.appendChild(dur);
 
     const inTok = document.createElement("span");
     inTok.className = "stat-item stat-tokens-in";
     inTok.title = `输入 Token：${msg.metrics.inputTokens}`;
-    inTok.innerHTML = `<span class="stat-icon">📥</span><span class="stat-val">${formatTokenCount(msg.metrics.inputTokens)}</span>`;
+    inTok.textContent = `入 ${formatTokenCount(msg.metrics.inputTokens)}`;
     stats.appendChild(inTok);
 
     const outTok = document.createElement("span");
     outTok.className = "stat-item stat-tokens-out";
     outTok.title = `输出 Token：${msg.metrics.outputTokens}`;
-    outTok.innerHTML = `<span class="stat-icon">📤</span><span class="stat-val">${formatTokenCount(msg.metrics.outputTokens)}</span>`;
+    outTok.textContent = `出 ${formatTokenCount(msg.metrics.outputTokens)}`;
     stats.appendChild(outTok);
 
     const reason = document.createElement("span");
     reason.className = `stat-item stat-reason ${msg.metrics.finishReason || ""}`;
     reason.title = `结束原因：${msg.metrics.finishReason || "未知"}`;
-    reason.innerHTML = `<span class="stat-icon">🏁</span><span class="stat-val">${finishReasonLabel(msg.metrics.finishReason)}</span>`;
+    reason.textContent = finishReasonLabel(msg.metrics.finishReason);
     stats.appendChild(reason);
   }
   footer.appendChild(stats);
@@ -274,7 +278,8 @@ function createMessageFooter(msg) {
     clipBtn.type = "button";
     clipBtn.className = "btn-clip-card";
     clipBtn.title = "剪藏此回答至 Obsidian 卡片与 Chrome 书签";
-    clipBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg><span>剪藏</span>`;
+    clipBtn.setAttribute("aria-label", clipBtn.title);
+    clipBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg><span>剪藏</span>`;
     clipBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       openClipModal(msg);
@@ -285,13 +290,19 @@ function createMessageFooter(msg) {
     copyBtn.type = "button";
     copyBtn.className = "btn-copy-answer";
     copyBtn.title = "复制回答";
+    copyBtn.setAttribute("aria-label", copyBtn.title);
     copyBtn.innerHTML = `<svg class="ico tiny"><use href="#i-copy"/></svg><span>复制</span>`;
     copyBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       try {
         await writeClipboardRich({ text: msg.text, html: formatAnswer(msg.text) });
-        copyBtn.querySelector("span").textContent = "已复制";
-        setTimeout(() => { copyBtn.querySelector("span").textContent = "复制"; }, 1200);
+        const label = copyBtn.querySelector("span");
+        label.textContent = "已复制";
+        copyBtn.classList.add("is-done");
+        setTimeout(() => {
+          label.textContent = "复制";
+          copyBtn.classList.remove("is-done");
+        }, 1200);
       } catch (err) {
         flashStatus(err.message || String(err), false);
       }
@@ -302,6 +313,7 @@ function createMessageFooter(msg) {
     obsidianBtn.type = "button";
     obsidianBtn.className = "btn-obsidian-answer";
     obsidianBtn.title = "把当前整段对话写入文稿文件夹";
+    obsidianBtn.setAttribute("aria-label", obsidianBtn.title);
     obsidianBtn.innerHTML = `<svg class="ico tiny"><use href="#i-book"/></svg><span>写入 Obsidian</span>`;
     obsidianBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -315,7 +327,8 @@ function createMessageFooter(msg) {
     dlBtn.type = "button";
     dlBtn.className = "btn-download-trace";
     dlBtn.title = "下载本次会话执行 Trace 日志（JSON）";
-    dlBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Trace</span>`;
+    dlBtn.setAttribute("aria-label", dlBtn.title);
+    dlBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Trace</span>`;
     dlBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       downloadMessageTrace(msg);
@@ -419,13 +432,16 @@ function renderMessages() {
       });
       root.appendChild(actions);
     }
+    ensureLiveTick(false);
     messageScroll?.reset();
     messageScroll?.afterRender();
     return;
   }
+  let streaming = false;
   for (const [index, msg] of state.messages.entries()) {
     const wrap = document.createElement("div");
-    wrap.className = `msg ${msg.role}${msg.error ? " error" : ""}`;
+    const continued = continuesAssistant(msg, state.messages[index - 1]);
+    wrap.className = `msg ${msg.role}${msg.error ? " error" : ""}${continued ? " continued" : ""}`;
     if (msg.role === "user") {
       if (msg.image) {
         const img = document.createElement("img");
@@ -433,14 +449,17 @@ function renderMessages() {
         img.src = msg.image;
         wrap.appendChild(img);
       }
-      wrap.appendChild(document.createTextNode(msg.text));
+      wrap.appendChild(document.createTextNode(msg.text || ""));
     } else {
-      const who = document.createElement("div");
-      who.className = "who";
-      who.textContent = "PageLens";
-      wrap.appendChild(who);
+      if (!continued) {
+        const who = document.createElement("div");
+        who.className = "who";
+        who.textContent = "PageLens";
+        wrap.appendChild(who);
+      }
       const isLast = msg === state.messages[state.messages.length - 1];
-      const streamingThis = state.busy && isLast && !msg.metrics;
+      const streamingThis = state.busy && isLast && !msg.metrics && !msg.error;
+      if (streamingThis) streaming = true;
       if (msg.trace?.length) {
         const tr = document.createElement("div");
         tr.className = "tool-trace";
@@ -454,20 +473,114 @@ function renderMessages() {
         wrap.appendChild(createThinkingBox(thinking, { isStreaming: isThinkingNow }));
       }
 
-      const displayText = answer || (isThinkingNow ? "" : (msg.text || (state.busy ? "…" : "")));
+      const visibleAnswer = answer && answer !== "…" ? answer : "";
+      const displayText = visibleAnswer || (isThinkingNow || streamingThis ? "" : (msg.text || ""));
       if (displayText) {
         const body = document.createElement("div");
         body.className = "body";
         fillBotBody(body, displayText, { mermaid: !streamingThis && !msg.error });
         wrap.appendChild(body);
       }
+      if (streamingThis) syncLiveStatus(wrap, msg, { streaming: true });
       if (messageShowsActionRow(state.messages, index, state.busy)) {
         wrap.appendChild(createMessageFooter(msg));
       }
     }
     root.appendChild(wrap);
   }
+  ensureLiveTick(streaming);
   messageScroll?.afterRender(scrollTop);
+}
+
+function continuesAssistant(msg, prev) {
+  return msg?.role === "bot" && !msg.error && prev?.role === "bot" && !prev.error;
+}
+
+function liveCharCount(msg) {
+  const { thinking, answer } = splitThinking(msg.text, msg.thinking);
+  return String(answer || "").length + String(thinking || "").length;
+}
+
+function describeLive(msg, now = Date.now()) {
+  const toolName = runningToolName(msg.trace);
+  const { thinking, answer, isStreamingThinking } = splitThinking(msg.text, msg.thinking);
+  const written = String(answer || "").trim() && answer !== "…";
+  const phase = toolName ? "tool" : written ? "writing" : ((thinking && String(thinking).trim()) || isStreamingThinking) ? "thinking" : "waiting";
+  const chars = liveCharCount(msg);
+  const samples = noteLiveSample(liveSamples.get(msg), chars, now);
+  liveSamples.set(msg, samples);
+  if (!liveStarts.has(msg)) liveStarts.set(msg, state.run?.startedAt || now);
+  return liveLines({
+    phase,
+    toolName,
+    elapsedMs: Math.max(0, now - liveStarts.get(msg)),
+    chars,
+    charsPerSec: charsPerSecond(samples, now),
+    showDots: phase === "waiting" && chars === 0,
+  });
+}
+
+function syncLiveStatus(wrap, msg, { streaming }) {
+  const existing = wrap.querySelector(":scope > .stream-live");
+  if (!streaming) {
+    existing?.remove();
+    return;
+  }
+  const lines = describeLive(msg);
+  const el = existing || document.createElement("details");
+  if (!existing) {
+    el.className = "stream-live";
+    const summary = document.createElement("summary");
+    summary.className = "stream-live__summary";
+    summary.title = "点开查看已用时间、字数和速度";
+    summary.innerHTML = `<span class="stream-live__dots" aria-hidden="true"><span class="stream-live__dot">.</span><span class="stream-live__dot">.</span><span class="stream-live__dot">.</span></span><span class="stream-live__phase"></span><span class="stream-live__sep" aria-hidden="true">·</span><span class="stream-live__pace"></span>`;
+    const detail = document.createElement("dl");
+    detail.className = "stream-live__detail";
+    detail.innerHTML = `<dt>已用</dt><dd data-k="elapsed"></dd><dt>速度</dt><dd data-k="speed"></dd><dt>已写出</dt><dd data-k="chars"></dd><dt data-k="tool-label">正在做</dt><dd data-k="tool"></dd>`;
+    el.append(summary, detail);
+    const who = wrap.querySelector(":scope > .who");
+    if (who) who.after(el);
+    else wrap.prepend(el);
+  }
+  el.dataset.phase = lines.phaseKey;
+  const dots = el.querySelector(".stream-live__dots");
+  if (dots) dots.hidden = !lines.showDots;
+  const phase = el.querySelector(".stream-live__phase");
+  if (phase) phase.textContent = lines.phase;
+  const pace = el.querySelector(".stream-live__pace");
+  if (pace) pace.textContent = lines.pace;
+  const elapsed = el.querySelector('[data-k="elapsed"]');
+  if (elapsed) elapsed.textContent = lines.elapsed;
+  const speed = el.querySelector('[data-k="speed"]');
+  if (speed) speed.textContent = lines.speed;
+  const chars = el.querySelector('[data-k="chars"]');
+  if (chars) chars.textContent = lines.chars;
+  const toolLabel = el.querySelector('[data-k="tool-label"]');
+  const tool = el.querySelector('[data-k="tool"]');
+  if (toolLabel) toolLabel.hidden = !lines.showTool;
+  if (tool) {
+    tool.hidden = !lines.showTool;
+    tool.textContent = lines.toolName;
+  }
+}
+
+function ensureLiveTick(on) {
+  if (!on) {
+    if (liveTick) clearInterval(liveTick);
+    liveTick = 0;
+    return;
+  }
+  if (liveTick) return;
+  liveTick = setInterval(() => {
+    if (!state.busy) {
+      ensureLiveTick(false);
+      return;
+    }
+    const msg = state.messages.at(-1);
+    const wrap = document.querySelector("#msgs .msg.bot:last-of-type");
+    if (!msg || msg.role !== "bot" || msg.error || msg.metrics || !wrap) return;
+    syncLiveStatus(wrap, msg, { streaming: true });
+  }, 400);
 }
 
 function createThinkingBox(thinking, { isStreaming = false } = {}) {
@@ -486,11 +599,9 @@ function createThinkingBox(thinking, { isStreaming = false } = {}) {
   summary.innerHTML = `
     ${chevronSvg}
     <span class="thinking-title">
-      <span class="thinking-icon">💭</span>
       <span class="thinking-label">${isStreaming ? "正在思考" : "思考过程"}</span>
       ${isStreaming ? '<span class="thinking-pulse"></span>' : ""}
     </span>
-    <span class="thinking-badge">${isStreaming ? "思考中" : "点击展开/收起"}</span>
   `;
 
   const content = document.createElement("div");
@@ -533,11 +644,6 @@ function updateThinkingBox(details, thinking, { isStreaming = false } = {}) {
     details.querySelector(".thinking-title")?.appendChild(p);
   } else if (!isStreaming && pulse) {
     pulse.remove();
-  }
-
-  const badge = details.querySelector(".thinking-badge");
-  if (badge) {
-    badge.textContent = isStreaming ? "思考中" : "点击展开/收起";
   }
 
   if (isStreaming && !details.open && details.dataset.autoOpen === "true") {
@@ -627,6 +733,7 @@ export {
   downloadMessageTrace,
   maybeUploadTraceToLangfuse,
   renderMessages,
+  syncLiveStatus,
   createThinkingBox,
   updateThinkingBox,
   fillBotBody,
