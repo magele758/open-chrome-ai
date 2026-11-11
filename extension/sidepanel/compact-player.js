@@ -9,7 +9,7 @@ import { deleteMediaArchive, loadFullMediaArchive } from "../lib/audio-composer.
 import { injectVideo } from "../lib/chrome.js";
 import { clearVideoDubCache } from "../lib/dub-cache.js";
 import { InterpretController } from "../lib/interpret-controller.js";
-import { DUB_ARCHIVE_VERSION } from "../lib/interpret-policy.js";
+import { dubArchiveVersion } from "../lib/interpret-policy.js";
 import { videoIdentity } from "../lib/library.js";
 import { formatTime } from "../lib/prompts.js";
 import { isTtsReady } from "../lib/storage.js";
@@ -534,7 +534,7 @@ async function performCompactToggle() {
 
   const archive = ((typeof packForMedia === "function" && packForMedia()) || state.pack)?.archive;
   // Older archives keep the previous voice/segmentation; regenerate (segment caches are reused).
-  const currentArchive = archive?.processingVersion === DUB_ARCHIVE_VERSION ? archive : null;
+  const currentArchive = archive?.processingVersion === dubArchiveVersion(state.settings.asr) ? archive : null;
   let audioBlob = currentArchive?.compactAudioBlob || currentArchive?.audioBlob;
   if (audioBlob) {
     try {
@@ -673,7 +673,7 @@ async function generateFullCompactAudio() {
     if (revision !== compactRevision) return;
     compactSessionOpen = true;
     $("compact-player-bar")?.classList.remove("hidden");
-    if (archive?.complete && archive.compactAudioBlob && archive.processingVersion === DUB_ARCHIVE_VERSION) {
+    if (archive?.complete && archive.compactAudioBlob && archive.processingVersion === dubArchiveVersion(state.settings.asr)) {
       const pack = typeof packForMediaWrite === "function" ? packForMediaWrite(tab.id) : (state.pack ||= {});
       if (pack) pack.archive = archive;
       compactGenerationMessage = "已复用完整音频，无需重新翻译或合成；可直接播放或下载。";

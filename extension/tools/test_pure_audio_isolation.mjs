@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { runPlannedInterpret } from '../lib/planned-interpret.js';
 import { InterpretController } from '../lib/interpret-controller.js';
-import { DUB_ARCHIVE_VERSION } from '../lib/interpret-policy.js';
+import { dubArchiveVersion } from '../lib/interpret-policy.js';
 
 // A paused page must not govern audio production, even beyond the planning window.
 const blob = new Blob(['audio']);
@@ -81,7 +81,7 @@ const context = vm.createContext({
   RemoteInterpretController: class { subscribe() {} isRunning() { return false; } async stop() {} },
   renderContext() {}, renderTranscribeAction() {}, formatTime: n => String(n), pushError: err => { throw Error(err); },
   getSharedAudioContext: () => null, injectVideo: async () => ({ ok: true }),
-  isAsrReady: () => true, isTtsReady: () => true, requireModel: () => true, DUB_ARCHIVE_VERSION,
+  isAsrReady: () => true, isTtsReady: () => true, requireModel: () => true, dubArchiveVersion,
   startInterpret: () => { videoStarts++; },
   stopDubPlayback() {}, loadFullMediaArchive: async () => savedArchive, videoIdentity: () => "test-video",
 });
@@ -143,9 +143,12 @@ const staleStarts = audioStarts;
 await vm.runInContext('generateFullCompactAudio()', context);
 assert.equal(audioStarts, staleStarts + 1, 'an archive from older voice/segmentation logic is regenerated');
 await vm.runInContext('generateFullCompactAudio()', context);
-savedArchive = { complete: true, compactAudioBlob: blob, processingVersion: DUB_ARCHIVE_VERSION };
+savedArchive = { complete: true, compactAudioBlob: blob, processingVersion: dubArchiveVersion() };
 const startsBefore = audioStarts;
 await vm.runInContext('generateFullCompactAudio()', context);
 assert.equal(audioStarts, startsBefore);
 assert.equal(el('cp-download-btn').disabled, false);
 console.log('PASS: full-generation button runs without autoplay, cancels and reuses a completed archive');
+context.state.settings.asr.interpretLanguage = 'en';
+await vm.runInContext('generateFullCompactAudio()', context);
+assert.equal(audioStarts, startsBefore + 1, 'changing the source language regenerates a saved dub');
