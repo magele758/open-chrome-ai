@@ -729,19 +729,74 @@ export async function prepareSelectOption(spec) {
     const sub = ctrl.querySelector?.(".ant-select-selector, .el-select__wrapper");
     return Boolean(sub && visible(sub));
   };
+  const DIALOG_SEL = ".ant-modal, .ant-drawer, .el-dialog, [role='dialog'], [aria-modal='true']";
+  const isComboOpen = (root) => {
+    if (!root) return false;
+    if (root.classList?.contains("ant-select")) {
+      return Boolean(
+        root.classList.contains("ant-select-open") ||
+          root.querySelector?.("input")?.getAttribute?.("aria-expanded") === "true",
+      );
+    }
+    if (root.classList?.contains("el-select")) {
+      return Boolean(
+        root.querySelector?.(".el-select__caret.is-reverse, .el-select__wrapper.is-focused") ||
+          root.getAttribute?.("aria-expanded") === "true",
+      );
+    }
+    return Boolean(
+      root.getAttribute?.("aria-expanded") === "true" ||
+        root.getAttribute?.("data-state") === "open" ||
+        root.querySelector?.("[aria-expanded='true']"),
+    );
+  };
+  const pickSafeNeutralNode = (root) => {
+    const hostDialog = root?.closest?.(DIALOG_SEL) || null;
+    const fieldBox = root?.closest?.(
+      ".ant-form-item, .el-form-item, [class*='__field'], [class*='-field'], [class*='__item']",
+    );
+    const fieldHeader = fieldBox?.querySelector?.("[class*='__label'], [class*='-label']");
+    if (fieldHeader && fieldHeader.tagName !== "LABEL" && !root.contains(fieldHeader)) {
+      return fieldHeader;
+    }
+    if (hostDialog) {
+      const dlgHeader = hostDialog.querySelector?.(
+        ".ant-modal-title, .ant-modal-header, .ant-drawer-title, .el-dialog__title, .el-dialog__header",
+      );
+      if (dlgHeader) return dlgHeader;
+      return hostDialog.querySelector?.(".ant-modal-content, .ant-drawer-content, .el-dialog__body") || hostDialog;
+    }
+    return document.body;
+  };
   const closeCombo = (root) => {
     if (!root) return;
     const inp = root.querySelector?.("input") || root;
-    inp.dispatchEvent?.(
-      new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }),
-    );
-    inp.dispatchEvent?.(
-      new KeyboardEvent("keyup", { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }),
-    );
     inp.blur?.();
-    const safeNeutral = root.closest?.(".ant-modal")?.querySelector?.(".ant-modal-header, .ant-modal-title") || document.body;
-    safeNeutral?.dispatchEvent?.(new MouseEvent("mousedown", { bubbles: true }));
-    safeNeutral?.dispatchEvent?.(new MouseEvent("mouseup", { bubbles: true }));
+    const safeNeutral = pickSafeNeutralNode(root);
+    if (safeNeutral) {
+      const r = safeNeutral.getBoundingClientRect?.() || { left: 0, top: 0, width: 0, height: 0 };
+      const cx = r.width > 0 ? Math.round(r.left + Math.min(20, r.width / 2)) : 0;
+      const cy = r.height > 0 ? Math.round(r.top + r.height / 2) : 0;
+      if (typeof PointerEvent === "function") {
+        safeNeutral.dispatchEvent?.(
+          new PointerEvent("pointerdown", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }),
+        );
+      }
+      safeNeutral.dispatchEvent?.(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }),
+      );
+      if (typeof PointerEvent === "function") {
+        safeNeutral.dispatchEvent?.(
+          new PointerEvent("pointerup", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }),
+        );
+      }
+      safeNeutral.dispatchEvent?.(
+        new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }),
+      );
+      safeNeutral.dispatchEvent?.(
+        new MouseEvent("click", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }),
+      );
+    }
   };
   const readSelected = (root) => {
     const items = [...(root.querySelectorAll?.(".ant-select-selection-item, .el-select__tags-text") || [])];
@@ -835,7 +890,9 @@ export async function prepareSelectOption(spec) {
         }
         if (!ctrl) {
           const fieldBox =
-            lEl.closest(".ant-form-item, .el-form-item, [class*='__field'], [class*='-field']") || lEl.parentElement;
+            lEl.closest(
+              ".ant-form-item, .el-form-item, [class*='__field'], [class*='-field'], [class*='__item']",
+            ) || lEl.parentElement;
           ctrl = resolveControl(fieldBox);
         }
         if (ctrl && !seen.has(ctrl) && controlVisible(ctrl)) {
@@ -877,7 +934,7 @@ export async function prepareSelectOption(spec) {
 
   const selectedBefore = readSelected(target);
   if (selectedBefore.some(matchesVal)) {
-    if (target.classList?.contains("ant-select-open") || target.getAttribute?.("aria-expanded") === "true") {
+    if (isComboOpen(target)) {
       closeCombo(target);
       await sleep(40);
     }
@@ -916,7 +973,7 @@ export async function prepareSelectOption(spec) {
   };
   let hit = document.elementFromPoint(x, y);
   if (hit && !composedContains(target, hit) && !composedContains(hit, target)) {
-    closeCombo(hit.closest?.(".ant-select-open") || document.activeElement || document.body);
+    closeCombo(hit.closest?.(".ant-select-open") || target);
     await sleep(60);
     await doubleRaf();
     r = trigger.getBoundingClientRect();
@@ -930,8 +987,8 @@ export async function prepareSelectOption(spec) {
 
   const uid = `plsel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   target.setAttribute("data-pl-select-uid", uid);
-  const isOpen =
-    Boolean(target.classList?.contains("ant-select-open")) || target.getAttribute?.("aria-expanded") === "true";
+  target.setAttribute("data-pl-select-dialog", target.closest?.(DIALOG_SEL) ? "1" : "0");
+  const isOpen = isComboOpen(target);
 
   if (!o.useCdp && !isOpen) {
     trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
@@ -976,19 +1033,74 @@ export async function completeSelectOption(spec) {
     return { ok: false, error: "下拉框引用已失效" };
   }
   let keepUid = false;
+  const DIALOG_SEL = ".ant-modal, .ant-drawer, .el-dialog, [role='dialog'], [aria-modal='true']";
+  const isComboOpen = (root) => {
+    if (!root) return false;
+    if (root.classList?.contains("ant-select")) {
+      return Boolean(
+        root.classList.contains("ant-select-open") ||
+          root.querySelector?.("input")?.getAttribute?.("aria-expanded") === "true",
+      );
+    }
+    if (root.classList?.contains("el-select")) {
+      return Boolean(
+        root.querySelector?.(".el-select__caret.is-reverse, .el-select__wrapper.is-focused") ||
+          root.getAttribute?.("aria-expanded") === "true",
+      );
+    }
+    return Boolean(
+      root.getAttribute?.("aria-expanded") === "true" ||
+        root.getAttribute?.("data-state") === "open" ||
+        root.querySelector?.("[aria-expanded='true']"),
+    );
+  };
+  const pickSafeNeutralNode = (root) => {
+    const hostDialog = root?.closest?.(DIALOG_SEL) || null;
+    const fieldBox = root?.closest?.(
+      ".ant-form-item, .el-form-item, [class*='__field'], [class*='-field'], [class*='__item']",
+    );
+    const fieldHeader = fieldBox?.querySelector?.("[class*='__label'], [class*='-label']");
+    if (fieldHeader && fieldHeader.tagName !== "LABEL" && !root.contains(fieldHeader)) {
+      return fieldHeader;
+    }
+    if (hostDialog) {
+      const dlgHeader = hostDialog.querySelector?.(
+        ".ant-modal-title, .ant-modal-header, .ant-drawer-title, .el-dialog__title, .el-dialog__header",
+      );
+      if (dlgHeader) return dlgHeader;
+      return hostDialog.querySelector?.(".ant-modal-content, .ant-drawer-content, .el-dialog__body") || hostDialog;
+    }
+    return document.body;
+  };
   const closeCombo = (root) => {
     if (!root) return;
     const inp = root.querySelector?.("input") || root;
-    inp.dispatchEvent?.(
-      new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }),
-    );
-    inp.dispatchEvent?.(
-      new KeyboardEvent("keyup", { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }),
-    );
     inp.blur?.();
-    const safeNeutral = root.closest?.(".ant-modal")?.querySelector?.(".ant-modal-header, .ant-modal-title") || document.body;
-    safeNeutral?.dispatchEvent?.(new MouseEvent("mousedown", { bubbles: true }));
-    safeNeutral?.dispatchEvent?.(new MouseEvent("mouseup", { bubbles: true }));
+    const safeNeutral = pickSafeNeutralNode(root);
+    if (safeNeutral) {
+      const r = safeNeutral.getBoundingClientRect?.() || { left: 0, top: 0, width: 0, height: 0 };
+      const cx = r.width > 0 ? Math.round(r.left + Math.min(20, r.width / 2)) : 0;
+      const cy = r.height > 0 ? Math.round(r.top + r.height / 2) : 0;
+      if (typeof PointerEvent === "function") {
+        safeNeutral.dispatchEvent?.(
+          new PointerEvent("pointerdown", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }),
+        );
+      }
+      safeNeutral.dispatchEvent?.(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }),
+      );
+      if (typeof PointerEvent === "function") {
+        safeNeutral.dispatchEvent?.(
+          new PointerEvent("pointerup", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }),
+        );
+      }
+      safeNeutral.dispatchEvent?.(
+        new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }),
+      );
+      safeNeutral.dispatchEvent?.(
+        new MouseEvent("click", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }),
+      );
+    }
   };
   const readSelected = (root) => {
     const items = [...(root.querySelectorAll?.(".ant-select-selection-item, .el-select__tags-text") || [])];
@@ -1076,17 +1188,107 @@ export async function completeSelectOption(spec) {
     inp.dispatchEvent(new Event("change", { bubbles: true }));
   };
 
-  try {
-    if (stage === "finalize") {
-      await sleep(60);
+  const inDialog = comboRoot.getAttribute("data-pl-select-dialog") === "1";
+  const isFileUploadTrigger = (node) => {
+    const start = node && node.nodeType === 1 ? node : node?.parentElement || null;
+    if (!start) return false;
+    if (start.tagName === "INPUT" && String(start.type || "").toLowerCase() === "file") return true;
+    const lbl = start.closest?.("label");
+    if (lbl) {
+      const c = lbl.control || lbl.querySelector?.('input[type="file"]');
+      if (c && c.tagName === "INPUT" && String(c.type || "").toLowerCase() === "file" && !c.disabled) return true;
+    }
+    for (
+      let cur = start;
+      cur && cur !== document.body && cur !== document.documentElement;
+      cur = cur.parentElement || cur.getRootNode?.()?.host || null
+    ) {
+      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
       if (
-        comboRoot.classList?.contains("ant-select-open") ||
-        comboRoot.getAttribute?.("aria-expanded") === "true" ||
-        findVisiblePopup()
+        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
+        (cur.classList?.contains("ant-upload") &&
+          !cur.classList.contains("ant-upload-wrapper") &&
+          !cur.classList.contains("ant-upload-picture-card-wrapper"))
       ) {
-        closeCombo(comboRoot);
-        await sleep(50);
+        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
       }
+    }
+    return false;
+  };
+  const pickUncoveredNeutralPoint = (root) => {
+    const hostDialog = root?.closest?.(DIALOG_SEL) || null;
+    const fieldBox = root?.closest?.(
+      ".ant-form-item, .el-form-item, [class*='__field'], [class*='-field'], [class*='__item']",
+    );
+    const fieldHeader = fieldBox?.querySelector?.("[class*='__label'], [class*='-label']");
+    const candidates = [];
+    if (fieldHeader && fieldHeader.tagName !== "LABEL" && !root.contains(fieldHeader)) {
+      candidates.push(fieldHeader);
+    }
+    if (hostDialog) {
+      hostDialog
+        .querySelectorAll?.(".ant-modal-title, .ant-modal-header, .ant-drawer-title, .el-dialog__title, .el-dialog__header")
+        .forEach((el) => candidates.push(el));
+    } else if (document.body) {
+      candidates.push(document.body);
+    }
+    const vw = window.innerWidth || document.documentElement?.clientWidth || 1280;
+    const vh = window.innerHeight || document.documentElement?.clientHeight || 800;
+    for (const el of candidates) {
+      const r = el?.getBoundingClientRect?.();
+      if (!r || r.width <= 4 || r.height <= 4) continue;
+      const sampleXs = [
+        Math.round(r.left + Math.min(20, r.width / 2)),
+        Math.round(r.left + Math.min(80, r.width * 0.4)),
+      ];
+      const cy = Math.round(r.top + Math.min(16, r.height / 2));
+      for (const cx of sampleXs) {
+        if (cx < 2 || cy < 2 || cx > vw - 2 || cy > vh - 2) continue;
+        const hit = document.elementFromPoint(cx, cy);
+        if (!hit) continue;
+        if (hostDialog && !hostDialog.contains(hit)) continue;
+        if (root.contains(hit)) continue;
+        if (
+          hit.closest?.(
+            ".ant-select-dropdown, .el-select-dropdown, [role='listbox'], button, a, input, select, textarea, label, .ant-modal-close, .ant-drawer-close, .el-dialog__headerbtn",
+          )
+        ) {
+          continue;
+        }
+        if (isFileUploadTrigger(hit)) continue;
+        return { x: cx, y: cy };
+      }
+    }
+    return null;
+  };
+  const verifyHostAlive = () => {
+    if (!comboRoot.isConnected) {
+      return "选择后下拉控件已从 DOM 卸载（宿主容器可能被意外关闭）";
+    }
+    if (inDialog) {
+      const curDialog = comboRoot.closest?.(DIALOG_SEL);
+      if (!curDialog || !curDialog.isConnected) {
+        return "选择后宿主弹窗已卸载";
+      }
+      const wrap = curDialog.closest?.(".ant-modal-wrap, .el-overlay-dialog") || curDialog;
+      const st = window.getComputedStyle(wrap);
+      if (
+        st.display === "none" ||
+        st.visibility === "hidden" ||
+        curDialog.classList?.contains("ant-zoom-leave") ||
+        curDialog.classList?.contains("ant-fade-leave")
+      ) {
+        return "选择后宿主弹窗正在关闭或已隐藏";
+      }
+    }
+    return null;
+  };
+
+  try {
+    if (stage === "verify") {
+      await sleep(50);
+      const hostErr = verifyHostAlive();
+      if (hostErr) return { ok: false, hostClosed: true, error: hostErr };
       const selected = readSelected(comboRoot);
       if (!selected.some(matchesVal)) {
         return { ok: false, error: `点击选项后回读未生效（期望「${val}」，实读 ${JSON.stringify(selected)}）`, selected };
@@ -1096,12 +1298,40 @@ export async function completeSelectOption(spec) {
         action: "select",
         value: val,
         selected,
-        popupClosed: !comboRoot.classList?.contains("ant-select-open"),
+        popupClosed: !isComboOpen(comboRoot),
+      };
+    }
+
+    if (stage === "finalize") {
+      await sleep(60);
+      if (isComboOpen(comboRoot)) {
+        closeCombo(comboRoot);
+        await sleep(50);
+        if (isComboOpen(comboRoot) && o.allowCdpFallback) {
+          const pt = pickUncoveredNeutralPoint(comboRoot);
+          if (pt) {
+            keepUid = true;
+            return { ok: true, needCdpCloseClick: true, closeX: pt.x, closeY: pt.y };
+          }
+        }
+      }
+      const hostErr = verifyHostAlive();
+      if (hostErr) return { ok: false, hostClosed: true, error: hostErr };
+      const selected = readSelected(comboRoot);
+      if (!selected.some(matchesVal)) {
+        return { ok: false, error: `点击选项后回读未生效（期望「${val}」，实读 ${JSON.stringify(selected)}）`, selected };
+      }
+      return {
+        ok: true,
+        action: "select",
+        value: val,
+        selected,
+        popupClosed: !isComboOpen(comboRoot),
       };
     }
 
     if (stage === "cleanup") {
-      closeCombo(comboRoot);
+      if (isComboOpen(comboRoot)) closeCombo(comboRoot);
       return { ok: true };
     }
 
@@ -1194,25 +1424,31 @@ export async function completeSelectOption(spec) {
       return { ok: true, needCdpOptionClick: true, optX, optY };
     }
 
-    if (
-      comboRoot.classList?.contains("ant-select-open") ||
-      comboRoot.getAttribute?.("aria-expanded") === "true" ||
-      findVisiblePopup()
-    ) {
+    if (isComboOpen(comboRoot)) {
       closeCombo(comboRoot);
       await sleep(50);
+      if (isComboOpen(comboRoot) && o.allowCdpFallback) {
+        const pt = pickUncoveredNeutralPoint(comboRoot);
+        if (pt) {
+          keepUid = true;
+          return { ok: true, needCdpCloseClick: true, closeX: pt.x, closeY: pt.y };
+        }
+      }
     }
+    const hostErr = verifyHostAlive();
+    if (hostErr) return { ok: false, hostClosed: true, error: hostErr };
     selected = readSelected(comboRoot);
     return {
       ok: true,
       action: "select",
       value: val,
       selected,
-      popupClosed: !comboRoot.classList?.contains("ant-select-open"),
+      popupClosed: !isComboOpen(comboRoot),
     };
   } finally {
     if (!keepUid) {
       comboRoot.removeAttribute("data-pl-select-uid");
+      comboRoot.removeAttribute("data-pl-select-dialog");
     }
   }
 }

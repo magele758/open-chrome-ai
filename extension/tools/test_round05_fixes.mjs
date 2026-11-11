@@ -246,8 +246,8 @@ function wireMockAntSelect({ selectId, ddId, holderId, inputId, allOptions, mult
     renderOptions(input.value);
   });
 
-  input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape" || ev.keyCode === 27) {
+  doc.addEventListener("mousedown", (ev) => {
+    if (!sel.contains(ev.target) && !dd.contains(ev.target)) {
       sel.classList.remove("ant-select-open");
       dd.classList.add("ant-select-dropdown-hidden");
     }

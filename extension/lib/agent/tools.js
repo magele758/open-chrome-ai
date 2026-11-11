@@ -558,7 +558,19 @@ export function createAgentTools(ctx) {
               return toToolText(clickOpt);
             }
             comp = await injectMain(tabId, completeSelectOption, [
-              { uid: prep.uid, value: args.value, stage: "finalize" },
+              { uid: prep.uid, value: args.value, stage: "finalize", allowCdpFallback: Boolean(cdpEnabled) },
+            ]);
+          }
+          if (comp?.ok && comp.needCdpCloseClick && cdpEnabled) {
+            const clickClose = await dispatchSafeCdpClick(cdp, tabId, comp.closeX, comp.closeY);
+            if (!clickClose.ok) {
+              await injectMain(tabId, completeSelectOption, [
+                { uid: prep.uid, value: args.value, stage: "cleanup" },
+              ]).catch(() => {});
+              return toToolText(clickClose);
+            }
+            comp = await injectMain(tabId, completeSelectOption, [
+              { uid: prep.uid, value: args.value, stage: "verify" },
             ]);
           }
           return toToolText(comp || { ok: false, error: "下拉选项点击未返回结果" });
