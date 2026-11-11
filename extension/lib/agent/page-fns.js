@@ -1693,14 +1693,14 @@ export function controlVideo(opts) {
 
 export function runJs(code) {
   const dump = (value, depth = 0) => {
-    if (depth > 5) return "[…]";
+    if (depth > 9) return "[…]";
     if (value == null) return value;
     const t = typeof value;
-    if (t === "string") return value.length > 4000 ? `${value.slice(0, 4000)}…` : value;
+    if (t === "string") return value.length > 8000 ? `${value.slice(0, 8000)}…` : value;
     if (t === "number" || t === "boolean") return value;
     if (t === "bigint") return String(value);
     if (t === "function") return `[Function ${value.name || ""}]`;
-    if (Array.isArray(value)) return value.slice(0, 50).map((item) => dump(item, depth + 1));
+    if (Array.isArray(value)) return value.slice(0, 120).map((item) => dump(item, depth + 1));
     if (t === "object") {
       if (typeof Element !== "undefined" && value instanceof Element) {
         return {
@@ -1714,7 +1714,7 @@ export function runJs(code) {
       for (const key of Object.keys(value)) {
         out[key] = dump(value[key], depth + 1);
         n += 1;
-        if (n >= 40) break;
+        if (n >= 80) break;
       }
       return out;
     }
@@ -1723,7 +1723,7 @@ export function runJs(code) {
 
   const raw = String(code || "");
   if (!raw.trim()) return { ok: false, error: "空代码" };
-  if (raw.length > 8000) return { ok: false, error: "代码过长" };
+  if (raw.length > 24000) return { ok: false, error: "代码过长" };
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
   const failure = (err) => {
     const message = err?.message || String(err);

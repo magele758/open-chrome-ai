@@ -493,6 +493,135 @@ function summarizeStepArgs(stepId, params = {}) {
   return out;
 }
 
+const ASSERT_KIND_SNIPPETS = Object.freeze({
+  modals_count: `const ms=visibleModals(),titles=ms.map(m=>norm((m.querySelector(".ant-modal-title")||{}).innerText));
+if(ms.length!==Number(c.equals))return{pass:false,index:idx,kind:c.kind,expected:"可见弹窗数 === "+c.equals,actual:"实读弹窗数 === "+ms.length+" ("+JSON.stringify(titles)+")"};
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:{count:ms.length,titles}});`,
+
+  select_items_include: `const items=[...scope.querySelectorAll(".ant-select-selection-item")].map(itemText).filter(Boolean);
+const missing=(c.mustInclude||[]).filter(w=>!items.includes(String(w)));
+if(missing.length)return{pass:false,index:idx,kind:c.kind,expected:"已选下拉项包含 "+JSON.stringify(c.mustInclude),actual:"缺少 "+JSON.stringify(missing)+"；当前已选: "+JSON.stringify(items.slice(0,20))};
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:items});`,
+
+  checked_checkboxes_equal: `const ignore=new Set((c.ignoreLabels||["全选"]).map(norm));
+const checked=[...scope.querySelectorAll('input[type="checkbox"]')].filter(cb=>cb.checked).map(cb=>{const l=cb.closest("label");return l?norm(l.innerText):"";}).filter(t=>t&&!ignore.has(t));
+const want=(c.equals||[]).map(String);
+if(JSON.stringify(checked)!==JSON.stringify(want))return{pass:false,index:idx,kind:c.kind,expected:"已勾选复选框 === "+JSON.stringify(want),actual:"实读已勾选 === "+JSON.stringify(checked)};
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:checked});`,
+
+  cascader_or_select_equals: `const inp=scope.querySelector(c.inputSelector)||document.querySelector(c.inputSelector);
+const sel=inp?inp.closest(".ant-select"):null,it=sel?sel.querySelector(".ant-select-selection-item"):null,got=it?itemText(it):"";
+if(got!==String(c.equals))return{pass:false,index:idx,kind:c.kind,expected:c.inputSelector+" 选中值 === "+JSON.stringify(c.equals),actual:"实读选中值 === "+JSON.stringify(got)};
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:got});`,
+
+  input_equals: `const nth=Number(c.nth)||0,el=scope.querySelectorAll(c.selector)[nth]||document.querySelectorAll(c.selector)[nth],got=el?String(el.value??""):null;
+if(got!==String(c.equals))return{pass:false,index:idx,kind:c.kind,expected:c.selector+" 值 === "+JSON.stringify(c.equals),actual:"实读值 === "+JSON.stringify(got)};
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:got});`,
+
+  inputs_by_placeholder_equal: `const list=[...scope.querySelectorAll("input")].filter(inp=>inp.getAttribute("placeholder")===String(c.placeholder)).map(inp=>String(inp.value??""));
+if(c.allEqual!==undefined){const w=String(c.allEqual),m=Number(c.minCount??1);if(list.length<m||list.some(v=>v!==w))return{pass:false,index:idx,kind:c.kind,expected:'placeholder="'+c.placeholder+'" 至少 '+m+" 项且全部 === "+JSON.stringify(w),actual:"实读序列 === "+JSON.stringify(list)};}
+else{const w=(c.equals||[]).map(String);if(JSON.stringify(list)!==JSON.stringify(w))return{pass:false,index:idx,kind:c.kind,expected:'placeholder="'+c.placeholder+'" 输入值序列 === '+JSON.stringify(w),actual:"实读序列 === "+JSON.stringify(list)};}
+evidence.push({index:idx,id:checkId,kind:c.kind,placeholder:c.placeholder,actual:list});`,
+
+  text_matches_regex: `const full=norm(scope.innerText||""),m=new RegExp(String(c.pattern),c.flags||"").exec(full);
+if(!m)return{pass:false,index:idx,kind:c.kind,expected:"文本匹配正则 /"+c.pattern+"/"+(c.flags||""),actual:"实读片段: "+JSON.stringify(full.slice(0,260))};
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:m[0]});`,
+
+  select_sequence_equals: `const list=[...scope.querySelectorAll(c.selector)].map(s=>{const it=s.querySelector(".ant-select-selection-item");return it?itemText(it):"";});
+if(Array.isArray(c.repeatPattern)&&c.repeatPattern.length>0){const p=c.repeatPattern.map(String),okR=list.length>=p.length&&list.length%p.length===0&&list.every((v,k)=>v===p[k%p.length]);if(!okR)return{pass:false,index:idx,kind:c.kind,expected:c.selector+" 选中序列按周期重复 "+JSON.stringify(p),actual:"实读序列 === "+JSON.stringify(list)};}
+else{const w=(c.equals||[]).map(String);if(JSON.stringify(list)!==JSON.stringify(w))return{pass:false,index:idx,kind:c.kind,expected:c.selector+" 选中序列 === "+JSON.stringify(w),actual:"实读序列 === "+JSON.stringify(list)};}
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:list});`,
+
+  radio_checked_equals: `const checked=[...scope.querySelectorAll('input[type="radio"]')].filter(r=>r.checked).map(r=>{const l=r.closest("label");return l?normBtn(l.innerText):"";}).filter(Boolean);
+if(!checked.includes(normBtn(c.equals)))return{pass:false,index:idx,kind:c.kind,expected:(c.scopeSelector||"scope")+" 选中单选 === "+JSON.stringify(c.equals),actual:"实读选中 === "+JSON.stringify(checked)};
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:checked});`,
+
+  field_blocks_match: `const fSel=c.fieldSelector||".ant-form-item",lSel=c.labelSelector||".ant-form-item-label, label";
+const blocks=[...scope.querySelectorAll(fSel)].map(b=>({label:norm((b.querySelector(lSel)||{}).innerText),items:[...b.querySelectorAll(".ant-select-selection-item")].map(itemText).filter(Boolean),inputs:[...b.querySelectorAll("input")].filter(x=>x.type!=="search"&&x.type!=="checkbox"&&x.type!=="radio").map(x=>String(x.value??"")).filter(v=>v!=="")}));
+for(const exp of c.expectedFields||[]){const hit=blocks.find(b=>b.label.includes(String(exp.labelIncludes)));if(!hit)return{pass:false,index:idx,kind:c.kind,expected:"存在属性块包含 "+JSON.stringify(exp.labelIncludes),actual:"当前属性块标签: "+JSON.stringify(blocks.map(b=>b.label))};if(exp.items&&JSON.stringify(hit.items)!==JSON.stringify(exp.items))return{pass:false,index:idx,kind:c.kind,expected:hit.label+" 已选项 === "+JSON.stringify(exp.items),actual:"实读已选项 === "+JSON.stringify(hit.items)};if(exp.inputs&&JSON.stringify(hit.inputs)!==JSON.stringify(exp.inputs))return{pass:false,index:idx,kind:c.kind,expected:hit.label+" 输入值 === "+JSON.stringify(exp.inputs),actual:"实读输入值 === "+JSON.stringify(hit.inputs)};}
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:blocks});`,
+
+  text_includes: `const full=norm(scope.innerText||""),missing=(c.mustInclude||[]).filter(sub=>!full.includes(norm(sub)));
+if(missing.length)return{pass:false,index:idx,kind:c.kind,expected:"文本包含 "+JSON.stringify(c.mustInclude),actual:"缺少 "+JSON.stringify(missing)+"；实读片段: "+JSON.stringify(full.slice(0,260))};
+const snippets=(c.mustInclude||[]).map(sub=>{const n=norm(sub),p=full.indexOf(n);return p>=0?full.slice(Math.max(0,p-16),p+n.length+64):"";});
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:snippets});`,
+
+  text_excludes: `const full=norm(scope.innerText||""),found=(c.forbid||[]).find(sub=>sub&&full.includes(norm(sub)));
+if(found)return{pass:false,index:idx,kind:c.kind,expected:"文本不包含 "+JSON.stringify(c.forbid),actual:"命中禁止文本: "+JSON.stringify(found)};
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:{excludedAll:c.forbid||[],sample:full.slice(0,180)}});`,
+
+  images_min_count: `const imgs=[...scope.querySelectorAll(c.selector||"img")].filter(img=>{const s=String(img.getAttribute("src")||img.src||"").trim();return Boolean(s)&&!s.startsWith("data:image/svg+xml");});
+const min=Number(c.minCount??1);
+if(imgs.length<min)return{pass:false,index:idx,kind:c.kind,expected:(c.selector||"img")+" 有效图片数 >= "+min,actual:"实读有效图片数 === "+imgs.length};
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:{count:imgs.length,samples:imgs.slice(0,4).map(img=>({alt:img.alt||"",w:img.naturalWidth||0,h:img.naturalHeight||0}))}});`,
+
+  row_state: `const rows=[...scope.querySelectorAll(c.rowSelector||"tr")].filter(r=>{const rc=r.getBoundingClientRect();return rc.width>0&&rc.height>0;});
+const allK=c.mustIncludeAll||[],exK=c.excludeSubstrings||[];
+const matched=rows.filter(r=>{const t=norm(r.innerText);return allK.every(k=>t.includes(String(k)))&&!exK.some(ex=>ex&&t.includes(String(ex)));});
+const wantC=Number(c.expectedCount??1);
+if(matched.length!==wantC)return{pass:false,index:idx,kind:c.kind,expected:"匹配行数 === "+wantC+" ("+JSON.stringify(allK)+")",actual:"实读匹配行数 === "+matched.length};
+const btns=matched[0]?[...matched[0].querySelectorAll("button")].map(b=>({text:normBtn(b.innerText),enabled:!b.disabled&&b.getBoundingClientRect().width>0})):[];
+if(wantC===1&&Array.isArray(c.mustHaveEnabledButtons)){for(const wb of c.mustHaveEnabledButtons){if(!btns.find(b=>b.text===normBtn(wb)&&b.enabled))return{pass:false,index:idx,kind:c.kind,expected:"行内按钮可见且可用（未点击）: "+wb,actual:"实读行内按钮: "+JSON.stringify(btns)};}}
+evidence.push({index:idx,id:checkId,kind:c.kind,actual:{rowCount:matched.length,rowText:matched[0]?norm(matched[0].innerText).slice(0,500):null,buttons:btns}});`,
+});
+
+function buildSingleAssertScript(containerSelector, subChecks, baseIndex = 0) {
+  const kinds = [...new Set(subChecks.map((c) => String(c?.kind || "")))];
+  const branches = kinds
+    .map((k, bi) => {
+      const body = ASSERT_KIND_SNIPPETS[k];
+      const cond = `${bi === 0 ? "if" : "else if"}(c.kind===${JSON.stringify(k)})`;
+      if (!body) {
+        return `${cond}{return{pass:false,index:idx,kind:c.kind,expected:"已知断言类型",actual:"未知 check.kind: "+c.kind};}`;
+      }
+      return `${cond}{${body}}`;
+    })
+    .join("\n");
+  const fallback = kinds.length
+    ? `else{return{pass:false,index:idx,kind:c.kind,expected:"已知断言类型",actual:"未知 check.kind: "+c.kind};}`
+    : "";
+
+  return `const containerSel=${JSON.stringify(containerSelector)};
+const checks=${JSON.stringify(subChecks)};
+const baseIdx=${Number(baseIndex) || 0};
+const norm=s=>String(s||"").replace(/\\s+/g," ").trim();
+const normBtn=s=>norm(s).replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g,"$1");
+const visibleModals=()=>[...document.querySelectorAll(".ant-modal")].filter(m=>{const w=m.closest(".ant-modal-wrap")||m.parentElement,ws=w?getComputedStyle(w):getComputedStyle(m),r=m.getBoundingClientRect();if(ws.display==="none"||ws.visibility==="hidden")return false;if((w&&/leave/.test(w.className||""))||/leave/.test(m.className||""))return false;return r.width>0&&r.height>0;});
+const defaultScope=containerSel?document.querySelector(containerSel):document;
+if(containerSel&&!defaultScope)return{pass:false,failedCheck:"container",expected:"容器存在: "+containerSel,actual:"容器不存在"};
+const pickScope=c=>c.topmostModal?(visibleModals().slice(-1)[0]||null):(c.scopeSelector?document.querySelector(c.scopeSelector):defaultScope);
+const itemText=el=>((el.querySelector(".ant-select-selection-item-content")||el).textContent||"").replace(/\\s+/g," ").trim();
+const evidence=[];
+for(let i=0;i<checks.length;i+=1){
+const c=checks[i]||{},idx=baseIdx+i,checkId=c.id?String(c.id):(c.kind+"_"+idx),scope=pickScope(c);
+if(!scope&&c.kind!=="modals_count")return{pass:false,index:idx,kind:c.kind,expected:"作用域存在: "+(c.scopeSelector||"topmostModal"),actual:"作用域不存在"};
+${branches}
+${fallback}
+}
+return{pass:true,checkedCount:checks.length,evidence};`;
+}
+
+export function buildAssertStateBatches(containerSelector, checks = [], maxCodeLen = 6000) {
+  if (!Array.isArray(checks) || checks.length === 0) {
+    return [{ baseIndex: 0, count: 0, code: buildSingleAssertScript(containerSelector, [], 0) }];
+  }
+  const batches = [];
+  let start = 0;
+  while (start < checks.length) {
+    let end = start + 1;
+    let bestCode = buildSingleAssertScript(containerSelector, checks.slice(start, end), start);
+    while (end < checks.length) {
+      const candidate = buildSingleAssertScript(containerSelector, checks.slice(start, end + 1), start);
+      if (candidate.length > maxCodeLen) break;
+      bestCode = candidate;
+      end += 1;
+    }
+    batches.push({ baseIndex: start, count: end - start, code: bestCode });
+    start = end;
+  }
+  return batches;
+}
+
 export function formatWorkflowSummary({
   ok,
   aborted = false,
@@ -2435,373 +2564,24 @@ export async function runDeterministicWorkflow({
         const checks = Array.isArray(params.checks) ? params.checks : [];
         const timeoutMs = Math.max(0, Number(params.timeoutMs) || 0);
         const deadline = Date.now() + timeoutMs;
+        const batches = buildAssertStateBatches(containerSelector, checks, 6000);
 
         while (true) {
-          const evalRes = await evalJs(
-            `const containerSel = ${JSON.stringify(containerSelector)};
-            const checks = ${JSON.stringify(checks)};
-            const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
-            const normBtn = (s) => norm(s).replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
-            const visibleModals = () => [...document.querySelectorAll(".ant-modal")].filter((m) => {
-              const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
-              const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
-              const r = m.getBoundingClientRect();
-              if (ws.display === "none" || ws.visibility === "hidden") return false;
-              if ((wrap && /leave/.test(wrap.className || "")) || /leave/.test(m.className || "")) return false;
-              return r.width > 0 && r.height > 0;
-            });
-            const defaultScope = containerSel ? document.querySelector(containerSel) : document;
-            if (containerSel && !defaultScope) {
-              return { pass: false, failedCheck: "container", expected: "容器存在: " + containerSel, actual: "容器不存在" };
+          let failedEval = null;
+          const mergedEvidence = [];
+          for (const batch of batches) {
+            const evalRes = await evalJs(batch.code, stepCtx);
+            if (!evalRes?.pass) {
+              failedEval = evalRes;
+              break;
             }
-            const pickScope = (c) => {
-              if (c.topmostModal) {
-                const ms = visibleModals();
-                return ms.length ? ms[ms.length - 1] : null;
-              }
-              if (c.scopeSelector) return document.querySelector(c.scopeSelector);
-              return defaultScope;
-            };
-            const itemText = (el) => ((el.querySelector(".ant-select-selection-item-content") || el).textContent || "").replace(/\\s+/g, " ").trim();
-            const evidence = [];
-
-            for (let i = 0; i < checks.length; i += 1) {
-              const c = checks[i] || {};
-              const checkId = c.id ? String(c.id) : (c.kind + "_" + i);
-              const scope = pickScope(c);
-              if (!scope && c.kind !== "modals_count") {
-                return { pass: false, index: i, kind: c.kind, expected: "作用域存在: " + (c.scopeSelector || "topmostModal"), actual: "作用域不存在" };
-              }
-              if (c.kind === "modals_count") {
-                const ms = visibleModals();
-                const titles = ms.map((m) => norm((m.querySelector(".ant-modal-title") || {}).innerText));
-                if (ms.length !== Number(c.equals)) {
-                  return {
-                    pass: false,
-                    index: i,
-                    kind: c.kind,
-                    expected: "可见弹窗数 === " + c.equals,
-                    actual: "实读弹窗数 === " + ms.length + " (" + JSON.stringify(titles) + ")"
-                  };
-                }
-                evidence.push({ index: i, id: checkId, kind: c.kind, actual: { count: ms.length, titles } });
-              } else if (c.kind === "select_items_include") {
-                const items = [...scope.querySelectorAll(".ant-select-selection-item")].map(itemText).filter(Boolean);
-                const missing = (c.mustInclude || []).filter((want) => !items.includes(String(want)));
-                if (missing.length) {
-                  return {
-                    pass: false,
-                    index: i,
-                    kind: c.kind,
-                    expected: "已选下拉项包含 " + JSON.stringify(c.mustInclude),
-                    actual: "缺少 " + JSON.stringify(missing) + "；当前已选: " + JSON.stringify(items.slice(0, 20))
-                  };
-                }
-                evidence.push({ index: i, id: checkId, kind: c.kind, actual: items });
-              } else if (c.kind === "checked_checkboxes_equal") {
-                const ignore = new Set((c.ignoreLabels || ["全选"]).map(norm));
-                const checked = [...scope.querySelectorAll('input[type="checkbox"]')]
-                  .filter((cb) => cb.checked)
-                  .map((cb) => {
-                    const lbl = cb.closest("label");
-                    return lbl ? norm(lbl.innerText) : "";
-                  })
-                  .filter((t) => t && !ignore.has(t));
-                const want = (c.equals || []).map(String);
-                if (JSON.stringify(checked) !== JSON.stringify(want)) {
-                  return {
-                    pass: false,
-                    index: i,
-                    kind: c.kind,
-                    expected: "已勾选复选框 === " + JSON.stringify(want),
-                    actual: "实读已勾选 === " + JSON.stringify(checked)
-                  };
-                }
-                evidence.push({ index: i, id: checkId, kind: c.kind, actual: checked });
-              } else if (c.kind === "cascader_or_select_equals") {
-                const inp = scope.querySelector(c.inputSelector) || document.querySelector(c.inputSelector);
-                const sel = inp ? inp.closest(".ant-select") : null;
-                const it = sel ? sel.querySelector(".ant-select-selection-item") : null;
-                const got = it ? itemText(it) : "";
-                if (got !== String(c.equals)) {
-                  return {
-                    pass: false,
-                    index: i,
-                    kind: c.kind,
-                    expected: c.inputSelector + " 选中值 === " + JSON.stringify(c.equals),
-                    actual: "实读选中值 === " + JSON.stringify(got)
-                  };
-                }
-                evidence.push({ index: i, id: checkId, kind: c.kind, actual: got });
-              } else if (c.kind === "input_equals") {
-                const nth = Number(c.nth) || 0;
-                const el = scope.querySelectorAll(c.selector)[nth] || document.querySelectorAll(c.selector)[nth];
-                const got = el ? String(el.value ?? "") : null;
-                if (got !== String(c.equals)) {
-                  return {
-                    pass: false,
-                    index: i,
-                    kind: c.kind,
-                    expected: c.selector + " 值 === " + JSON.stringify(c.equals),
-                    actual: "实读值 === " + JSON.stringify(got)
-                  };
-                }
-                evidence.push({ index: i, id: checkId, kind: c.kind, actual: got });
-              } else if (c.kind === "inputs_by_placeholder_equal") {
-                const list = [...scope.querySelectorAll("input")]
-                  .filter((inp) => inp.getAttribute("placeholder") === String(c.placeholder))
-                  .map((inp) => String(inp.value ?? ""));
-                if (c.allEqual !== undefined) {
-                  const wantVal = String(c.allEqual);
-                  const minLen = Number(c.minCount ?? 1);
-                  if (list.length < minLen || list.some((v) => v !== wantVal)) {
-                    return {
-                      pass: false,
-                      index: i,
-                      kind: c.kind,
-                      expected: 'placeholder="' + c.placeholder + '" 至少 ' + minLen + " 项且全部 === " + JSON.stringify(wantVal),
-                      actual: "实读序列 === " + JSON.stringify(list)
-                    };
-                  }
-                } else {
-                  const want = (c.equals || []).map(String);
-                  if (JSON.stringify(list) !== JSON.stringify(want)) {
-                    return {
-                      pass: false,
-                      index: i,
-                      kind: c.kind,
-                      expected: 'placeholder="' + c.placeholder + '" 输入值序列 === ' + JSON.stringify(want),
-                      actual: "实读序列 === " + JSON.stringify(list)
-                    };
-                  }
-                }
-                evidence.push({ index: i, id: checkId, kind: c.kind, placeholder: c.placeholder, actual: list });
-              } else if (c.kind === "text_matches_regex") {
-                const full = norm(scope.innerText || "");
-                const re = new RegExp(String(c.pattern), c.flags || "");
-                const m = re.exec(full);
-                if (!m) {
-                  return {
-                    pass: false,
-                    index: i,
-                    kind: c.kind,
-                    expected: "文本匹配正则 /" + c.pattern + "/" + (c.flags || ""),
-                    actual: "实读片段: " + JSON.stringify(full.slice(0, 260))
-                  };
-                }
-                evidence.push({ index: i, id: checkId, kind: c.kind, actual: m[0] });
-              } else if (c.kind === "select_sequence_equals") {
-                const list = [...scope.querySelectorAll(c.selector)].map((s) => {
-                  const it = s.querySelector(".ant-select-selection-item");
-                  return it ? itemText(it) : "";
-                });
-                if (Array.isArray(c.repeatPattern) && c.repeatPattern.length > 0) {
-                  const pat = c.repeatPattern.map(String);
-                  const okRepeat =
-                    list.length >= pat.length &&
-                    list.length % pat.length === 0 &&
-                    list.every((v, idx) => v === pat[idx % pat.length]);
-                  if (!okRepeat) {
-                    return {
-                      pass: false,
-                      index: i,
-                      kind: c.kind,
-                      expected: c.selector + " 选中序列按周期重复 " + JSON.stringify(pat),
-                      actual: "实读序列 === " + JSON.stringify(list)
-                    };
-                  }
-                } else {
-                  const want = (c.equals || []).map(String);
-                  if (JSON.stringify(list) !== JSON.stringify(want)) {
-                    return {
-                      pass: false,
-                      index: i,
-                      kind: c.kind,
-                      expected: c.selector + " 选中序列 === " + JSON.stringify(want),
-                      actual: "实读序列 === " + JSON.stringify(list)
-                    };
-                  }
-                }
-                evidence.push({ index: i, id: checkId, kind: c.kind, actual: list });
-              } else if (c.kind === "radio_checked_equals") {
-                const checked = [...scope.querySelectorAll('input[type="radio"]')]
-                  .filter((r) => r.checked)
-                  .map((r) => {
-                    const lbl = r.closest("label");
-                    return lbl ? normBtn(lbl.innerText) : "";
-                  })
-                  .filter(Boolean);
-                if (!checked.includes(normBtn(c.equals))) {
-                  return {
-                    pass: false,
-                    index: i,
-                    kind: c.kind,
-                    expected: (c.scopeSelector || "scope") + " 选中单选 === " + JSON.stringify(c.equals),
-                    actual: "实读选中 === " + JSON.stringify(checked)
-                  };
-                }
-                evidence.push({ index: i, id: checkId, kind: c.kind, actual: checked });
-              } else if (c.kind === "field_blocks_match") {
-                const fSel = c.fieldSelector || ".ant-form-item";
-                const lSel = c.labelSelector || ".ant-form-item-label, label";
-                const blocks = [...scope.querySelectorAll(fSel)].map((b) => {
-                  const lEl = b.querySelector(lSel);
-                  return {
-                    label: norm(lEl ? lEl.innerText : ""),
-                    items: [...b.querySelectorAll(".ant-select-selection-item")].map(itemText).filter(Boolean),
-                    inputs: [...b.querySelectorAll("input")]
-                      .filter((inp) => inp.type !== "search" && inp.type !== "checkbox" && inp.type !== "radio")
-                      .map((inp) => String(inp.value ?? ""))
-                      .filter((v) => v !== "")
-                  };
-                });
-                for (const exp of c.expectedFields || []) {
-                  const hit = blocks.find((b) => b.label.includes(String(exp.labelIncludes)));
-                  if (!hit) {
-                    return {
-                      pass: false,
-                      index: i,
-                      kind: c.kind,
-                      expected: "存在属性块包含 " + JSON.stringify(exp.labelIncludes),
-                      actual: "当前属性块标签: " + JSON.stringify(blocks.map((b) => b.label))
-                    };
-                  }
-                  if (exp.items && JSON.stringify(hit.items) !== JSON.stringify(exp.items)) {
-                    return {
-                      pass: false,
-                      index: i,
-                      kind: c.kind,
-                      expected: hit.label + " 已选项 === " + JSON.stringify(exp.items),
-                      actual: "实读已选项 === " + JSON.stringify(hit.items)
-                    };
-                  }
-                  if (exp.inputs && JSON.stringify(hit.inputs) !== JSON.stringify(exp.inputs)) {
-                    return {
-                      pass: false,
-                      index: i,
-                      kind: c.kind,
-                      expected: hit.label + " 输入值 === " + JSON.stringify(exp.inputs),
-                      actual: "实读输入值 === " + JSON.stringify(hit.inputs)
-                    };
-                  }
-                }
-                evidence.push({ index: i, id: checkId, kind: c.kind, actual: blocks });
-              } else if (c.kind === "text_includes") {
-                const full = norm(scope.innerText || "");
-                const missing = (c.mustInclude || []).filter((sub) => !full.includes(norm(sub)));
-                if (missing.length) {
-                  return {
-                    pass: false,
-                    index: i,
-                    kind: c.kind,
-                    expected: "文本包含 " + JSON.stringify(c.mustInclude),
-                    actual: "缺少 " + JSON.stringify(missing) + "；实读片段: " + JSON.stringify(full.slice(0, 260))
-                  };
-                }
-                const snippets = (c.mustInclude || []).map((sub) => {
-                  const needle = norm(sub);
-                  const pos = full.indexOf(needle);
-                  return pos >= 0 ? full.slice(Math.max(0, pos - 16), pos + needle.length + 64) : "";
-                });
-                evidence.push({ index: i, id: checkId, kind: c.kind, actual: snippets });
-              } else if (c.kind === "text_excludes") {
-                const full = norm(scope.innerText || "");
-                const found = (c.forbid || []).find((sub) => sub && full.includes(norm(sub)));
-                if (found) {
-                  return {
-                    pass: false,
-                    index: i,
-                    kind: c.kind,
-                    expected: "文本不包含 " + JSON.stringify(c.forbid),
-                    actual: "命中禁止文本: " + JSON.stringify(found)
-                  };
-                }
-                evidence.push({ index: i, id: checkId, kind: c.kind, actual: { excludedAll: c.forbid || [], sample: full.slice(0, 180) } });
-              } else if (c.kind === "images_min_count") {
-                const imgs = [...scope.querySelectorAll(c.selector || "img")].filter((img) => {
-                  const src = String(img.getAttribute("src") || img.src || "").trim();
-                  return Boolean(src) && !src.startsWith("data:image/svg+xml");
-                });
-                const min = Number(c.minCount ?? 1);
-                if (imgs.length < min) {
-                  return {
-                    pass: false,
-                    index: i,
-                    kind: c.kind,
-                    expected: (c.selector || "img") + " 有效图片数 >= " + min,
-                    actual: "实读有效图片数 === " + imgs.length
-                  };
-                }
-                evidence.push({
-                  index: i,
-                  id: checkId,
-                  kind: c.kind,
-                  actual: {
-                    count: imgs.length,
-                    samples: imgs.slice(0, 4).map((img) => ({ alt: img.alt || "", w: img.naturalWidth || 0, h: img.naturalHeight || 0 }))
-                  }
-                });
-              } else if (c.kind === "row_state") {
-                const rows = [...scope.querySelectorAll(c.rowSelector || "tr")].filter((r) => {
-                  const rect = r.getBoundingClientRect();
-                  return rect.width > 0 && rect.height > 0;
-                });
-                const allKeys = c.mustIncludeAll || [];
-                const excludes = c.excludeSubstrings || [];
-                const matched = rows.filter((r) => {
-                  const t = norm(r.innerText);
-                  return allKeys.every((k) => t.includes(String(k))) && !excludes.some((ex) => ex && t.includes(String(ex)));
-                });
-                const wantCount = Number(c.expectedCount ?? 1);
-                if (matched.length !== wantCount) {
-                  return {
-                    pass: false,
-                    index: i,
-                    kind: c.kind,
-                    expected: "匹配行数 === " + wantCount + " (" + JSON.stringify(allKeys) + ")",
-                    actual: "实读匹配行数 === " + matched.length
-                  };
-                }
-                const btns = matched[0]
-                  ? [...matched[0].querySelectorAll("button")].map((b) => ({
-                      text: normBtn(b.innerText),
-                      enabled: !b.disabled && b.getBoundingClientRect().width > 0
-                    }))
-                  : [];
-                if (wantCount === 1 && Array.isArray(c.mustHaveEnabledButtons)) {
-                  for (const wantB of c.mustHaveEnabledButtons) {
-                    const hitB = btns.find((b) => b.text === normBtn(wantB) && b.enabled);
-                    if (!hitB) {
-                      return {
-                        pass: false,
-                        index: i,
-                        kind: c.kind,
-                        expected: "行内按钮可见且可用（未点击）: " + wantB,
-                        actual: "实读行内按钮: " + JSON.stringify(btns)
-                      };
-                    }
-                  }
-                }
-                evidence.push({
-                  index: i,
-                  id: checkId,
-                  kind: c.kind,
-                  actual: {
-                    rowCount: matched.length,
-                    rowText: matched[0] ? norm(matched[0].innerText).slice(0, 500) : null,
-                    buttons: btns
-                  }
-                });
-              } else {
-                return { pass: false, index: i, kind: c.kind, expected: "已知断言类型", actual: "未知 check.kind: " + c.kind };
-              }
+            if (Array.isArray(evalRes.evidence)) {
+              mergedEvidence.push(...evalRes.evidence);
             }
-            return { pass: true, checkedCount: checks.length, evidence };`,
-            stepCtx,
-          );
+          }
 
-          if (evalRes?.pass) {
-            return { ok: true, checkedCount: evalRes.checkedCount, evidence: evalRes.evidence || [] };
+          if (!failedEval) {
+            return { ok: true, checkedCount: checks.length, evidence: mergedEvidence };
           }
           if (Date.now() >= deadline) {
             throw new WorkflowError({
@@ -2810,9 +2590,9 @@ export async function runDeterministicWorkflow({
               stepIndex: stepCtx.stepIndex,
               stepId: stepCtx.stepId,
               op: stepCtx.op,
-              expected: evalRes?.expected || "所有状态断言通过",
-              actual: evalRes?.actual || JSON.stringify(evalRes),
-              message: `断言未通过 [${evalRes?.kind || "check"}]: 期望 ${evalRes?.expected}，实读 ${evalRes?.actual}`,
+              expected: failedEval?.expected || "所有状态断言通过",
+              actual: failedEval?.actual || JSON.stringify(failedEval),
+              message: `断言未通过 [${failedEval?.kind || "check"}]: 期望 ${failedEval?.expected}，实读 ${failedEval?.actual}`,
             });
           }
           await sleepWithAbort(150, signal);

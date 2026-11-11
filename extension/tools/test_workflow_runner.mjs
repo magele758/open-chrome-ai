@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 
 import { extractCapsule } from "../lib/agent/trust/capsule.js";
+import { runJs } from "../lib/agent/page-fns.js";
 import {
   WORKFLOW_MODEL_ID,
+  buildAssertStateBatches,
   evaluateWhenPredicate,
   formatWorkflowSummary,
   interpolateParams,
@@ -495,4 +497,89 @@ const LARGE_FAKE_PNG_DATA_URL =
   assert.equal(stepRec.actualReadback.evidence[0].actual.length, 18, "18 项属性实读证据不得被截断");
   assert.equal(stepRec.actualReadback.evidence[1].actual, "真实回读标题");
   console.log("PASS 5. assert_state full untruncated actualReadback.evidence persisted in toolSteps");
+}
+
+// ── 6. ADR-020 真实 page-fns.runJs 长度契约与深层嵌套实读证据零 "[…]" 截断回归测试 ──
+{
+  const smallChecks = [
+    { id: "m0", kind: "modals_count", equals: 0 },
+    { id: "hdr", kind: "text_matches_regex", pattern: "全部\\s*30\\s*未发布\\s*30" },
+    { id: "row", kind: "row_state", rowSelector: "tr", mustIncludeAll: ["SKU-01"], expectedCount: 1 },
+  ];
+  const smallBatches = buildAssertStateBatches("", smallChecks, 6000);
+  assert.equal(smallBatches.length, 1);
+  assert.ok(smallBatches[0].code.length < 4500, `3 项断言脚本应紧凑 (<4500)，实测=${smallBatches[0].code.length}`);
+
+  const largeChecks = [
+    {
+      id: "fields_15",
+      kind: "field_blocks_match",
+      fieldSelector: ".attr-block",
+      labelSelector: ".attr-label",
+      expectedFields: Array.from({ length: 15 }, (_, k) => ({
+        labelIncludes: `字段_${k + 1}`,
+        items: [`选项_${k + 1}`],
+        ...(k === 0 ? { inputs: ["100"] } : {}),
+      })),
+    },
+    ...Array.from({ length: 28 }, (_, k) => ({
+      id: `ph_${k}`,
+      kind: "inputs_by_placeholder_equal",
+      placeholder: `占位_${k}`,
+      equals: [`值_${k}`],
+    })),
+  ];
+  const largeBatches = buildAssertStateBatches(".modal-root", largeChecks, 6000);
+  assert.ok(largeBatches.length >= 1);
+  for (const b of largeBatches) {
+    assert.ok(b.code.length <= 6000, `分批脚本长度必须 <= 6000，实测=${b.code.length}`);
+  }
+
+  // 直接走真实 page-fns.js#runJs 验证执行不报“代码过长”且第 6 层数组元素不被 dump 截成 "[…]"
+  const prevDoc = globalThis.document;
+  const prevStyle = globalThis.getComputedStyle;
+  try {
+    const fakeBlock = {
+      querySelector: (sel) => (sel === ".attr-label" ? { innerText: "* 材质成分" } : null),
+      querySelectorAll: (sel) => {
+        if (sel === ".ant-select-selection-item") {
+          return [{ querySelector: () => null, textContent: "纯棉材质" }];
+        }
+        if (sel === "input") {
+          return [{ type: "text", value: "100" }];
+        }
+        return [];
+      },
+    };
+    const fakeRoot = {
+      innerText: "全部 30 未发布 30",
+      querySelector: () => null,
+      querySelectorAll: (sel) => (sel === ".attr-block" ? [fakeBlock] : []),
+    };
+    globalThis.getComputedStyle = () => ({ display: "block", visibility: "visible" });
+    globalThis.document = {
+      innerText: "全部 30 未发布 30",
+      querySelector: (sel) => (sel === ".modal-root" ? fakeRoot : null),
+      querySelectorAll: () => [],
+    };
+
+    const realBatch = buildAssertStateBatches(".modal-root", [
+      {
+        id: "deep_attr",
+        kind: "field_blocks_match",
+        fieldSelector: ".attr-block",
+        labelSelector: ".attr-label",
+        expectedFields: [{ labelIncludes: "材质成分", items: ["纯棉材质"], inputs: ["100"] }],
+      },
+    ]);
+    const realOut = await runJs(realBatch[0].code);
+    assert.equal(realOut.ok, true, `真实 runJs 应返回 ok:true，实际=${JSON.stringify(realOut)}`);
+    assert.equal(realOut.result.pass, true);
+    assert.deepEqual(realOut.result.evidence[0].actual[0].items, ["纯棉材质"], "第 6 层 items 元素不得被 dump 截成 […]");
+    assert.deepEqual(realOut.result.evidence[0].actual[0].inputs, ["100"], "第 6 层 inputs 元素不得被 dump 截成 […]");
+  } finally {
+    globalThis.document = prevDoc;
+    globalThis.getComputedStyle = prevStyle;
+  }
+  console.log("PASS 6. ADR-020 real page-fns.runJs code-length batching & depth-6 lossless evidence contract");
 }
