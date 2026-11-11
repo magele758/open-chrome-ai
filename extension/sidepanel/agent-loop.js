@@ -51,6 +51,26 @@ import { composeSkillPrompt, userInvokedSkill } from "../lib/slash.js";
 import { isModelReady, resolveModel } from "../lib/storage.js";
 import { detectInjection, withUntrustedOutput } from "../lib/untrusted.js";
 
+const AGENT_BUSY_SESSION_KEY = "pl.agent.busy";
+
+function writeAgentBusyState(busy, runId = "") {
+  try {
+    const area = globalThis.chrome?.storage?.session;
+    if (!area?.set) return;
+    Promise.resolve(
+      area.set({
+        [AGENT_BUSY_SESSION_KEY]: {
+          busy: Boolean(busy),
+          runId: String(runId || ""),
+          updatedAt: Date.now(),
+        },
+      }),
+    ).catch(() => {});
+  } catch {
+    /* ignore session storage errors */
+  }
+}
+
 function currentKind(wantImage) {
   return wantImage || state.image ? "multimodal" : "text";
 }
@@ -414,7 +434,9 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     loopEngine: LOOP_ENGINE_ID,
   });
 
+  const runId = `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   state.busy = true;
+  writeAgentBusyState(true, runId);
   state.abort = new AbortController();
   state.run = {
     status: "running",
@@ -478,6 +500,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             paintBot(botMsg);
           }
           if (ev.type === "turn_prepared") {
+            writeAgentBusyState(true, runId);
             if (botMsg.thinking && !botMsg.thinking.endsWith("\n\n")) {
               botMsg.thinking += "\n\n";
             }
@@ -581,6 +604,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     const finished = ["stop", "max_turns", "empty_assistant"].includes(result?.reason);
     if (userStop || finished || failed) state.run = null;
     state.busy = false;
+    writeAgentBusyState(false, runId);
     state.abort = null;
     state.stopIntent = null;
     setSendButton(false);
@@ -638,6 +662,7 @@ async function sendPrompt(userText, options = {}) {
     if (state.busy) {
       console.warn("[pagelens] sendPrompt force-clear busy");
       state.busy = false;
+      writeAgentBusyState(false);
       state.abort = null;
       state.stopIntent = null;
     }
@@ -731,6 +756,7 @@ async function sendPrompt(userText, options = {}) {
     botMsg.text = "请求失败：" + (err.message || String(err));
     botMsg.error = true;
     state.busy = false;
+    writeAgentBusyState(false);
     renderMessages();
   }
 }

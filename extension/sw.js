@@ -13,8 +13,10 @@ import { installInboxConfirm } from "./lib/agent/inbox-confirm.js";
 import { AGENT_TASK_EVENTS, onAgentTaskEvent } from "./lib/agent/delegate.js";
 import { installDelegate } from "./lib/agent/delegate-sw.js";
 import { installAgentGateway } from "./lib/bridge/gateway.js";
+import { installDevAutoReload, syncDevReloadAlarm } from "./lib/dev-reload.js";
 
 applyOptionalLocalSettings().catch(() => {});
+installDevAutoReload();
 installDelegate();
 onAgentTaskEvent((ev) => {
   if (ev.type === AGENT_TASK_EVENTS.FINISHED) completeHeadlessAgentPrompt().catch(() => {});
@@ -31,6 +33,7 @@ setTimeout(() => {
 
 chrome.runtime.onInstalled.addListener(() => {
   applyOptionalLocalSettings().catch(() => {});
+  syncDevReloadAlarm().catch(() => {});
   syncAgentInboxAlarm().catch(() => {});
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   chrome.contextMenus.removeAll(() => {
@@ -49,6 +52,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onStartup.addListener(() => {
   applyOptionalLocalSettings().catch(() => {});
+  syncDevReloadAlarm().catch(() => {});
   syncAgentInboxAlarm().catch(() => {});
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
