@@ -15,6 +15,7 @@ import { isLangfuseConfigured, sendTraceToLangfuse } from "../lib/langfuse.js";
 import { bindMarkdownLinks, decorateInlines, enhanceMermaid, formatAnswer, splitThinking } from "../lib/markdown.js";
 import { visibleSkills } from "../lib/prompts.js";
 import { isModelReady, resolveModel } from "../lib/storage.js";
+import { messageShowsActionRow } from "../lib/turn-end-actions.js";
 
 const thinkingScrolls = new WeakMap();
 
@@ -422,7 +423,7 @@ function renderMessages() {
     messageScroll?.afterRender();
     return;
   }
-  for (const msg of state.messages) {
+  for (const [index, msg] of state.messages.entries()) {
     const wrap = document.createElement("div");
     wrap.className = `msg ${msg.role}${msg.error ? " error" : ""}`;
     if (msg.role === "user") {
@@ -460,7 +461,7 @@ function renderMessages() {
         fillBotBody(body, displayText, { mermaid: !streamingThis && !msg.error });
         wrap.appendChild(body);
       }
-      if (msg.metrics || (!streamingThis && displayText && !msg.error && displayText !== "…")) {
+      if (messageShowsActionRow(state.messages, index, state.busy)) {
         wrap.appendChild(createMessageFooter(msg));
       }
     }

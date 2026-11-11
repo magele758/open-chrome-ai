@@ -54,12 +54,16 @@ export function createDelegatePanel(deps) {
   function taskNode(task) {
     const running = task.status === TASK_STATUS.RUNNING;
     const steps = Array.isArray(task.steps) ? task.steps.slice(-STEPS_SHOWN) : [];
-    const head = el("div", { className: "delegate-head" }, [
+    const summary = el("summary", { className: "routine-row-summary" }, [
       el("strong", { text: task.agentName || "外部 Agent" }),
-      el("span", { className: `delegate-status ${task.status}`, text: STATUS_LABELS[task.status] || task.status }),
+      el("span", { className: `routine-row-when delegate-status ${task.status}`, text: STATUS_LABELS[task.status] || task.status }),
+    ]);
+    const body = el("div", { className: "routine-row-body" }, [
+      el("div", { className: "delegate-prompt", text: String(task.prompt || "").slice(0, 160), title: task.prompt || "" }),
+      el("div", { className: "delegate-capsule", text: `授权：${describeCapsule(task.capsule).join(" · ")}` }),
     ]);
     if (running) {
-      head.append(
+      body.append(
         el("button", {
           type: "button",
           className: "trust-btn",
@@ -72,24 +76,18 @@ export function createDelegatePanel(deps) {
         }),
       );
     }
-    const children = [
-      head,
-      el("div", { className: "delegate-prompt", text: String(task.prompt || "").slice(0, 160), title: task.prompt || "" }),
-      el("div", { className: "delegate-capsule", text: `授权：${describeCapsule(task.capsule).join(" · ")}` }),
-    ];
     if (task.pending?.length) {
-      children.push(el("div", { className: "delegate-pending", text: `${task.pending.length} 个操作等你在上方「待批准」里处理` }));
+      body.append(el("div", { className: "delegate-pending", text: `${task.pending.length} 个操作等你在上方「待批准」里处理` }));
     }
-    if (task.error?.message) children.push(el("div", { className: "delegate-error", text: task.error.message }));
+    if (task.error?.message) body.append(el("div", { className: "delegate-error", text: task.error.message }));
     if (steps.length) {
-      children.push(
-        el("details", { className: "delegate-steps" }, [
-          el("summary", { text: `步骤 ${task.steps.length}` }),
-          ...steps.map((s) => el("div", { className: "delegate-step", text: stepLine(s), title: s.summary || "" })),
-        ]),
+      body.append(
+        el("div", { className: "delegate-steps" }, steps.map((s) => el("div", { className: "delegate-step", text: stepLine(s), title: s.summary || "" }))),
       );
     }
-    return el("div", { className: "delegate-item" }, children);
+    return el("article", { className: "delegate-item" }, [
+      el("details", { className: "routine-row-details" }, [summary, body]),
+    ]);
   }
 
   async function render() {
@@ -108,7 +106,7 @@ export function createDelegatePanel(deps) {
     }
     const running = list.filter((t) => t.status === TASK_STATUS.RUNNING).length;
     const details = el("details", { className: "delegate-box", ...(open ? { open: "" } : {}) }, [
-      el("summary", { text: `🤖 外部委托任务 · ${running ? `${running} 个运行中` : `最近 ${list.length} 个`}` }),
+      el("summary", { text: `外部委托任务 · ${running ? `${running} 个运行中` : `最近 ${list.length} 个`}` }),
       ...list.map(taskNode),
     ]);
     details.addEventListener("toggle", () => {
