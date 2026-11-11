@@ -31,6 +31,7 @@ import {
   waitForTabNavigation,
 } from "../chrome.js";
 import {
+  completeSelectOption,
   findInPage,
   getLinks,
   getPageInfo,
@@ -39,13 +40,14 @@ import {
   listControls,
   pasteIntoPage,
   pageAct,
+  prepareSelectOption,
   queryDom,
   runJs,
   scrollPage,
 } from "./page-fns.js";
 import { actOnRef, scrollContainerOf, scrollViewport, snapshotControls } from "./page-snapshot.js";
 import { cdpAvailable, getCdp } from "../cdp.js";
-import { cdpScreenshot, createCdpTools, withDialogGuard } from "./cdp-tools.js";
+import { cdpScreenshot, createCdpTools, dispatchSafeCdpClick, withDialogGuard } from "./cdp-tools.js";
 import { createBrowserApiTools } from "./browser-api-tools.js";
 import { createCookieTools } from "./cookie-tools.js";
 import { createSettingsTools } from "./settings-tools.js";
@@ -460,13 +462,14 @@ export function createAgentTools(ctx) {
     },
     {
       name: "fill",
-      description: "向输入框填文字。用 selector 或 text 定位。submit=true 时尝试回车/提交表单。",
+      description: "向输入框填文字。用 selector 或 text 定位。blur=true 时填完失焦提交受控数值框；submit=true 时尝试回车/提交表单。",
       parameters: obj(
         {
           tabId: tabIdProp(),
           selector: { type: "string" },
           text: { type: "string", description: "用可见文字定位控件" },
           value: { type: "string", description: "要填入的内容" },
+          blur: { type: "boolean", description: "填完后是否触发 blur（适用于 AntD InputNumber 等失焦校验控件）" },
           submit: { type: "boolean", description: "填完是否提交" },
           nth: { type: "integer" },
         },
@@ -480,6 +483,7 @@ export function createAgentTools(ctx) {
             selector: args.selector,
             text: args.text,
             value: args.value,
+            blur: args.blur,
             submit: args.submit,
             nth: args.nth,
           }),
@@ -488,22 +492,82 @@ export function createAgentTools(ctx) {
     },
     {
       name: "select_option",
-      description: "在 <select> 里选一项，value 可以是 option 的 value 或可见文本。",
+      description:
+        "在原生 <select> 或自定义下拉框（Ant Design .ant-select / Element .el-select / ARIA combobox）中选择一项。优先用此工具而非手写 run_js 展开下拉：可传 selector 或字段 label（如 '材质'、'尺码表'）定位，已选中同名项会幂等直接返回，未选中会自动展开、检索过滤虚拟列表、点击精确匹配项并在多选模式下自动收起浮层。",
       parameters: obj(
         {
           tabId: tabIdProp(),
-          selector: { type: "string" },
-          value: { type: "string" },
-          nth: { type: "integer" },
+          selector: { type: "string", description: "下拉控件或外层容器 CSS 选择器（与 label 二选一）" },
+          label: { type: "string", description: "表单字段标签文字，如 '材质'、'细节'、'尺码表'（自动忽略星号与冒号）" },
+          value: { type: "string", description: "要选中的选项精确文本或 value" },
+          nth: { type: "integer", description: "多个同名下拉时取第几个，从 0 开始" },
         },
-        ["selector", "value"],
+        ["value"],
       ),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
-        return toToolText(
-          await actInFrames(tabId, "select", { selector: args.selector, value: args.value, nth: args.nth }),
-        );
+        const prep = await injectMain(tabId, prepareSelectOption, [
+          {
+            selector: args.selector,
+            label: args.label,
+            value: args.value,
+            nth: args.nth,
+            useCdp: Boolean(cdpEnabled),
+          },
+        ]);
+        if (!prep || prep.ok === false) {
+          if (prep?.notFound && args.selector) {
+            const frameRes = await actInFrames(tabId, "select", {
+              selector: args.selector,
+              value: args.value,
+              nth: args.nth,
+            });
+            if (frameRes?.ok) return toToolText(frameRes);
+          }
+          return toToolText(prep || { ok: false, error: "下拉定位失败" });
+        }
+        if (prep.done) {
+          const { done: _done, ...rest } = prep;
+          return toToolText(rest);
+        }
+        try {
+          if (prep.needCdpOpen && cdpEnabled) {
+            const clickOpen = await dispatchSafeCdpClick(cdp, tabId, prep.x, prep.y);
+            if (!clickOpen.ok) {
+              await injectMain(tabId, completeSelectOption, [
+                { uid: prep.uid, value: args.value, stage: "cleanup" },
+              ]).catch(() => {});
+              return toToolText(clickOpen);
+            }
+          }
+          let comp = await injectMain(tabId, completeSelectOption, [
+            {
+              uid: prep.uid,
+              value: args.value,
+              stage: "select",
+              allowCdpFallback: Boolean(cdpEnabled),
+            },
+          ]);
+          if (comp?.ok && comp.needCdpOptionClick && cdpEnabled) {
+            const clickOpt = await dispatchSafeCdpClick(cdp, tabId, comp.optX, comp.optY);
+            if (!clickOpt.ok) {
+              await injectMain(tabId, completeSelectOption, [
+                { uid: prep.uid, value: args.value, stage: "cleanup" },
+              ]).catch(() => {});
+              return toToolText(clickOpt);
+            }
+            comp = await injectMain(tabId, completeSelectOption, [
+              { uid: prep.uid, value: args.value, stage: "finalize" },
+            ]);
+          }
+          return toToolText(comp || { ok: false, error: "下拉选项点击未返回结果" });
+        } catch (err) {
+          await injectMain(tabId, completeSelectOption, [
+            { uid: prep.uid, value: args.value, stage: "cleanup" },
+          ]).catch(() => {});
+          return toToolText({ ok: false, error: err?.message || String(err) });
+        }
       },
     },
     {

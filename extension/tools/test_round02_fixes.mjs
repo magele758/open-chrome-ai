@@ -84,12 +84,12 @@ const { JSDOM } = require("jsdom");
     assert.equal(clickCancel.match.id, "cancel-btn");
     scrollCalls.length = 0;
 
-    // 1d. Below-fold non-control element DOES scrollIntoView({ block: "nearest", behavior: "auto" }) on wait
+    // 1d. Below-fold non-control element DOES scrollIntoView({ block: "nearest", behavior: "instant" }) on wait
     const waitBelow = await runPageAct("wait", { text: "底部延迟块", timeoutMs: 400 });
     assert.equal(waitBelow.ok, true);
     assert.equal(waitBelow.match.id, "below-fold");
     assert.equal(scrollCalls.length, 1);
-    assert.deepEqual({ ...scrollCalls[0].opts }, { block: "nearest", behavior: "auto" });
+    assert.deepEqual({ ...scrollCalls[0].opts }, { block: "nearest", behavior: "instant" });
 
     // 1e. Delayed dynamic modal render succeeds within timeoutMs; missing text reports updated error classified as failure
     win.setTimeout(() => {
@@ -188,12 +188,12 @@ const { JSDOM } = require("jsdom");
 
     const runScroll = (opts) => win.eval(`(${scrollPage.toString()})(${JSON.stringify(opts)})`);
 
-    // 2a. scrollPage({ y: 600 }) scrolls .collection-create-modal__content with behavior: "auto"
+    // 2a. scrollPage({ y: 600 }) scrolls .collection-create-modal__content with behavior: "instant"
     const resY = runScroll({ y: 600 });
     assert.equal(resY.ok, true);
     assert.equal(resY.via, "modal-y");
     assert.equal(scroller.scrollTop, 600);
-    assert.equal(modalScrollToArgs?.behavior, "auto");
+    assert.equal(modalScrollToArgs?.behavior, "instant");
     assert.equal(windowScrollCalls.length, 0, "must scroll modal container rather than window");
 
     // 2b. scrollPage({ percent: 50 }) scrolls modal container to 50% of (2200 - 500) = 850
@@ -201,24 +201,24 @@ const { JSDOM } = require("jsdom");
     assert.equal(resPct.ok, true);
     assert.equal(resPct.via, "modal-percent");
     assert.equal(scroller.scrollTop, 850);
-    assert.equal(modalScrollToArgs?.behavior, "auto");
+    assert.equal(modalScrollToArgs?.behavior, "instant");
 
-    // 2c. When modal is hidden, scrollPage({ y: 300 }) falls back to window with behavior: "auto"
+    // 2c. When modal is hidden, scrollPage({ y: 300 }) falls back to window with behavior: "instant"
     win.document.querySelector(".ant-modal-wrap").style.display = "none";
     const resWin = runScroll({ y: 300 });
     assert.equal(resWin.ok, true);
     assert.equal(resWin.via, "y");
-    assert.deepEqual({ ...windowScrollCalls[0] }, { top: 300, behavior: "auto" });
+    assert.deepEqual({ ...windowScrollCalls[0] }, { top: 300, behavior: "instant" });
 
-    // 2d. selector scroll uses behavior: "auto"
+    // 2d. selector scroll uses behavior: "instant"
     const resSel = runScroll({ selector: "#page-el" });
     assert.equal(resSel.ok, true);
     assert.equal(resSel.via, "selector");
-    assert.equal(elScrollIntoViewCalls[0].behavior, "auto");
+    assert.equal(elScrollIntoViewCalls[0].behavior, "instant");
   } finally {
     dom.window.close();
   }
-  console.log("PASS 2. scrollPage modal internal scroller & behavior === 'auto'");
+  console.log("PASS 2. scrollPage modal internal scroller & behavior === 'instant'");
 }
 
 // ── 3. ADR-008: runJs returns value for sync IIFE, async IIFE, object literal, trailing semicolon, and multi-statement ──

@@ -113,6 +113,33 @@ export function dialogNote(dialog) {
   return `页面弹出了 ${dialog.type} 对话框：「${String(dialog.message).slice(0, 200)}」。操作可能还没完成，用 handle_dialog（accept=true 确认 / false 取消）处理后再继续。`;
 }
 
+/** 发送真实 CDP 鼠标点击，并开启引擎级文件选择框拦截保护（防止误触原生打开窗口）。 */
+export async function dispatchSafeCdpClick(cdp, tabId, x, y, options = {}) {
+  await cdp.ensure(tabId);
+  let chooserOpened = false;
+  const chooserWatch = cdp.watchFileChooser?.(tabId) || null;
+  chooserWatch?.promise?.then(() => {
+    chooserOpened = true;
+  });
+  await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: true }).catch(() => {});
+  try {
+    for (const ev of mouseClickEvents(x, y, {
+      button: options.button || "left",
+      clickCount: options.double ? 2 : 1,
+    })) {
+      await cdp.send(tabId, "Input.dispatchMouseEvent", ev);
+    }
+    await sleep(60);
+  } finally {
+    chooserWatch?.cancel?.();
+    await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+  }
+  if (chooserOpened) {
+    return { ok: false, blockedFileChooser: true, error: BLOCKED_CHOOSER_OPENED_ERROR };
+  }
+  return { ok: true };
+}
+
 /** 给会触发页面行为的工具加上对话框保护：alert/confirm 会卡住注入的脚本，这里抢先返回。 */
 export function withDialogGuard(tools, { cdp, resolveTabId, enabled }) {
   if (!enabled) return tools;
@@ -278,24 +305,12 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
               return toToolText({ ok: false, blockedFileChooser: true, error: BLOCKED_UPLOAD_ELEMENT_ERROR });
             }
           }
-          let chooserOpened = false;
-          const chooserWatch = cdp.watchFileChooser?.(tabId) || null;
-          chooserWatch?.promise?.then(() => {
-            chooserOpened = true;
+          const clickRes = await dispatchSafeCdpClick(cdp, tabId, p.x, p.y, {
+            button: args.button || "left",
+            double: Boolean(args.double),
           });
-          await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: true }).catch(() => {});
-          try {
-            await mouse(
-              tabId,
-              mouseClickEvents(p.x, p.y, { button: args.button || "left", clickCount: args.double ? 2 : 1 }),
-            );
-            await sleep(60);
-          } finally {
-            chooserWatch?.cancel?.();
-            await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
-          }
-          if (chooserOpened) {
-            return toToolText({ ok: false, blockedFileChooser: true, error: BLOCKED_CHOOSER_OPENED_ERROR });
+          if (!clickRes.ok) {
+            return toToolText(clickRes);
           }
           return toToolText({
             ok: true,

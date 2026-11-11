@@ -566,7 +566,7 @@ export async function pageAct(kind, spec) {
       (vw <= 0 || (rect.right > 0 && rect.left < vw));
     const oversized = vh > 0 && rect.height > vh * 0.6;
     if (!inViewport && !oversized) {
-      scrollEl.scrollIntoView({ block: "nearest", behavior: "auto" });
+      scrollEl.scrollIntoView({ block: "nearest", behavior: "instant" });
     }
     return { ok: true, waitedMs: Date.now() - t0, match: describe(hit.el), count: hit.count };
   }
@@ -586,7 +586,7 @@ export async function pageAct(kind, spec) {
   if (kind === "click" && isFileUploadTrigger(el)) {
     return { ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MSG };
   }
-  (hit.scrollTarget || el).scrollIntoView({ block: "center", behavior: "auto" });
+  (hit.scrollTarget || el).scrollIntoView({ block: "center", behavior: "instant" });
 
   if (kind === "click") {
     el.focus();
@@ -601,6 +601,9 @@ export async function pageAct(kind, spec) {
       el.dispatchEvent(new Event("change", { bubbles: true }));
     } else {
       setValue(el, value);
+    }
+    if (o.blur) {
+      el.blur();
     }
     if (o.submit) {
       const form = el.form || el.closest("form");
@@ -639,12 +642,587 @@ export async function pageAct(kind, spec) {
   return { ok: false, error: `未知动作 ${kind}` };
 }
 
+export async function prepareSelectOption(spec) {
+  const o = spec || {};
+  const val = String(o.value ?? "").replace(/\s+/g, " ").trim();
+  if (!val) return { ok: false, error: "需要非空 value" };
+  if (!o.selector && !o.label) return { ok: false, error: "需要 selector 或 label" };
+
+  const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
+  const compactCjk = (s) => {
+    const t = clean(s);
+    if (!/[\u3400-\u9fff]/.test(t)) return "";
+    return t.replace(/\s+/g, "");
+  };
+  const cVal = compactCjk(val);
+  const normLabel = (s) =>
+    clean(s)
+      .replace(/^[\s*＊:：]+/, "")
+      .replace(/[\s:：]+$/, "")
+      .trim();
+  const baseLabel = (s) => normLabel(s).replace(/\s*[（(][^）)]*[）)]\s*$/, "").trim();
+  const doubleRaf = () =>
+    new Promise((resolve) => {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      } else {
+        setTimeout(resolve, 16);
+      }
+    });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const visible = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    let cur = el;
+    while (cur && cur.nodeType === 1) {
+      if (cur.hidden) return false;
+      const st = window.getComputedStyle(cur);
+      if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+      cur = cur.parentElement;
+    }
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const isFileUploadTrigger = (node) => {
+    if (!node || node.nodeType !== 1) return false;
+    if (
+      node.tagName === "INPUT" &&
+      String(node.type || node.getAttribute("type") || "").toLowerCase() === "file" &&
+      !node.disabled
+    ) {
+      return true;
+    }
+    for (
+      let cur = node;
+      cur && cur !== document.body && cur !== document.documentElement;
+      cur = cur.parentElement || cur.getRootNode?.()?.host || null
+    ) {
+      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
+      if (
+        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
+        (cur.classList?.contains("ant-upload") &&
+          !cur.classList.contains("ant-upload-wrapper") &&
+          !cur.classList.contains("ant-upload-picture-card-wrapper"))
+      ) {
+        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
+      }
+    }
+    return false;
+  };
+  const COMBO_SEL = "select, .ant-select:not(.ant-cascader), .el-select, [data-radix-select-trigger], [role='combobox']";
+  const resolveControl = (node) => {
+    if (!node || node.nodeType !== 1) return null;
+    if (node instanceof HTMLSelectElement) return node;
+    const up = node.closest?.(".ant-select:not(.ant-cascader), .el-select, [data-radix-select-trigger]");
+    if (up) return up;
+    if (node.matches?.("[role='combobox']") && !node.closest?.(".ant-cascader")) {
+      return node.closest?.('[class*="select"]:not(.ant-cascader)') || node;
+    }
+    const down = node.querySelector?.("select, .ant-select:not(.ant-cascader), .el-select, [data-radix-select-trigger]");
+    if (down) return down;
+    const cb = node.querySelector?.("[role='combobox']");
+    if (cb && !cb.closest?.(".ant-cascader")) return cb;
+    return null;
+  };
+  const controlVisible = (ctrl) => {
+    if (!ctrl) return false;
+    if (visible(ctrl)) return true;
+    const sub = ctrl.querySelector?.(".ant-select-selector, .el-select__wrapper");
+    return Boolean(sub && visible(sub));
+  };
+  const closeCombo = (root) => {
+    if (!root) return;
+    const inp = root.querySelector?.("input") || root;
+    inp.dispatchEvent?.(
+      new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }),
+    );
+    inp.dispatchEvent?.(
+      new KeyboardEvent("keyup", { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }),
+    );
+    inp.blur?.();
+    const safeNeutral = root.closest?.(".ant-modal")?.querySelector?.(".ant-modal-header, .ant-modal-title") || document.body;
+    safeNeutral?.dispatchEvent?.(new MouseEvent("mousedown", { bubbles: true }));
+    safeNeutral?.dispatchEvent?.(new MouseEvent("mouseup", { bubbles: true }));
+  };
+  const readSelected = (root) => {
+    const items = [...(root.querySelectorAll?.(".ant-select-selection-item, .el-select__tags-text") || [])];
+    const out = [];
+    for (const item of items) {
+      const tAttr = clean(item.getAttribute?.("title"));
+      if (tAttr) {
+        out.push(tAttr);
+        continue;
+      }
+      const clone = item.cloneNode(true);
+      clone.querySelectorAll?.(".ant-select-selection-item-remove, [aria-hidden='true']").forEach((x) => x.remove());
+      const txt = clean(clone.textContent);
+      if (txt) out.push(txt);
+    }
+    if (!out.length && !root.classList?.contains("ant-select") && !root.classList?.contains("el-select")) {
+      const ph = clean(root.getAttribute?.("placeholder") || root.getAttribute?.("data-placeholder"));
+      const txt = clean(root.value ?? root.textContent);
+      if (txt && txt !== ph) out.push(txt);
+    }
+    return out;
+  };
+  const matchesVal = (s) => s === val || Boolean(cVal && compactCjk(s) === cVal);
+
+  const nth = Math.max(0, Number(o.nth) || 0);
+  let candidates = [];
+  if (o.selector) {
+    let raw;
+    try {
+      raw = [...document.querySelectorAll(String(o.selector))];
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) };
+    }
+    const seen = new Set();
+    for (const n of raw) {
+      const ctrl = resolveControl(n);
+      if (ctrl && !seen.has(ctrl) && controlVisible(ctrl)) {
+        seen.add(ctrl);
+        candidates.push(ctrl);
+      }
+    }
+    if (!candidates.length) {
+      return { ok: false, notFound: true, error: `没有可见下拉控件：${o.selector}` };
+    }
+  } else {
+    const targetNorm = normLabel(o.label);
+    const targetBase = baseLabel(o.label);
+    const targetCjk = compactCjk(targetNorm);
+    const maxZIndex = (el) => {
+      let best = 0;
+      for (let cur = el; cur && cur !== document.documentElement; cur = cur.parentElement) {
+        const z = Number.parseInt(window.getComputedStyle(cur).zIndex, 10);
+        if (Number.isFinite(z) && z > best) best = z;
+      }
+      return best;
+    };
+    const modals = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .ant-modal, .ant-drawer')]
+      .filter((m) => visible(m) && !m.closest('[aria-hidden="true"]'));
+    const topModals = modals
+      .filter((m) => !modals.some((other) => other !== m && other.contains(m)))
+      .map((m, idx) => ({ m, idx, z: maxZIndex(m) }))
+      .sort((a, b) => (b.z !== a.z ? b.z - a.z : b.idx - a.idx));
+    const roots = topModals.length ? [topModals[0].m, document] : [document];
+
+    const labelTextOf = (labelEl) => {
+      const clone = labelEl.cloneNode(true);
+      clone
+        .querySelectorAll?.('[class*="hint"], [class*="desc"], [class*="extra"], [class*="tip"], [class*="tooltip"]')
+        .forEach((x) => x.remove());
+      return clean(clone.textContent);
+    };
+    const isLabelMatch = (rawTxt) => {
+      const fn = normLabel(rawTxt);
+      if (!fn) return false;
+      const bn = baseLabel(rawTxt);
+      if (fn === targetNorm || bn === targetNorm || (targetBase && bn === targetBase)) return true;
+      if (targetCjk && compactCjk(fn) === targetCjk) return true;
+      return false;
+    };
+
+    for (const root of roots) {
+      const seen = new Set();
+      const labelEls = [
+        ...root.querySelectorAll("label, .ant-form-item-label, .el-form-item__label, [class*='__label'], [class*='-label']"),
+      ].filter(visible);
+      for (const lEl of labelEls) {
+        if (!isLabelMatch(labelTextOf(lEl))) continue;
+        let ctrl = null;
+        if (lEl.tagName === "LABEL" && lEl.control) {
+          ctrl = resolveControl(lEl.control);
+        }
+        if (!ctrl) {
+          const fieldBox =
+            lEl.closest(".ant-form-item, .el-form-item, [class*='__field'], [class*='-field']") || lEl.parentElement;
+          ctrl = resolveControl(fieldBox);
+        }
+        if (ctrl && !seen.has(ctrl) && controlVisible(ctrl)) {
+          seen.add(ctrl);
+          candidates.push(ctrl);
+        }
+      }
+      if (!candidates.length) {
+        for (const el of root.querySelectorAll(COMBO_SEL)) {
+          const ctrl = resolveControl(el);
+          if (!ctrl || seen.has(ctrl) || !controlVisible(ctrl)) continue;
+          const aria = el.getAttribute?.("aria-label") || ctrl.getAttribute?.("aria-label") || "";
+          const ph = el.getAttribute?.("placeholder") || ctrl.querySelector?.(".ant-select-selection-placeholder")?.textContent || "";
+          if (isLabelMatch(aria) || isLabelMatch(ph)) {
+            seen.add(ctrl);
+            candidates.push(ctrl);
+          }
+        }
+      }
+      if (candidates.length) break;
+    }
+    if (!candidates.length) {
+      return { ok: false, notFound: true, error: `没有匹配标签「${o.label}」的可见下拉框` };
+    }
+  }
+
+  const target = candidates[Math.min(nth, candidates.length - 1)];
+  if (target instanceof HTMLSelectElement) {
+    const opt = [...target.options].find(
+      (x) => x.value === val || clean(x.text) === val || x.text.includes(val),
+    );
+    if (!opt) return { ok: false, notFound: true, error: `没有选项 ${val}` };
+    target.scrollIntoView({ block: "center", behavior: "instant" });
+    target.value = opt.value;
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true, done: true, action: "select", value: target.value, text: clean(opt.text) };
+  }
+
+  const selectedBefore = readSelected(target);
+  if (selectedBefore.some(matchesVal)) {
+    if (target.classList?.contains("ant-select-open") || target.getAttribute?.("aria-expanded") === "true") {
+      closeCombo(target);
+      await sleep(40);
+    }
+    return { ok: true, done: true, action: "select", alreadySelected: true, value: val, selected: selectedBefore };
+  }
+
+  const otherOpen = [...document.querySelectorAll(".ant-select-open, [role='combobox'][aria-expanded='true']")].filter(
+    (el) => el !== target && !target.contains(el) && !el.contains(target),
+  );
+  if (otherOpen.length) {
+    for (const op of otherOpen) closeCombo(op);
+    await sleep(60);
+    await doubleRaf();
+  }
+
+  const trigger = target.querySelector?.(".ant-select-selector, .el-select__wrapper") || target;
+  if (isFileUploadTrigger(trigger)) {
+    return {
+      ok: false,
+      blockedFileChooser: true,
+      error: "目标位置命中文件上传控件（点击会弹出系统文件选择框），已拦截；如需上传文件请使用 upload_file 工具",
+    };
+  }
+  trigger.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  await doubleRaf();
+
+  let r = trigger.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) {
+    return { ok: false, error: "下拉框没有可点击区域" };
+  }
+  let x = Math.round(r.x + r.width / 2);
+  let y = Math.round(r.y + r.height / 2);
+  const composedContains = (a, b) => {
+    for (let n = b; n; n = n.parentNode || n.host) if (n === a) return true;
+    return false;
+  };
+  let hit = document.elementFromPoint(x, y);
+  if (hit && !composedContains(target, hit) && !composedContains(hit, target)) {
+    closeCombo(hit.closest?.(".ant-select-open") || document.activeElement || document.body);
+    await sleep(60);
+    await doubleRaf();
+    r = trigger.getBoundingClientRect();
+    x = Math.round(r.x + r.width / 2);
+    y = Math.round(r.y + r.height / 2);
+    hit = document.elementFromPoint(x, y);
+    if (hit && !composedContains(target, hit) && !composedContains(hit, target)) {
+      return { ok: false, covered: true, error: "目标下拉框被其他浮层遮挡，请先关闭遮挡层" };
+    }
+  }
+
+  const uid = `plsel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  target.setAttribute("data-pl-select-uid", uid);
+  const isOpen =
+    Boolean(target.classList?.contains("ant-select-open")) || target.getAttribute?.("aria-expanded") === "true";
+
+  if (!o.useCdp && !isOpen) {
+    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+    trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+    trigger.click?.();
+  }
+
+  return {
+    ok: true,
+    done: false,
+    uid,
+    needCdpOpen: Boolean(o.useCdp && !isOpen),
+    x,
+    y,
+    count: candidates.length,
+  };
+}
+
+export async function completeSelectOption(spec) {
+  const o = spec || {};
+  const uid = String(o.uid || "");
+  const val = String(o.value ?? "").replace(/\s+/g, " ").trim();
+  const stage = o.stage || "select";
+  const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
+  const compactCjk = (s) => {
+    const t = clean(s);
+    if (!/[\u3400-\u9fff]/.test(t)) return "";
+    return t.replace(/\s+/g, "");
+  };
+  const cVal = compactCjk(val);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const doubleRaf = () =>
+    new Promise((resolve) => {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      } else {
+        setTimeout(resolve, 16);
+      }
+    });
+  const comboRoot = uid ? document.querySelector(`[data-pl-select-uid="${uid}"]`) : null;
+  if (!comboRoot) {
+    return { ok: false, error: "下拉框引用已失效" };
+  }
+  let keepUid = false;
+  const closeCombo = (root) => {
+    if (!root) return;
+    const inp = root.querySelector?.("input") || root;
+    inp.dispatchEvent?.(
+      new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }),
+    );
+    inp.dispatchEvent?.(
+      new KeyboardEvent("keyup", { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }),
+    );
+    inp.blur?.();
+    const safeNeutral = root.closest?.(".ant-modal")?.querySelector?.(".ant-modal-header, .ant-modal-title") || document.body;
+    safeNeutral?.dispatchEvent?.(new MouseEvent("mousedown", { bubbles: true }));
+    safeNeutral?.dispatchEvent?.(new MouseEvent("mouseup", { bubbles: true }));
+  };
+  const readSelected = (root) => {
+    const items = [...(root.querySelectorAll?.(".ant-select-selection-item, .el-select__tags-text") || [])];
+    const out = [];
+    for (const item of items) {
+      const tAttr = clean(item.getAttribute?.("title"));
+      if (tAttr) {
+        out.push(tAttr);
+        continue;
+      }
+      const clone = item.cloneNode(true);
+      clone.querySelectorAll?.(".ant-select-selection-item-remove, [aria-hidden='true']").forEach((x) => x.remove());
+      const txt = clean(clone.textContent);
+      if (txt) out.push(txt);
+    }
+    if (!out.length && !root.classList?.contains("ant-select") && !root.classList?.contains("el-select")) {
+      const ph = clean(root.getAttribute?.("placeholder") || root.getAttribute?.("data-placeholder"));
+      const txt = clean(root.value ?? root.textContent);
+      if (txt && txt !== ph) out.push(txt);
+    }
+    return out;
+  };
+  const matchesVal = (s) => s === val || Boolean(cVal && compactCjk(s) === cVal);
+  const findVisiblePopup = () => {
+    const boxVisible = (el) => {
+      if (!el) return false;
+      if (el.classList?.contains("ant-select-dropdown-hidden")) return false;
+      const st = window.getComputedStyle(el);
+      if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    const inp = comboRoot.querySelector?.("input[aria-controls], input[aria-owns]") || comboRoot;
+    const ctrlId = inp?.getAttribute?.("aria-controls") || inp?.getAttribute?.("aria-owns") || "";
+    if (ctrlId) {
+      const listEl = document.getElementById(ctrlId);
+      const wrap =
+        listEl?.closest?.(".ant-select-dropdown, .el-select-dropdown, [data-radix-popper-content-wrapper]") || listEl;
+      if (wrap && boxVisible(wrap)) return wrap;
+    }
+    const all = [
+      ...document.querySelectorAll(
+        ".ant-select-dropdown:not(.ant-select-dropdown-hidden), .el-select-dropdown, [role='listbox']",
+      ),
+    ].filter(boxVisible);
+    return all.length ? all[all.length - 1] : null;
+  };
+  const listVisibleOptions = (popup) => {
+    if (!popup) return [];
+    const raw = [
+      ...popup.querySelectorAll(
+        ".ant-select-item-option:not(.ant-select-item-option-disabled), .el-select-dropdown__item:not(.is-disabled), [role='option']:not([aria-disabled='true'])",
+      ),
+    ];
+    return raw.filter((el) => {
+      const st = window.getComputedStyle(el);
+      if (st.display === "none" || st.visibility === "hidden") return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+  };
+  const optionLabel = (opt) =>
+    clean(
+      opt.querySelector?.(".ant-select-item-option-content")?.textContent ||
+        opt.getAttribute?.("title") ||
+        opt.textContent,
+    );
+  const findOption = (popup) => {
+    const opts = listVisibleOptions(popup);
+    return (
+      opts.find((opt) => {
+        const lbl = optionLabel(opt);
+        const title = clean(opt.getAttribute?.("title"));
+        return matchesVal(lbl) || (title && matchesVal(title));
+      }) || null
+    );
+  };
+  const setSearchInput = (inp, text) => {
+    inp.focus?.();
+    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    if (desc?.set) desc.set.call(inp, text);
+    else inp.value = text;
+    inp.dispatchEvent(new Event("input", { bubbles: true }));
+    inp.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+    inp.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
+  try {
+    if (stage === "finalize") {
+      await sleep(60);
+      if (
+        comboRoot.classList?.contains("ant-select-open") ||
+        comboRoot.getAttribute?.("aria-expanded") === "true" ||
+        findVisiblePopup()
+      ) {
+        closeCombo(comboRoot);
+        await sleep(50);
+      }
+      const selected = readSelected(comboRoot);
+      if (!selected.some(matchesVal)) {
+        return { ok: false, error: `点击选项后回读未生效（期望「${val}」，实读 ${JSON.stringify(selected)}）`, selected };
+      }
+      return {
+        ok: true,
+        action: "select",
+        value: val,
+        selected,
+        popupClosed: !comboRoot.classList?.contains("ant-select-open"),
+      };
+    }
+
+    if (stage === "cleanup") {
+      closeCombo(comboRoot);
+      return { ok: true };
+    }
+
+    const t0 = Date.now();
+    let popup = findVisiblePopup();
+    while (!popup && Date.now() - t0 < 1200) {
+      await sleep(50);
+      popup = findVisiblePopup();
+    }
+
+    let opt = findOption(popup);
+    const searchInput = comboRoot.querySelector?.(
+      "input[type='search'], input.ant-select-selection-search-input, input.el-select__input, input[role='combobox']",
+    );
+    const isSearchable = comboRoot.classList?.contains("ant-select")
+      ? comboRoot.classList.contains("ant-select-show-search") && Boolean(searchInput && !searchInput.disabled)
+      : Boolean(
+          searchInput &&
+            !searchInput.readOnly &&
+            !searchInput.disabled &&
+            Number(window.getComputedStyle(searchInput).opacity) > 0,
+        );
+
+    if (!opt && isSearchable && searchInput) {
+      setSearchInput(searchInput, val);
+      const tSearch = Date.now();
+      while (Date.now() - tSearch < 1200) {
+        await sleep(65);
+        popup = findVisiblePopup();
+        opt = findOption(popup);
+        if (opt) break;
+      }
+    }
+
+    if (!opt) {
+      popup = findVisiblePopup();
+      if (popup) {
+        const holder =
+          popup.querySelector?.(".rc-virtual-list-holder, .el-scrollbar__wrap") ||
+          (popup.scrollHeight > popup.clientHeight + 10 ? popup : null);
+        if (holder && holder.scrollHeight > holder.clientHeight + 10) {
+          if (typeof holder.scrollTo === "function") holder.scrollTo({ top: 0, behavior: "instant" });
+          holder.scrollTop = 0;
+          await sleep(40);
+          opt = findOption(popup);
+          const step = Math.max(120, Math.floor(holder.clientHeight * 0.75));
+          for (let pos = step; !opt && pos <= holder.scrollHeight + step; pos += step) {
+            const nextTop = Math.min(pos, Math.max(0, holder.scrollHeight - holder.clientHeight));
+            if (typeof holder.scrollTo === "function") holder.scrollTo({ top: nextTop, behavior: "instant" });
+            holder.scrollTop = nextTop;
+            await sleep(45);
+            popup = findVisiblePopup() || popup;
+            opt = findOption(popup);
+            if (nextTop >= holder.scrollHeight - holder.clientHeight) break;
+          }
+        }
+      }
+    }
+
+    if (!opt) {
+      const availableOptions = listVisibleOptions(findVisiblePopup() || popup)
+        .map(optionLabel)
+        .filter(Boolean)
+        .slice(0, 20);
+      if (isSearchable && searchInput && searchInput.value) {
+        setSearchInput(searchInput, "");
+      }
+      closeCombo(comboRoot);
+      return {
+        ok: false,
+        notFound: true,
+        error: `下拉框中未找到精确匹配项「${val}」`,
+        availableOptions,
+      };
+    }
+
+    opt.scrollIntoView({ block: "nearest", behavior: "instant" });
+    await doubleRaf();
+    const optRect = opt.getBoundingClientRect();
+    const optX = Math.round(optRect.x + optRect.width / 2);
+    const optY = Math.round(optRect.y + optRect.height / 2);
+    opt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: optX, clientY: optY }));
+    opt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: optX, clientY: optY }));
+    opt.click?.();
+    await sleep(75);
+
+    let selected = readSelected(comboRoot);
+    if (!selected.some(matchesVal) && o.allowCdpFallback && optRect.width > 0 && optRect.height > 0) {
+      keepUid = true;
+      return { ok: true, needCdpOptionClick: true, optX, optY };
+    }
+
+    if (
+      comboRoot.classList?.contains("ant-select-open") ||
+      comboRoot.getAttribute?.("aria-expanded") === "true" ||
+      findVisiblePopup()
+    ) {
+      closeCombo(comboRoot);
+      await sleep(50);
+    }
+    selected = readSelected(comboRoot);
+    return {
+      ok: true,
+      action: "select",
+      value: val,
+      selected,
+      popupClosed: !comboRoot.classList?.contains("ant-select-open"),
+    };
+  } finally {
+    if (!keepUid) {
+      comboRoot.removeAttribute("data-pl-select-uid");
+    }
+  }
+}
+
 export function scrollPage(opts) {
   const o = opts || {};
   if (o.selector) {
     const el = document.querySelector(String(o.selector));
     if (!el) return { ok: false, error: "没有匹配元素" };
-    el.scrollIntoView({ block: o.block || "center", behavior: "auto" });
+    el.scrollIntoView({ block: o.block || "center", behavior: "instant" });
     return { ok: true, via: "selector" };
   }
   const visible = (el) => {
@@ -697,23 +1275,23 @@ export function scrollPage(opts) {
     if (scroller) {
       const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
       const y = max * (o.percent / 100);
-      if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top: y, behavior: "auto" });
+      if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top: y, behavior: "instant" });
       scroller.scrollTop = y;
       return { ok: true, via: "modal-percent", y, scrollTop: scroller.scrollTop };
     }
     const max = Math.max(0, document.documentElement.scrollHeight - innerHeight);
     const y = max * (o.percent / 100);
-    scrollTo({ top: y, behavior: "auto" });
+    scrollTo({ top: y, behavior: "instant" });
     return { ok: true, via: "percent", y };
   }
   if (typeof o.y === "number") {
     const scroller = findModalScroller();
     if (scroller) {
-      if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top: o.y, behavior: "auto" });
+      if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top: o.y, behavior: "instant" });
       scroller.scrollTop = o.y;
       return { ok: true, via: "modal-y", y: o.y, scrollTop: scroller.scrollTop };
     }
-    scrollTo({ top: o.y, behavior: "auto" });
+    scrollTo({ top: o.y, behavior: "instant" });
     return { ok: true, via: "y" };
   }
   return { ok: false, error: "需要 selector、percent 或 y" };
