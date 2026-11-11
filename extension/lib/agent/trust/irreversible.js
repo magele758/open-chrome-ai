@@ -89,7 +89,11 @@ export function matchIrreversible(toolName, args = {}, settings = {}, ctx = {}) 
   const on = enabledMap(settings);
   const item = (id, reason) => (on[id] ? { id, label: IRREVERSIBLE_ITEMS.find((i) => i.id === id).label, reason } : null);
   const hits = [];
-  const buttonText = [args?.text, ctx.elementText].filter((x) => typeof x === "string" && x.trim()).join(" ").slice(0, 200);
+  const buttonText = [args?.text, ctx.elementText]
+    .filter((x) => typeof x === "string" && x.trim())
+    .join(" ")
+    .replace(/([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g, "$1")
+    .slice(0, 200);
   const isClick = CLICK_TOOLS.has(toolName) && (toolName !== "act_element" || String(args?.action || "") === "click");
 
   if (toolName === "cose_publish") hits.push(item("publish_send", "COSE 发布到外部平台"));

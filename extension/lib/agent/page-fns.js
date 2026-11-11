@@ -223,6 +223,7 @@ export function listControls(limit) {
   const inModal = (el) => modals.some((m) => m.contains(el));
   const ordered = modals.length ? [...nodes.filter(inModal), ...nodes.filter((el) => !inModal(el))] : nodes;
   const clean = (s) => String(s || "").trim().replace(/\s+/g, " ");
+  const compactCjk = (s) => String(s || "").replace(/([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g, "$1");
   const isCheck = (el) =>
     (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) || el.matches(checkRoles);
   const checkedOf = (el) =>
@@ -257,6 +258,11 @@ export function listControls(limit) {
     if (isCheck(el)) {
       item.checked = checkedOf(el);
       item.text = item.text || labelOf(el).slice(0, 80);
+    } else if (
+      (item.tag === "button" || el.getAttribute("role") === "button") &&
+      /^[\u4e00-\u9fff]\s+[\u4e00-\u9fff]$/.test(item.text)
+    ) {
+      item.text = compactCjk(item.text);
     }
     if (modals.length && inModal(el)) item.modal = true;
     return item;
@@ -286,6 +292,7 @@ export function checkStates(spec) {
   };
   gather(document);
   const clean = (s) => String(s || "").trim().replace(/\s+/g, " ");
+  const compactCjk = (s) => String(s || "").replace(/([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g, "$1");
   const checkedOf = (el) =>
     el instanceof HTMLInputElement
       ? el.checked
@@ -317,11 +324,13 @@ export function checkStates(spec) {
     return { items: rows.map((r) => ({ label: r.label, checked: r.checked, disabled: r.disabled })) };
   }
   const lower = (s) => s.toLowerCase();
+  const compact = (s) => compactCjk(lower(s));
   const results = labels.map((want) => {
     const w = lower(want);
-    const exact = rows.filter((r) => lower(r.label) === w);
-    const starts = rows.filter((r) => lower(r.label).startsWith(w));
-    const includes = rows.filter((r) => lower(r.label).includes(w));
+    const cw = compact(want);
+    const exact = rows.filter((r) => lower(r.label) === w || (cw && compact(r.label) === cw));
+    const starts = rows.filter((r) => lower(r.label).startsWith(w) || (cw && compact(r.label).startsWith(cw)));
+    const includes = rows.filter((r) => lower(r.label).includes(w) || (cw && compact(r.label).includes(cw)));
     const pool = exact.length ? exact : o.exact ? [] : starts.length ? starts : includes;
     if (!pool.length) return { want, found: false };
     const hit = pool[0];
@@ -348,6 +357,7 @@ export function checkStates(spec) {
 export async function pageAct(kind, spec) {
   const o = spec || {};
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const compactCjk = (s) => String(s || "").replace(/([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g, "$1");
   const visible = (el) => {
     if (!el) return false;
     let cur = el;
@@ -359,6 +369,22 @@ export async function pageAct(kind, spec) {
     }
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
+  };
+  const resolveProxy = (el) => {
+    if (!el || !/^(INPUT|SELECT|TEXTAREA)$/i.test(el.tagName)) return null;
+    if (String(el.getAttribute("type") || el.type || "").toLowerCase() === "hidden") return null;
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") return null;
+    if (visible(el)) return null;
+    const anc = el.parentElement;
+    const primary = anc?.closest(
+      '.ant-select-selector, .ant-cascader-picker, .ant-picker, [role="combobox"], [role="listbox"], [role="switch"], [role="checkbox"], [role="radio"], .ant-checkbox-wrapper, .ant-radio-wrapper, .ant-switch',
+    );
+    if (primary && visible(primary)) return primary;
+    const secondary = anc?.closest(".ant-select, .ant-cascader, label");
+    if (secondary && visible(secondary)) return secondary;
+    const lbl = el.labels?.[0] || null;
+    if (lbl && visible(lbl)) return lbl;
+    return null;
   };
   const describe = (el) => ({
     tag: el.tagName.toLowerCase(),
@@ -391,26 +417,50 @@ export async function pageAct(kind, spec) {
   const find = () => {
     const nth = Math.max(0, Number(o.nth) || 0);
     if (o.selector) {
-      let nodes;
+      let raw;
       try {
-        nodes = collect(String(o.selector), false).filter(visible);
-        if (!nodes.length) nodes = collect(String(o.selector), true).filter(visible);
+        raw = collect(String(o.selector), false);
+        if (!raw.some(visible)) raw = collect(String(o.selector), true);
       } catch (err) {
         return { error: err?.message || String(err) };
+      }
+      let nodes = raw.filter(visible);
+      if (!nodes.length && raw.length) {
+        if (kind === "fill" || kind === "press" || kind === "select") {
+          const proxyInputs = [];
+          for (const n of raw) {
+            const wrap = resolveProxy(n);
+            if (wrap) proxyInputs.push({ el: n, scrollTarget: wrap });
+          }
+          if (proxyInputs.length) {
+            const picked = proxyInputs[Math.min(nth, proxyInputs.length - 1)];
+            return { el: picked.el, scrollTarget: picked.scrollTarget, count: proxyInputs.length };
+          }
+        } else {
+          nodes = [...new Set(raw.map(resolveProxy).filter(Boolean))];
+        }
       }
       if (!nodes.length) return { error: `没有可见元素：${o.selector}`, notFound: true };
       return { el: nodes[Math.min(nth, nodes.length - 1)], count: nodes.length };
     }
     const needle = String(o.text || "").trim();
-    if (!needle) return { error: "需要 selector 或 text" };
+    if (!needle) {
+      if (kind === "press") return { el: document.activeElement || document.body, count: 1 };
+      return { error: "需要 selector 或 text" };
+    }
     const lower = needle.toLowerCase();
+    const cLower = compactCjk(lower);
     const matches = (el) => {
       const rawText = el.innerText ?? el.textContent ?? "";
-      const t = `${rawText} ${el.value || ""} ${el.getAttribute("aria-label") || ""} ${el.getAttribute("placeholder") || ""}`
-        .replace(/\s+/g, " ")
-        .trim()
+      const t = [rawText, el.value, el.getAttribute("aria-label"), el.getAttribute("placeholder")]
+        .filter(Boolean)
+        .map((s) => String(s).replace(/\s+/g, " ").trim())
+        .join(" | ")
         .toLowerCase();
-      return t === lower || t.includes(lower);
+      if (t === lower || t.includes(lower)) return true;
+      if (!cLower) return false;
+      const ct = compactCjk(t);
+      return ct === cLower || ct.includes(cLower);
     };
     let nodes = collect(CONTROLS, false).filter(visible).filter(matches);
     if (!nodes.length) nodes = collect(CONTROLS, true).filter(visible).filter(matches);
@@ -460,7 +510,8 @@ export async function pageAct(kind, spec) {
       hit = find();
     }
     if (hit.error) return { ok: false, error: hit.error, notFound: hit.notFound === true, waitedMs: Date.now() - t0 };
-    const rect = hit.el.getBoundingClientRect();
+    const scrollEl = hit.scrollTarget || hit.el;
+    const rect = scrollEl.getBoundingClientRect();
     const vh = window.innerHeight || document.documentElement?.clientHeight || 0;
     const vw = window.innerWidth || document.documentElement?.clientWidth || 0;
     const inViewport =
@@ -470,7 +521,7 @@ export async function pageAct(kind, spec) {
       (vw <= 0 || (rect.right > 0 && rect.left < vw));
     const oversized = vh > 0 && rect.height > vh * 0.6;
     if (!inViewport && !oversized) {
-      hit.el.scrollIntoView({ block: "nearest", behavior: "auto" });
+      scrollEl.scrollIntoView({ block: "nearest", behavior: "auto" });
     }
     return { ok: true, waitedMs: Date.now() - t0, match: describe(hit.el), count: hit.count };
   }
@@ -481,7 +532,7 @@ export async function pageAct(kind, spec) {
   if (kind === "probe" || kind === "waitProbe") return { ok: true, count: hit.count, match: describe(hit.el) };
 
   const el = hit.el;
-  el.scrollIntoView({ block: "center", behavior: "auto" });
+  (hit.scrollTarget || el).scrollIntoView({ block: "center", behavior: "auto" });
 
   if (kind === "click") {
     el.focus();
@@ -519,7 +570,12 @@ export async function pageAct(kind, spec) {
 
   if (kind === "press") {
     const key = String(o.key || "Enter");
-    const target = document.activeElement && document.activeElement !== document.body ? document.activeElement : el;
+    const target =
+      o.selector || o.text
+        ? el
+        : document.activeElement && document.activeElement !== document.body
+          ? document.activeElement
+          : el;
     target.focus();
     target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
     target.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true, cancelable: true }));

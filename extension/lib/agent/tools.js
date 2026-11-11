@@ -1897,7 +1897,7 @@ export function resolveActiveTools({
     .replace(/(?:系统|图片分配)?自动保存|保存(?:商品|草稿|成功|失败|状态|结果|核验|提示|按钮)/g, " ")
     .replace(/(?:类目|完整|目标全?|所选|候选|分类|导航|面包屑|上述|该|此|两条)路径|路径匹配/g, " ");
   if (
-    /\bshell\b|命令|终端|(?:运行|执行)\s*(?:shell|bash|zsh|sh|cmd|脚本|命令|终端|本机|skill)|`[^`\n]+`|脚本|\bskill\b|obsidian|文稿|入库|保存|\bnote\b|\blibrary\b|\bexec\b|\bbash\b|\bzsh\b|授权|权限|未授权|重新授权|文件|文件夹|目录|路径|知识库|笔记|读写/i.test(
+    /\bshell\b|命令|终端|(?:运行|执行)\s*(?:shell|bash|zsh|sh|cmd|脚本|命令|终端|本机|skill)|`\$\s*[^`\n]+`|(?:运行|执行|跑一下|跑|\brun\b|\bexecute\b|\bexec\b)\s*(?:命令|脚本|终端)?\s*[:：]?\s*`(?![.#\[<*])[^`\n]+`|`(?![.#\[<*])(?:git|npm|pnpm|yarn|node|python3?|pip3?|curl|wget|ls|cd|cat|grep|rg|find|mkdir|rm|cp|mv|chmod|echo|make|cargo|go|docker|kubectl|brew|sh|bash|zsh|pytest)\b[^`\n]*`|脚本|\bskill\b|obsidian|文稿|入库|保存|\bnote\b|\blibrary\b|\bexec\b|\bbash\b|\bzsh\b|授权|权限|未授权|重新授权|文件|文件夹|目录|路径|知识库|笔记|读写/i.test(
       sysText,
     )
   ) {

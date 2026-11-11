@@ -55,10 +55,14 @@ const DOMAIN_RE = new RegExp(`(?<![\\w.@/-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-
 const IPV4_RE = /(?<![\w.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?::\d+)?(?![\w.])/g;
 const HANDLE_RE = /(?<![\w@])@([A-Za-z0-9_][\w.-]{1,38})/g;
 const PATH_RE = /(?<![\w:/.~])((?:~\/|\/)(?:[\w.@%+=-]+\/?)+|[A-Za-z]:\\[^\s"'”」)）]+)/g;
-const FENCE_RE = /```[\w-]*\n?([\s\S]*?)```/g;
+const FENCE_RE = /```([\w-]*)[ \t]*\n?([\s\S]*?)```/g;
+const SHELL_FENCE_LANG_RE = /^(?:sh|bash|zsh|shell|console|cmd|powershell|ps1)$/i;
 const TICK_RE = /`([^`\n]+)`/g;
 const DOLLAR_RE = /^[ \t]*\$[ \t]+(.+)$/gm;
-const QUOTED_RUN_RE = /(?:运行|执行|跑一下|跑|run|execute|exec)\s*[:：]?\s*[“"「『]([^”"」』\n]+)[”"」』]/gi;
+const QUOTED_RUN_RE = /(?:运行|执行|跑一下|跑|run|execute|exec)\s*(?:本机)?(?:命令|脚本|终端)?\s*[:：]?\s*[“"「『]([^”"」』\n]+)[”"」』]/gi;
+const RUN_TICK_CHAIN_RE =
+  /(?:运行|执行|跑一下|跑|\brun\b|\bexecute\b|\bexec\b)\s*(?:本机)?(?:命令|脚本|终端)?\s*[:：]?\s*`[^`\n]+`(?:\s*(?:和|与|及|、|,|或|以及|然后|接着|顺便|并|再|\band\b|\bthen\b)\s*`[^`\n]+`)*/gi;
+const FENCE_RUN_INTRO_RE = /(?:运行|执行|跑一下|跑|\brun\b|\bexecute\b|\bexec\b)\s*(?:本机)?(?:命令|脚本|终端)?\s*[:：]?\s*$/i;
 
 function uniq(list) {
   return [...new Set(list.filter(Boolean))];
@@ -99,19 +103,78 @@ export function emptyCapsule(principal = "user") {
   };
 }
 
-function extractCommands(text) {
+function isPlausibleShellCommand(raw) {
+  const cmd = normalizeCommand(String(raw || "").replace(/^\s*\$\s+/, ""));
+  if (!cmd || cmd.length > 500) return false;
+  // 排除 CSS 选择器（.class、#id、[attr]、>、+、*）、HTML 标签与注释
+  if (/^(?:\.(?!\/)|#|\[|<|>|\+|~(?![/\\])|\*|:)/.test(cmd)) return false;
+  // 排除纯 URL
+  if (/^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(cmd)) return false;
+  // 排除无参数纯路径（可执行脚本或 bin 目录命令除外）
+  if (
+    /^(?:~\/|\/|[A-Za-z]:\\)\S+$/.test(cmd) &&
+    !/\.(?:sh|bash|zsh|command|bat|cmd|ps1|py|mjs|cjs|js|rb|pl)$/i.test(cmd) &&
+    !/(?:^|\/)s?bin\/[A-Za-z0-9._-]+$/.test(cmd)
+  ) {
+    return false;
+  }
+  const strippedEnv = cmd.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+/, "");
+  const firstToken = strippedEnv.split(/\s+/)[0] || "";
+  if (!firstToken || !/[A-Za-z]/.test(firstToken)) return false;
+  if (/[^\x21-\x7e]/.test(firstToken)) return false;
+  if (/[\[\]#>+~:]/.test(firstToken)) return false;
+  if (
+    /^[a-z]+\.[a-z][\w.-]*$/i.test(firstToken) &&
+    !/\.(?:sh|bash|zsh|command|bat|cmd|ps1|py|mjs|cjs|js|ts|rb|pl|exe|out|bin)$/i.test(firstToken)
+  ) {
+    return false;
+  }
+  return /^(?:\.{1,2}\/[\w./+-]+|~\/[\w./+-]+|\/[\w./+-]+|[A-Za-z][\w.+-]*)$/.test(firstToken);
+}
+
+function extractCommands(text, { hasShellIntent = false, allowBareTickCommands = false } = {}) {
   const out = [];
   let rest = text;
-  rest = rest.replace(FENCE_RE, (_m, body) => {
+  rest = rest.replace(FENCE_RE, (_m, lang, body, offset, fullStr) => {
+    if (lang && !SHELL_FENCE_LANG_RE.test(lang)) return " ";
+    const prefix = String(fullStr || "").slice(Math.max(0, Number(offset) - 40), Number(offset));
+    const fenceIntro = FENCE_RUN_INTRO_RE.test(prefix);
     for (const line of String(body).split("\n")) {
-      const cmd = line.replace(/^\s*\$\s+/, "").trim();
-      if (cmd && !cmd.startsWith("#")) out.push(cmd);
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const hasDollar = /^\$\s+/.test(trimmed);
+      const cmd = trimmed.replace(/^\$\s+/, "").trim();
+      if ((hasDollar || hasShellIntent || fenceIntro) && isPlausibleShellCommand(cmd)) {
+        out.push(cmd);
+      }
     }
     return " ";
   });
-  for (const m of rest.matchAll(TICK_RE)) out.push(m[1]);
-  for (const m of rest.matchAll(DOLLAR_RE)) out.push(m[1]);
-  for (const m of rest.matchAll(QUOTED_RUN_RE)) out.push(m[1]);
+  for (const m of rest.matchAll(TICK_RE)) {
+    if (/^\s*\$\s+\S/.test(m[1])) {
+      const cmd = m[1].replace(/^\s*\$\s+/, "");
+      if (isPlausibleShellCommand(cmd)) out.push(cmd);
+    }
+  }
+  for (const chain of rest.matchAll(RUN_TICK_CHAIN_RE)) {
+    for (const tm of chain[0].matchAll(TICK_RE)) {
+      const cmd = tm[1].replace(/^\s*\$\s+/, "");
+      if (isPlausibleShellCommand(cmd)) out.push(cmd);
+    }
+  }
+  if (hasShellIntent || allowBareTickCommands) {
+    for (const m of rest.matchAll(TICK_RE)) {
+      const cmd = m[1].replace(/^\s*\$\s+/, "");
+      if (isPlausibleShellCommand(cmd)) out.push(cmd);
+    }
+  }
+  for (const m of rest.matchAll(DOLLAR_RE)) {
+    if (isPlausibleShellCommand(m[1])) out.push(m[1]);
+  }
+  for (const m of rest.matchAll(QUOTED_RUN_RE)) {
+    const cmd = m[1].replace(/^\s*\$\s+/, "");
+    if (isPlausibleShellCommand(cmd)) out.push(cmd);
+  }
   return uniq(out.map(normalizeCommand).filter((c) => c.length <= 500));
 }
 
@@ -158,15 +221,19 @@ function neutralizePassiveActionPhrases(src) {
  * @param {string} text
  * @param {{ principal?: "user"|"agent" }} [opts]
  */
-export function extractCapsule(text, { principal = "user" } = {}) {
+export function extractCapsule(text, { principal = "user", allowBareTickCommands = false } = {}) {
   const capsule = emptyCapsule(principal);
   const src = String(text || "").slice(0, 20000);
   if (!src.trim()) return capsule;
 
   const affirmativeSrc = stripProhibitedClauses(src);
-  const actionSrc = neutralizePassiveActionPhrases(affirmativeSrc);
+  const nonShellFencesStripped = affirmativeSrc.replace(FENCE_RE, (m, lang) =>
+    lang && !SHELL_FENCE_LANG_RE.test(lang) ? " " : m,
+  );
+  const actionSrc = neutralizePassiveActionPhrases(nonShellFencesStripped);
+  const hasShellIntent = ACTION_KEYWORDS.shell.test(actionSrc);
 
-  const commands = extractCommands(affirmativeSrc);
+  const commands = extractCommands(affirmativeSrc, { hasShellIntent, allowBareTickCommands });
   const urls = uniq([...affirmativeSrc.matchAll(URL_RE)].map((m) => m[0].replace(/[.,;:!?]+$/, "")).filter((u) => urlOrigin(u)));
   const emails = uniq([...affirmativeSrc.matchAll(EMAIL_RE)].map((m) => m[0].toLowerCase()));
   const noUrls = affirmativeSrc.replace(URL_RE, " ").replace(EMAIL_RE, " ");
@@ -238,7 +305,7 @@ export function mergeCapsules(a, b) {
  * 用户在侧栏手动扩大授权。additions 里的 text 按委托人指令抽取（每行可写域名、URL、`$ 命令`）。
  */
 export function widenCapsule(capsule, { actions = [], text = "" } = {}) {
-  const fromText = extractCapsule(text);
+  const fromText = extractCapsule(text, { allowBareTickCommands: true });
   fromText.actions = [];
   const extra = normalizeCapsule({ ...fromText, actions });
   extra.widened = true;

@@ -342,11 +342,34 @@ export function scrollViewport(dir, amount) {
 export function locateElement(spec) {
   const o = spec || {};
   const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
+  const compactCjk = (s) => String(s || "").replace(/([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g, "$1");
   const visible = (el) => {
-    const st = getComputedStyle(el);
-    if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+    if (!el) return false;
+    let cur = el;
+    while (cur && cur.nodeType === 1) {
+      if (cur.hidden) return false;
+      const st = getComputedStyle(cur);
+      if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+      cur = cur.parentElement;
+    }
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
+  };
+  const resolveProxy = (el) => {
+    if (!el || !/^(INPUT|SELECT|TEXTAREA)$/i.test(el.tagName)) return null;
+    if (String(el.getAttribute("type") || el.type || "").toLowerCase() === "hidden") return null;
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") return null;
+    if (visible(el)) return null;
+    const anc = el.parentElement;
+    const primary = anc?.closest(
+      '.ant-select-selector, .ant-cascader-picker, .ant-picker, [role="combobox"], [role="listbox"], [role="switch"], [role="checkbox"], [role="radio"], .ant-checkbox-wrapper, .ant-radio-wrapper, .ant-switch',
+    );
+    if (primary && visible(primary)) return primary;
+    const secondary = anc?.closest(".ant-select, .ant-cascader, label");
+    if (secondary && visible(secondary)) return secondary;
+    const lbl = el.labels?.[0] || null;
+    if (lbl && visible(lbl)) return lbl;
+    return null;
   };
   const collect = (selector) => {
     const out = [...document.querySelectorAll(selector)];
@@ -371,20 +394,33 @@ export function locateElement(spec) {
     const nth = Math.max(0, Number(o.nth) || 0);
     let nodes;
     if (o.selector) {
+      let raw;
       try {
-        nodes = collect(String(o.selector)).filter(visible);
+        raw = collect(String(o.selector));
       } catch (err) {
         return { ok: false, error: err?.message || String(err) };
+      }
+      nodes = raw.filter(visible);
+      if (!nodes.length && raw.length) {
+        nodes = [...new Set(raw.map(resolveProxy).filter(Boolean))];
       }
       if (!nodes.length) return { ok: false, notFound: true, error: `没有可见元素：${o.selector}` };
     } else {
       const needle = clean(o.text).toLowerCase();
       if (!needle) return { ok: false, error: "需要 node、selector 或 text" };
+      const cNeedle = compactCjk(needle);
       nodes = collect("a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem'], [onclick]")
         .filter(visible)
         .filter((n) => {
-          const t = clean(`${n.innerText || ""} ${n.value || ""} ${n.getAttribute("aria-label") || ""} ${n.getAttribute("placeholder") || ""}`).toLowerCase();
-          return t === needle || t.includes(needle);
+          const t = [n.innerText, n.value, n.getAttribute("aria-label"), n.getAttribute("placeholder")]
+            .filter(Boolean)
+            .map(clean)
+            .join(" | ")
+            .toLowerCase();
+          if (t === needle || t.includes(needle)) return true;
+          if (!cNeedle) return false;
+          const ct = compactCjk(t);
+          return ct === cNeedle || ct.includes(cNeedle);
         });
       if (!nodes.length) return { ok: false, notFound: true, error: `没有匹配「${o.text}」的可见控件` };
     }
