@@ -1,7 +1,9 @@
 /**
  * Functions injected into the page via chrome.scripting.executeScript.
- * Must stay self-contained (no module locals / imports).
+ * Must stay self-contained (no module locals / imports inside injected function bodies).
  */
+
+import "./ui-adapters/index.js";
 
 export function getPageInfo() {
   const all = [...document.querySelectorAll("video, audio")].filter((el) => {
@@ -188,7 +190,10 @@ export function queryDom(selector, limit) {
   }));
 }
 
-export function listControls(limit) {
+export function listControls(limit, adapterSpec) {
+  const A = adapterSpec || globalThis.__pagelensAdapterSpec || null;
+  const hiddenPortalClasses = A?.hiddenPortalClasses || [];
+  const leaveRe = A?.leaveClassPattern ? new RegExp(A.leaveClassPattern) : null;
   const max = Math.min(Number(limit) || 60, 150);
   const visible = (el) => {
     if (!el) return false;
@@ -197,10 +202,8 @@ export function listControls(limit) {
       const cls = typeof cur.className === "string" ? cur.className : "";
       if (
         cur.hidden ||
-        cur.classList?.contains("ant-select-dropdown-hidden") ||
-        cur.classList?.contains("ant-dropdown-hidden") ||
-        cur.classList?.contains("ant-popover-hidden") ||
-        (cls && /\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\b/.test(cls))
+        hiddenPortalClasses.some((c) => cur.classList?.contains(c)) ||
+        (cls && leaveRe && leaveRe.test(cls))
       ) {
         return false;
       }
@@ -240,7 +243,9 @@ export function listControls(limit) {
   const seen = new Set();
   const nodes = all.filter((el) => (seen.has(el) ? false : (seen.add(el), visible(el))));
   // 打开的弹窗优先：弹窗里的控件排前面，避免被页面主体的上百个控件挤出 limit。
-  const modals = [...document.querySelectorAll("[role='dialog'], [aria-modal='true'], dialog[open]")].filter(visible);
+  const dialogSel =
+    A?.dialogSelector || "[role='dialog'], [role='alertdialog'], [aria-modal='true'], dialog[open]";
+  const modals = [...document.querySelectorAll(dialogSel)].filter(visible);
   const inModal = (el) => modals.some((m) => m.contains(el));
   const ordered = modals.length ? [...nodes.filter(inModal), ...nodes.filter((el) => !inModal(el))] : nodes;
   const clean = (s) => String(s || "").trim().replace(/\s+/g, " ");
@@ -377,6 +382,10 @@ export function checkStates(spec) {
  */
 export async function pageAct(kind, spec) {
   const o = spec || {};
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
+  const blockFileChooser = o.fileChooserPolicy !== "allow";
+  const hiddenPortalClasses = A?.hiddenPortalClasses || [];
+  const leaveRe = A?.leaveClassPattern ? new RegExp(A.leaveClassPattern) : null;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const compactCjk = (s) => String(s || "").replace(/([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g, "$1");
   const visible = (el) => {
@@ -386,10 +395,8 @@ export async function pageAct(kind, spec) {
       const cls = typeof cur.className === "string" ? cur.className : "";
       if (
         cur.hidden ||
-        cur.classList?.contains("ant-select-dropdown-hidden") ||
-        cur.classList?.contains("ant-dropdown-hidden") ||
-        cur.classList?.contains("ant-popover-hidden") ||
-        (cls && /\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\b/.test(cls))
+        hiddenPortalClasses.some((c) => cur.classList?.contains(c)) ||
+        (cls && leaveRe && leaveRe.test(cls))
       ) {
         return false;
       }
@@ -407,17 +414,19 @@ export async function pageAct(kind, spec) {
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
+  const priProxySel =
+    A?.proxyTriggerSelector ||
+    '[role="combobox"], [role="listbox"], [role="switch"], [role="checkbox"], [role="radio"]';
+  const secProxySel = A?.proxySecondarySelector || "label";
   const resolveProxy = (el) => {
     if (!el || !/^(INPUT|SELECT|TEXTAREA)$/i.test(el.tagName)) return null;
     if (String(el.getAttribute("type") || el.type || "").toLowerCase() === "hidden") return null;
     if (el.disabled || el.getAttribute("aria-disabled") === "true") return null;
     if (visible(el)) return null;
     const anc = el.parentElement;
-    const primary = anc?.closest(
-      '.ant-select-selector, .ant-cascader-picker, .ant-picker, [role="combobox"], [role="listbox"], [role="switch"], [role="checkbox"], [role="radio"], .ant-checkbox-wrapper, .ant-radio-wrapper, .ant-switch',
-    );
+    const primary = priProxySel ? anc?.closest(priProxySel) : null;
     if (primary && visible(primary)) return primary;
-    const secondary = anc?.closest(".ant-select, .ant-cascader, label");
+    const secondary = secProxySel ? anc?.closest(secProxySel) : null;
     if (secondary && visible(secondary)) return secondary;
     const lbl = el.labels?.[0] || null;
     if (lbl && visible(lbl)) return lbl;
@@ -432,21 +441,24 @@ export async function pageAct(kind, spec) {
   });
   const FILE_CHOOSER_BLOCKED_MSG =
     "目标位置命中文件上传控件（点击会弹出系统文件选择框），已拦截；如需上传文件请使用 upload_file 工具，如系滚动后坐标偏移请改用 selector 定位目标控件";
-  const isFileUploadTrigger = (node) => {
-    if (!node || node.nodeType !== 1) return false;
+  const uploadListSel = A?.uploadListSelector || '[role="list"][data-upload-list], [class*="upload-list"]';
+  const uploadTrigSel = A?.uploadTriggerSelector || 'button, [role="button"]';
+  const hitsFileInput = (node) => {
+    const start = node && node.nodeType === 1 ? node : node?.parentElement || null;
+    if (!start) return false;
     if (
-      node.tagName === "INPUT" &&
-      String(node.type || node.getAttribute("type") || "").toLowerCase() === "file" &&
-      !node.disabled
+      start.tagName === "INPUT" &&
+      String(start.type || start.getAttribute("type") || "").toLowerCase() === "file" &&
+      !start.disabled
     ) {
       return true;
     }
     for (
-      let cur = node;
+      let cur = start;
       cur && cur !== document.body && cur !== document.documentElement;
       cur = cur.parentElement || cur.getRootNode?.()?.host || null
     ) {
-      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
+      if (uploadListSel && cur.matches?.(uploadListSel)) break;
       if (cur.tagName === "LABEL") {
         const forId = cur.getAttribute?.("for");
         const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
@@ -459,13 +471,8 @@ export async function pageAct(kind, spec) {
           return true;
         }
       }
-      if (
-        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
-        (cur.classList?.contains("ant-upload") &&
-          !cur.classList.contains("ant-upload-wrapper") &&
-          !cur.classList.contains("ant-upload-picture-card-wrapper"))
-      ) {
-        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
+      if (uploadTrigSel && cur.matches?.(uploadTrigSel) && cur.querySelector?.('input[type="file"]:not([disabled])')) {
+        return true;
       }
     }
     return false;
@@ -473,11 +480,12 @@ export async function pageAct(kind, spec) {
 
   const CONTROLS =
     "a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio'], [role='option'], [role='treeitem'], [role='checkbox'], [role='radio'], [role='switch'], [onclick]";
-  const TEXT_CONTAINERS =
-    "h1, h2, h3, h4, h5, h6, [role='heading'], [role='dialog'], [aria-modal='true'], .ant-modal-title, .ant-drawer-title, th, td, li, p, span, div";
-  const POPUP_LAYER_SEL =
-    ".ant-select-dropdown:not(.ant-select-dropdown-hidden), .ant-cascader-dropdown:not(.ant-select-dropdown-hidden), .ant-dropdown:not(.ant-dropdown-hidden), .el-select-dropdown, .el-cascader__dropdown, [role='listbox'], [role='menu'], [role='tree']";
-  const DIALOG_LAYER_SEL = "[role='dialog'], [aria-modal='true'], dialog[open], .ant-modal, .ant-drawer, .el-dialog";
+  const baseTextContainers =
+    "h1, h2, h3, h4, h5, h6, [role='heading'], [role='dialog'], [aria-modal='true'], dialog[open], th, td, li, p, span, div";
+  const TEXT_CONTAINERS = A?.dialogTitleSelector ? `${A.dialogTitleSelector}, ${baseTextContainers}` : baseTextContainers;
+  const POPUP_LAYER_SEL = A?.popupLayerSelector || "[role='listbox'], [role='menu'], [role='tree']";
+  const DIALOG_LAYER_SEL =
+    A?.dialogSelector || "[role='dialog'], [role='alertdialog'], [aria-modal='true'], dialog[open]";
   const collect = (selector, deep) => {
     const out = [...document.querySelectorAll(selector)];
     if (!deep) return out;
@@ -588,7 +596,7 @@ export async function pageAct(kind, spec) {
         }
       }
       if (!nodes.length) {
-        if (kind === "click" && raw.some(isFileUploadTrigger)) {
+        if (kind === "click" && blockFileChooser && raw.some(hitsFileInput)) {
           return { error: FILE_CHOOSER_BLOCKED_MSG, blockedFileChooser: true };
         }
         return { error: `没有可见元素：${o.selector}`, notFound: true };
@@ -682,7 +690,7 @@ export async function pageAct(kind, spec) {
   if (kind === "probe" || kind === "waitProbe") return { ok: true, count: hit.count, match: describe(hit.el) };
 
   const el = hit.el;
-  if (kind === "click" && isFileUploadTrigger(el)) {
+  if (kind === "click" && blockFileChooser && hitsFileInput(el)) {
     return { ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MSG };
   }
   (hit.scrollTarget || el).scrollIntoView({ block: "center", behavior: "instant" });
@@ -743,6 +751,29 @@ export async function pageAct(kind, spec) {
 
 export async function prepareSelectOption(spec) {
   const o = spec || {};
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
+  const blockFileChooser = o.fileChooserPolicy !== "allow";
+  const hiddenPortalClasses = A?.hiddenPortalClasses || [];
+  const leaveRe = A?.leaveClassPattern ? new RegExp(A.leaveClassPattern) : null;
+  const COMBO_SEL = A?.comboboxRootSelector || "select, [role='combobox'], [data-radix-select-trigger]";
+  const COMBO_ROOT_CLASSES = A?.comboboxRootClasses || [];
+  const EXCL_CAS_SEL = A?.excludeCascaderSelector || "[role='combobox'][aria-haspopup='tree'], [role='menubar']";
+  const TRIG_SUB_SEL = A?.triggerSubSelector || "";
+  const DIALOG_SEL = A?.dialogSelector || "dialog[open], [role='dialog'], [role='alertdialog'], [aria-modal='true']";
+  const DIALOG_TITLE_SEL = A?.dialogTitleSelector || "[role='heading'], h1, h2, h3, header";
+  const DIALOG_BODY_SEL = A?.dialogBodySelector || "article, section";
+  const FIELD_BOX_SEL =
+    A?.fieldContainerSelector || "fieldset, [role='group'], [class*='__field'], [class*='-field'], [class*='__item']";
+  const FIELD_LABEL_SEL = A?.fieldLabelSelector || "label, legend, [class*='__label'], [class*='-label']";
+  const OPEN_ROOT_SEL = A?.openRootSelector || "[role='combobox'][aria-expanded='true'], [data-state='open']";
+  const OPEN_DESC_SEL = A?.openDescendantSelector || "[aria-expanded='true']";
+  const SEL_ITEM_SEL = A?.selectedItemSelector || "[role='option'][aria-selected='true']";
+  const SEL_CONTENT_SEL = A?.selectedItemContentSelector || "";
+  const SEL_REMOVE_SEL = A?.selectedItemRemoveSelector || "[aria-hidden='true']";
+  const PH_SEL = A?.placeholderSelector || "";
+  const uploadListSel = A?.uploadListSelector || '[role="list"][data-upload-list], [class*="upload-list"]';
+  const uploadTrigSel = A?.uploadTriggerSelector || 'button, [role="button"]';
+
   const val = String(o.value ?? "").replace(/\s+/g, " ").trim();
   if (!val) return { ok: false, error: "需要非空 value" };
   if (!o.selector && !o.label) return { ok: false, error: "需要 selector 或 label" };
@@ -774,7 +805,13 @@ export async function prepareSelectOption(spec) {
     let cur = el;
     while (cur && cur.nodeType === 1) {
       const cls = typeof cur.className === "string" ? cur.className : "";
-      if (cur.hidden || (cls && /\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\b/.test(cls))) return false;
+      if (
+        cur.hidden ||
+        hiddenPortalClasses.some((c) => cur.classList?.contains(c)) ||
+        (cls && leaveRe && leaveRe.test(cls))
+      ) {
+        return false;
+      }
       const st = window.getComputedStyle(cur);
       if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
       cur = cur.parentElement;
@@ -782,89 +819,86 @@ export async function prepareSelectOption(spec) {
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
-  const isFileUploadTrigger = (node) => {
-    if (!node || node.nodeType !== 1) return false;
+  const hitsFileInput = (node) => {
+    const start = node && node.nodeType === 1 ? node : node?.parentElement || null;
+    if (!start) return false;
     if (
-      node.tagName === "INPUT" &&
-      String(node.type || node.getAttribute("type") || "").toLowerCase() === "file" &&
-      !node.disabled
+      start.tagName === "INPUT" &&
+      String(start.type || start.getAttribute("type") || "").toLowerCase() === "file" &&
+      !start.disabled
     ) {
       return true;
     }
     for (
-      let cur = node;
+      let cur = start;
       cur && cur !== document.body && cur !== document.documentElement;
       cur = cur.parentElement || cur.getRootNode?.()?.host || null
     ) {
-      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
-      if (
-        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
-        (cur.classList?.contains("ant-upload") &&
-          !cur.classList.contains("ant-upload-wrapper") &&
-          !cur.classList.contains("ant-upload-picture-card-wrapper"))
-      ) {
-        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
+      if (uploadListSel && cur.matches?.(uploadListSel)) break;
+      if (cur.tagName === "LABEL") {
+        const forId = cur.getAttribute?.("for");
+        const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
+        if (
+          (ctrl?.tagName === "INPUT" &&
+            String(ctrl.type || ctrl.getAttribute?.("type") || "").toLowerCase() === "file" &&
+            !ctrl.disabled) ||
+          cur.querySelector?.('input[type="file"]:not([disabled])')
+        ) {
+          return true;
+        }
+      }
+      if (uploadTrigSel && cur.matches?.(uploadTrigSel) && cur.querySelector?.('input[type="file"]:not([disabled])')) {
+        return true;
       }
     }
     return false;
   };
-  const COMBO_SEL = "select, .ant-select:not(.ant-cascader), .el-select, [data-radix-select-trigger], [role='combobox']";
+  const isCascader = (n) => Boolean(EXCL_CAS_SEL && n?.closest?.(EXCL_CAS_SEL));
+  const nonSelectRootSel = COMBO_ROOT_CLASSES.map((c) => `.${c}`).concat(["[data-radix-select-trigger]"]).join(", ");
   const resolveControl = (node) => {
     if (!node || node.nodeType !== 1) return null;
     if (node instanceof HTMLSelectElement) return node;
-    const up = node.closest?.(".ant-select:not(.ant-cascader), .el-select, [data-radix-select-trigger]");
-    if (up) return up;
-    if (node.matches?.("[role='combobox']") && !node.closest?.(".ant-cascader")) {
-      return node.closest?.('[class*="select"]:not(.ant-cascader)') || node;
+    if (nonSelectRootSel) {
+      const up = node.closest?.(nonSelectRootSel);
+      if (up && !isCascader(up)) return up;
     }
-    const down = node.querySelector?.("select, .ant-select:not(.ant-cascader), .el-select, [data-radix-select-trigger]");
-    if (down) return down;
-    const cb = node.querySelector?.("[role='combobox']");
-    if (cb && !cb.closest?.(".ant-cascader")) return cb;
+    if (node.matches?.("[role='combobox']") && !isCascader(node)) {
+      const selWrap = nonSelectRootSel ? node.closest?.(nonSelectRootSel) : null;
+      return selWrap && !isCascader(selWrap) ? selWrap : node;
+    }
+    const down = node.querySelector?.(COMBO_SEL);
+    if (down && !isCascader(down)) {
+      if (down instanceof HTMLSelectElement) return down;
+      const selWrap = nonSelectRootSel ? down.closest?.(nonSelectRootSel) : null;
+      return selWrap && node.contains(selWrap) && !isCascader(selWrap) ? selWrap : down;
+    }
     return null;
   };
   const controlVisible = (ctrl) => {
     if (!ctrl) return false;
     if (visible(ctrl)) return true;
-    const sub = ctrl.querySelector?.(".ant-select-selector, .el-select__wrapper");
+    const sub = TRIG_SUB_SEL ? ctrl.querySelector?.(TRIG_SUB_SEL) : null;
     return Boolean(sub && visible(sub));
   };
-  const DIALOG_SEL = ".ant-modal, .ant-drawer, .el-dialog, [role='dialog'], [aria-modal='true']";
   const isComboOpen = (root) => {
     if (!root) return false;
-    if (root.classList?.contains("ant-select")) {
-      return Boolean(
-        root.classList.contains("ant-select-open") ||
-          root.querySelector?.("input")?.getAttribute?.("aria-expanded") === "true",
-      );
-    }
-    if (root.classList?.contains("el-select")) {
-      return Boolean(
-        root.querySelector?.(".el-select__caret.is-reverse, .el-select__wrapper.is-focused") ||
-          root.getAttribute?.("aria-expanded") === "true",
-      );
-    }
-    return Boolean(
-      root.getAttribute?.("aria-expanded") === "true" ||
-        root.getAttribute?.("data-state") === "open" ||
-        root.querySelector?.("[aria-expanded='true']"),
-    );
+    if (OPEN_ROOT_SEL && root.matches?.(OPEN_ROOT_SEL)) return true;
+    if (root.getAttribute?.("aria-expanded") === "true" || root.getAttribute?.("data-state") === "open") return true;
+    if (OPEN_DESC_SEL && root.querySelector?.(OPEN_DESC_SEL)) return true;
+    return false;
   };
   const pickSafeNeutralNode = (root) => {
     const hostDialog = root?.closest?.(DIALOG_SEL) || null;
-    const fieldBox = root?.closest?.(
-      ".ant-form-item, .el-form-item, [class*='__field'], [class*='-field'], [class*='__item']",
-    );
-    const fieldHeader = fieldBox?.querySelector?.("[class*='__label'], [class*='-label']");
+    const fieldBox = FIELD_BOX_SEL ? root?.closest?.(FIELD_BOX_SEL) : null;
+    const fieldHeader = fieldBox?.querySelector?.("[class*='__label'], [class*='-label'], legend");
     if (fieldHeader && fieldHeader.tagName !== "LABEL" && !root.contains(fieldHeader)) {
       return fieldHeader;
     }
     if (hostDialog) {
-      const dlgHeader = hostDialog.querySelector?.(
-        ".ant-modal-title, .ant-modal-header, .ant-drawer-title, .el-dialog__title, .el-dialog__header",
-      );
-      if (dlgHeader) return dlgHeader;
-      return hostDialog.querySelector?.(".ant-modal-content, .ant-drawer-content, .el-dialog__body") || hostDialog;
+      const dlgHeader = DIALOG_TITLE_SEL ? hostDialog.querySelector?.(DIALOG_TITLE_SEL) : null;
+      if (dlgHeader && !root.contains(dlgHeader)) return dlgHeader;
+      const dlgBody = DIALOG_BODY_SEL ? hostDialog.querySelector?.(DIALOG_BODY_SEL) : null;
+      return dlgBody || hostDialog;
     }
     return document.body;
   };
@@ -899,23 +933,56 @@ export async function prepareSelectOption(spec) {
     }
   };
   const readSelected = (root) => {
-    const items = [...(root.querySelectorAll?.(".ant-select-selection-item, .el-select__tags-text") || [])];
-    const out = [];
-    for (const item of items) {
-      const tAttr = clean(item.getAttribute?.("title"));
-      if (tAttr) {
-        out.push(tAttr);
-        continue;
-      }
-      const clone = item.cloneNode(true);
-      clone.querySelectorAll?.(".ant-select-selection-item-remove, [aria-hidden='true']").forEach((x) => x.remove());
-      const txt = clean(clone.textContent);
-      if (txt) out.push(txt);
+    if (!root) return [];
+    if (root instanceof HTMLSelectElement) {
+      return [...(root.selectedOptions || [])].map((x) => clean(x.label || x.textContent || x.value)).filter(Boolean);
     }
-    if (!out.length && !root.classList?.contains("ant-select") && !root.classList?.contains("el-select")) {
-      const ph = clean(root.getAttribute?.("placeholder") || root.getAttribute?.("data-placeholder"));
-      const txt = clean(root.value ?? root.textContent);
-      if (txt && txt !== ph) out.push(txt);
+    const out = [];
+    if (SEL_ITEM_SEL) {
+      for (const item of root.querySelectorAll?.(SEL_ITEM_SEL) || []) {
+        const tAttr = clean(item.getAttribute?.("title"));
+        if (tAttr) {
+          out.push(tAttr);
+          continue;
+        }
+        const sub = SEL_CONTENT_SEL ? item.querySelector?.(SEL_CONTENT_SEL) : null;
+        if (sub) {
+          const st = clean(sub.textContent);
+          if (st) out.push(st);
+          continue;
+        }
+        const clone = item.cloneNode(true);
+        if (SEL_REMOVE_SEL) clone.querySelectorAll?.(SEL_REMOVE_SEL).forEach((x) => x.remove());
+        const txt = clean(clone.textContent);
+        if (txt) out.push(txt);
+      }
+    }
+    if (!out.length) {
+      const owner = root.querySelector?.("input[aria-controls], input[aria-owns], [aria-controls], [aria-owns]") || root;
+      const rawCtrl = clean(owner?.getAttribute?.("aria-controls") || owner?.getAttribute?.("aria-owns") || "");
+      const cid = rawCtrl ? rawCtrl.split(/\s+/)[0] : "";
+      if (cid) {
+        const lb = document.getElementById?.(cid);
+        if (lb) {
+          for (const opt of lb.querySelectorAll?.("[role='option'][aria-selected='true']") || []) {
+            const t = clean(opt.getAttribute?.("title") || opt.getAttribute?.("aria-label") || opt.textContent);
+            if (t) out.push(t);
+          }
+        }
+      }
+    }
+    const isFrameworkCombo = COMBO_ROOT_CLASSES.some((c) => root.classList?.contains(c));
+    if (!out.length && !isFrameworkCombo) {
+      const inp = root.tagName === "INPUT" ? root : root.querySelector?.("input[role='combobox'], input[type='search']");
+      const ph = clean(root.getAttribute?.("placeholder") || root.getAttribute?.("data-placeholder") || inp?.getAttribute?.("placeholder"));
+      if (inp && clean(inp.value) && clean(inp.value) !== ph) {
+        out.push(clean(inp.value));
+      } else if (!root.querySelector?.("[role='listbox'], [role='option']") && root.getAttribute?.("data-placeholder") == null) {
+        const clone = root.cloneNode(true);
+        clone.querySelectorAll?.("[aria-hidden='true']").forEach((x) => x.remove());
+        const txt = clean(root.value ?? clone.textContent);
+        if (txt && txt !== ph) out.push(txt);
+      }
     }
     return out;
   };
@@ -953,7 +1020,7 @@ export async function prepareSelectOption(spec) {
       }
       return best;
     };
-    const modals = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .ant-modal, .ant-drawer')]
+    const modals = [...document.querySelectorAll(DIALOG_SEL)]
       .filter((m) => visible(m) && !m.closest('[aria-hidden="true"]'));
     const topModals = modals
       .filter((m) => !modals.some((other) => other !== m && other.contains(m)))
@@ -979,9 +1046,7 @@ export async function prepareSelectOption(spec) {
 
     for (const root of roots) {
       const seen = new Set();
-      const labelEls = [
-        ...root.querySelectorAll("label, .ant-form-item-label, .el-form-item__label, [class*='__label'], [class*='-label']"),
-      ].filter(visible);
+      const labelEls = [...root.querySelectorAll(FIELD_LABEL_SEL)].filter(visible);
       for (const lEl of labelEls) {
         if (!isLabelMatch(labelTextOf(lEl))) continue;
         let ctrl = null;
@@ -989,10 +1054,7 @@ export async function prepareSelectOption(spec) {
           ctrl = resolveControl(lEl.control);
         }
         if (!ctrl) {
-          const fieldBox =
-            lEl.closest(
-              ".ant-form-item, .el-form-item, [class*='__field'], [class*='-field'], [class*='__item']",
-            ) || lEl.parentElement;
+          const fieldBox = (FIELD_BOX_SEL ? lEl.closest(FIELD_BOX_SEL) : null) || lEl.parentElement;
           ctrl = resolveControl(fieldBox);
         }
         if (ctrl && !seen.has(ctrl) && controlVisible(ctrl)) {
@@ -1005,7 +1067,8 @@ export async function prepareSelectOption(spec) {
           const ctrl = resolveControl(el);
           if (!ctrl || seen.has(ctrl) || !controlVisible(ctrl)) continue;
           const aria = el.getAttribute?.("aria-label") || ctrl.getAttribute?.("aria-label") || "";
-          const ph = el.getAttribute?.("placeholder") || ctrl.querySelector?.(".ant-select-selection-placeholder")?.textContent || "";
+          const phNode = PH_SEL ? ctrl.querySelector?.(PH_SEL) : null;
+          const ph = el.getAttribute?.("placeholder") || phNode?.textContent || "";
           if (isLabelMatch(aria) || isLabelMatch(ph)) {
             seen.add(ctrl);
             candidates.push(ctrl);
@@ -1041,17 +1104,19 @@ export async function prepareSelectOption(spec) {
     return { ok: true, done: true, action: "select", alreadySelected: true, value: val, selected: selectedBefore };
   }
 
-  const otherOpen = [...document.querySelectorAll(".ant-select-open, [role='combobox'][aria-expanded='true']")].filter(
-    (el) => el !== target && !target.contains(el) && !el.contains(target),
-  );
+  const otherOpen = OPEN_ROOT_SEL
+    ? [...document.querySelectorAll(OPEN_ROOT_SEL)].filter(
+        (el) => el !== target && !target.contains(el) && !el.contains(target),
+      )
+    : [];
   if (otherOpen.length) {
     for (const op of otherOpen) closeCombo(op);
     await sleep(60);
     await doubleRaf();
   }
 
-  const trigger = target.querySelector?.(".ant-select-selector, .el-select__wrapper") || target;
-  if (isFileUploadTrigger(trigger)) {
+  const trigger = (TRIG_SUB_SEL ? target.querySelector?.(TRIG_SUB_SEL) : null) || target;
+  if (blockFileChooser && hitsFileInput(trigger)) {
     return {
       ok: false,
       blockedFileChooser: true,
@@ -1073,7 +1138,7 @@ export async function prepareSelectOption(spec) {
   };
   let hit = document.elementFromPoint(x, y);
   if (hit && !composedContains(target, hit) && !composedContains(hit, target)) {
-    closeCombo(hit.closest?.(".ant-select-open") || target);
+    closeCombo((OPEN_ROOT_SEL ? hit.closest?.(OPEN_ROOT_SEL) : null) || target);
     await sleep(60);
     await doubleRaf();
     r = trigger.getBoundingClientRect();
@@ -1109,6 +1174,32 @@ export async function prepareSelectOption(spec) {
 
 export async function completeSelectOption(spec) {
   const o = spec || {};
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
+  const blockFileChooser = o.fileChooserPolicy !== "allow";
+  const hiddenPortalClasses = A?.hiddenPortalClasses || [];
+  const leaveRe = A?.leaveClassPattern ? new RegExp(A.leaveClassPattern) : null;
+  const COMBO_ROOT_CLASSES = A?.comboboxRootClasses || [];
+  const SEARCHABLE_ROOT_CLASSES = A?.searchableRootClasses || [];
+  const TRIG_SUB_SEL = A?.triggerSubSelector || "";
+  const DIALOG_SEL = A?.dialogSelector || "dialog[open], [role='dialog'], [role='alertdialog'], [aria-modal='true']";
+  const DIALOG_WRAP_SEL = A?.dialogWrapSelector || "";
+  const DIALOG_TITLE_SEL = A?.dialogTitleSelector || "[role='heading'], h1, h2, h3, header";
+  const DIALOG_BODY_SEL = A?.dialogBodySelector || "article, section";
+  const DIALOG_CLOSE_SEL = A?.dialogCloseSelector || 'button[aria-label*="关闭" i], button[aria-label*="close" i]';
+  const FIELD_BOX_SEL =
+    A?.fieldContainerSelector || "fieldset, [role='group'], [class*='__field'], [class*='-field'], [class*='__item']";
+  const OPEN_ROOT_SEL = A?.openRootSelector || "[role='combobox'][aria-expanded='true'], [data-state='open']";
+  const OPEN_DESC_SEL = A?.openDescendantSelector || "[aria-expanded='true']";
+  const POPUP_SEL = A?.popupSelector || "[role='listbox'], [data-radix-popper-content-wrapper]";
+  const OPT_SEL = A?.optionSelector || "option:not([disabled]), [role='option']:not([aria-disabled='true'])";
+  const OPT_CONTENT_SEL = A?.optionContentSelector || "";
+  const SEL_ITEM_SEL = A?.selectedItemSelector || "[role='option'][aria-selected='true']";
+  const SEL_CONTENT_SEL = A?.selectedItemContentSelector || "";
+  const SEL_REMOVE_SEL = A?.selectedItemRemoveSelector || "[aria-hidden='true']";
+  const SEARCH_INP_SEL = A?.searchInputSelector || "input[type='search'], input[role='combobox']";
+  const uploadListSel = A?.uploadListSelector || '[role="list"][data-upload-list], [class*="upload-list"]';
+  const uploadTrigSel = A?.uploadTriggerSelector || 'button, [role="button"]';
+
   const uid = String(o.uid || "");
   const val = String(o.value ?? "").replace(/\s+/g, " ").trim();
   const stage = o.stage || "select";
@@ -1133,42 +1224,25 @@ export async function completeSelectOption(spec) {
     return { ok: false, error: "下拉框引用已失效" };
   }
   let keepUid = false;
-  const DIALOG_SEL = ".ant-modal, .ant-drawer, .el-dialog, [role='dialog'], [aria-modal='true']";
   const isComboOpen = (root) => {
     if (!root) return false;
-    if (root.classList?.contains("ant-select")) {
-      return Boolean(
-        root.classList.contains("ant-select-open") ||
-          root.querySelector?.("input")?.getAttribute?.("aria-expanded") === "true",
-      );
-    }
-    if (root.classList?.contains("el-select")) {
-      return Boolean(
-        root.querySelector?.(".el-select__caret.is-reverse, .el-select__wrapper.is-focused") ||
-          root.getAttribute?.("aria-expanded") === "true",
-      );
-    }
-    return Boolean(
-      root.getAttribute?.("aria-expanded") === "true" ||
-        root.getAttribute?.("data-state") === "open" ||
-        root.querySelector?.("[aria-expanded='true']"),
-    );
+    if (OPEN_ROOT_SEL && root.matches?.(OPEN_ROOT_SEL)) return true;
+    if (root.getAttribute?.("aria-expanded") === "true" || root.getAttribute?.("data-state") === "open") return true;
+    if (OPEN_DESC_SEL && root.querySelector?.(OPEN_DESC_SEL)) return true;
+    return false;
   };
   const pickSafeNeutralNode = (root) => {
     const hostDialog = root?.closest?.(DIALOG_SEL) || null;
-    const fieldBox = root?.closest?.(
-      ".ant-form-item, .el-form-item, [class*='__field'], [class*='-field'], [class*='__item']",
-    );
-    const fieldHeader = fieldBox?.querySelector?.("[class*='__label'], [class*='-label']");
+    const fieldBox = FIELD_BOX_SEL ? root?.closest?.(FIELD_BOX_SEL) : null;
+    const fieldHeader = fieldBox?.querySelector?.("[class*='__label'], [class*='-label'], legend");
     if (fieldHeader && fieldHeader.tagName !== "LABEL" && !root.contains(fieldHeader)) {
       return fieldHeader;
     }
     if (hostDialog) {
-      const dlgHeader = hostDialog.querySelector?.(
-        ".ant-modal-title, .ant-modal-header, .ant-drawer-title, .el-dialog__title, .el-dialog__header",
-      );
-      if (dlgHeader) return dlgHeader;
-      return hostDialog.querySelector?.(".ant-modal-content, .ant-drawer-content, .el-dialog__body") || hostDialog;
+      const dlgHeader = DIALOG_TITLE_SEL ? hostDialog.querySelector?.(DIALOG_TITLE_SEL) : null;
+      if (dlgHeader && !root.contains(dlgHeader)) return dlgHeader;
+      const dlgBody = DIALOG_BODY_SEL ? hostDialog.querySelector?.(DIALOG_BODY_SEL) : null;
+      return dlgBody || hostDialog;
     }
     return document.body;
   };
@@ -1203,23 +1277,56 @@ export async function completeSelectOption(spec) {
     }
   };
   const readSelected = (root) => {
-    const items = [...(root.querySelectorAll?.(".ant-select-selection-item, .el-select__tags-text") || [])];
-    const out = [];
-    for (const item of items) {
-      const tAttr = clean(item.getAttribute?.("title"));
-      if (tAttr) {
-        out.push(tAttr);
-        continue;
-      }
-      const clone = item.cloneNode(true);
-      clone.querySelectorAll?.(".ant-select-selection-item-remove, [aria-hidden='true']").forEach((x) => x.remove());
-      const txt = clean(clone.textContent);
-      if (txt) out.push(txt);
+    if (!root) return [];
+    if (root instanceof HTMLSelectElement) {
+      return [...(root.selectedOptions || [])].map((x) => clean(x.label || x.textContent || x.value)).filter(Boolean);
     }
-    if (!out.length && !root.classList?.contains("ant-select") && !root.classList?.contains("el-select")) {
-      const ph = clean(root.getAttribute?.("placeholder") || root.getAttribute?.("data-placeholder"));
-      const txt = clean(root.value ?? root.textContent);
-      if (txt && txt !== ph) out.push(txt);
+    const out = [];
+    if (SEL_ITEM_SEL) {
+      for (const item of root.querySelectorAll?.(SEL_ITEM_SEL) || []) {
+        const tAttr = clean(item.getAttribute?.("title"));
+        if (tAttr) {
+          out.push(tAttr);
+          continue;
+        }
+        const sub = SEL_CONTENT_SEL ? item.querySelector?.(SEL_CONTENT_SEL) : null;
+        if (sub) {
+          const st = clean(sub.textContent);
+          if (st) out.push(st);
+          continue;
+        }
+        const clone = item.cloneNode(true);
+        if (SEL_REMOVE_SEL) clone.querySelectorAll?.(SEL_REMOVE_SEL).forEach((x) => x.remove());
+        const txt = clean(clone.textContent);
+        if (txt) out.push(txt);
+      }
+    }
+    if (!out.length) {
+      const owner = root.querySelector?.("input[aria-controls], input[aria-owns], [aria-controls], [aria-owns]") || root;
+      const rawCtrl = clean(owner?.getAttribute?.("aria-controls") || owner?.getAttribute?.("aria-owns") || "");
+      const cid = rawCtrl ? rawCtrl.split(/\s+/)[0] : "";
+      if (cid) {
+        const lb = document.getElementById?.(cid);
+        if (lb) {
+          for (const opt of lb.querySelectorAll?.("[role='option'][aria-selected='true']") || []) {
+            const t = clean(opt.getAttribute?.("title") || opt.getAttribute?.("aria-label") || opt.textContent);
+            if (t) out.push(t);
+          }
+        }
+      }
+    }
+    const isFrameworkCombo = COMBO_ROOT_CLASSES.some((c) => root.classList?.contains(c));
+    if (!out.length && !isFrameworkCombo) {
+      const inp = root.tagName === "INPUT" ? root : root.querySelector?.("input[role='combobox'], input[type='search']");
+      const ph = clean(root.getAttribute?.("placeholder") || root.getAttribute?.("data-placeholder") || inp?.getAttribute?.("placeholder"));
+      if (inp && clean(inp.value) && clean(inp.value) !== ph) {
+        out.push(clean(inp.value));
+      } else if (!root.querySelector?.("[role='listbox'], [role='option']") && root.getAttribute?.("data-placeholder") == null) {
+        const clone = root.cloneNode(true);
+        clone.querySelectorAll?.("[aria-hidden='true']").forEach((x) => x.remove());
+        const txt = clean(root.value ?? clone.textContent);
+        if (txt && txt !== ph) out.push(txt);
+      }
     }
     return out;
   };
@@ -1227,10 +1334,13 @@ export async function completeSelectOption(spec) {
   const findVisiblePopup = (allowUnownedFallback = false) => {
     const boxVisible = (el) => {
       if (!el) return false;
-      if (el.classList?.contains("ant-select-dropdown-hidden")) return false;
       for (let cur = el; cur && cur.nodeType === 1; cur = cur.parentElement) {
         const cls = typeof cur.className === "string" ? cur.className : "";
-        if (cur.hidden || (cls && /\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\b/.test(cls))) {
+        if (
+          cur.hidden ||
+          hiddenPortalClasses.some((c) => cur.classList?.contains(c)) ||
+          (cls && leaveRe && leaveRe.test(cls))
+        ) {
           return false;
         }
         const st = window.getComputedStyle(cur);
@@ -1245,11 +1355,12 @@ export async function completeSelectOption(spec) {
     const ctrlId = rawCtrl ? rawCtrl.split(/\s+/)[0] : "";
     if (ctrlId) {
       const listEl = document.getElementById?.(ctrlId) || null;
-      const wrap =
-        listEl?.closest?.(".ant-select-dropdown, .el-select-dropdown, [data-radix-popper-content-wrapper]") || listEl;
+      const wrap = (POPUP_SEL ? listEl?.closest?.(POPUP_SEL) : null) || listEl;
       if (wrap && boxVisible(wrap)) return wrap;
       if (!allowUnownedFallback) return null;
     }
+    const inlineBox = comboRoot.querySelector?.("[role='listbox']");
+    if (inlineBox && boxVisible(inlineBox)) return inlineBox;
     const foreignCtrlIds = new Set();
     for (const owner of document.querySelectorAll?.("[aria-controls], [aria-owns]") || []) {
       if (owner === comboRoot || comboRoot.contains?.(owner)) continue;
@@ -1269,20 +1380,14 @@ export async function completeSelectOption(spec) {
       }
       return false;
     };
-    const all = [
-      ...(document.querySelectorAll?.(
-        ".ant-select-dropdown:not(.ant-select-dropdown-hidden), .el-select-dropdown, [role='listbox']",
-      ) || []),
-    ].filter((p) => boxVisible(p) && !isForeignPopup(p));
+    const all = [...(document.querySelectorAll?.(POPUP_SEL) || [])].filter(
+      (p) => boxVisible(p) && !isForeignPopup(p),
+    );
     return all.length ? all[all.length - 1] : null;
   };
   const listVisibleOptions = (popup) => {
     if (!popup) return [];
-    const raw = [
-      ...popup.querySelectorAll(
-        ".ant-select-item-option:not(.ant-select-item-option-disabled), .el-select-dropdown__item:not(.is-disabled), [role='option']:not([aria-disabled='true'])",
-      ),
-    ];
+    const raw = [...popup.querySelectorAll(OPT_SEL)];
     return raw.filter((el) => {
       const st = window.getComputedStyle(el);
       if (st.display === "none" || st.visibility === "hidden") return false;
@@ -1292,7 +1397,7 @@ export async function completeSelectOption(spec) {
   };
   const optionLabel = (opt) =>
     clean(
-      opt.querySelector?.(".ant-select-item-option-content")?.textContent ||
+      (OPT_CONTENT_SEL ? opt.querySelector?.(OPT_CONTENT_SEL)?.textContent : "") ||
         opt.getAttribute?.("title") ||
         opt.textContent,
     );
@@ -1306,6 +1411,17 @@ export async function completeSelectOption(spec) {
       }) || null
     );
   };
+  const findScrollableDescendant = (rootEl) => {
+    if (!rootEl) return null;
+    const cands = [rootEl, ...(rootEl.querySelectorAll?.("*") || [])].filter((el) => {
+      if (!el || el.scrollHeight <= el.clientHeight + 10) return false;
+      const oy = window.getComputedStyle(el).overflowY;
+      return oy === "auto" || oy === "scroll" || oy === "overlay" || el === rootEl;
+    });
+    if (!cands.length) return null;
+    cands.sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+    return cands[0];
+  };
   const setSearchInput = (inp, text) => {
     inp.focus?.();
     const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -1317,7 +1433,7 @@ export async function completeSelectOption(spec) {
   };
 
   const inDialog = comboRoot.getAttribute("data-pl-select-dialog") === "1";
-  const isFileUploadTrigger = (node) => {
+  const hitsFileInput = (node) => {
     const start = node && node.nodeType === 1 ? node : node?.parentElement || null;
     if (!start) return false;
     if (start.tagName === "INPUT" && String(start.type || "").toLowerCase() === "file") return true;
@@ -1331,32 +1447,26 @@ export async function completeSelectOption(spec) {
       cur && cur !== document.body && cur !== document.documentElement;
       cur = cur.parentElement || cur.getRootNode?.()?.host || null
     ) {
-      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
-      if (
-        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
-        (cur.classList?.contains("ant-upload") &&
-          !cur.classList.contains("ant-upload-wrapper") &&
-          !cur.classList.contains("ant-upload-picture-card-wrapper"))
-      ) {
-        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
+      if (uploadListSel && cur.matches?.(uploadListSel)) break;
+      if (uploadTrigSel && cur.matches?.(uploadTrigSel) && cur.querySelector?.('input[type="file"]:not([disabled])')) {
+        return true;
       }
     }
     return false;
   };
+  const avoidInteractiveSel = [POPUP_SEL, "button, a, input, select, textarea, label", DIALOG_CLOSE_SEL]
+    .filter(Boolean)
+    .join(", ");
   const pickUncoveredNeutralPoint = (root) => {
     const hostDialog = root?.closest?.(DIALOG_SEL) || null;
-    const fieldBox = root?.closest?.(
-      ".ant-form-item, .el-form-item, [class*='__field'], [class*='-field'], [class*='__item']",
-    );
-    const fieldHeader = fieldBox?.querySelector?.("[class*='__label'], [class*='-label']");
+    const fieldBox = FIELD_BOX_SEL ? root?.closest?.(FIELD_BOX_SEL) : null;
+    const fieldHeader = fieldBox?.querySelector?.("[class*='__label'], [class*='-label'], legend");
     const candidates = [];
     if (fieldHeader && fieldHeader.tagName !== "LABEL" && !root.contains(fieldHeader)) {
       candidates.push(fieldHeader);
     }
-    if (hostDialog) {
-      hostDialog
-        .querySelectorAll?.(".ant-modal-title, .ant-modal-header, .ant-drawer-title, .el-dialog__title, .el-dialog__header")
-        .forEach((el) => candidates.push(el));
+    if (hostDialog && DIALOG_TITLE_SEL) {
+      hostDialog.querySelectorAll?.(DIALOG_TITLE_SEL).forEach((el) => candidates.push(el));
     } else if (document.body) {
       candidates.push(document.body);
     }
@@ -1376,14 +1486,10 @@ export async function completeSelectOption(spec) {
         if (!hit) continue;
         if (hostDialog && !hostDialog.contains(hit)) continue;
         if (root.contains(hit)) continue;
-        if (
-          hit.closest?.(
-            ".ant-select-dropdown, .el-select-dropdown, [role='listbox'], button, a, input, select, textarea, label, .ant-modal-close, .ant-drawer-close, .el-dialog__headerbtn",
-          )
-        ) {
+        if (avoidInteractiveSel && hit.closest?.(avoidInteractiveSel)) {
           continue;
         }
-        if (isFileUploadTrigger(hit)) continue;
+        if (blockFileChooser && hitsFileInput(hit)) continue;
         return { x: cx, y: cy };
       }
     }
@@ -1398,15 +1504,18 @@ export async function completeSelectOption(spec) {
       if (!curDialog || !curDialog.isConnected) {
         return "选择后宿主弹窗已卸载";
       }
-      const wrap = curDialog.closest?.(".ant-modal-wrap, .el-overlay-dialog") || curDialog;
-      const st = window.getComputedStyle(wrap);
-      if (
-        st.display === "none" ||
-        st.visibility === "hidden" ||
-        curDialog.classList?.contains("ant-zoom-leave") ||
-        curDialog.classList?.contains("ant-fade-leave")
-      ) {
-        return "选择后宿主弹窗正在关闭或已隐藏";
+      const wrap = (DIALOG_WRAP_SEL ? curDialog.closest?.(DIALOG_WRAP_SEL) : null) || curDialog;
+      for (let anc = curDialog; anc && anc.nodeType === 1; anc = anc.parentElement) {
+        const st = window.getComputedStyle(anc);
+        const cls = typeof anc.className === "string" ? anc.className : "";
+        if (
+          st.display === "none" ||
+          st.visibility === "hidden" ||
+          (cls && leaveRe && leaveRe.test(cls))
+        ) {
+          return "选择后宿主弹窗正在关闭或已隐藏";
+        }
+        if (anc === wrap) break;
       }
     }
     return null;
@@ -1471,8 +1580,8 @@ export async function completeSelectOption(spec) {
       const elapsed = Date.now() - t0;
       if (!retriggeredOpen && elapsed >= 220 && !isComboOpen(comboRoot)) {
         retriggeredOpen = true;
-        const trig = comboRoot.querySelector?.(".ant-select-selector, .el-select__wrapper") || comboRoot;
-        if (trig && !isFileUploadTrigger(trig)) {
+        const trig = (TRIG_SUB_SEL ? comboRoot.querySelector?.(TRIG_SUB_SEL) : null) || comboRoot;
+        if (trig && (!blockFileChooser || !hitsFileInput(trig))) {
           const tr = trig.getBoundingClientRect?.();
           if (tr && tr.width > 0 && tr.height > 0) {
             const tx = Math.round(tr.x + tr.width / 2);
@@ -1499,17 +1608,18 @@ export async function completeSelectOption(spec) {
         opt = findOption(popup);
       }
     }
-    const searchInput = comboRoot.querySelector?.(
-      "input[type='search'], input.ant-select-selection-search-input, input.el-select__input, input[role='combobox']",
+    const searchInput = SEARCH_INP_SEL
+      ? comboRoot.matches?.(SEARCH_INP_SEL)
+        ? comboRoot
+        : comboRoot.querySelector?.(SEARCH_INP_SEL)
+      : null;
+    const isSearchable = Boolean(
+      searchInput &&
+        !searchInput.readOnly &&
+        !searchInput.disabled &&
+        (SEARCHABLE_ROOT_CLASSES.some((c) => comboRoot.classList?.contains(c)) ||
+          Number(window.getComputedStyle(searchInput).opacity) > 0),
     );
-    const isSearchable = comboRoot.classList?.contains("ant-select")
-      ? comboRoot.classList.contains("ant-select-show-search") && Boolean(searchInput && !searchInput.disabled)
-      : Boolean(
-          searchInput &&
-            !searchInput.readOnly &&
-            !searchInput.disabled &&
-            Number(window.getComputedStyle(searchInput).opacity) > 0,
-        );
 
     if (!opt && isSearchable && searchInput) {
       setSearchInput(searchInput, val);
@@ -1525,9 +1635,7 @@ export async function completeSelectOption(spec) {
     if (!opt) {
       popup = findVisiblePopup(true) || popup;
       if (popup) {
-        const holder =
-          popup.querySelector?.(".rc-virtual-list-holder, .el-scrollbar__wrap") ||
-          (popup.scrollHeight > popup.clientHeight + 10 ? popup : null);
+        const holder = findScrollableDescendant(popup);
         if (holder && holder.scrollHeight > holder.clientHeight + 10) {
           if (typeof holder.scrollTo === "function") holder.scrollTo({ top: 0, behavior: "instant" });
           holder.scrollTop = 0;
@@ -1611,6 +1719,12 @@ export async function completeSelectOption(spec) {
 
 export function scrollPage(opts) {
   const o = opts || {};
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
+  const hiddenPortalClasses = A?.hiddenPortalClasses || [];
+  const leaveRe = A?.leaveClassPattern ? new RegExp(A.leaveClassPattern) : null;
+  const DIALOG_SEL = A?.dialogSelector || 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
+  const scope = o.scope === "window" || o.scope === "modal" ? o.scope : "auto";
+
   if (o.selector) {
     const el = document.querySelector(String(o.selector));
     if (!el) return { ok: false, error: "没有匹配元素" };
@@ -1624,10 +1738,8 @@ export function scrollPage(opts) {
       const cls = typeof cur.className === "string" ? cur.className : "";
       if (
         cur.hidden ||
-        cur.classList?.contains("ant-select-dropdown-hidden") ||
-        cur.classList?.contains("ant-dropdown-hidden") ||
-        cur.classList?.contains("ant-popover-hidden") ||
-        (cls && /\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\b/.test(cls))
+        hiddenPortalClasses.some((c) => cur.classList?.contains(c)) ||
+        (cls && leaveRe && leaveRe.test(cls))
       ) {
         return false;
       }
@@ -1661,9 +1773,9 @@ export function scrollPage(opts) {
     return best;
   };
   const findModalScroller = () => {
-    const rawModals = [
-      ...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .ant-modal, .ant-drawer'),
-    ].filter((el) => visible(el) && !el.closest('[aria-hidden="true"]'));
+    const rawModals = [...document.querySelectorAll(DIALOG_SEL)].filter(
+      (el) => visible(el) && !el.closest('[aria-hidden="true"]'),
+    );
     if (!rawModals.length) return null;
     const topModals = rawModals
       .filter((m) => !rawModals.some((other) => other !== m && other.contains(m)))
@@ -1679,13 +1791,18 @@ export function scrollPage(opts) {
     return null;
   };
   if (typeof o.percent === "number") {
-    const scroller = findModalScroller();
-    if (scroller) {
-      const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-      const y = max * (o.percent / 100);
-      if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top: y, behavior: "instant" });
-      scroller.scrollTop = y;
-      return { ok: true, via: "modal-percent", y, scrollTop: scroller.scrollTop };
+    if (scope !== "window") {
+      const scroller = findModalScroller();
+      if (scroller) {
+        const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        const y = max * (o.percent / 100);
+        if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top: y, behavior: "instant" });
+        scroller.scrollTop = y;
+        return { ok: true, via: "modal-percent", y, scrollTop: scroller.scrollTop };
+      }
+      if (scope === "modal") {
+        return { ok: false, error: "当前没有可滚动的弹窗容器" };
+      }
     }
     const max = Math.max(0, document.documentElement.scrollHeight - innerHeight);
     const y = max * (o.percent / 100);
@@ -1693,11 +1810,16 @@ export function scrollPage(opts) {
     return { ok: true, via: "percent", y };
   }
   if (typeof o.y === "number") {
-    const scroller = findModalScroller();
-    if (scroller) {
-      if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top: o.y, behavior: "instant" });
-      scroller.scrollTop = o.y;
-      return { ok: true, via: "modal-y", y: o.y, scrollTop: scroller.scrollTop };
+    if (scope !== "window") {
+      const scroller = findModalScroller();
+      if (scroller) {
+        if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top: o.y, behavior: "instant" });
+        scroller.scrollTop = o.y;
+        return { ok: true, via: "modal-y", y: o.y, scrollTop: scroller.scrollTop };
+      }
+      if (scope === "modal") {
+        return { ok: false, error: "当前没有可滚动的弹窗容器" };
+      }
     }
     scrollTo({ top: o.y, behavior: "instant" });
     return { ok: true, via: "y" };

@@ -4,6 +4,8 @@
  * 默认在隔离世界执行：节点缓存挂在该世界的 window 上，页面脚本读不到。
  */
 
+import "./ui-adapters/index.js";
+
 export function snapshotControls(opts) {
   const o = opts || {};
   if (!document.body) return null;
@@ -190,27 +192,32 @@ export function snapshotControls(opts) {
  */
 export async function actOnRef(kind, spec) {
   const o = spec || {};
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
+  const blockFileChooser = o.fileChooserPolicy !== "allow";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
   const cache = window.__pagelensSnap;
   const stale = (why) => ({ ok: false, stale: true, error: `${why}，请重新 snapshot_controls 后再操作` });
   const FILE_CHOOSER_BLOCKED_MSG =
     "目标位置命中文件上传控件（点击会弹出系统文件选择框），已拦截；如需上传文件请使用 upload_file 工具，如系滚动后坐标偏移请改用 selector 定位目标控件";
-  const isFileUploadTrigger = (node) => {
-    if (!node || node.nodeType !== 1) return false;
+  const uploadListSel = A?.uploadListSelector || '[role="list"][data-upload-list], [class*="upload-list"]';
+  const uploadTrigSel = A?.uploadTriggerSelector || 'button, [role="button"]';
+  const hitsFileInput = (node) => {
+    const start = node && node.nodeType === 1 ? node : node?.parentElement || null;
+    if (!start) return false;
     if (
-      node.tagName === "INPUT" &&
-      String(node.type || node.getAttribute("type") || "").toLowerCase() === "file" &&
-      !node.disabled
+      start.tagName === "INPUT" &&
+      String(start.type || start.getAttribute("type") || "").toLowerCase() === "file" &&
+      !start.disabled
     ) {
       return true;
     }
     for (
-      let cur = node;
+      let cur = start;
       cur && cur !== document.body && cur !== document.documentElement;
       cur = cur.parentElement || cur.getRootNode?.()?.host || null
     ) {
-      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
+      if (uploadListSel && cur.matches?.(uploadListSel)) break;
       if (cur.tagName === "LABEL") {
         const forId = cur.getAttribute?.("for");
         const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
@@ -223,13 +230,8 @@ export async function actOnRef(kind, spec) {
           return true;
         }
       }
-      if (
-        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
-        (cur.classList?.contains("ant-upload") &&
-          !cur.classList.contains("ant-upload-wrapper") &&
-          !cur.classList.contains("ant-upload-picture-card-wrapper"))
-      ) {
-        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
+      if (uploadTrigSel && cur.matches?.(uploadTrigSel) && cur.querySelector?.('input[type="file"]:not([disabled])')) {
+        return true;
       }
     }
     return false;
@@ -237,7 +239,7 @@ export async function actOnRef(kind, spec) {
 
   const el = cache?.nodes.get(Number(o.node));
   if (!el || !el.isConnected) return stale("目标元素已不在页面上");
-  if (kind === "click" && isFileUploadTrigger(el)) {
+  if (kind === "click" && blockFileChooser && hitsFileInput(el)) {
     return { ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MSG };
   }
   if (!cache.visible(el)) return stale("目标元素已不可见");
@@ -300,7 +302,7 @@ export async function actOnRef(kind, spec) {
   };
 
   if (kind === "click") {
-    if (hit && isFileUploadTrigger(hit)) {
+    if (blockFileChooser && hit && hitsFileInput(hit)) {
       return { ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MSG };
     }
     el.focus?.();
@@ -389,17 +391,21 @@ export function scrollViewport(dir, amount) {
  */
 export function locateElement(spec) {
   const o = spec || {};
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
+  const blockFileChooser = o.fileChooserPolicy !== "allow";
+  const hiddenPortalClasses = A?.hiddenPortalClasses || [];
+  const leaveRe = A?.leaveClassPattern ? new RegExp(A.leaveClassPattern) : null;
   const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
   const compactCjk = (s) => String(s || "").replace(/([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g, "$1");
   const visible = (el) => {
     if (!el) return false;
     let cur = el;
     while (cur && cur.nodeType === 1) {
+      const cls = typeof cur.className === "string" ? cur.className : "";
       if (
         cur.hidden ||
-        cur.classList?.contains("ant-select-dropdown-hidden") ||
-        cur.classList?.contains("ant-dropdown-hidden") ||
-        cur.classList?.contains("ant-popover-hidden")
+        hiddenPortalClasses.some((c) => cur.classList?.contains(c)) ||
+        (cls && leaveRe && leaveRe.test(cls))
       ) {
         return false;
       }
@@ -417,17 +423,19 @@ export function locateElement(spec) {
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
+  const priProxySel =
+    A?.proxyTriggerSelector ||
+    '[role="combobox"], [role="listbox"], [role="switch"], [role="checkbox"], [role="radio"]';
+  const secProxySel = A?.proxySecondarySelector || "label";
   const resolveProxy = (el) => {
     if (!el || !/^(INPUT|SELECT|TEXTAREA)$/i.test(el.tagName)) return null;
     if (String(el.getAttribute("type") || el.type || "").toLowerCase() === "hidden") return null;
     if (el.disabled || el.getAttribute("aria-disabled") === "true") return null;
     if (visible(el)) return null;
     const anc = el.parentElement;
-    const primary = anc?.closest(
-      '.ant-select-selector, .ant-cascader-picker, .ant-picker, [role="combobox"], [role="listbox"], [role="switch"], [role="checkbox"], [role="radio"], .ant-checkbox-wrapper, .ant-radio-wrapper, .ant-switch',
-    );
+    const primary = priProxySel ? anc?.closest(priProxySel) : null;
     if (primary && visible(primary)) return primary;
-    const secondary = anc?.closest(".ant-select, .ant-cascader, label");
+    const secondary = secProxySel ? anc?.closest(secProxySel) : null;
     if (secondary && visible(secondary)) return secondary;
     const lbl = el.labels?.[0] || null;
     if (lbl && visible(lbl)) return lbl;
@@ -449,9 +457,9 @@ export function locateElement(spec) {
 
   const CONTROLS =
     "a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio'], [role='option'], [role='treeitem'], [role='checkbox'], [role='radio'], [role='switch'], [onclick]";
-  const POPUP_LAYER_SEL =
-    ".ant-select-dropdown:not(.ant-select-dropdown-hidden), .ant-cascader-dropdown:not(.ant-select-dropdown-hidden), .ant-dropdown:not(.ant-dropdown-hidden), .el-select-dropdown, .el-cascader__dropdown, [role='listbox'], [role='menu'], [role='tree']";
-  const DIALOG_LAYER_SEL = "[role='dialog'], [aria-modal='true'], dialog[open], .ant-modal, .ant-drawer, .el-dialog";
+  const POPUP_LAYER_SEL = A?.popupLayerSelector || "[role='listbox'], [role='menu'], [role='tree']";
+  const DIALOG_LAYER_SEL =
+    A?.dialogSelector || "[role='dialog'], [role='alertdialog'], [aria-modal='true'], dialog[open]";
   const notDisabled = (n) =>
     Boolean(n) && !n.disabled && n.getAttribute("aria-disabled") !== "true" && !n.closest?.("[aria-disabled='true']");
   const textFieldsOf = (n) =>
@@ -587,21 +595,24 @@ export function locateElement(spec) {
       blocker: { tag: hit.tagName.toLowerCase(), text: clean(hit.innerText || "").slice(0, 60) },
     };
   }
-  const isFileUploadTrigger = (node) => {
-    if (!node || node.nodeType !== 1) return false;
+  const uploadListSel = A?.uploadListSelector || '[role="list"][data-upload-list], [class*="upload-list"]';
+  const uploadTrigSel = A?.uploadTriggerSelector || 'button, [role="button"]';
+  const hitsFileInput = (node) => {
+    const start = node && node.nodeType === 1 ? node : node?.parentElement || null;
+    if (!start) return false;
     if (
-      node.tagName === "INPUT" &&
-      String(node.type || node.getAttribute("type") || "").toLowerCase() === "file" &&
-      !node.disabled
+      start.tagName === "INPUT" &&
+      String(start.type || start.getAttribute("type") || "").toLowerCase() === "file" &&
+      !start.disabled
     ) {
       return true;
     }
     for (
-      let cur = node;
+      let cur = start;
       cur && cur !== document.body && cur !== document.documentElement;
       cur = cur.parentElement || cur.getRootNode?.()?.host || null
     ) {
-      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
+      if (uploadListSel && cur.matches?.(uploadListSel)) break;
       if (cur.tagName === "LABEL") {
         const forId = cur.getAttribute?.("for");
         const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
@@ -614,13 +625,8 @@ export function locateElement(spec) {
           return true;
         }
       }
-      if (
-        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
-        (cur.classList?.contains("ant-upload") &&
-          !cur.classList.contains("ant-upload-wrapper") &&
-          !cur.classList.contains("ant-upload-picture-card-wrapper"))
-      ) {
-        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
+      if (uploadTrigSel && cur.matches?.(uploadTrigSel) && cur.querySelector?.('input[type="file"]:not([disabled])')) {
+        return true;
       }
     }
     return false;
@@ -638,7 +644,7 @@ export function locateElement(spec) {
     tag: el.tagName.toLowerCase(),
     text: clean(el.innerText || el.value || el.getAttribute("aria-label")).slice(0, 60),
     count,
-    fileUpload: Boolean(isFileUploadTrigger(hit || el) || isFileUploadTrigger(el)),
+    fileUpload: blockFileChooser ? Boolean(hitsFileInput(hit || el) || hitsFileInput(el)) : false,
   };
 }
 

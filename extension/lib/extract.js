@@ -1,5 +1,7 @@
 /** Injected into the page. Must stay self-contained (no module locals). */
-export async function extractPage() {
+export async function extractPage(opts) {
+  const o = opts || {};
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
   const MAX_CHARS = 9000;
   const title = document.title || "";
   const url = location.href;
@@ -296,7 +298,7 @@ export async function extractPage() {
         if (el.matches?.("input, textarea, select")) {
           const tp = String(el.getAttribute("type") || "").toLowerCase();
           if (tp === "hidden" || tp === "password" || tp === "file") return "";
-          if (tp === "checkbox" || tp === "radio") return el.checked ? "[已勾选]" : "";
+          if (tp === "checkbox" || tp === "radio") return el.checked ? "[checked]" : "";
           if (el.tagName === "SELECT") {
             return clean(el.selectedOptions?.[0]?.textContent || el.value || "");
           }
@@ -328,9 +330,9 @@ export async function extractPage() {
         return out.join("\n");
       };
 
-      const rawDialogs = [
-        ...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .ant-drawer-content, .ant-modal-content'),
-      ].filter((el) => visible(el));
+      const dialogSel =
+        A?.dialogSelector || 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
+      const rawDialogs = [...document.querySelectorAll(dialogSel)].filter((el) => visible(el));
       const openDialogs = rawDialogs.filter(
         (el) => !rawDialogs.some((other) => other !== el && other.contains(el)),
       );
@@ -339,12 +341,12 @@ export async function extractPage() {
       const sections = [];
       for (const dlg of openDialogs) {
         const dlgText = dedupLines(walkReadable(dlg, skipSet, false, 0));
-        if (dlgText) sections.push(`【弹窗/抽屉】\n${dlgText}`);
+        if (dlgText) sections.push(`[dialog]\n${dlgText}`);
         skipSet.add(dlg);
       }
 
-      const appRoot =
-        document.querySelector('main, [role="main"], .ant-layout-content, #app, #root') || document.body;
+      const appRootSel = A?.appRootSelector || 'main, [role="main"], #app, #root';
+      const appRoot = document.querySelector(appRootSel) || document.body;
       if (appRoot && !skipSet.has(appRoot)) {
         const appText = dedupLines(walkReadable(appRoot, skipSet, true, 0));
         if (appText) sections.push(appText);

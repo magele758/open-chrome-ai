@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { listControls, pageAct } from "../lib/agent/page-fns.js";
 import { locateElement } from "../lib/agent/page-snapshot.js";
+import { getCompositeUIAdapterSpec } from "../lib/agent/ui-adapters/index.js";
 import { resolveClickElementText } from "../lib/agent/click-label.js";
 import { matchIrreversible } from "../lib/agent/trust/irreversible.js";
 import { checkHitlRequirement } from "../lib/agent/tools.js";
@@ -135,14 +136,15 @@ doc.elementFromPoint = (x, y) => {
 };
 
 // 通过 toString() 独立注入页面 realm，强校验自包含零外部闭包依赖
+const adapterSpec = getCompositeUIAdapterSpec();
 const runPageAct = async (kind, spec) => ({
-  ...(await win.eval(`(${pageAct.toString()})(${JSON.stringify(kind)}, ${JSON.stringify(spec)})`)),
+  ...(await win.eval(`(${pageAct.toString()})(${JSON.stringify(kind)}, ${JSON.stringify({ adapterSpec, ...spec })})`)),
 });
 const runLocate = (spec) => ({
-  ...win.eval(`(${locateElement.toString()})(${JSON.stringify(spec)})`),
+  ...win.eval(`(${locateElement.toString()})(${JSON.stringify({ adapterSpec, ...spec })})`),
 });
 const runListControls = (limit) =>
-  JSON.parse(JSON.stringify(win.eval(`(${listControls.toString()})(${JSON.stringify(limit)})`)));
+  JSON.parse(JSON.stringify(win.eval(`(${listControls.toString()})(${JSON.stringify(limit)}, ${JSON.stringify(adapterSpec)})`)));
 
 const clickedIds = [];
 for (const el of doc.querySelectorAll("li, button, label, span")) {

@@ -1,4 +1,5 @@
 import { extractPage } from "./extract.js";
+import { getCompositeUIAdapterSpec } from "./agent/ui-adapters/index.js";
 import { inject, restrictedUrl } from "./chrome.js";
 import { enrichPackWithPdf, hostnameOf } from "./pdf-text.js";
 
@@ -22,7 +23,7 @@ export async function loadTabPack(tabId) {
   }
   let pack;
   try {
-    pack = await inject(tabId, extractPage);
+    pack = await inject(tabId, extractPage, [{ adapterSpec: getCompositeUIAdapterSpec() }]);
   } catch {
     pack = null;
   }

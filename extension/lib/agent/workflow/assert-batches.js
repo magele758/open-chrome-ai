@@ -3,24 +3,9 @@
  * 零业务语义（不含卡片移除按钮猜测或特定业务页面断言）。
  */
 
-export const DEFAULT_ADAPTER_SPEC = Object.freeze({
-  dialogSelector: 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"], .ant-modal, .ant-drawer, .el-dialog',
-  dialogTitleSelector: '[role="heading"], h1, h2, h3, .ant-modal-title, .ant-drawer-title, .el-dialog__title',
-  dialogWrapSelector: '.ant-modal-wrap, .el-overlay-dialog',
-  leaveClassPattern: "\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b",
-  hiddenPortalClasses: ["ant-select-dropdown-hidden", "ant-dropdown-hidden", "ant-popover-hidden"],
-  comboboxRootSelector: 'select, [role="combobox"], .ant-select, .el-select',
-  selectedItemSelector: '[role="option"][aria-selected="true"], .ant-select-selection-item, .el-select__tags-text',
-  selectedItemContentSelector: '.ant-select-selection-item-content',
-  selectedItemRemoveSelector: '.ant-select-selection-item-remove, [aria-hidden="true"]',
-  radioGroupSelector: '[role="radiogroup"], .ant-radio-group, .el-radio-group',
-  fieldContainerSelector: '.ant-form-item, .el-form-item, fieldset',
-  fieldLabelSelector: 'label, legend, .ant-form-item-label, .el-form-item__label',
-  requiredSelector: '[required], [aria-required="true"], .ant-form-item-required, .is-required',
-  loadingSelector: '[aria-busy="true"], [role="progressbar"], .ant-spin-spinning, .ant-skeleton, .el-loading-mask',
-  alertSelector: '[role="alert"], .ant-message-notice-content, .ant-notification-notice, .el-message',
-  emptyRowClasses: ["ant-table-measure-row", "ant-table-placeholder", "el-table__empty-block"],
-});
+import { DEFAULT_COMPOSITE_ADAPTER_SPEC } from "../ui-adapters/index.js";
+
+export const DEFAULT_ADAPTER_SPEC = DEFAULT_COMPOSITE_ADAPTER_SPEC;
 
 const SELECT_HELPER_KINDS = new Set([
   "select_items_include",

@@ -8,6 +8,13 @@ import { inject, injectFrames, toToolText } from "../chrome.js";
 import { requireOptionalFeature } from "../optional-permissions.js";
 import { checkStates } from "./page-fns.js";
 import { iframeRect, locateElement } from "./page-snapshot.js";
+import {
+  FILE_CHOOSER_BLOCKED_MESSAGE,
+  evaluateClickPolicy,
+  normalizeExecutionPolicy,
+  shouldBlockFileChooser,
+} from "./policy-guard.js";
+import { getCompositeUIAdapterSpec } from "./ui-adapters/index.js";
 
 const MAX_SHOT_HEIGHT = 16000;
 const DIALOG_GUARDED = new Set([
@@ -30,29 +37,33 @@ const DIALOG_GUARDED = new Set([
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const BLOCKED_UPLOAD_ELEMENT_ERROR =
-  "目标位置命中文件上传控件（点击会弹出系统文件选择框），已拦截；如需上传文件请使用 upload_file 工具，如系滚动后坐标偏移请改用 selector 定位目标控件";
+const BLOCKED_UPLOAD_ELEMENT_ERROR = FILE_CHOOSER_BLOCKED_MESSAGE;
 const BLOCKED_CHOOSER_OPENED_ERROR =
   "点击触发了文件选择框（已自动拦截，未打开系统窗口）；如需上传文件请使用 upload_file 工具，如系坐标偏移请改用 selector 定位目标控件";
 
 /** 自包含注入探测：按局部视口坐标或 CSS 选择器检查命中节点是否为文件上传触发器。 */
 export function inspectFileUploadTarget(spec) {
   const o = spec || {};
-  const isFileUploadTrigger = (node) => {
-    if (!node || node.nodeType !== 1) return false;
+  if (o.fileChooserPolicy === "allow") return { blocked: false };
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
+  const uploadListSel = A?.uploadListSelector || '[role="list"][data-upload-list], [class*="upload-list"]';
+  const uploadTrigSel = A?.uploadTriggerSelector || 'button, [role="button"]';
+  const hitsFileInput = (node) => {
+    const start = node && node.nodeType === 1 ? node : node?.parentElement || null;
+    if (!start) return false;
     if (
-      node.tagName === "INPUT" &&
-      String(node.type || node.getAttribute("type") || "").toLowerCase() === "file" &&
-      !node.disabled
+      start.tagName === "INPUT" &&
+      String(start.type || start.getAttribute("type") || "").toLowerCase() === "file" &&
+      !start.disabled
     ) {
       return true;
     }
     for (
-      let cur = node;
+      let cur = start;
       cur && cur !== document.body && cur !== document.documentElement;
       cur = cur.parentElement || cur.getRootNode?.()?.host || null
     ) {
-      if (cur.matches?.('.ant-upload-list, .el-upload-list, [class*="upload-list"]')) break;
+      if (uploadListSel && cur.matches?.(uploadListSel)) break;
       if (cur.tagName === "LABEL") {
         const forId = cur.getAttribute?.("for");
         const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
@@ -65,13 +76,8 @@ export function inspectFileUploadTarget(spec) {
           return true;
         }
       }
-      if (
-        cur.matches?.('button, [role="button"], .ant-upload-btn, .el-upload') ||
-        (cur.classList?.contains("ant-upload") &&
-          !cur.classList.contains("ant-upload-wrapper") &&
-          !cur.classList.contains("ant-upload-picture-card-wrapper"))
-      ) {
-        if (cur.querySelector?.('input[type="file"]:not([disabled])')) return true;
+      if (uploadTrigSel && cur.matches?.(uploadTrigSel) && cur.querySelector?.('input[type="file"]:not([disabled])')) {
+        return true;
       }
     }
     return false;
@@ -79,7 +85,7 @@ export function inspectFileUploadTarget(spec) {
   if (o.selector) {
     try {
       const nodes = [...document.querySelectorAll(String(o.selector))];
-      return { blocked: nodes.some(isFileUploadTrigger) };
+      return { blocked: nodes.some(hitsFileInput) };
     } catch {
       return { blocked: false };
     }
@@ -93,7 +99,7 @@ export function inspectFileUploadTarget(spec) {
     if (!inner || inner === hit) break;
     hit = inner;
   }
-  return { blocked: isFileUploadTrigger(hit) };
+  return { blocked: hitsFileInput(hit) };
 }
 
 function obj(properties, required = []) {
@@ -113,15 +119,18 @@ export function dialogNote(dialog) {
   return `页面弹出了 ${dialog.type} 对话框：「${String(dialog.message).slice(0, 200)}」。操作可能还没完成，用 handle_dialog（accept=true 确认 / false 取消）处理后再继续。`;
 }
 
-/** 发送真实 CDP 鼠标点击，并开启引擎级文件选择框拦截保护（防止误触原生打开窗口）。 */
+/** 发送真实 CDP 鼠标点击，并按策略开启引擎级文件选择框拦截保护（防止误触原生打开窗口）。 */
 export async function dispatchSafeCdpClick(cdp, tabId, x, y, options = {}) {
   await cdp.ensure(tabId);
+  const blockChooser = options.fileChooserPolicy !== "allow";
   let chooserOpened = false;
-  const chooserWatch = cdp.watchFileChooser?.(tabId) || null;
+  const chooserWatch = blockChooser ? cdp.watchFileChooser?.(tabId) || null : null;
   chooserWatch?.promise?.then(() => {
     chooserOpened = true;
   });
-  await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: true }).catch(() => {});
+  if (blockChooser) {
+    await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: true }).catch(() => {});
+  }
   try {
     for (const ev of mouseClickEvents(x, y, {
       button: options.button || "left",
@@ -132,9 +141,11 @@ export async function dispatchSafeCdpClick(cdp, tabId, x, y, options = {}) {
     await sleep(60);
   } finally {
     chooserWatch?.cancel?.();
-    await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    if (blockChooser) {
+      await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    }
   }
-  if (chooserOpened) {
+  if (blockChooser && chooserOpened) {
     return { ok: false, blockedFileChooser: true, error: BLOCKED_CHOOSER_OPENED_ERROR };
   }
   return { ok: true };
@@ -191,6 +202,9 @@ export async function cdpScreenshot(cdp, tabId, { fullPage = false, selector = "
 
 export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRefItem }) {
   const webNavigation = () => globalThis.chrome?.webNavigation;
+  const getPolicy = () =>
+    normalizeExecutionPolicy(typeof ctx?.getPolicy === "function" ? ctx.getPolicy() : ctx?.policy);
+  const getAdapterSpec = () => getCompositeUIAdapterSpec(getPolicy().uiAdapters);
 
   async function frameOffset(tabId, frameId) {
     if (!frameId) return { x: 0, y: 0 };
@@ -211,15 +225,26 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
       const y = Math.round(Number(spec.y));
       return { x, y, localX: x, localY: y, frameId: 0, fromCoords: true, match: "坐标" };
     }
+    const policy = getPolicy();
+    const adapterSpec = getAdapterSpec();
     let frameId = 0;
     let target;
     if (spec?.index != null) {
       const { item, error } = getRefItem(tabId, spec.index);
       if (error) throw new Error(error);
       frameId = item.frameId || 0;
-      target = { node: item.node };
+      const hasCustomPolicy = Boolean(ctx?.policy || typeof ctx?.getPolicy === "function");
+      target = hasCustomPolicy
+        ? { node: item.node, adapterSpec, fileChooserPolicy: policy.fileChooserPolicy }
+        : { node: item.node };
     } else {
-      target = { selector: spec?.selector, text: spec?.text, nth: spec?.nth };
+      target = {
+        selector: spec?.selector,
+        text: spec?.text,
+        nth: spec?.nth,
+        adapterSpec,
+        fileChooserPolicy: policy.fileChooserPolicy,
+      };
     }
     let hit = await inject(tabId, locateElement, [target], { frameId });
     if (!hit?.ok && hit?.notFound && spec?.index == null) {
@@ -241,6 +266,7 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
       localX: hit.x,
       localY: hit.y,
       fileUpload: Boolean(hit.fileUpload),
+      rawText: hit.text || "",
       match: `${hit.tag} ${hit.text}`.trim(),
       frameId,
     };
@@ -275,30 +301,44 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
       }),
       async execute(args) {
         if (!hasTarget(args)) return "需要 index、selector、text 或 x,y 之一。";
+        const policy = getPolicy();
+        const adapterSpec = getAdapterSpec();
+        const preCheck = evaluateClickPolicy({ text: args.text, selector: args.selector }, policy);
+        if (!preCheck.allowed) {
+          return toToolText({ ok: false, blockedByPolicy: true, code: preCheck.code, error: preCheck.error });
+        }
         const tabId = await prepare(args);
+        const blockChooser = shouldBlockFileChooser(policy);
         try {
           let p;
           try {
             p = await resolvePoint(tabId, args);
           } catch (err) {
-            if (args.selector && args.index == null) {
-              const hiddenUpload = await inject(tabId, inspectFileUploadTarget, [{ selector: String(args.selector) }]).catch(
-                () => null,
-              );
+            if (blockChooser && args.selector && args.index == null) {
+              const hiddenUpload = await inject(tabId, inspectFileUploadTarget, [
+                { selector: String(args.selector), adapterSpec, fileChooserPolicy: policy.fileChooserPolicy },
+              ]).catch(() => null);
               if (hiddenUpload?.blocked) {
                 return toToolText({ ok: false, blockedFileChooser: true, error: BLOCKED_UPLOAD_ELEMENT_ERROR });
               }
             }
             throw err;
           }
-          if (p.fileUpload) {
+          const postCheck = evaluateClickPolicy(
+            { text: args.text, domElementText: p.rawText || "", selector: args.selector },
+            policy,
+          );
+          if (!postCheck.allowed) {
+            return toToolText({ ok: false, blockedByPolicy: true, code: postCheck.code, error: postCheck.error });
+          }
+          if (blockChooser && p.fileUpload) {
             return toToolText({ ok: false, blockedFileChooser: true, error: BLOCKED_UPLOAD_ELEMENT_ERROR });
           }
-          if (p.fromCoords) {
+          if (blockChooser && p.fromCoords) {
             const pointUpload = await inject(
               tabId,
               inspectFileUploadTarget,
-              [{ x: p.localX, y: p.localY }],
+              [{ x: p.localX, y: p.localY, adapterSpec, fileChooserPolicy: policy.fileChooserPolicy }],
               { frameId: p.frameId || 0 },
             ).catch(() => null);
             if (pointUpload?.blocked) {
@@ -308,6 +348,7 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
           const clickRes = await dispatchSafeCdpClick(cdp, tabId, p.x, p.y, {
             button: args.button || "left",
             double: Boolean(args.double),
+            fileChooserPolicy: policy.fileChooserPolicy,
           });
           if (!clickRes.ok) {
             return toToolText(clickRes);

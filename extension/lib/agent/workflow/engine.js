@@ -8,6 +8,7 @@
  * if_state / foreach / call_macro / fail
  */
 
+import { evaluateClickPolicy, evaluateUrlPolicy } from "../policy-guard.js";
 import { matchIrreversible } from "../trust/irreversible.js";
 import { DEFAULT_ADAPTER_SPEC, buildAssertStateBatches } from "./assert-batches.js";
 import {
@@ -99,10 +100,8 @@ function normalizePathText(v) {
 }
 
 function assertUrlNotForbidden(url, forbidPatterns = [], stepCtx = {}) {
-  const u = String(url || "");
-  if (!u || !Array.isArray(forbidPatterns) || forbidPatterns.length === 0) return;
-  const hit = forbidPatterns.find((p) => p && u.toLowerCase().includes(String(p).toLowerCase()));
-  if (hit) {
+  const verdict = evaluateUrlPolicy(url, { forbidUrlPatterns: forbidPatterns });
+  if (!verdict.allowed) {
     throw new WorkflowError({
       code: "WORKFLOW_FORBIDDEN_URL",
       blame: "workflow",
@@ -110,8 +109,8 @@ function assertUrlNotForbidden(url, forbidPatterns = [], stepCtx = {}) {
       stepId: stepCtx.stepId || "",
       op: stepCtx.op || "",
       expected: `页面 URL 不命中禁止模式 ${JSON.stringify(forbidPatterns)}`,
-      actual: u,
-      message: `页面 URL 命中禁止访问模式 "${hit}": ${u}`,
+      actual: String(url || ""),
+      message: `页面 URL 命中禁止访问模式 "${verdict.matched}": ${url}`,
     });
   }
 }
@@ -125,44 +124,33 @@ function assertClickTargetSafe({
   targetUrl = "",
   stepCtx = {},
 }) {
-  const forbidTexts = Array.isArray(policy.forbidClickTexts) ? policy.forbidClickTexts : [];
-  const forbidSels = Array.isArray(policy.forbidSelectors) ? policy.forbidSelectors : [];
-  const cands = [normalizeCjkText(labelText), normalizeCjkText(domElementText)].filter(Boolean);
-
-  for (const fb of forbidTexts) {
-    const want = normalizeCjkText(fb);
-    if (!want) continue;
-    if (cands.some((c) => c === want || c.includes(want))) {
+  const verdict = evaluateClickPolicy({ text: labelText, domElementText, selector }, policy);
+  if (!verdict.allowed) {
+    if (verdict.code === "POLICY_FORBIDDEN_SELECTOR") {
       throw new WorkflowError({
-        code: "WORKFLOW_FORBIDDEN_ACTION",
+        code: "WORKFLOW_FORBIDDEN_SELECTOR",
         blame: "workflow",
         stepIndex: stepCtx.stepIndex || 0,
         stepId: stepCtx.stepId || "",
         op: stepCtx.op || "",
-        expected: `禁止点击文本列表不包含 "${fb}"`,
-        actual: `尝试点击 "${labelText || domElementText}"`,
-        message: `策略守卫拦截：禁止点击 "${fb}"`,
+        expected: `禁止选择器列表不包含 "${verdict.matched}"`,
+        actual: String(selector),
+        message: `策略守卫拦截：禁止操作选择器 "${verdict.matched}"`,
       });
     }
+    throw new WorkflowError({
+      code: "WORKFLOW_FORBIDDEN_ACTION",
+      blame: "workflow",
+      stepIndex: stepCtx.stepIndex || 0,
+      stepId: stepCtx.stepId || "",
+      op: stepCtx.op || "",
+      expected: `禁止点击文本列表不包含 "${verdict.matched}"`,
+      actual: `尝试点击 "${labelText || domElementText}"`,
+      message: `策略守卫拦截：禁止点击 "${verdict.matched}"`,
+    });
   }
 
-  if (selector) {
-    for (const fs of forbidSels) {
-      if (fs && String(selector).includes(String(fs))) {
-        throw new WorkflowError({
-          code: "WORKFLOW_FORBIDDEN_SELECTOR",
-          blame: "workflow",
-          stepIndex: stepCtx.stepIndex || 0,
-          stepId: stepCtx.stepId || "",
-          op: stepCtx.op || "",
-          expected: `禁止选择器列表不包含 "${fs}"`,
-          actual: String(selector),
-          message: `策略守卫拦截：禁止操作选择器 "${fs}"`,
-        });
-      }
-    }
-  }
-
+  const forbidTexts = Array.isArray(policy.forbidClickTexts) ? policy.forbidClickTexts : [];
   const irr = matchIrreversible(
     "click",
     { text: labelText || domElementText, selector },

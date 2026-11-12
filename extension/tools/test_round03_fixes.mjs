@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { locateElement } from "../lib/agent/page-snapshot.js";
 import { checkStates, listControls, pageAct } from "../lib/agent/page-fns.js";
+import { getCompositeUIAdapterSpec } from "../lib/agent/ui-adapters/index.js";
 import { extractCapsule, widenCapsule } from "../lib/agent/trust/capsule.js";
 import { matchIrreversible } from "../lib/agent/trust/irreversible.js";
 import { createAgentTools, resolveActiveTools } from "../lib/agent/tools.js";
@@ -125,12 +126,15 @@ const { JSDOM } = require("jsdom");
   };
 
   // 通过 toString() 在独立页面 realm 求值，强校验注入函数零外部闭包依赖
-  const runLocate = (spec) => ({ ...win.eval(`(${locateElement.toString()})(${JSON.stringify(spec)})`) });
+  const adapterSpec = getCompositeUIAdapterSpec();
+  const runLocate = (spec) => ({
+    ...win.eval(`(${locateElement.toString()})(${JSON.stringify({ adapterSpec, ...spec })})`),
+  });
   const runPageAct = async (kind, spec) => ({
-    ...(await win.eval(`(${pageAct.toString()})(${JSON.stringify(kind)}, ${JSON.stringify(spec)})`)),
+    ...(await win.eval(`(${pageAct.toString()})(${JSON.stringify(kind)}, ${JSON.stringify({ adapterSpec, ...spec })})`)),
   });
   const runListControls = (limit) =>
-    JSON.parse(JSON.stringify(win.eval(`(${listControls.toString()})(${JSON.stringify(limit)})`)));
+    JSON.parse(JSON.stringify(win.eval(`(${listControls.toString()})(${JSON.stringify(limit)}, ${JSON.stringify(adapterSpec)})`)));
   const runCheckStates = (spec) =>
     JSON.parse(JSON.stringify(win.eval(`(${checkStates.toString()})(${JSON.stringify(spec)})`)));
 

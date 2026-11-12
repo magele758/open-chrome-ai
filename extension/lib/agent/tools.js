@@ -80,6 +80,12 @@ import {
   probeCompanions,
 } from "./companions.js";
 import { searchArtifacts, readArtifactPage } from "./artifact-store.js";
+import {
+  evaluateClickPolicy,
+  evaluateUrlPolicy,
+  normalizeExecutionPolicy,
+} from "./policy-guard.js";
+import { getCompositeUIAdapterSpec } from "./ui-adapters/index.js";
 
 const NOTES_KEY = "pagelensNotes";
 
@@ -215,6 +221,14 @@ const MAX_JEV_HISTORY = 10;
 export function createAgentTools(ctx) {
   const cdp = ctx.cdp || (cdpAvailable() ? getCdp() : null);
   const cdpEnabled = Boolean(cdp) && ctx.settings?.cdpInput !== false;
+  const getPolicy = () =>
+    normalizeExecutionPolicy(typeof ctx.getPolicy === "function" ? ctx.getPolicy() : ctx.policy);
+  const getAdapterSpec = () => getCompositeUIAdapterSpec(getPolicy().uiAdapters);
+  const withExecContext = (spec = {}) => ({
+    ...spec,
+    adapterSpec: getAdapterSpec(),
+    fileChooserPolicy: getPolicy().fileChooserPolicy,
+  });
   const snapshots = new Map();
   // HITL 需要按编号操作的控件文字来匹配不可逆清单（「发布」「删除」类按钮）
   ctx.exposeRefLabel?.((tabId, index) => {
@@ -242,9 +256,12 @@ export function createAgentTools(ctx) {
       return inject(tabId, scrollViewport, [dir]);
     }
     const kind = action === "select" ? "select" : action;
-    return inject(tabId, actOnRef, [kind, { node: item.node, label: item.label, value, submit }], {
-      frameId: item.frameId,
-    });
+    return inject(
+      tabId,
+      actOnRef,
+      [kind, withExecContext({ node: item.node, label: item.label, value, submit })],
+      { frameId: item.frameId },
+    );
   };
   const tools = [
     {
@@ -438,8 +455,9 @@ export function createAgentTools(ctx) {
       }),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
-        if (!args?.allFrames) return toToolText(await inject(tabId, listControls, [args?.limit]));
-        const frames = await injectFrames(tabId, listControls, [args?.limit]);
+        const adapterSpec = getAdapterSpec();
+        if (!args?.allFrames) return toToolText(await inject(tabId, listControls, [args?.limit, adapterSpec]));
+        const frames = await injectFrames(tabId, listControls, [args?.limit, adapterSpec]);
         return toToolText(frames.filter((f) => f.result?.length).map((f) => ({ frameId: f.frameId, controls: f.result })));
       },
     },
@@ -454,10 +472,31 @@ export function createAgentTools(ctx) {
         nth: { type: "integer", description: "多个匹配时取第几个，从 0 开始" },
       }),
       async execute(args) {
+        const policy = getPolicy();
+        const preCheck = evaluateClickPolicy({ text: args.text, selector: args.selector }, policy);
+        if (!preCheck.allowed) {
+          return toToolText({ ok: false, blockedByPolicy: true, code: preCheck.code, error: preCheck.error });
+        }
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
+        if (!args.text && args.selector && policy.forbidClickTexts.length > 0) {
+          const probed = await actInFrames(
+            tabId,
+            "probe",
+            withExecContext({ selector: args.selector, nth: args.nth }),
+          );
+          if (probed?.ok && probed.match?.text) {
+            const postCheck = evaluateClickPolicy(
+              { domElementText: probed.match.text, selector: args.selector },
+              policy,
+            );
+            if (!postCheck.allowed) {
+              return toToolText({ ok: false, blockedByPolicy: true, code: postCheck.code, error: postCheck.error });
+            }
+          }
+        }
         return toToolText(
-          await actInFrames(tabId, "click", { selector: args.selector, text: args.text, nth: args.nth }),
+          await actInFrames(tabId, "click", withExecContext({ selector: args.selector, text: args.text, nth: args.nth })),
         );
       },
     },
@@ -470,7 +509,7 @@ export function createAgentTools(ctx) {
           selector: { type: "string" },
           text: { type: "string", description: "用可见文字定位控件" },
           value: { type: "string", description: "要填入的内容" },
-          blur: { type: "boolean", description: "填完后是否触发 blur（适用于 AntD InputNumber 等失焦校验控件）" },
+          blur: { type: "boolean", description: "填完后是否触发 blur（适用于数值输入框等失焦校验控件）" },
           submit: { type: "boolean", description: "填完是否提交" },
           nth: { type: "integer" },
         },
@@ -480,14 +519,18 @@ export function createAgentTools(ctx) {
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
         return toToolText(
-          await actInFrames(tabId, "fill", {
-            selector: args.selector,
-            text: args.text,
-            value: args.value,
-            blur: args.blur,
-            submit: args.submit,
-            nth: args.nth,
-          }),
+          await actInFrames(
+            tabId,
+            "fill",
+            withExecContext({
+              selector: args.selector,
+              text: args.text,
+              value: args.value,
+              blur: args.blur,
+              submit: args.submit,
+              nth: args.nth,
+            }),
+          ),
         );
       },
     },
@@ -506,24 +549,35 @@ export function createAgentTools(ctx) {
         ["value"],
       ),
       async execute(args) {
+        const policy = getPolicy();
+        if (args.selector) {
+          const selCheck = evaluateClickPolicy({ selector: args.selector }, policy);
+          if (!selCheck.allowed) {
+            return toToolText({ ok: false, blockedByPolicy: true, code: selCheck.code, error: selCheck.error });
+          }
+        }
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
         const prep = await injectMain(tabId, prepareSelectOption, [
-          {
+          withExecContext({
             selector: args.selector,
             label: args.label,
             value: args.value,
             nth: args.nth,
             useCdp: Boolean(cdpEnabled),
-          },
+          }),
         ]);
         if (!prep || prep.ok === false) {
           if (prep?.notFound && args.selector) {
-            const frameRes = await actInFrames(tabId, "select", {
-              selector: args.selector,
-              value: args.value,
-              nth: args.nth,
-            });
+            const frameRes = await actInFrames(
+              tabId,
+              "select",
+              withExecContext({
+                selector: args.selector,
+                value: args.value,
+                nth: args.nth,
+              }),
+            );
             if (frameRes?.ok) return toToolText(frameRes);
           }
           return toToolText(prep || { ok: false, error: "下拉定位失败" });
@@ -534,50 +588,61 @@ export function createAgentTools(ctx) {
         }
         try {
           if (prep.needCdpOpen && cdpEnabled) {
-            const clickOpen = await dispatchSafeCdpClick(cdp, tabId, prep.x, prep.y);
+            const clickOpen = await dispatchSafeCdpClick(cdp, tabId, prep.x, prep.y, {
+              fileChooserPolicy: policy.fileChooserPolicy,
+            });
             if (!clickOpen.ok) {
               await injectMain(tabId, completeSelectOption, [
-                { uid: prep.uid, value: args.value, stage: "cleanup" },
+                withExecContext({ uid: prep.uid, value: args.value, stage: "cleanup" }),
               ]).catch(() => {});
               return toToolText(clickOpen);
             }
           }
           let comp = await injectMain(tabId, completeSelectOption, [
-            {
+            withExecContext({
               uid: prep.uid,
               value: args.value,
               stage: "select",
               allowCdpFallback: Boolean(cdpEnabled),
-            },
+            }),
           ]);
           if (comp?.ok && comp.needCdpOptionClick && cdpEnabled) {
-            const clickOpt = await dispatchSafeCdpClick(cdp, tabId, comp.optX, comp.optY);
+            const clickOpt = await dispatchSafeCdpClick(cdp, tabId, comp.optX, comp.optY, {
+              fileChooserPolicy: policy.fileChooserPolicy,
+            });
             if (!clickOpt.ok) {
               await injectMain(tabId, completeSelectOption, [
-                { uid: prep.uid, value: args.value, stage: "cleanup" },
+                withExecContext({ uid: prep.uid, value: args.value, stage: "cleanup" }),
               ]).catch(() => {});
               return toToolText(clickOpt);
             }
             comp = await injectMain(tabId, completeSelectOption, [
-              { uid: prep.uid, value: args.value, stage: "finalize", allowCdpFallback: Boolean(cdpEnabled) },
+              withExecContext({
+                uid: prep.uid,
+                value: args.value,
+                stage: "finalize",
+                allowCdpFallback: Boolean(cdpEnabled),
+              }),
             ]);
           }
           if (comp?.ok && comp.needCdpCloseClick && cdpEnabled) {
-            const clickClose = await dispatchSafeCdpClick(cdp, tabId, comp.closeX, comp.closeY);
+            const clickClose = await dispatchSafeCdpClick(cdp, tabId, comp.closeX, comp.closeY, {
+              fileChooserPolicy: policy.fileChooserPolicy,
+            });
             if (!clickClose.ok) {
               await injectMain(tabId, completeSelectOption, [
-                { uid: prep.uid, value: args.value, stage: "cleanup" },
+                withExecContext({ uid: prep.uid, value: args.value, stage: "cleanup" }),
               ]).catch(() => {});
               return toToolText(clickClose);
             }
             comp = await injectMain(tabId, completeSelectOption, [
-              { uid: prep.uid, value: args.value, stage: "verify" },
+              withExecContext({ uid: prep.uid, value: args.value, stage: "verify" }),
             ]);
           }
           return toToolText(comp || { ok: false, error: "下拉选项点击未返回结果" });
         } catch (err) {
           await injectMain(tabId, completeSelectOption, [
-            { uid: prep.uid, value: args.value, stage: "cleanup" },
+            withExecContext({ uid: prep.uid, value: args.value, stage: "cleanup" }),
           ]).catch(() => {});
           return toToolText({ ok: false, error: err?.message || String(err) });
         }
@@ -600,7 +665,7 @@ export function createAgentTools(ctx) {
         return toToolText(
           await injectMain(tabId, pageAct, [
             "press",
-            { key: args.key, selector: args.selector },
+            withExecContext({ key: args.key, selector: args.selector }),
           ]),
         );
       },
@@ -616,11 +681,15 @@ export function createAgentTools(ctx) {
       }),
       async execute(args) {
         return toToolText(
-          await actInFrames(await resolveTabId(ctx, args), "wait", {
-            selector: args?.selector,
-            text: args?.text,
-            timeoutMs: args?.timeoutMs,
-          }),
+          await actInFrames(
+            await resolveTabId(ctx, args),
+            "wait",
+            withExecContext({
+              selector: args?.selector,
+              text: args?.text,
+              timeoutMs: args?.timeoutMs,
+            }),
+          ),
         );
       },
     },
@@ -645,18 +714,29 @@ export function createAgentTools(ctx) {
     },
     {
       name: "scroll_page",
-      description: "滚动页面到选择器、百分比或 y 像素。",
+      description: "滚动页面到选择器、百分比或 y 像素（支持指定整页窗口或当前顶层弹窗作用域）。",
       parameters: obj({
         tabId: tabIdProp(),
         selector: { type: "string", description: "滚到这个元素" },
         percent: { type: "number", description: "0–100，页高百分比" },
         y: { type: "number", description: "绝对像素" },
         block: { type: "string", description: "scrollIntoView block，默认 center" },
+        scope: {
+          type: "string",
+          enum: ["auto", "window", "modal"],
+          description: "滚动作用域：auto（有弹窗优先滚弹窗，默认）、window（强制滚整页窗口）、modal（仅滚顶层弹窗）",
+        },
       }),
       async execute(args) {
         return toToolText(
           await inject(await resolveTabId(ctx, args), scrollPage, [
-            { selector: args.selector, percent: args.percent, y: args.y, block: args.block },
+            withExecContext({
+              selector: args.selector,
+              percent: args.percent,
+              y: args.y,
+              block: args.block,
+              scope: args.scope,
+            }),
           ]),
         );
       },
@@ -835,6 +915,10 @@ export function createAgentTools(ctx) {
       async execute(args) {
         const url = String(args.url || "").trim();
         if (!isHttpUrl(url)) return `只能打开 http(s) URL，收到：${url}`;
+        const urlVerdict = evaluateUrlPolicy(url, getPolicy());
+        if (!urlVerdict.allowed) {
+          return toToolText({ ok: false, blockedByPolicy: true, code: urlVerdict.code, error: urlVerdict.error });
+        }
         const hostDenied = await requireHostUrl(url);
         if (hostDenied) return hostDenied;
         const tab = await chrome.tabs.create({ url, active: Boolean(args.active) });
@@ -911,6 +995,10 @@ export function createAgentTools(ctx) {
       async execute(args) {
         const url = String(args.url || "").trim();
         if (!isHttpUrl(url)) return `只能打开 http(s) URL，收到：${url}`;
+        const urlVerdict = evaluateUrlPolicy(url, getPolicy());
+        if (!urlVerdict.allowed) {
+          return toToolText({ ok: false, blockedByPolicy: true, code: urlVerdict.code, error: urlVerdict.error });
+        }
         const hostDenied = await requireHostUrl(url);
         if (hostDenied) return hostDenied;
         const tabId = await resolveTabId(ctx, args);
@@ -1696,6 +1784,12 @@ export function createAgentTools(ctx) {
           }
           const { item, error } = findItem(tabId, args.index);
           if (error) return error;
+          if (action === "click") {
+            const clickVerdict = evaluateClickPolicy({ domElementText: item.label || item.text || "" }, getPolicy());
+            if (!clickVerdict.allowed) {
+              return toToolText({ ok: false, blockedByPolicy: true, code: clickVerdict.code, error: clickVerdict.error });
+            }
+          }
           if (action === "fill" && item.kind !== "fill") return `[${item.index}] 不是可输入控件，请用 click。`;
           if (action === "select" && item.kind !== "select") return `[${item.index}] 不是下拉框，请用 click。`;
           if ((action === "fill" || action === "select") && args.value == null) return `${action} 需要 value。`;
