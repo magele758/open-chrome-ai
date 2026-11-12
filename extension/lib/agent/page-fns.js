@@ -362,16 +362,43 @@ export function checkStates(spec) {
     const hit = pool[0];
     if (o.scroll) hit.el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     const r = hit.el.getBoundingClientRect();
-    return {
+    const x = Math.round(r.left + r.width / 2);
+    const y = Math.round(r.top + r.height / 2);
+    const entry = {
       want,
       found: true,
       label: hit.label,
       checked: hit.checked,
       disabled: hit.disabled,
       ambiguous: pool.length > 1,
-      x: Math.round(r.left + r.width / 2),
-      y: Math.round(r.top + r.height / 2),
+      x,
+      y,
     };
+    if (o.hitTest && typeof document.elementFromPoint === "function") {
+      let topEl = document.elementFromPoint(x, y);
+      while (topEl?.shadowRoot && typeof topEl.shadowRoot.elementFromPoint === "function") {
+        const inner = topEl.shadowRoot.elementFromPoint(x, y);
+        if (!inner || inner === topEl) break;
+        topEl = inner;
+      }
+      const isAssociatedLabel =
+        topEl?.tagName === "LABEL" &&
+        (topEl.contains(hit.el) || (Boolean(hit.el.id) && topEl.getAttribute("for") === hit.el.id));
+      const composedContains = (a, b) => {
+        for (let n = b; n; n = n.parentNode || n.host) if (n === a) return true;
+        return false;
+      };
+      if (topEl && !composedContains(hit.el, topEl) && !isAssociatedLabel) {
+        entry.occluded = true;
+        entry.covered = true;
+        entry.blocker = {
+          tag: topEl.tagName.toLowerCase(),
+          id: topEl.id || "",
+          text: clean(topEl.innerText || topEl.textContent || "").slice(0, 60),
+        };
+      }
+    }
+    return entry;
   });
   return { results };
 }
@@ -1542,13 +1569,27 @@ export async function completeSelectOption(spec) {
     if (stage === "finalize") {
       await sleep(60);
       if (isComboOpen(comboRoot)) {
-        closeCombo(comboRoot);
-        await sleep(50);
-        if (isComboOpen(comboRoot) && o.allowCdpFallback) {
-          const pt = pickUncoveredNeutralPoint(comboRoot);
-          if (pt) {
-            keepUid = true;
-            return { ok: true, needCdpCloseClick: true, closeX: pt.x, closeY: pt.y };
+        if (o.preferCdpOptionClick && o.allowCdpFallback) {
+          const inp = comboRoot.querySelector?.("input") || comboRoot;
+          inp.blur?.();
+          await sleep(30);
+          if (isComboOpen(comboRoot)) {
+            const pt = pickUncoveredNeutralPoint(comboRoot);
+            if (pt) {
+              keepUid = true;
+              return { ok: true, needCdpCloseClick: true, closeX: pt.x, closeY: pt.y };
+            }
+          }
+        }
+        if (isComboOpen(comboRoot)) {
+          closeCombo(comboRoot);
+          await sleep(50);
+          if (isComboOpen(comboRoot) && o.allowCdpFallback) {
+            const pt = pickUncoveredNeutralPoint(comboRoot);
+            if (pt) {
+              keepUid = true;
+              return { ok: true, needCdpCloseClick: true, closeX: pt.x, closeY: pt.y };
+            }
           }
         }
       }
@@ -1578,7 +1619,7 @@ export async function completeSelectOption(spec) {
     while (!popup && Date.now() - t0 < 1200) {
       await sleep(50);
       const elapsed = Date.now() - t0;
-      if (!retriggeredOpen && elapsed >= 220 && !isComboOpen(comboRoot)) {
+      if (!o.preferCdpOptionClick && !retriggeredOpen && elapsed >= 220 && !isComboOpen(comboRoot)) {
         retriggeredOpen = true;
         const trig = (TRIG_SUB_SEL ? comboRoot.querySelector?.(TRIG_SUB_SEL) : null) || comboRoot;
         if (trig && (!blockFileChooser || !hitsFileInput(trig))) {
@@ -1677,6 +1718,43 @@ export async function completeSelectOption(spec) {
     const optRect = opt.getBoundingClientRect();
     const optX = Math.round(optRect.x + optRect.width / 2);
     const optY = Math.round(optRect.y + optRect.height / 2);
+    if (optRect.width > 0 && optRect.height > 0 && typeof document.elementFromPoint === "function") {
+      let hitOpt = document.elementFromPoint(optX, optY);
+      while (hitOpt?.shadowRoot && typeof hitOpt.shadowRoot.elementFromPoint === "function") {
+        const inner = hitOpt.shadowRoot.elementFromPoint(optX, optY);
+        if (!inner || inner === hitOpt) break;
+        hitOpt = inner;
+      }
+      const composedContains = (a, b) => {
+        for (let n = b; n; n = n.parentNode || n.host) if (n === a) return true;
+        return false;
+      };
+      if (
+        hitOpt &&
+        !composedContains(opt, hitOpt) &&
+        !composedContains(hitOpt, opt) &&
+        !(popup && composedContains(popup, hitOpt))
+      ) {
+        return {
+          ok: false,
+          occluded: true,
+          covered: true,
+          error: "下拉选项被其他元素遮挡（弹窗/遮罩/悬浮层），请先处理遮挡物",
+          blocker: {
+            tag: hitOpt.tagName.toLowerCase(),
+            id: hitOpt.id || "",
+            text: clean(hitOpt.innerText || hitOpt.textContent || "").slice(0, 60),
+          },
+        };
+      }
+    }
+
+    // debugger 权限已授时直接交由外层执行单次真实 CDP 点击，消除“先合成点击 75ms 再补 CDP 点击”的双击反选风险
+    if (o.preferCdpOptionClick && o.allowCdpFallback && optRect.width > 0 && optRect.height > 0) {
+      keepUid = true;
+      return { ok: true, needCdpOptionClick: true, optX, optY };
+    }
+
     opt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: optX, clientY: optY }));
     opt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: optX, clientY: optY }));
     opt.click?.();

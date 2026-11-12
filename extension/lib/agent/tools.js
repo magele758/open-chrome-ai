@@ -45,9 +45,15 @@ import {
   runJs,
   scrollPage,
 } from "./page-fns.js";
-import { actOnRef, scrollContainerOf, scrollViewport, snapshotControls } from "./page-snapshot.js";
+import { actOnRef, iframeRect, locateElement, scrollContainerOf, scrollViewport, snapshotControls } from "./page-snapshot.js";
 import { cdpAvailable, getCdp } from "../cdp.js";
-import { cdpScreenshot, createCdpTools, dispatchSafeCdpClick, withDialogGuard } from "./cdp-tools.js";
+import {
+  cdpScreenshot,
+  createCdpTools,
+  dispatchSafeCdpClick,
+  inspectFileUploadTarget,
+  withDialogGuard,
+} from "./cdp-tools.js";
 import { createBrowserApiTools } from "./browser-api-tools.js";
 import { createCookieTools } from "./cookie-tools.js";
 import { createSettingsTools } from "./settings-tools.js";
@@ -81,9 +87,11 @@ import {
 } from "./companions.js";
 import { searchArtifacts, readArtifactPage } from "./artifact-store.js";
 import {
+  FILE_CHOOSER_BLOCKED_MESSAGE,
   evaluateClickPolicy,
   evaluateUrlPolicy,
   normalizeExecutionPolicy,
+  shouldBlockFileChooser,
 } from "./policy-guard.js";
 import { getCompositeUIAdapterSpec } from "./ui-adapters/index.js";
 
@@ -229,6 +237,22 @@ export function createAgentTools(ctx) {
     adapterSpec: getAdapterSpec(),
     fileChooserPolicy: getPolicy().fileChooserPolicy,
   });
+  const canUseTrustedCdpInput = async () => {
+    if (!cdpEnabled) return false;
+    if (ctx.forceCdpInput === true) return true;
+    if (typeof globalThis.chrome?.permissions?.contains !== "function") return false;
+    try {
+      return Boolean(await globalThis.chrome.permissions.contains({ permissions: ["debugger"] }));
+    } catch {
+      return false;
+    }
+  };
+  const resolveCdpFrameOffset = async (tabId, frameId) => {
+    if (!frameId) return { x: 0, y: 0 };
+    const info = await globalThis.chrome?.webNavigation?.getFrame?.({ tabId, frameId }).catch(() => null);
+    if (!info || info.parentFrameId !== 0) return null;
+    return (await inject(tabId, iframeRect, [info.url]).catch(() => null)) || null;
+  };
   const snapshots = new Map();
   // HITL 需要按编号操作的控件文字来匹配不可逆清单（「发布」「删除」类按钮）
   ctx.exposeRefLabel?.((tabId, index) => {
@@ -479,6 +503,63 @@ export function createAgentTools(ctx) {
         }
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
+        if (await canUseTrustedCdpInput()) {
+          const targetSpec = withExecContext({
+            selector: args.selector,
+            text: args.text,
+            nth: args.nth,
+          });
+          let frameId = 0;
+          let hit = await injectMain(tabId, locateElement, [targetSpec]);
+          if (!hit?.ok && hit?.notFound) {
+            const all = await injectFrames(tabId, locateElement, [targetSpec], { world: "MAIN" }).catch(() => []);
+            const found = all.find((f) => f.frameId > 0 && f.result?.ok);
+            if (found) {
+              hit = found.result;
+              frameId = found.frameId;
+            }
+          }
+          if (!hit?.ok) {
+            if (hit?.notFound && args.selector && shouldBlockFileChooser(policy)) {
+              const hiddenUpload = await injectMain(tabId, inspectFileUploadTarget, [
+                withExecContext({ selector: String(args.selector) }),
+              ]).catch(() => null);
+              if (hiddenUpload?.blocked) {
+                return toToolText({ ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MESSAGE });
+              }
+            }
+            return toToolText(hit || { ok: false, error: "定位失败" });
+          }
+          const postCheck = evaluateClickPolicy(
+            { text: args.text, domElementText: hit.text || "", selector: args.selector },
+            policy,
+          );
+          if (!postCheck.allowed) {
+            return toToolText({ ok: false, blockedByPolicy: true, code: postCheck.code, error: postCheck.error });
+          }
+          if (shouldBlockFileChooser(policy) && hit.fileUpload) {
+            return toToolText({ ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MESSAGE });
+          }
+          const offset = await resolveCdpFrameOffset(tabId, frameId);
+          if (offset) {
+            const cx = hit.x + offset.x;
+            const cy = hit.y + offset.y;
+            const cdpRes = await dispatchSafeCdpClick(cdp, tabId, cx, cy, {
+              fileChooserPolicy: policy.fileChooserPolicy,
+            });
+            if (!cdpRes.ok) return toToolText(cdpRes);
+            return toToolText({
+              ok: true,
+              action: "click",
+              via: "cdp",
+              tag: hit.tag,
+              text: hit.text,
+              count: hit.count,
+              at: { x: cx, y: cy },
+              ...(frameId ? { frameId } : {}),
+            });
+          }
+        }
         if (!args.text && args.selector && policy.forbidClickTexts.length > 0) {
           const probed = await actInFrames(
             tabId,
@@ -558,6 +639,7 @@ export function createAgentTools(ctx) {
         }
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
+        const preferCdpOptionClick = await canUseTrustedCdpInput();
         const prep = await injectMain(tabId, prepareSelectOption, [
           withExecContext({
             selector: args.selector,
@@ -604,6 +686,7 @@ export function createAgentTools(ctx) {
               value: args.value,
               stage: "select",
               allowCdpFallback: Boolean(cdpEnabled),
+              preferCdpOptionClick,
             }),
           ]);
           if (comp?.ok && comp.needCdpOptionClick && cdpEnabled) {
@@ -622,6 +705,7 @@ export function createAgentTools(ctx) {
                 value: args.value,
                 stage: "finalize",
                 allowCdpFallback: Boolean(cdpEnabled),
+                preferCdpOptionClick,
               }),
             ]);
           }
@@ -1885,6 +1969,7 @@ export const TOOL_DOMAINS = {
     "extract_pages",
     "get_page_info",
     "screenshot",
+    "ax_snapshot",
     "get_selection",
     "get_links",
     "find_in_page",
@@ -1898,6 +1983,7 @@ export const TOOL_DOMAINS = {
     "clipboard_write",
     "copy_selection",
     "list_controls",
+    "ax_snapshot",
     "click",
     "fill",
     "select_option",

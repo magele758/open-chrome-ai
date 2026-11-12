@@ -12,6 +12,7 @@ export const READ_ONLY_TOOLS = new Set([
   "query_dom",
   "list_controls",
   "snapshot_controls",
+  "ax_snapshot",
   "wait_for",
   "wait_for_navigation",
   "scroll_page",
