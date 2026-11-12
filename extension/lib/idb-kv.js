@@ -88,7 +88,7 @@ export async function idbSetAll(entries) {
 
 export async function idbDel(keys) {
   const list = [].concat(keys).filter(Boolean);
-  if (!list.length || !idbAvailable()) return;
+  if (!list.length || !idbAvailable()) return false;
   try {
     const db = await openDb();
     await new Promise((resolve, reject) => {
@@ -98,18 +98,20 @@ export async function idbDel(keys) {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
+    return true;
   } catch {
-    /* ignore */
+    return false;
   }
 }
 
-export async function idbListKeys() {
+export async function idbListKeys(prefix) {
   if (!idbAvailable()) return [];
   try {
     const db = await openDb();
     return await new Promise((resolve, reject) => {
       const tx = db.transaction(DATA_STORE, "readonly");
-      const req = tx.objectStore(DATA_STORE).getAllKeys();
+      const range = prefix ? IDBKeyRange.bound(prefix, prefix + "\uffff") : undefined;
+      const req = tx.objectStore(DATA_STORE).getAllKeys(range);
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
     });

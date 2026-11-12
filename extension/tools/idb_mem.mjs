@@ -2,6 +2,7 @@
 
 export function installMemoryIndexedDB(global = globalThis) {
   const dbs = new Map();
+  global.IDBKeyRange ||= { bound: (lower, upper) => ({ lower, upper }) };
 
   function request(result) {
     const r = { result, error: null, onsuccess: null, onerror: null, onupgradeneeded: null };
@@ -22,8 +23,11 @@ export function installMemoryIndexedDB(global = globalThis) {
         data.delete(key);
         return request(undefined);
       },
-      getAllKeys() {
-        return request([...data.keys()]);
+      getAll(range) {
+        return request([...data].filter(([key]) => !range || key >= range.lower && key <= range.upper).map(([, value]) => value));
+      },
+      getAllKeys(range) {
+        return request([...data.keys()].filter(key => !range || key >= range.lower && key <= range.upper));
       },
     };
   }

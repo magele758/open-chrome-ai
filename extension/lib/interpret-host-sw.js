@@ -6,7 +6,8 @@
  *   host   --pl.interpret.event--> panel (and SW, which closes an idle document)
  */
 import { loadSettings } from "./storage.js";
-import { loadDubJobs, unfinished } from "./dub-queue.js";
+import { listDubArchives } from "./audio-composer.js";
+import { loadDubJobs, unfinished, unifiedDubList } from "./dub-queue.js";
 import { videoIdentity } from "./library.js";
 import { injectVideo } from "./chrome.js";
 import { NATIVE_HOST_NAME } from "./native-host.js";
@@ -40,11 +41,17 @@ export function createInterpretRouter({
       await chromeApi.alarms.create("pl.queue.watch", { delayInMinutes: 1 });
       return doc.withDocument(() => forward({ op: msg.op, job: { url, title, id: videoIdentity(url), media } }));
     }
-    if (msg.op === "queueList" && !(await doc.exists())) {
+    if (msg.op === "queueList") {
+      const archives = await listDubArchives();
+      if (await doc.exists()) {
+        const res = await forward(msg);
+        if (res?.ok) return { ok: true, jobs: unifiedDubList(res.jobs, archives, res.live || []) };
+      }
       const jobs = await loadDubJobs();
       if (jobs.some(unfinished)) await resumePending();
-      return { ok: true, jobs: jobs.map(({ media, ...row }) => row) };
+      return { ok: true, jobs: unifiedDubList(jobs.map(({ media, ...row }) => row), archives, []) };
     }
+    if (msg.op === "queueDelete") return doc.withDocument(() => forward(msg));
     if (msg.op === "start") return doc.withDocument(() => forward(msg));
     if (!(await doc.exists())) {
       if (msg.op === "list") return { ok: true, tasks: [] };

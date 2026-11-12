@@ -1,0 +1,8 @@
+id: unified-dub-priority
+status: implemented
+notes: "assumedApproval: standing-order-2026-10-22"
+criteria:
+  - id: AC-1
+    then: Completed historical and new audio archives appear once alongside queued work and can be deleted persistently.
+  - id: AC-2
+    then: Starting live interpretation immediately interrupts background processing, shows the requested video first, and resumes FIFO processing after live use ends.

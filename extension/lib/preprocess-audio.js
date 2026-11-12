@@ -3,14 +3,15 @@ import { dubArchiveVersion } from "./interpret-policy.js";
 import { runPlannedInterpret } from "./planned-interpret.js";
 import { isTtsReady } from "./storage.js";
 
-export async function preprocessAudio(row, settings, progress) {
+export async function preprocessAudio(row, settings, progress, signal) {
   const archive = await loadFullMediaArchive(row.id);
+  signal?.throwIfAborted();
   if (archive?.complete && archive.hasAudio && archive.hasCompactAudio &&
       archive.processingVersion === dubArchiveVersion(settings.asr)) return archive.expireAt;
   if (!isTtsReady(settings.tts)) throw Error("请先配置语音合成（TTS）");
   let expiry, warning;
   await runPlannedInterpret({
-    sourceUrl: row.url, title: row.title, settings, audioOnly: true, generateFull: true,
+    sourceUrl: row.url, title: row.title, settings, signal, audioOnly: true, generateFull: true,
     // Resolve the source captured at enqueue time even after its tab closes.
     video: async cmd => cmd === "media" ? row.media : undefined,
     onEvent(event) {
