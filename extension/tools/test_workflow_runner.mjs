@@ -1275,3 +1275,151 @@ const LARGE_FAKE_PNG_DATA_URL =
   assert.deepEqual(out9b.selectedOptions, ["通码One-size", "适中"]);
   console.log("PASS 9. ADR-024 select popup ownership isolation (*-leave + aria-controls) & modal dynamic radio matching");
 }
+
+// ── 10. ADR-025 嵌套弹窗实体异步列表水合轮询、栈顶作用域隔离与子弹窗离场销毁契约 ──
+{
+  // 10a. 外层弹窗（modalsBeforeCount=1）自身已含“使用/适中”字样；点击打开子弹窗后先经历未挂载（poll 1）与空表占位“暂无档案”（poll 2–3），
+  //      第 4 拍异步列表返回目标行；点击确认后还须等待子弹窗离场动画（allModalCount 从 2 降回 1）才放行。
+  let rowPoll = 0;
+  let postConfirmPoll = 0;
+  let boundText10a = "";
+  const clickedMarks10a = [];
+
+  const res10a = await runDeterministicWorkflow({
+    rawText:
+      `/workflow\n` +
+      JSON.stringify({
+        schemaVersion: "1.0",
+        id: "nested-entity-async-hydration-10a",
+        binds: {},
+        steps: [
+          {
+            id: "E_ASYNC",
+            op: "ensure_modal_entity",
+            params: {
+              selectedSelector: ".outer-dialog",
+              alreadyBoundTexts: ["已绑档案", "档案甲", "感受:适中"],
+              alreadyBoundRegex: "规格:\\S+",
+              openButtonText: "选择档案",
+              rowMustInclude: ["档案甲"],
+              rowActionText: "使用",
+              optionClicks: [
+                { radioGroupIndex: 0, prefer: ["均码One"], verifyPrefix: "规格:" },
+                "适中",
+              ],
+              confirmText: "确认",
+              timeoutMs: 3000,
+            },
+          },
+        ],
+      }),
+    rawTools: {
+      run_js: async ({ code }) => {
+        if (code.includes("entity_pre_modal_count")) {
+          return JSON.stringify({ ok: true, result: { modalCountBefore: 1 } });
+        }
+        if (code.includes("entity_post_confirm_settle")) {
+          postConfirmPoll += 1;
+          // 第 1 拍子弹窗仍处于 ant-zoom-leave 离场态（allModalCount=2），第 2 拍彻底卸载回到 1
+          return JSON.stringify({
+            ok: true,
+            result: { boundText: boundText10a, allModalCount: postConfirmPoll < 2 ? 2 : 1 },
+          });
+        }
+        if (code.includes(".outer-dialog")) {
+          return JSON.stringify({ ok: true, result: "外层说明：建议使用高清素材" });
+        }
+        if (code.includes("emptyPlaceholderOnly")) {
+          rowPoll += 1;
+          if (rowPoll === 1) {
+            return JSON.stringify({
+              ok: true,
+              result: { found: false, newModalMounted: false, modalCount: 1, modalsBeforeCount: 1 },
+            });
+          }
+          if (rowPoll <= 3) {
+            return JSON.stringify({
+              ok: true,
+              result: { found: false, newModalMounted: true, spinning: false, emptyPlaceholderOnly: true, rows: ["暂无档案"] },
+            });
+          }
+          return JSON.stringify({
+            ok: true,
+            result: { found: true, newModalMounted: true, rowText: "档案甲 175 使用" },
+          });
+        }
+        if (code.includes("radiogroup")) {
+          return JSON.stringify({
+            ok: true,
+            result: { found: true, chosenText: "均码One", available: ["均码One"] },
+          });
+        }
+        if (code.includes("entity_str_option_probe")) {
+          return JSON.stringify({ ok: true, result: { found: true, matchedText: "适中" } });
+        }
+        if (code.includes("entity_confirm_probe")) {
+          return JSON.stringify({ ok: true, result: { found: true, matchedText: "确 认" } });
+        }
+        return JSON.stringify({ ok: true, result: true });
+      },
+      click: async ({ text, selector }) => {
+        clickedMarks10a.push(selector || text);
+        if (selector && clickedMarks10a.length >= 5) {
+          boundText10a = "已绑档案 档案甲 规格:均码One 感受:适中";
+        }
+        return JSON.stringify({ ok: true });
+      },
+    },
+    resolvePageSnapshot: async () => ({ tabId: 17, url: "https://portal.example.org/list", title: "List" }),
+  });
+
+  assert.equal(res10a.ok, true, `10a 应轮询越过“暂无档案”短暂空态并完成绑定: ${JSON.stringify(res10a.failure)}`);
+  assert.equal(rowPoll, 4, "必须持续轮询直到子弹窗挂载且异步列表行水合完成");
+  assert.ok(postConfirmPoll >= 2, "点击确认后必须等到子弹窗离场动画彻底卸载（allModalCount<=1）才返回");
+
+  // 10b. 子弹窗超时未挂载或持续转圈时，必须归因「工具」（WORKFLOW_ENTITY_MODAL_WAIT_TIMEOUT），不得误判「workflow」
+  const res10b = await runDeterministicWorkflow({
+    rawText:
+      `/workflow\n` +
+      JSON.stringify({
+        schemaVersion: "1.0",
+        id: "nested-entity-mount-timeout-10b",
+        binds: {},
+        steps: [
+          {
+            id: "E_TIMEOUT",
+            op: "ensure_modal_entity",
+            params: {
+              selectedSelector: ".outer-dialog",
+              alreadyBoundTexts: ["已绑档案", "档案甲"],
+              openButtonText: "选择档案",
+              rowMustInclude: ["档案甲"],
+              rowActionText: "使用",
+              timeoutMs: 1000,
+            },
+          },
+        ],
+      }),
+    rawTools: {
+      run_js: async ({ code }) => {
+        if (code.includes("entity_pre_modal_count")) {
+          return JSON.stringify({ ok: true, result: { modalCountBefore: 1 } });
+        }
+        if (code.includes(".outer-dialog")) {
+          return JSON.stringify({ ok: true, result: "" });
+        }
+        return JSON.stringify({
+          ok: true,
+          result: { found: false, newModalMounted: true, spinning: true, rows: ["暂无档案"] },
+        });
+      },
+      click: async () => JSON.stringify({ ok: true }),
+    },
+    resolvePageSnapshot: async () => ({ tabId: 18, url: "https://portal.example.org/list", title: "List" }),
+  });
+
+  assert.equal(res10b.ok, false);
+  assert.equal(res10b.failure.code, "WORKFLOW_ENTITY_MODAL_WAIT_TIMEOUT");
+  assert.equal(res10b.failure.blame, "工具", "异步列表持续 loading 超时应归属工具而非误判主档缺失");
+  console.log("PASS 10. ADR-025 nested entity modal async table hydration, top-modal scoping & close settle");
+}

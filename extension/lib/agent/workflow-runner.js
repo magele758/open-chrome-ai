@@ -2589,6 +2589,22 @@ export async function runDeterministicWorkflow({
           return { ok: true, skipped: true, boundText: clipBound(existing) };
         }
 
+        const preModalInfo = await evalJs(
+          `/* entity_pre_modal_count */
+          const modals = [...document.querySelectorAll(".ant-modal")].filter((m) => {
+            const cls = (m.className || "") + " " + ((m.parentElement && m.parentElement.className) || "");
+            if (/\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cls)) return false;
+            const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+            const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+            const r = m.getBoundingClientRect();
+            return ws.display !== "none" && ws.visibility !== "hidden" && r.width > 0 && r.height > 0;
+          });
+          return { modalCountBefore: modals.length };`,
+          stepCtx,
+        );
+        const modalsBeforeCount =
+          typeof preModalInfo?.modalCountBefore === "number" ? preModalInfo.modalCountBefore : 0;
+
         assertClickTargetSafe({
           labelText: openButtonText,
           domElementText: openButtonText,
@@ -2615,52 +2631,79 @@ export async function runDeterministicWorkflow({
           });
         }
 
-        const { parsed: wRes, text: wTxt } = await invokeRawTool(
-          "wait_for",
-          { text: rowActionText, timeoutMs },
-          stepCtx,
-        );
-        if (!wRes || wRes.ok !== true) {
-          throw new WorkflowError({
-            code: "WORKFLOW_ENTITY_MODAL_WAIT_TIMEOUT",
-            blame: "工具",
-            stepIndex: stepCtx.stepIndex,
-            stepId: stepCtx.stepId,
-            op: stepCtx.op,
-            expected: `弹窗加载出操作按钮 "${rowActionText}"`,
-            actual: wTxt.slice(0, 300),
-            message: `等待弹窗列表超时`,
-          });
-        }
-
         const rowNonce = `ent_${++nonceCounter}`;
-        const rowProbe = await evalJs(
-          `const modals = [...document.querySelectorAll(".ant-modal")].filter((m) => {
-            const cls = (m.className || "") + " " + ((m.parentElement && m.parentElement.className) || "");
-            if (/\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cls)) return false;
-            const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
-            const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
-            const r = m.getBoundingClientRect();
-            return ws.display !== "none" && ws.visibility !== "hidden" && r.width > 0 && r.height > 0;
-          });
-          const top = modals[modals.length - 1] || document;
-          const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
-          const normBtn = (s) => norm(s).replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
-          const rows = [...top.querySelectorAll("tbody tr")];
-          const must = ${JSON.stringify(rowMustInclude)};
-          const wantAct = ${JSON.stringify(normalizeCjkText(rowActionText))};
-          const hitRow = rows.find((tr) => {
-            const t = norm(tr.innerText);
-            return must.every((k) => t.includes(k));
-          });
-          if (!hitRow) return { found: false, rows: rows.map((r) => norm(r.innerText)).slice(0, 8) };
-          const btn = [...hitRow.querySelectorAll("button, a")].find((b) => normBtn(b.innerText) === wantAct);
-          if (!btn) return { found: false, reason: "no_button", rowText: norm(hitRow.innerText) };
-          btn.setAttribute("data-pl-wf-act", ${JSON.stringify(rowNonce)});
-          return { found: true, rowText: norm(hitRow.innerText) };`,
-          stepCtx,
-        );
+        const rowDeadline = Date.now() + timeoutMs;
+        let rowProbe = null;
+        while (true) {
+          rowProbe = await evalJs(
+            `const modals = [...document.querySelectorAll(".ant-modal")].filter((m) => {
+              const cls = (m.className || "") + " " + ((m.parentElement && m.parentElement.className) || "");
+              if (/\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cls)) return false;
+              const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+              const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+              const r = m.getBoundingClientRect();
+              return ws.display !== "none" && ws.visibility !== "hidden" && r.width > 0 && r.height > 0;
+            });
+            const before = ${modalsBeforeCount};
+            if (before > 0 && modals.length <= before) {
+              return { found: false, newModalMounted: false, modalCount: modals.length, modalsBeforeCount: before };
+            }
+            const top = modals[modals.length - 1] || document;
+            const spinning = Boolean(top.querySelector && top.querySelector(".ant-spin-spinning, .ant-skeleton"));
+            const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+            const normBtn = (s) => norm(s).replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
+            const rows = [...top.querySelectorAll("tbody tr")];
+            const rowTexts = rows.map((r) => norm(r.innerText)).filter(Boolean);
+            const must = ${JSON.stringify(rowMustInclude)};
+            const wantAct = ${JSON.stringify(normalizeCjkText(rowActionText))};
+            const hitRow = rows.find((tr) => {
+              const t = norm(tr.innerText);
+              return must.every((k) => t.includes(k));
+            });
+            if (!hitRow) {
+              const emptyPlaceholderOnly =
+                rowTexts.length === 0 ||
+                (rowTexts.length === 1 && /^(?:暂无|无数据|加载中|loading|no data)/i.test(rowTexts[0]));
+              return {
+                found: false,
+                newModalMounted: modals.length > before || before === 0,
+                spinning,
+                emptyPlaceholderOnly,
+                rows: rowTexts.slice(0, 8),
+              };
+            }
+            const btn = [...hitRow.querySelectorAll("button, a, [role='button']")].find(
+              (b) => normBtn(b.innerText) === wantAct,
+            );
+            if (!btn) {
+              return {
+                found: false,
+                newModalMounted: true,
+                spinning,
+                reason: "no_button",
+                rowText: norm(hitRow.innerText),
+              };
+            }
+            btn.setAttribute("data-pl-wf-act", ${JSON.stringify(rowNonce)});
+            return { found: true, newModalMounted: true, rowText: norm(hitRow.innerText) };`,
+            stepCtx,
+          );
+          if (rowProbe?.found || Date.now() >= rowDeadline) break;
+          await sleepWithAbort(120, signal);
+        }
         if (!rowProbe?.found) {
+          if (rowProbe?.newModalMounted === false || rowProbe?.spinning === true) {
+            throw new WorkflowError({
+              code: "WORKFLOW_ENTITY_MODAL_WAIT_TIMEOUT",
+              blame: "工具",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `新实体选择弹窗挂载并完成列表水合（当前前置弹窗数=${modalsBeforeCount}，操作按钮 "${rowActionText}"）`,
+              actual: JSON.stringify(rowProbe),
+              message: `等待实体选择弹窗及异步列表就绪超时`,
+            });
+          }
           throw new WorkflowError({
             code: "WORKFLOW_ENTITY_ROW_NOT_FOUND",
             blame: "workflow",
@@ -2694,13 +2737,17 @@ export async function runDeterministicWorkflow({
             while (true) {
               radioProbe = await evalJs(
                 `const modals = [...document.querySelectorAll(".ant-modal")].filter((m) => {
-                  const cls = \`\${m.className || ""} \${(m.parentElement && m.parentElement.className) || ""}\`;
+                  const cls = (m.className || "") + " " + ((m.parentElement && m.parentElement.className) || "");
                   if (/\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cls)) return false;
                   const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
                   const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
                   const r = m.getBoundingClientRect();
                   return ws.display !== "none" && ws.visibility !== "hidden" && r.width > 0 && r.height > 0;
                 });
+                const before = ${modalsBeforeCount};
+                if (before > 0 && modals.length <= before) {
+                  return { found: false, newModalMounted: false, modalCount: modals.length };
+                }
                 const top = modals[modals.length - 1] || document;
                 const groups = [...top.querySelectorAll(".ant-radio-group, [role='radiogroup']")];
                 const grp = groups[${groupIdx}] || null;
@@ -2761,65 +2808,207 @@ export async function runDeterministicWorkflow({
           }
 
           const optText = String(optSpec);
-          await invokeRawTool("wait_for", { text: optText, timeoutMs: 5000 }, stepCtx);
-          assertClickTargetSafe({
-            labelText: optText,
-            domElementText: optText,
-            forbidClickTexts: directive.forbidClickTexts,
-            settings,
-            targetUrl: currentUrl,
-            stepCtx,
-          });
-          const { parsed: oRes, text: oTxt } = await invokeRawTool("click", { text: optText }, stepCtx);
-          if (!oRes || oRes.ok !== true) {
-            throw new WorkflowError({
-              code: "WORKFLOW_ENTITY_OPTION_CLICK_FAILED",
-              blame: "工具",
-              stepIndex: stepCtx.stepIndex,
-              stepId: stepCtx.stepId,
-              op: stepCtx.op,
-              expected: `点击选项 "${optText}"`,
-              actual: oTxt.slice(0, 300),
-              message: `点击选项失败: ${optText}`,
+          const strOptNonce = `entstropt_${++nonceCounter}`;
+          const strOptDeadline = Date.now() + 5000;
+          let strOptProbe = null;
+          while (true) {
+            strOptProbe = await evalJs(
+              `/* entity_str_option_probe */
+              const modals = [...document.querySelectorAll(".ant-modal")].filter((m) => {
+                const cls = (m.className || "") + " " + ((m.parentElement && m.parentElement.className) || "");
+                if (/\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cls)) return false;
+                const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+                const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+                const r = m.getBoundingClientRect();
+                return ws.display !== "none" && ws.visibility !== "hidden" && r.width > 0 && r.height > 0;
+              });
+              const before = ${modalsBeforeCount};
+              if (before > 0 && modals.length <= before) {
+                return { found: false, newModalMounted: false, modalCount: modals.length };
+              }
+              const top = modals[modals.length - 1] || document;
+              const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+              const normBtn = (s) => norm(s).replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
+              const want = ${JSON.stringify(normalizeCjkText(optText))};
+              const cands = [
+                ...top.querySelectorAll(
+                  "label.ant-radio-wrapper:not(.ant-radio-wrapper-disabled), label.ant-radio-button-wrapper:not(.ant-radio-button-wrapper-disabled), [role='radio']:not([aria-disabled='true']), [role='option']:not([aria-disabled='true']), button:not([disabled])",
+                ),
+              ];
+              const hit = cands.find((el) => {
+                const raw = norm(el.innerText || el.textContent);
+                return raw === ${JSON.stringify(optText.trim())} || normBtn(raw) === want;
+              });
+              if (!hit) {
+                return {
+                  found: false,
+                  available: cands.map((el) => norm(el.innerText || el.textContent)).filter(Boolean).slice(0, 12),
+                };
+              }
+              hit.setAttribute("data-pl-wf-act", ${JSON.stringify(strOptNonce)});
+              return { found: true, matchedText: norm(hit.innerText || hit.textContent) };`,
+              stepCtx,
+            );
+            if (strOptProbe === true || strOptProbe?.found || Date.now() >= strOptDeadline) break;
+            await sleepWithAbort(100, signal);
+          }
+          if (strOptProbe === true) {
+            await invokeRawTool("wait_for", { text: optText, timeoutMs: 5000 }, stepCtx);
+            assertClickTargetSafe({
+              labelText: optText,
+              domElementText: optText,
+              forbidClickTexts: directive.forbidClickTexts,
+              settings,
+              targetUrl: currentUrl,
+              stepCtx,
+            });
+            const { parsed: oRes, text: oTxt } = await invokeRawTool("click", { text: optText }, stepCtx);
+            if (!oRes || oRes.ok !== true) {
+              throw new WorkflowError({
+                code: "WORKFLOW_ENTITY_OPTION_CLICK_FAILED",
+                blame: "工具",
+                stepIndex: stepCtx.stepIndex,
+                stepId: stepCtx.stepId,
+                op: stepCtx.op,
+                expected: `点击选项 "${optText}"`,
+                actual: oTxt.slice(0, 300),
+                message: `点击选项失败: ${optText}`,
+              });
+            }
+          } else {
+            if (!strOptProbe?.found) {
+              throw new WorkflowError({
+                code: "WORKFLOW_ENTITY_OPTION_CLICK_FAILED",
+                blame: "工具",
+                stepIndex: stepCtx.stepIndex,
+                stepId: stepCtx.stepId,
+                op: stepCtx.op,
+                expected: `顶层实体弹窗内点击选项 "${optText}"`,
+                actual: JSON.stringify(strOptProbe),
+                message: `点击选项失败: ${optText}`,
+              });
+            }
+            await clickMarkedElement({
+              markNonce: strOptNonce,
+              buttonText: optText,
+              stepCtx,
+              targetUrl: currentUrl,
             });
           }
           selectedOptions.push(optText);
         }
 
-        assertClickTargetSafe({
-          labelText: confirmText,
-          domElementText: confirmText,
-          forbidClickTexts: directive.forbidClickTexts,
-          settings,
-          targetUrl: currentUrl,
-          stepCtx,
-        });
-        const { parsed: cRes, text: cTxt } = await invokeRawTool("click", { text: confirmText }, stepCtx);
-        if (!cRes || cRes.ok !== true) {
-          throw new WorkflowError({
-            code: "WORKFLOW_ENTITY_CONFIRM_FAILED",
-            blame: "工具",
-            stepIndex: stepCtx.stepIndex,
-            stepId: stepCtx.stepId,
-            op: stepCtx.op,
-            expected: `点击确认按钮 "${confirmText}"`,
-            actual: cTxt.slice(0, 300),
-            message: `确认绑定失败: ${confirmText}`,
+        const confirmNonce = `entcfm_${++nonceCounter}`;
+        const confirmDeadline = Date.now() + 4000;
+        let confirmProbe = null;
+        while (true) {
+          confirmProbe = await evalJs(
+            `/* entity_confirm_probe */
+            const modals = [...document.querySelectorAll(".ant-modal")].filter((m) => {
+              const cls = (m.className || "") + " " + ((m.parentElement && m.parentElement.className) || "");
+              if (/\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cls)) return false;
+              const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+              const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+              const r = m.getBoundingClientRect();
+              return ws.display !== "none" && ws.visibility !== "hidden" && r.width > 0 && r.height > 0;
+            });
+            const before = ${modalsBeforeCount};
+            if (before > 0 && modals.length <= before) {
+              return { found: false, newModalMounted: false, modalCount: modals.length };
+            }
+            const top = modals[modals.length - 1] || document;
+            const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+            const normBtn = (s) => norm(s).replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
+            const want = ${JSON.stringify(normalizeCjkText(confirmText))};
+            const btns = [...top.querySelectorAll("button:not([disabled]), [role='button']:not([aria-disabled='true'])")];
+            const hit = btns.find((b) => normBtn(b.innerText || b.textContent) === want);
+            if (!hit) {
+              return { found: false, buttons: btns.map((b) => norm(b.innerText || b.textContent)).filter(Boolean).slice(0, 8) };
+            }
+            hit.setAttribute("data-pl-wf-act", ${JSON.stringify(confirmNonce)});
+            return { found: true, matchedText: norm(hit.innerText || hit.textContent) };`,
+            stepCtx,
+          );
+          if (confirmProbe === true || confirmProbe?.found || Date.now() >= confirmDeadline) break;
+          await sleepWithAbort(100, signal);
+        }
+        if (confirmProbe === true) {
+          assertClickTargetSafe({
+            labelText: confirmText,
+            domElementText: confirmText,
+            forbidClickTexts: directive.forbidClickTexts,
+            settings,
+            targetUrl: currentUrl,
+            stepCtx,
+          });
+          const { parsed: cRes, text: cTxt } = await invokeRawTool("click", { text: confirmText }, stepCtx);
+          if (!cRes || cRes.ok !== true) {
+            throw new WorkflowError({
+              code: "WORKFLOW_ENTITY_CONFIRM_FAILED",
+              blame: "工具",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `点击确认按钮 "${confirmText}"`,
+              actual: cTxt.slice(0, 300),
+              message: `确认绑定失败: ${confirmText}`,
+            });
+          }
+        } else {
+          if (!confirmProbe?.found) {
+            throw new WorkflowError({
+              code: "WORKFLOW_ENTITY_CONFIRM_FAILED",
+              blame: "工具",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `顶层实体弹窗内点击确认按钮 "${confirmText}"`,
+              actual: JSON.stringify(confirmProbe),
+              message: `确认绑定失败: ${confirmText}`,
+            });
+          }
+          await clickMarkedElement({
+            markNonce: confirmNonce,
+            buttonText: confirmText,
+            stepCtx,
+            targetUrl: currentUrl,
           });
         }
 
         const mustIncludeAfter = [...alreadyBoundTexts, ...dynamicVerifySubstrings];
-        const bindDeadline = Date.now() + 5000;
+        const bindDeadline = Date.now() + Math.min(timeoutMs, 8000);
         let boundAfter = "";
+        let remainingAllModals = 0;
         while (true) {
-          boundAfter = await evalJs(
-            `return [...document.querySelectorAll(${JSON.stringify(selectedSelector)})]
+          const postInfo = await evalJs(
+            `/* entity_post_confirm_settle */
+            const allModals = [...document.querySelectorAll(".ant-modal")].filter((m) => {
+              const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+              const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+              const ms = getComputedStyle(m);
+              const r = m.getBoundingClientRect();
+              return (
+                ws.display !== "none" &&
+                ws.visibility !== "hidden" &&
+                ms.display !== "none" &&
+                ms.visibility !== "hidden" &&
+                r.width > 0 &&
+                r.height > 0
+              );
+            });
+            const boundText = [...document.querySelectorAll(${JSON.stringify(selectedSelector)})]
               .map((el) => (el.innerText || "").replace(/\\s+/g, " ").trim())
-              .join(" | ");`,
+              .join(" | ");
+            return { boundText, allModalCount: allModals.length };`,
             stepCtx,
           );
+          boundAfter = typeof postInfo === "string" ? postInfo : String(postInfo?.boundText || "");
+          remainingAllModals =
+            typeof postInfo?.allModalCount === "number" ? postInfo.allModalCount : modalsBeforeCount;
+          const childModalClosed = modalsBeforeCount > 0 ? remainingAllModals <= modalsBeforeCount : remainingAllModals === 0;
           if (
             boundAfter &&
+            childModalClosed &&
             mustIncludeAfter.every((sub) => String(boundAfter).includes(sub)) &&
             (!alreadyBoundRegex || alreadyBoundRegex.test(String(boundAfter)))
           ) {
@@ -2832,12 +3021,12 @@ export async function runDeterministicWorkflow({
               stepIndex: stepCtx.stepIndex,
               stepId: stepCtx.stepId,
               op: stepCtx.op,
-              expected: `已绑定区域包含 ${JSON.stringify(mustIncludeAfter)}${alreadyBoundRegex ? ` 且匹配 ${alreadyBoundRegex}` : ""}`,
+              expected: `子弹窗彻底卸载（当前=${remainingAllModals}, 期望<=${modalsBeforeCount}）且已绑定区域包含 ${JSON.stringify(mustIncludeAfter)}${alreadyBoundRegex ? ` 且匹配 ${alreadyBoundRegex}` : ""}`,
               actual: clipBound(boundAfter) || "(空)",
-              message: `绑定实体回读校验失败`,
+              message: `绑定实体回读校验或子弹窗关闭等待失败`,
             });
           }
-          await sleepWithAbort(150, signal);
+          await sleepWithAbort(120, signal);
         }
         return { ok: true, skipped: false, selectedOptions, boundText: clipBound(boundAfter) };
       }
@@ -3408,6 +3597,9 @@ export async function runDeterministicWorkflow({
         onStepStart?.({ stepIndex, stepId: step.id, name: step.op, args: summaryArgs });
       }
 
+      if (toolMap.has("screenshot")) {
+        await sleepWithAbort(220, signal).catch(() => {});
+      }
       const failShotUrl = await captureStepScreenshot(stepCtx);
       const failSnap = await resolvePageSnapshot().catch(() => null);
       const endTs = Date.now();
