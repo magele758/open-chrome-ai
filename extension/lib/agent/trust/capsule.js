@@ -200,7 +200,9 @@ export function stripProhibitedClauses(raw) {
 }
 
 const READ_ONLY_WORKFLOW_OPS = new Set([
+  "assert_url",
   "wait_for",
+  "scroll_container",
   "assert_state",
   "query_dom",
   "set_binds",
@@ -211,7 +213,6 @@ const READ_ONLY_WORKFLOW_OPS = new Set([
 const NAVIGATE_WORKFLOW_OPS = new Set([
   "navigate",
   "open_tab",
-  "ensure_page_entry",
 ]);
 
 function collectWorkflowStrings(node, out, depth = 0) {
@@ -270,10 +271,10 @@ function collectWorkflowStepActions(steps, macros, actionSet, visitedMacros = ne
     if (READ_ONLY_WORKFLOW_OPS.has(op)) continue;
     if (NAVIGATE_WORKFLOW_OPS.has(op)) {
       actionSet.add("navigate");
-      if (op === "ensure_page_entry" && (params.entryNavText || params.entryNavSelector)) {
-        actionSet.add("input");
-      }
       continue;
+    }
+    if (params.openUrl) {
+      actionSet.add("navigate");
     }
     if (op === "upload_file") {
       actionSet.add("upload");

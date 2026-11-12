@@ -50,9 +50,7 @@ import { packToContext, systemPrompt } from "../lib/prompts.js";
 import {
   createRunId,
   formatTimestampForFilename,
-  isAutoExportRunBundleEnabled,
   persistRunBundle,
-  predictDetachedImagePaths,
   stripAttachedPageContext,
 } from "../lib/run-recorder.js";
 import { ensureSkillBody } from "../lib/skill-folder.js";
@@ -618,21 +616,7 @@ async function executeLoop({
           });
           lockedEndedAtIso = new Date().toISOString();
           lockedTsSlug = formatTimestampForFilename(lockedEndedAtIso);
-          const shouldExportWorkflowBundle = await isAutoExportRunBundleEnabled({
-            settings: state.settings,
-          });
-          const shotPaths = shouldExportWorkflowBundle
-            ? predictDetachedImagePaths(runTraceSteps, {
-                tsSlug: lockedTsSlug,
-                source: "sidepanel",
-                runId,
-              })
-            : [];
-          botMsg.text = formatWorkflowSummary({
-            ...wfRes,
-            allShotPaths: shotPaths,
-            lastShotPath: shotPaths[shotPaths.length - 1] || "",
-          });
+          botMsg.text = formatWorkflowSummary(wfRes);
           const wfAborted = Boolean(wfRes.aborted) || state.stopIntent === "user";
           runEndReason = wfAborted ? "abort" : (wfRes.ok ? "stop" : "error");
           runStatus = wfAborted ? "cancelled" : (wfRes.ok ? "done" : "failed");
