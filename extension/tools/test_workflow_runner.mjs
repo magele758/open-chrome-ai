@@ -9,8 +9,11 @@ import {
   formatWorkflowSummary,
   interpolateParams,
   isWorkflowDirectiveText,
+  normalizeCategoryPathText,
   parseWorkflowDirective,
+  resolveFormProfileFromSnapshot,
   runDeterministicWorkflow,
+  synthesizeAsciiTitle,
 } from "../lib/agent/workflow-runner.js";
 import {
   buildRunRecord,
@@ -1422,4 +1425,445 @@ const LARGE_FAKE_PNG_DATA_URL =
   assert.equal(res10b.failure.code, "WORKFLOW_ENTITY_MODAL_WAIT_TIMEOUT");
   assert.equal(res10b.failure.blame, "工具", "异步列表持续 loading 超时应归属工具而非误判主档缺失");
   console.log("PASS 10. ADR-025 nested entity modal async table hydration, top-modal scoping & close settle");
+}
+
+// ── 11. ADR-026 通用三层工作流原语：起点自愈、双模式选行、未配置类目即停与双态提交闭环 ──
+{
+  // 11a-1. 非目标域名只读报错，严禁跨站跳转
+  const res11WrongOrigin = await runDeterministicWorkflow({
+    rawText:
+      `/workflow\n` +
+      JSON.stringify({
+        schemaVersion: "1.0",
+        id: "generic-entry-wrong-origin-11a",
+        binds: {},
+        steps: [
+          {
+            id: "W1.entry",
+            op: "ensure_page_entry",
+            params: {
+              mustStartWith: "https://portal.example.org/workspace/",
+              targetHashQueryEquals: { view: "tools", menu: "inboxBox" },
+            },
+          },
+        ],
+      }),
+    rawTools: {
+      run_js: async () =>
+        JSON.stringify({
+          ok: true,
+          result: {
+            url: "https://other.example.net/dashboard",
+            title: "Other",
+            queryMap: {},
+            hasPasswordInput: false,
+            readyFound: false,
+            spinning: false,
+            bodySample: "Other dashboard",
+          },
+        }),
+    },
+    resolvePageSnapshot: async () => ({ tabId: 21, url: "https://other.example.net/dashboard", title: "Other" }),
+  });
+  assert.equal(res11WrongOrigin.ok, false);
+  assert.equal(res11WrongOrigin.failure.code, "WORKFLOW_ENTRY_WRONG_ORIGIN");
+  assert.ok(res11WrongOrigin.failure.actual.includes("other.example.net"));
+
+  // 11a-2. 页内从落地页 -> 展开侧边栏 -> 作用域分组导航进入目标列表页 + 快照顶部统计计数（单段代码 < 8000 字符）
+  let navStage = 0;
+  const entryJsLengths = [];
+  const res11EntryNav = await runDeterministicWorkflow({
+    rawText:
+      `/workflow\n` +
+      JSON.stringify({
+        schemaVersion: "1.0",
+        id: "generic-entry-self-heal-11a",
+        binds: {},
+        steps: [
+          {
+            id: "W1.entry",
+            op: "ensure_page_entry",
+            params: {
+              mustStartWith: "https://portal.example.org/workspace/",
+              targetHashQueryEquals: { view: "tools", menu: "inboxBox" },
+              readySelector: ".ant-table-tbody",
+              captureHeaderRegex: "全部\\s*\\d+\\s*未发布\\s*\\d+\\s*发布中\\s*\\d+\\s*已发布\\s*\\d+",
+              checkSampleSubstrings: ["2026-11-11 15:05:51", "户外水龙头"],
+              navSteps: [
+                { kind: "click_if_visible", selector: "button.landing-cta", text: "进入工作台", waitMs: 20 },
+                { kind: "click_if_visible", selector: "button[aria-label='展开侧边栏']", waitMs: 20 },
+                {
+                  kind: "scoped_menu_click",
+                  rootSelector: ".side-menu",
+                  groupSelector: ".platform-group",
+                  headingSelector: "button.platform-heading",
+                  headingMustInclude: "channela半托管",
+                  headingExclude: "channelb",
+                  subItemSelector: ".subnav-item",
+                  itemText: "待发箱",
+                },
+              ],
+            },
+          },
+          {
+            id: "W1.verify_header",
+            op: "assert_state",
+            params: {
+              checks: [
+                {
+                  id: "hdr",
+                  kind: "text_matches_regex",
+                  pattern: "{{runtime.headerCountsPattern}}",
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    rawTools: {
+      run_js: async ({ code }) => {
+        entryJsLengths.push(code.length);
+        assert.ok(code.length < 8000, `run_js 片段超长: ${code.length}`);
+        if (code.includes("ensure_page_entry_probe")) {
+          if (navStage < 3) {
+            return JSON.stringify({
+              ok: true,
+              result: {
+                url: "https://portal.example.org/workspace/#/app?view=landing",
+                title: "Portal",
+                queryMap: { view: navStage === 0 ? "landing" : "tools", menu: "market" },
+                hasPasswordInput: false,
+                readyFound: false,
+                spinning: false,
+                bodySample: "Landing",
+              },
+            });
+          }
+          return JSON.stringify({
+            ok: true,
+            result: {
+              url: "https://portal.example.org/workspace/#/app?view=tools&menu=inboxBox",
+              title: "Portal",
+              queryMap: { view: "tools", menu: "inboxBox" },
+              hasPasswordInput: false,
+              readyFound: true,
+              spinning: false,
+              bodySample: "全部 28 未发布 27 发布中 0 已发布 1",
+            },
+          });
+        }
+        if (code.includes("landing-cta")) {
+          navStage = 1;
+          return JSON.stringify({ ok: true, result: { found: true, text: "进入工作台" } });
+        }
+        if (code.includes("展开侧边栏")) {
+          navStage = 2;
+          return JSON.stringify({ ok: true, result: { found: true, text: "" } });
+        }
+        if (code.includes("scoped_menu_probe")) {
+          return JSON.stringify({
+            ok: true,
+            result: { rootFound: true, groupFound: true, itemReady: false, canExpandHeading: true, headingText: "ChannelA channela半托管" },
+          });
+        }
+        if (code.includes("menusub_")) {
+          navStage = 3;
+          return JSON.stringify({ ok: true, result: { found: true } });
+        }
+        if (code.includes("wantCancel")) {
+          return JSON.stringify({ ok: true, result: { count: 0 } });
+        }
+        if (code.includes(".ant-modal")) {
+          return JSON.stringify({ ok: true, result: 0 });
+        }
+        if (code.includes("sampleVisible")) {
+          return JSON.stringify({
+            ok: true,
+            result: { headerMatch: "全部 28 未发布 27 发布中 0 已发布 1", sampleVisible: true },
+          });
+        }
+        if (code.includes("pass: true")) {
+          return JSON.stringify({ ok: true, result: { pass: true, evidence: [{ id: "hdr", actual: "matched" }] } });
+        }
+        return JSON.stringify({ ok: true, result: true });
+      },
+      click: async () => JSON.stringify({ ok: true }),
+    },
+    resolvePageSnapshot: async () => ({
+      tabId: 22,
+      url: "https://portal.example.org/workspace/#/app?view=tools&menu=inboxBox",
+      title: "Portal",
+    }),
+  });
+  assert.equal(res11EntryNav.ok, true, `11a-2 应完成页内自愈导航: ${JSON.stringify(res11EntryNav.failure)}`);
+  assert.equal(res11EntryNav.runtime.manualSampleVisibleOnPage, true);
+  assert.ok(res11EntryNav.runtime.headerCountsPattern.includes("28"));
+
+  // 11b. 双模式选行：禁触样本显式拦截 + 默认挑下一件未编辑（自动跳过禁触样本、缺货源价异常行与已保存行）
+  const res11ForbidRow = await runDeterministicWorkflow({
+    rawText:
+      `/workflow\n` +
+      JSON.stringify({
+        schemaVersion: "1.0",
+        id: "generic-row-forbid-11b",
+        binds: { claimedAt: "2026-11-11 15:05:51" },
+        steps: [
+          {
+            id: "W1.open",
+            op: "select_row_and_open",
+            params: {
+              targetClaimedAt: "{{claimedAt}}",
+              excludeSubstrings: ["2026-11-11 15:05:51", "601103373964438"],
+            },
+          },
+        ],
+      }),
+    rawTools: {
+      run_js: async () => JSON.stringify({ ok: true, result: true }),
+    },
+    resolvePageSnapshot: async () => ({ tabId: 23, url: "https://portal.example.org/list", title: "List" }),
+  });
+  assert.equal(res11ForbidRow.ok, false);
+  assert.equal(res11ForbidRow.failure.code, "WORKFLOW_FORBIDDEN_ROW");
+
+  // 11c. 类目映射解析、中英标题去噪合成、以及未配置类目即停并输出页面实读带*字段清单
+  assert.equal(normalizeCategoryPathText("女装->女士毛衣 -> 女装针织衫开衫"), "女装 / 女士毛衣 / 女装针织衫开衫");
+  const catMapFixture = {
+    马甲: {
+      matchKeywords: ["马甲", "背心"],
+      categorySearch: "毛衣",
+      categoryPath: "服饰 / 女装 / 女装针织衫开衫",
+      enPrefix: "Women's",
+      enSuffix: "Cardigan Sweater Vest",
+      pkgLength: "30",
+      pkgWidth: "24",
+      pkgHeight: "5",
+      pkgWeight: "320",
+      requiresSizeChart: true,
+      sizeChartName: "女士外套",
+      requiresModel: true,
+      modelName: "model_alpha",
+      modelFitOption: "合身",
+      attrRules: [{ kind: "select", label: "图案", value: "纯色" }],
+    },
+    外套: {
+      matchKeywords: ["外套", "大衣"],
+      categorySearch: "毛衣",
+      categoryPath: "服饰 / 女装 / 女装针织衫开衫",
+      enPrefix: "Women's",
+      enSuffix: "Long Coat Outerwear",
+      pkgLength: "38",
+      pkgWidth: "30",
+      pkgHeight: "8",
+      pkgWeight: "650",
+      requiresSizeChart: true,
+      sizeChartName: "女士外套",
+      requiresModel: true,
+      modelName: "model_alpha",
+      modelFitOption: "合身",
+      attrRules: [{ kind: "select", label: "图案", value: "纯色" }],
+    },
+    针织衫: {
+      matchKeywords: ["针织衫", "毛衣", "开衫"],
+      categorySearch: "毛衣",
+      categoryPath: "服饰 / 女装 / 女装针织衫开衫",
+      enPrefix: "Women's",
+      enSuffix: "Knit Pullover Sweater",
+      pkgLength: "32",
+      pkgWidth: "25",
+      pkgHeight: "4",
+      pkgWeight: "350",
+      requiresSizeChart: true,
+      sizeChartName: "女士外套",
+      requiresModel: true,
+      modelName: "model_alpha",
+      modelFitOption: "合身",
+      attrRules: [{ kind: "select", label: "图案", value: "条纹" }],
+    },
+  };
+  const dictFixture = [
+    ["白色", "White"],
+    ["毛绒", "Soft Fleece"],
+    ["单排扣", "Single-Breasted"],
+    ["灯芯绒", "Corduroy"],
+    ["加厚", "Thickened"],
+  ];
+
+  const vestProfile = resolveFormProfileFromSnapshot({
+    snapshot: {
+      currentCategory: "",
+      titleCnRaw: "aaaaaa春秋白色毛绒马甲单排扣背心毛衣bbbbb",
+      titleEnRaw: "",
+      starredLabels: ["*成分", "*材质"],
+    },
+    categoryMap: catMapFixture,
+    categoryOrder: ["马甲", "外套", "针织衫"],
+    enKeywordDictionary: dictFixture,
+    forbidTitleSubstrings: ["测试"],
+  });
+  assert.equal(vestProfile.categoryKey, "马甲");
+  assert.equal(vestProfile.titleCn, "春秋白色毛绒马甲单排扣背心毛衣");
+  assert.ok(/^[\x20-\x7E]+$/.test(vestProfile.titleEn) && vestProfile.titleEn.includes("Vest"));
+  assert.ok(!/test/i.test(vestProfile.titleEn));
+
+  const preservedEn = synthesizeAsciiTitle({
+    rawCnTitle: "高领条纹针织衫",
+    existingEnTitle: "Women's Striped Mock Neck Knit Sweater",
+    dictionary: dictFixture,
+    prefix: "Women's",
+    suffix: "Sweater",
+  });
+  assert.equal(preservedEn, "Women's Striped Mock Neck Knit Sweater", "已保存的干净英文标题应原样保留以保证 0 变更幂等");
+
+  assert.throws(
+    () =>
+      resolveFormProfileFromSnapshot({
+        snapshot: {
+          currentCategory: "家居厨房 / 卫浴用品 / 浴帘",
+          titleCnRaw: "aaaaaa防水加厚浴室挂帘bbbbb",
+          titleEnRaw: "",
+          starredLabels: ["*材质", "*尺寸规格", "*防水等级"],
+        },
+        categoryMap: catMapFixture,
+        categoryOrder: ["马甲", "外套", "针织衫"],
+      }),
+    (err) => {
+      assert.equal(err.code, "WORKFLOW_CATEGORY_UNMAPPED");
+      assert.ok(err.actual.includes("家居厨房 / 卫浴用品 / 浴帘"), "必须指明缺哪个类目配置");
+      assert.ok(err.actual.includes("*材质、*尺寸规格、*防水等级"), "必须输出页面实读带*字段清单");
+      return true;
+    },
+  );
+
+  // 11d. 双状态闭环：已保存商品 0 变更走 idempotent_short_circuit 且跳过 W10 重开；未编辑商品走真实提交并执行 W10 重开
+  const makeDualStateDirective = (savedMode) => ({
+    schemaVersion: "1.0",
+    id: savedMode ? "dual-saved-11d" : "dual-unedited-11d",
+    binds: {},
+    steps: [
+      {
+        id: "W6.attrs",
+        op: "ensure_attr_fields",
+        params: {
+          preserveExisting: true,
+          saveExpectedBindKey: "expectedAttrs",
+          requireAllStarredFilled: false,
+          rules: [
+            { kind: "select", label: "图案", value: "纯色" },
+          ],
+        },
+      },
+      {
+        id: "W8.model",
+        op: "ensure_modal_entity",
+        params: {
+          selectedSelector: ".outer-dialog",
+          alreadyBoundTexts: ["模特信息", "model_alpha", "感受:合身"],
+          alreadyBoundRegex: "尺码:\\S+",
+          saveVerifyBindKey: "modelVerifyTexts",
+          openButtonText: "添加模特",
+          rowMustInclude: ["model_alpha"],
+          rowActionText: "使用",
+        },
+      },
+      {
+        id: "W9.commit",
+        op: "commit_or_shortcircuit_modals",
+        params: {
+          confirmText: "确认分配",
+          cancelText: "取消",
+          singleShotKey: "save_once",
+          shortCircuitWhenUnmodified: true,
+          topmostModal: true,
+          cardButtonText: "移除",
+          pendingText: "待确认",
+          minConfirmedCards: 1,
+          waitModalsCount: 0,
+        },
+      },
+      {
+        id: "W10.reopen_only_when_modified",
+        op: "assert_state",
+        when: "runtime.wasModified",
+        params: {
+          checks: [
+            { id: "model_verify", kind: "text_includes", mustInclude: "{{runtime.modelVerifyTexts}}" },
+          ],
+        },
+      },
+    ],
+  });
+
+  const resSaved = await runDeterministicWorkflow({
+    rawText: `/workflow\n${JSON.stringify(makeDualStateDirective(true))}`,
+    rawTools: {
+      run_js: async ({ code }) => {
+        if (code.includes("cleanLbl")) {
+          return JSON.stringify({ ok: true, result: ["条纹"] });
+        }
+        if (code.includes(".outer-dialog")) {
+          return JSON.stringify({ ok: true, result: "模特信息 model_alpha 尺码:M 感受:合身" });
+        }
+        if (code.includes("confirmedCount")) {
+          return JSON.stringify({ ok: true, result: { scopeFound: true, confirmedCount: 1, pendingCount: 0 } });
+        }
+        if (code.includes("wantCancel")) {
+          return JSON.stringify({ ok: true, result: { count: 0 } });
+        }
+        if (code.includes(".ant-modal")) {
+          return JSON.stringify({ ok: true, result: 0 });
+        }
+        return JSON.stringify({ ok: true, result: true });
+      },
+      click: async () => JSON.stringify({ ok: true }),
+    },
+    resolvePageSnapshot: async () => ({ tabId: 24, url: "https://portal.example.org/list", title: "List" }),
+  });
+  assert.equal(resSaved.ok, true);
+  assert.equal(resSaved.mutationsCount, 0, "已保存商品必须保持 0 变更");
+  assert.equal(resSaved.commitMode, "idempotent_short_circuit", "0 变更商品必须走幂等短路关闭");
+  assert.equal(resSaved.skippedSteps, 1, "未发生修改时应自动跳过 W10 重开回读步骤");
+  assert.deepEqual(resSaved.runtime.expectedAttrs, [{ labelIncludes: "图案", items: ["条纹"] }]);
+  assert.deepEqual(resSaved.runtime.modelVerifyTexts, ["模特信息", "model_alpha", "感受:合身", "尺码:M"]);
+  const savedSummary = formatWorkflowSummary({ ...resSaved, targetSummary: "针织衫 · 初始已保存" });
+  assert.ok(savedSummary.includes("已保存态核对+幂等跳过") && savedSummary.includes("写入变更 0 项"));
+
+  let uneditedModalClosed = false;
+  const resUnedited = await runDeterministicWorkflow({
+    rawText: `/workflow\n${JSON.stringify(makeDualStateDirective(false))}`,
+    rawTools: {
+      run_js: async ({ code }) => {
+        if (code.includes("cleanLbl")) {
+          return JSON.stringify({ ok: true, result: [] });
+        }
+        if (code.includes(".outer-dialog") && !uneditedModalClosed) {
+          return JSON.stringify({ ok: true, result: "模特信息 model_alpha 尺码:S 感受:合身" });
+        }
+        if (code.includes("noticeNodes")) {
+          return JSON.stringify({ ok: true, result: { count: 0, titles: [], alerts: [], errorAlerts: [], loadingCount: 0 } });
+        }
+        if (code.includes(".ant-modal")) {
+          return JSON.stringify({ ok: true, result: 0 });
+        }
+        if (code.includes("pass: true")) {
+          return JSON.stringify({ ok: true, result: { pass: true, evidence: [{ id: "model_verify", actual: "ok" }] } });
+        }
+        return JSON.stringify({ ok: true, result: true });
+      },
+      select_option: async ({ value }) => JSON.stringify({ ok: true, alreadySelected: false, selected: value }),
+      click: async ({ text }) => {
+        if (text === "确认分配") uneditedModalClosed = true;
+        return JSON.stringify({ ok: true });
+      },
+    },
+    resolvePageSnapshot: async () => ({ tabId: 25, url: "https://portal.example.org/list", title: "List" }),
+  });
+  assert.equal(resUnedited.ok, true, `未编辑商品闭环应通过: ${JSON.stringify(resUnedited.failure)}`);
+  assert.equal(resUnedited.mutationsCount, 1);
+  assert.equal(resUnedited.commitMode, "committed_via_confirm");
+  assert.equal(resUnedited.skippedSteps, 0, "发生修改真实保存后必须执行 W10 重开回读校验");
+  const uneditedSummary = formatWorkflowSummary({ ...resUnedited, targetSummary: "马甲 · 初始未编辑" });
+  assert.ok(uneditedSummary.includes("首次填写+真实保存+回读校验") && uneditedSummary.includes("首次填写/核对耗时:"));
+
+  console.log("PASS 11. ADR-026 generic 3-layer primitives: entry self-heal, dual row picker, unmapped fast-fail & dual-state commit");
 }

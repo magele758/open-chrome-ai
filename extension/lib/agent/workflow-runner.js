@@ -484,6 +484,18 @@ function summarizeStepArgs(stepId, params = {}) {
       out.ruleCount = v.length;
       continue;
     }
+    if (k === "categoryMap" && v && typeof v === "object") {
+      out.categoryKeys = Object.keys(v);
+      continue;
+    }
+    if (k === "enKeywordDictionary" && Array.isArray(v)) {
+      out.dictEntryCount = v.length;
+      continue;
+    }
+    if (k === "navSteps" && Array.isArray(v)) {
+      out.navStepCount = v.length;
+      continue;
+    }
     if (typeof v === "string" && v.length > 180) {
       out[k] = `${v.slice(0, 177)}...`;
       continue;
@@ -636,6 +648,221 @@ export function buildAssertStateBatches(containerSelector, checks = [], maxCodeL
   return batches;
 }
 
+export function normalizeCategoryPathText(value) {
+  return String(value ?? "")
+    .replace(/\s*(?:->|\/|>|›)\s*/g, " / ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function synthesizeAsciiTitle({
+  rawCnTitle = "",
+  existingEnTitle = "",
+  dictionary = [],
+  prefix = "",
+  suffix = "",
+  fallbackTitle = "Standard Product Item",
+  maxLen = 120,
+} = {}) {
+  const existing = normalizeSpaces(existingEnTitle);
+  if (
+    existing.length > 0 &&
+    /^[\x20-\x7E]+$/.test(existing) &&
+    !/\btest\b/i.test(existing)
+  ) {
+    return existing.length <= maxLen ? existing : existing.slice(0, maxLen).trim();
+  }
+
+  const cn = String(rawCnTitle || "");
+  const tokens = [];
+  const seenLower = new Set();
+  const pushWords = (phrase) => {
+    const clean = String(phrase || "")
+      .replace(/[^\x20-\x7E]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!clean) return;
+    for (const word of clean.split(" ")) {
+      if (!word || /\btest\b/i.test(word)) continue;
+      const lw = word.toLowerCase();
+      if (seenLower.has(lw)) continue;
+      seenLower.add(lw);
+      tokens.push(word);
+    }
+  };
+
+  pushWords(prefix);
+  const entries = Array.isArray(dictionary)
+    ? dictionary
+    : dictionary && typeof dictionary === "object"
+      ? Object.entries(dictionary)
+      : [];
+  for (const entry of entries) {
+    const [cnKey, enPhrase] = Array.isArray(entry)
+      ? entry
+      : [entry?.cn, entry?.en];
+    if (cnKey && cn.includes(String(cnKey))) {
+      pushWords(enPhrase);
+    }
+  }
+  pushWords(suffix);
+
+  let built = tokens.join(" ").trim();
+  if (!built) {
+    built = String(fallbackTitle || "Standard Product Item")
+      .replace(/[^\x20-\x7E]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  if (built.length > maxLen) {
+    const sliced = built.slice(0, maxLen);
+    const lastSpace = sliced.lastIndexOf(" ");
+    built = (lastSpace >= 24 ? sliced.slice(0, lastSpace) : sliced).trim();
+  }
+  return built;
+}
+
+export function resolveFormProfileFromSnapshot({
+  snapshot = {},
+  categoryMap = {},
+  categoryOrder = [],
+  enKeywordDictionary = [],
+  noisePrefixRegex = "^[aA]{3,}",
+  noiseSuffixRegex = "[bB]{3,}$",
+  forbidTitleSubstrings = [],
+  stepCtx = {},
+} = {}) {
+  const configuredKeys =
+    Array.isArray(categoryOrder) && categoryOrder.length > 0
+      ? categoryOrder.filter((k) => Object.prototype.hasOwnProperty.call(categoryMap, k))
+      : Object.keys(categoryMap || {});
+
+  const currentCatNorm = normalizeCategoryPathText(snapshot.currentCategory || "");
+  const rawCn = String(snapshot.titleCnRaw ?? "");
+  let cleanCn = rawCn;
+  if (noisePrefixRegex) cleanCn = cleanCn.replace(new RegExp(noisePrefixRegex), "");
+  if (noiseSuffixRegex) cleanCn = cleanCn.replace(new RegExp(noiseSuffixRegex), "");
+  for (const bad of forbidTitleSubstrings) {
+    if (bad) cleanCn = cleanCn.split(String(bad)).join("");
+  }
+  cleanCn = normalizeSpaces(cleanCn);
+
+  const starredLabels = Array.isArray(snapshot.starredLabels)
+    ? [...new Set(snapshot.starredLabels.map((s) => normalizeSpaces(s)).filter(Boolean))]
+    : [];
+  const starredReport =
+    starredLabels.length > 0 ? starredLabels.join("、") : "(当前未渲染类目专属带*字段)";
+
+  const allAllowedPaths = new Set();
+  for (const key of configuredKeys) {
+    const p = categoryMap[key];
+    if (!p || typeof p !== "object") continue;
+    if (p.categoryPath) allAllowedPaths.add(normalizeCategoryPathText(p.categoryPath));
+    if (Array.isArray(p.allowedCategoryPaths)) {
+      for (const ap of p.allowedCategoryPaths) {
+        if (ap) allAllowedPaths.add(normalizeCategoryPathText(ap));
+      }
+    }
+  }
+
+  if (currentCatNorm && !allAllowedPaths.has(currentCatNorm)) {
+    throw new WorkflowError({
+      code: "WORKFLOW_CATEGORY_UNMAPPED",
+      blame: "workflow",
+      stepIndex: stepCtx.stepIndex || 0,
+      stepId: stepCtx.stepId || "",
+      op: stepCtx.op || "resolve_form_context",
+      expected: `商品类目在已维护的类目映射表中（当前已配置: ${configuredKeys.join("、") || "无"}）`,
+      actual: `缺少类目配置: 页面已选类目「${currentCatNorm}」（商品标题:「${cleanCn || rawCn || "(空)"}」）未配置；页面实读带*字段清单（共 ${starredLabels.length} 项）: ${starredReport}`,
+      message: `未配置类目「${currentCatNorm}」，已停止并输出页面实读带*字段清单`,
+    });
+  }
+
+  let matchedKey = "";
+  let matchedProfile = null;
+  const hay = cleanCn.toLowerCase();
+  for (const key of configuredKeys) {
+    const p = categoryMap[key];
+    if (!p || typeof p !== "object") continue;
+    const kws = Array.isArray(p.matchKeywords) ? p.matchKeywords : [];
+    if (kws.some((kw) => kw && hay.includes(String(kw).toLowerCase()))) {
+      matchedKey = key;
+      matchedProfile = p;
+      break;
+    }
+  }
+
+  if (!matchedProfile) {
+    throw new WorkflowError({
+      code: "WORKFLOW_CATEGORY_UNMAPPED",
+      blame: "workflow",
+      stepIndex: stepCtx.stepIndex || 0,
+      stepId: stepCtx.stepId || "",
+      op: stepCtx.op || "resolve_form_context",
+      expected: `商品命中类目映射表配置（当前已配置: ${configuredKeys.join("、") || "无"}）`,
+      actual: `缺少类目配置: 商品「${cleanCn || rawCn || "(空)"}」（页面当前类目: ${currentCatNorm || "未选择"}）未匹配任何已配置类目；页面实读带*字段清单（共 ${starredLabels.length} 项）: ${starredReport}`,
+      message: `商品未命中任何已配置类目映射，已停止并输出页面实读带*字段清单`,
+    });
+  }
+
+  const profilePaths = new Set([
+    normalizeCategoryPathText(matchedProfile.categoryPath || ""),
+    ...(Array.isArray(matchedProfile.allowedCategoryPaths)
+      ? matchedProfile.allowedCategoryPaths.map(normalizeCategoryPathText)
+      : []),
+  ].filter(Boolean));
+
+  if (currentCatNorm && profilePaths.size > 0 && !profilePaths.has(currentCatNorm)) {
+    throw new WorkflowError({
+      code: "WORKFLOW_CATEGORY_CONFLICT",
+      blame: "workflow",
+      stepIndex: stepCtx.stepIndex || 0,
+      stepId: stepCtx.stepId || "",
+      op: stepCtx.op || "resolve_form_context",
+      expected: `类目「${matchedKey}」路径属于 ${JSON.stringify([...profilePaths])}`,
+      actual: `缺少对应类目路径配置: 商品「${cleanCn}」命中「${matchedKey}」，但页面当前类目为「${currentCatNorm}」；页面实读带*字段清单（共 ${starredLabels.length} 项）: ${starredReport}`,
+      message: `商品页面类目与映射配置冲突: ${currentCatNorm}`,
+    });
+  }
+
+  const resolvedCategoryPath =
+    currentCatNorm && profilePaths.has(currentCatNorm)
+      ? currentCatNorm
+      : normalizeCategoryPathText(matchedProfile.categoryPath || "");
+
+  const titleEn = synthesizeAsciiTitle({
+    rawCnTitle: cleanCn,
+    existingEnTitle: snapshot.titleEnRaw || "",
+    dictionary: enKeywordDictionary,
+    prefix: matchedProfile.enPrefix || "",
+    suffix: matchedProfile.enSuffix || "",
+    fallbackTitle: matchedProfile.enFallbackTitle || "Standard Fashion Item",
+    maxLen: Number(matchedProfile.maxEnTitleLen) || 120,
+  });
+
+  return {
+    categoryKey: matchedKey,
+    categorySearch: String(matchedProfile.categorySearch || ""),
+    categoryPath: resolvedCategoryPath,
+    titleCn: cleanCn,
+    titleEn,
+    attrRules: Array.isArray(matchedProfile.attrRules) ? matchedProfile.attrRules : [],
+    pkgLength: String(matchedProfile.pkgLength ?? ""),
+    pkgWidth: String(matchedProfile.pkgWidth ?? ""),
+    pkgHeight: String(matchedProfile.pkgHeight ?? ""),
+    pkgWeight: String(matchedProfile.pkgWeight ?? ""),
+    requiresSizeChart: Boolean(matchedProfile.requiresSizeChart),
+    sizeChartName: String(matchedProfile.sizeChartName || ""),
+    requiresModel: Boolean(matchedProfile.requiresModel),
+    modelName: String(matchedProfile.modelName || ""),
+    modelFitOption: String(matchedProfile.modelFitOption || ""),
+    modelSizePrefer: Array.isArray(matchedProfile.modelSizePrefer)
+      ? matchedProfile.modelSizePrefer.map(String)
+      : [],
+    starredLabels,
+  };
+}
+
 export function formatWorkflowSummary({
   ok,
   aborted = false,
@@ -644,6 +871,10 @@ export function formatWorkflowSummary({
   executedSteps = 0,
   skippedSteps = 0,
   durationMs = 0,
+  commitMode = "",
+  commitElapsedMs = 0,
+  mutationsCount = 0,
+  targetSummary = "",
   failure = null,
   allShotPaths = [],
   lastShotPath = "",
@@ -666,13 +897,23 @@ export function formatWorkflowSummary({
     Array.isArray(allShotPaths) && allShotPaths.length > 0
       ? allShotPaths.join(", ")
       : "无";
-  return [
-    `✅ 确定性工作流执行通过（\`${workflowId}\`）`,
-    `- 执行步数: ${executedSteps}/${totalSteps}（条件跳过 ${skippedSteps} 步）`,
-    `- 总耗时: ${Math.max(0, Math.round(durationMs))} ms`,
-    `- 模型调用: 0 回合 / 0 词元`,
-    `- 截图路径: ${shotsText}`,
-  ].join("\n");
+  const lines = [`✅ 确定性工作流执行通过（\`${workflowId}\`）`];
+  if (targetSummary) {
+    lines.push(`- 目标对象: ${targetSummary}`);
+  }
+  if (commitMode) {
+    const modeLabel =
+      commitMode === "committed_via_confirm"
+        ? `首次填写+真实保存+回读校验（写入变更 ${mutationsCount} 项）`
+        : `已保存态核对+幂等跳过（写入变更 ${mutationsCount} 项）`;
+    lines.push(`- 运行路径: ${modeLabel}`);
+    lines.push(`- 首次填写/核对耗时: ${Math.max(1, Math.round(commitElapsedMs))} ms`);
+  }
+  lines.push(`- 执行步数: ${executedSteps}/${totalSteps}（条件跳过 ${skippedSteps} 步）`);
+  lines.push(`- 总耗时: ${Math.max(0, Math.round(durationMs))} ms`);
+  lines.push(`- 模型调用: 0 回合 / 0 词元`);
+  lines.push(`- 截图路径: ${shotsText}`);
+  return lines.join("\n");
 }
 
 function buildToolMap(rawTools) {
@@ -886,6 +1127,22 @@ export async function runDeterministicWorkflow({
     }
   }
 
+  const runtimeBinds = {
+    ...(directive.binds && typeof directive.binds === "object" ? directive.binds : {}),
+    runtime: {
+      wasModified: false,
+      requiresSizeChart: false,
+      requiresModel: false,
+      manualSampleVisibleOnPage: false,
+      sizeChartVerifyItems: [],
+      modelVerifyTexts: [],
+      ...(directive.binds?.runtime && typeof directive.binds.runtime === "object"
+        ? directive.binds.runtime
+        : {}),
+    },
+  };
+  let commitMeta = { mode: "", elapsedMs: 0 };
+
   async function clickMarkedElement({ markNonce, buttonText, selectorOverride = null, stepCtx, targetUrl = "" }) {
     const sel = selectorOverride || `[data-pl-wf-act="${markNonce}"]`;
     try {
@@ -928,6 +1185,8 @@ export async function runDeterministicWorkflow({
   async function closeModalsStack({
     modalSelector = ".ant-modal",
     cancelText = "取消",
+    fallbackCloseSelector = ".ant-modal-close, button[aria-label='Close'], button[aria-label='关闭']",
+    allowCloseFallback = true,
     maxAttempts = 5,
     settleMs = 1500,
     stepCtx,
@@ -939,6 +1198,7 @@ export async function runDeterministicWorkflow({
       const probe = await evalJs(
         `const sel = ${JSON.stringify(modalSelector)};
         const wantCancel = ${JSON.stringify(normalizeCjkText(cancelText))};
+        const fbSel = ${JSON.stringify(allowCloseFallback ? String(fallbackCloseSelector || "") : "")};
         const nonce = ${JSON.stringify(nonce)};
         const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim().replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
         const visible = [...document.querySelectorAll(sel)].filter((m) => {
@@ -958,11 +1218,21 @@ export async function runDeterministicWorkflow({
           return !b.disabled && r.width > 0 && r.height > 0;
         });
         const hit = btns.find((b) => norm(b.innerText) === wantCancel);
-        if (!hit) {
-          return { count: visible.length, title, foundCancel: false, buttons: btns.map((b) => norm(b.innerText)).slice(0, 12) };
+        if (hit) {
+          hit.setAttribute("data-pl-wf-act", nonce);
+          return { count: visible.length, title, foundCancel: true, buttonText: norm(hit.innerText) };
         }
-        hit.setAttribute("data-pl-wf-act", nonce);
-        return { count: visible.length, title, foundCancel: true, buttonText: norm(hit.innerText) };`,
+        if (fbSel) {
+          const fbHit = [...topModal.querySelectorAll(fbSel)].find((b) => {
+            const r = b.getBoundingClientRect();
+            return !b.disabled && r.width > 0 && r.height > 0;
+          });
+          if (fbHit) {
+            fbHit.setAttribute("data-pl-wf-act", nonce);
+            return { count: visible.length, title, foundCancel: true, viaFallbackClose: true, buttonText: "" };
+          }
+        }
+        return { count: visible.length, title, foundCancel: false, buttons: btns.map((b) => norm(b.innerText)).slice(0, 12) };`,
         stepCtx,
       );
 
@@ -983,7 +1253,7 @@ export async function runDeterministicWorkflow({
       }
       await clickMarkedElement({
         markNonce: nonce,
-        buttonText: cancelText,
+        buttonText: probe.viaFallbackClose ? "" : cancelText,
         stepCtx,
         targetUrl: currentUrl,
       });
@@ -1262,16 +1532,1113 @@ export async function runDeterministicWorkflow({
       case "close_modals_if_present": {
         const modalSelector = String(params.modalSelector || ".ant-modal");
         const cancelText = String(params.cancelText || "取消");
+        const fallbackCloseSelector =
+          params.fallbackCloseSelector !== undefined
+            ? String(params.fallbackCloseSelector)
+            : ".ant-modal-close, button[aria-label='Close'], button[aria-label='关闭']";
+        const allowCloseFallback = params.allowCloseFallback !== false;
         const maxAttempts = Math.max(1, Number(params.maxAttempts ?? params.maxRounds) || 5);
         const settleMs = Math.max(200, Number(params.settleMs) || 1500);
         return closeModalsStack({
           modalSelector,
           cancelText,
+          fallbackCloseSelector,
+          allowCloseFallback,
           maxAttempts,
           settleMs,
           stepCtx,
           currentUrl,
         });
+      }
+
+      case "ensure_page_entry": {
+        const mustStartWith = params.mustStartWith ? String(params.mustStartWith) : "";
+        const wrongHostHint = params.wrongHostHint
+          ? String(params.wrongHostHint)
+          : "请切回已登录的目标站点标签页后重试（执行器严格仅做页内导航，不跨站跳转）";
+        const targetUrlIncludes = Array.isArray(params.targetUrlIncludes)
+          ? params.targetUrlIncludes.map(String).filter(Boolean)
+          : params.targetUrlIncludes
+            ? [String(params.targetUrlIncludes)]
+            : [];
+        const targetHashQueryEquals =
+          params.targetHashQueryEquals && typeof params.targetHashQueryEquals === "object"
+            ? params.targetHashQueryEquals
+            : null;
+        const readySelector = params.readySelector ? String(params.readySelector) : "";
+        const waitSpinClear = params.waitSpinClear !== false;
+        const navSteps = Array.isArray(params.navSteps) ? params.navSteps : [];
+        const timeoutMs = Math.max(1000, Number(params.timeoutMs) || 12000);
+
+        const probeEntryState = async () =>
+          evalJs(
+            `/* ensure_page_entry_probe */
+            const readySel = ${JSON.stringify(readySelector)};
+            const url = String(location.href || "");
+            const hash = String(location.hash || "");
+            const qIdx = hash.indexOf("?");
+            const hashQueryStr = qIdx >= 0 ? hash.slice(qIdx + 1) : "";
+            const searchQueryStr = String(location.search || "").replace(/^\\?/, "");
+            const parsePairs = (qs) => {
+              const out = {};
+              if (!qs) return out;
+              for (const part of qs.split("&")) {
+                if (!part) continue;
+                const eq = part.indexOf("=");
+                const k = decodeURIComponent(eq >= 0 ? part.slice(0, eq) : part);
+                const v = decodeURIComponent(eq >= 0 ? part.slice(eq + 1) : "");
+                out[k] = v;
+              }
+              return out;
+            };
+            const queryMap = { ...parsePairs(searchQueryStr), ...parsePairs(hashQueryStr) };
+            const isBox = (el) => {
+              if (!el) return false;
+              const st = getComputedStyle(el);
+              if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            };
+            const hasPasswordInput = [...document.querySelectorAll('input[type="password"]')].some(isBox);
+            const readyEl = readySel ? [...document.querySelectorAll(readySel)].find(isBox) : true;
+            const spinning = Boolean(
+              readySel &&
+                readyEl &&
+                readyEl !== true &&
+                readyEl.closest(".ant-spin-nested-loading")?.querySelector(".ant-spin-spinning")
+            );
+            return {
+              url,
+              title: String(document.title || ""),
+              queryMap,
+              hasPasswordInput,
+              readyFound: Boolean(readyEl),
+              spinning,
+              bodySample: String(document.body ? document.body.innerText : "").slice(0, 1200)
+            };`,
+            stepCtx,
+          );
+
+        const isTargetUrlMatched = (st) => {
+          const u = String(st?.url || "");
+          if (targetUrlIncludes.some((sub) => !u.includes(sub))) return false;
+          if (targetHashQueryEquals) {
+            const qm = st?.queryMap || {};
+            for (const [k, v] of Object.entries(targetHashQueryEquals)) {
+              if (String(qm[k] ?? "") !== String(v)) return false;
+            }
+          }
+          return true;
+        };
+
+        const checkEntryBlockers = (st) => {
+          assertUrlNotForbidden(st?.url, directive.forbidUrlSubstrings, stepCtx);
+          if (mustStartWith && !String(st?.url || "").startsWith(mustStartWith)) {
+            throw new WorkflowError({
+              code: "WORKFLOW_ENTRY_WRONG_ORIGIN",
+              blame: "workflow",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `起点标签页位于目标站点页内 (${mustStartWith}...)`,
+              actual: `当前标签页 URL 为 ${st?.url || "(空)"}；${wrongHostHint}`,
+              message: `当前标签页不在目标站点内，拒绝跨站跳转: ${st?.url || "(空)"}`,
+            });
+          }
+          const extBlock = detectExternalBlocker({
+            url: st?.url,
+            title: st?.title,
+            text: st?.bodySample,
+          });
+          if (extBlock) {
+            throw new WorkflowError({
+              code: "WORKFLOW_EXTERNAL_BLOCKER",
+              blame: "其他",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: "站点处于已登录正常状态",
+              actual: extBlock,
+              message: extBlock,
+            });
+          }
+          if (st?.hasPasswordInput || String(st?.queryMap?.view || "") === "login") {
+            throw new WorkflowError({
+              code: "WORKFLOW_EXTERNAL_BLOCKER",
+              blame: "其他",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: "目标站点已登录，可直接进行页内导航",
+              actual: `检测到未登录状态或登录框 (URL: ${st?.url || "(空)"})，请先人工完成登录`,
+              message: "目标站点当前处于未登录状态",
+            });
+          }
+        };
+
+        let st = await probeEntryState();
+        checkEntryBlockers(st);
+        let navigated = false;
+
+        if (!isTargetUrlMatched(st)) {
+          navigated = true;
+          for (const nav of navSteps) {
+            checkAbort(signal);
+            const kind = String(nav?.kind || "");
+            if (kind === "close_modals") {
+              await closeModalsStack({
+                modalSelector: String(nav.modalSelector || ".ant-modal"),
+                cancelText: String(nav.cancelText || "取消"),
+                maxAttempts: Math.max(1, Number(nav.maxAttempts) || 4),
+                settleMs: Math.max(200, Number(nav.settleMs) || 1200),
+                stepCtx,
+                currentUrl: st?.url || currentUrl,
+              });
+              continue;
+            }
+            if (kind === "click_if_visible") {
+              const cNonce = `nav_${++nonceCounter}`;
+              const sel = String(nav.selector || "button, a, [role='button']");
+              const wantTxt = nav.text ? normalizeCjkText(nav.text) : "";
+              const found = await evalJs(
+                `const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim().replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
+                const want = ${JSON.stringify(wantTxt)};
+                const hit = [...document.querySelectorAll(${JSON.stringify(sel)})].find((el) => {
+                  const st = getComputedStyle(el);
+                  if (el.disabled || (st && (st.display === "none" || st.visibility === "hidden"))) return false;
+                  const r = el.getBoundingClientRect();
+                  if (r.width <= 0 || r.height <= 0) return false;
+                  return !want || norm(el.innerText || el.textContent).includes(want);
+                });
+                if (!hit) return { found: false };
+                hit.setAttribute("data-pl-wf-act", ${JSON.stringify(cNonce)});
+                return { found: true, text: norm(hit.innerText || hit.textContent) };`,
+                stepCtx,
+              );
+              if (found?.found) {
+                await clickMarkedElement({
+                  markNonce: cNonce,
+                  buttonText: nav.text ? String(nav.text) : "",
+                  stepCtx,
+                  targetUrl: st?.url || currentUrl,
+                });
+                await sleepWithAbort(Math.max(150, Number(nav.waitMs) || 450), signal);
+                st = await probeEntryState();
+                checkEntryBlockers(st);
+                if (isTargetUrlMatched(st)) break;
+              }
+              continue;
+            }
+            if (kind === "scoped_menu_click") {
+              const rootSel = String(nav.rootSelector || "nav, aside, body");
+              const grpSel = String(nav.groupSelector || "div");
+              const headSel = String(nav.headingSelector || "button");
+              const headInc = String(nav.headingMustInclude || "").toLowerCase();
+              const headExc = String(nav.headingExclude || "").toLowerCase();
+              const itemSel = String(nav.subItemSelector || "button, a, li");
+              const itemWant = normalizeCjkText(nav.itemText || "");
+
+              const menuDeadline = Date.now() + Math.min(timeoutMs, 5000);
+              let menuProbe = null;
+              const mNonce = `menu_${++nonceCounter}`;
+              while (true) {
+                menuProbe = await evalJs(
+                  `/* scoped_menu_probe */
+                  const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim().replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
+                  const isBox = (el) => {
+                    if (!el) return false;
+                    const st = getComputedStyle(el);
+                    if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                  };
+                  const root = [...document.querySelectorAll(${JSON.stringify(rootSel)})].find(isBox);
+                  if (!root) return { rootFound: false };
+                  const groups = [...root.querySelectorAll(${JSON.stringify(grpSel)})].filter(isBox);
+                  const groupHeads = groups.map((g) => {
+                    const h = g.querySelector(${JSON.stringify(headSel)}) || g;
+                    return { g, h, text: norm(h.innerText || h.textContent) };
+                  });
+                  const targetGrp = groupHeads.find((x) => {
+                    const low = x.text.toLowerCase();
+                    return (!${JSON.stringify(headInc)} || low.includes(${JSON.stringify(headInc)})) &&
+                      (!${JSON.stringify(headExc)} || !low.includes(${JSON.stringify(headExc)}));
+                  });
+                  if (!targetGrp) {
+                    return { rootFound: true, groupFound: false, availableGroups: groupHeads.map((x) => x.text).slice(0, 12) };
+                  }
+                  const subHit = [...targetGrp.g.querySelectorAll(${JSON.stringify(itemSel)})].find(
+                    (el) => isBox(el) && norm(el.innerText || el.textContent) === ${JSON.stringify(itemWant)},
+                  );
+                  if (subHit) {
+                    subHit.setAttribute("data-pl-wf-act", ${JSON.stringify(mNonce)});
+                    return { rootFound: true, groupFound: true, itemReady: true, itemText: norm(subHit.innerText || subHit.textContent) };
+                  }
+                  if (isBox(targetGrp.h)) {
+                    targetGrp.h.setAttribute("data-pl-wf-act", ${JSON.stringify(mNonce)});
+                    return { rootFound: true, groupFound: true, itemReady: false, canExpandHeading: true, headingText: targetGrp.text };
+                  }
+                  return { rootFound: true, groupFound: true, itemReady: false, canExpandHeading: false };`,
+                  stepCtx,
+                );
+                if (menuProbe?.itemReady || menuProbe?.canExpandHeading || Date.now() >= menuDeadline) break;
+                await sleepWithAbort(150, signal);
+              }
+
+              if (!menuProbe?.rootFound || !menuProbe?.groupFound) {
+                st = await probeEntryState();
+                checkEntryBlockers(st);
+                throw new WorkflowError({
+                  code: "WORKFLOW_ENTRY_NAV_MISSING",
+                  blame: "workflow",
+                  stepIndex: stepCtx.stepIndex,
+                  stepId: stepCtx.stepId,
+                  op: stepCtx.op,
+                  expected: `页面存在左侧导航容器 (${rootSel}) 及分组 "${nav.headingMustInclude || ""}"`,
+                  actual: JSON.stringify({ url: st?.url, menuProbe }),
+                  message: `无法在当前页面找到左侧导航菜单 "${nav.headingMustInclude} -> ${nav.itemText}"`,
+                });
+              }
+
+              if (!menuProbe.itemReady && menuProbe.canExpandHeading) {
+                await clickMarkedElement({
+                  markNonce: mNonce,
+                  buttonText: "",
+                  stepCtx,
+                  targetUrl: st?.url || currentUrl,
+                });
+                const subNonce = `menusub_${++nonceCounter}`;
+                const subDeadline = Date.now() + 3500;
+                let subProbe = null;
+                while (true) {
+                  subProbe = await evalJs(
+                    `const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim().replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
+                    const isBox = (el) => {
+                      if (!el) return false;
+                      const st = getComputedStyle(el);
+                      if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+                      const r = el.getBoundingClientRect();
+                      return r.width > 0 && r.height > 0;
+                    };
+                    const root = [...document.querySelectorAll(${JSON.stringify(rootSel)})].find(isBox);
+                    const groups = root ? [...root.querySelectorAll(${JSON.stringify(grpSel)})].filter(isBox) : [];
+                    const targetGrp = groups.find((g) => {
+                      const h = g.querySelector(${JSON.stringify(headSel)}) || g;
+                      const low = norm(h.innerText || h.textContent).toLowerCase();
+                      return (!${JSON.stringify(headInc)} || low.includes(${JSON.stringify(headInc)})) &&
+                        (!${JSON.stringify(headExc)} || !low.includes(${JSON.stringify(headExc)}));
+                    });
+                    const subHit = targetGrp
+                      ? [...targetGrp.querySelectorAll(${JSON.stringify(itemSel)})].find(
+                          (el) => isBox(el) && norm(el.innerText || el.textContent) === ${JSON.stringify(itemWant)},
+                        )
+                      : null;
+                    if (!subHit) return { found: false };
+                    subHit.setAttribute("data-pl-wf-act", ${JSON.stringify(subNonce)});
+                    return { found: true };`,
+                    stepCtx,
+                  );
+                  if (subProbe?.found || Date.now() >= subDeadline) break;
+                  await sleepWithAbort(120, signal);
+                }
+                if (!subProbe?.found) {
+                  throw new WorkflowError({
+                    code: "WORKFLOW_ENTRY_SUBMENU_MISSING",
+                    blame: "workflow",
+                    stepIndex: stepCtx.stepIndex,
+                    stepId: stepCtx.stepId,
+                    op: stepCtx.op,
+                    expected: `展开分组 "${nav.headingMustInclude}" 后出现子菜单 "${nav.itemText}"`,
+                    actual: JSON.stringify(subProbe),
+                    message: `展开导航分组后未找到子菜单 "${nav.itemText}"`,
+                  });
+                }
+                await clickMarkedElement({
+                  markNonce: subNonce,
+                  buttonText: String(nav.itemText || ""),
+                  stepCtx,
+                  targetUrl: st?.url || currentUrl,
+                });
+              } else if (menuProbe.itemReady) {
+                await clickMarkedElement({
+                  markNonce: mNonce,
+                  buttonText: String(nav.itemText || ""),
+                  stepCtx,
+                  targetUrl: st?.url || currentUrl,
+                });
+              }
+            }
+          }
+        }
+
+        const readyDeadline = Date.now() + timeoutMs;
+        while (true) {
+          st = await probeEntryState();
+          checkEntryBlockers(st);
+          if (isTargetUrlMatched(st) && st.readyFound && (!waitSpinClear || !st.spinning)) {
+            break;
+          }
+          if (Date.now() >= readyDeadline) {
+            throw new WorkflowError({
+              code: "WORKFLOW_ENTRY_READY_TIMEOUT",
+              blame: "workflow",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `进入目标列表页就绪 (query=${JSON.stringify(targetHashQueryEquals || targetUrlIncludes)}, readySelector=${readySelector || "无"})`,
+              actual: JSON.stringify({
+                url: st?.url,
+                queryMap: st?.queryMap,
+                readyFound: st?.readyFound,
+                spinning: st?.spinning,
+              }),
+              message: `页内导航后等待目标页面就绪超时`,
+            });
+          }
+          await sleepWithAbort(150, signal);
+        }
+
+        if (params.closeModalsOnTarget !== false) {
+          await closeModalsStack({
+            modalSelector: String(params.modalSelector || ".ant-modal"),
+            cancelText: String(params.cancelText || "取消"),
+            maxAttempts: Math.max(1, Number(params.maxModalCloseAttempts) || 4),
+            settleMs: 1500,
+            stepCtx,
+            currentUrl: st?.url || currentUrl,
+          });
+        }
+
+        let activeTabText = "";
+        if (params.ensureActiveTab && typeof params.ensureActiveTab === "object") {
+          const tabCfg = params.ensureActiveTab;
+          const tabContainerSel = String(tabCfg.containerSelector || ".ant-tabs");
+          const tabItemSel = String(tabCfg.tabSelector || ".ant-tabs-tab");
+          const activeCls = String(tabCfg.activeClass || "ant-tabs-tab-active");
+          const allowedPrefixes = Array.isArray(tabCfg.allowedPrefixes)
+            ? tabCfg.allowedPrefixes.map(String)
+            : ["全部"];
+          const targetPrefix = String(tabCfg.targetPrefix || allowedPrefixes[0] || "全部");
+          const tNonce = `tab_${++nonceCounter}`;
+          const tabProbe = await evalJs(
+            `const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+            const root = document.querySelector(${JSON.stringify(tabContainerSel)});
+            if (!root) return { exists: false };
+            const tabs = [...root.querySelectorAll(${JSON.stringify(tabItemSel)})];
+            const active = tabs.find((t) => String(t.className || "").includes(${JSON.stringify(activeCls)}));
+            const activeTxt = active ? norm(active.innerText || active.textContent) : "";
+            const allowed = ${JSON.stringify(allowedPrefixes)};
+            if (allowed.some((p) => activeTxt.startsWith(p))) {
+              return { exists: true, alreadyAllowed: true, activeTxt };
+            }
+            const target = tabs.find((t) => norm(t.innerText || t.textContent).startsWith(${JSON.stringify(targetPrefix)}));
+            if (!target) return { exists: true, alreadyAllowed: false, foundTarget: false, activeTxt };
+            target.setAttribute("data-pl-wf-act", ${JSON.stringify(tNonce)});
+            return { exists: true, alreadyAllowed: false, foundTarget: true, activeTxt, targetTxt: norm(target.innerText || target.textContent) };`,
+            stepCtx,
+          );
+          activeTabText = tabProbe?.activeTxt || "";
+          if (tabProbe?.exists && !tabProbe.alreadyAllowed && tabProbe.foundTarget) {
+            await clickMarkedElement({
+              markNonce: tNonce,
+              buttonText: "",
+              stepCtx,
+              targetUrl: st?.url || currentUrl,
+            });
+            activeTabText = tabProbe.targetTxt || targetPrefix;
+            await sleepWithAbort(350, signal);
+          }
+        }
+
+        let headerCountsSnapshot = "";
+        if (params.captureHeaderRegex || Array.isArray(params.checkSampleSubstrings)) {
+          const hRegStr = params.captureHeaderRegex ? String(params.captureHeaderRegex) : "";
+          const sampleSubs = Array.isArray(params.checkSampleSubstrings)
+            ? params.checkSampleSubstrings.map(String).filter(Boolean)
+            : [];
+          const snapMeta = await evalJs(
+            `const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+            const bodyTxt = norm(document.body ? document.body.innerText : "");
+            const hRe = ${JSON.stringify(hRegStr)} ? new RegExp(${JSON.stringify(hRegStr)}) : null;
+            const hm = hRe ? hRe.exec(bodyTxt) : null;
+            const subs = ${JSON.stringify(sampleSubs)};
+            let sampleVisible = false;
+            if (subs.length > 0) {
+              const rows = [...document.querySelectorAll("tbody tr")].filter((r) => {
+                const rc = r.getBoundingClientRect();
+                return rc.width > 0 && rc.height > 0;
+              });
+              sampleVisible = rows.some((r) => {
+                const t = norm(r.innerText);
+                return subs.every((k) => t.includes(k));
+              });
+            }
+            return { headerMatch: hm ? norm(hm[0]) : "", sampleVisible };`,
+            stepCtx,
+          );
+          if (snapMeta?.headerMatch) {
+            headerCountsSnapshot = snapMeta.headerMatch;
+            const escapedTokens = headerCountsSnapshot
+              .split(/\s+/)
+              .filter(Boolean)
+              .map((tok) => tok.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+            const patKey = String(params.saveHeaderPatternBindKey || "headerCountsPattern");
+            runtimeBinds.runtime[patKey] = escapedTokens.join("\\s*");
+            runtimeBinds.runtime.headerCountsSnapshot = headerCountsSnapshot;
+          } else if (params.captureHeaderRegex) {
+            throw new WorkflowError({
+              code: "WORKFLOW_HEADER_COUNTS_MISSING",
+              blame: "workflow",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `列表顶部状态统计匹配 /${params.captureHeaderRegex}/`,
+              actual: "页面未读取到状态统计计数栏",
+              message: "未能从列表页读取顶部状态统计计数",
+            });
+          }
+          if (sampleSubs.length > 0) {
+            runtimeBinds.runtime.manualSampleVisibleOnPage = Boolean(snapMeta?.sampleVisible);
+          }
+        }
+
+        return {
+          ok: true,
+          navigated,
+          url: st?.url || "",
+          ...(activeTabText ? { activeTab: activeTabText } : {}),
+          ...(headerCountsSnapshot ? { headerCountsSnapshot } : {}),
+        };
+      }
+
+      case "select_row_and_open": {
+        const rowSelector = String(params.rowSelector || "tbody tr");
+        const targetClaimedAt = normalizeSpaces(params.targetClaimedAt || "");
+        const targetSourceId = normalizeSpaces(params.targetSourceId || "");
+        const excludeSubstrings = Array.isArray(params.excludeSubstrings)
+          ? params.excludeSubstrings.map(String).filter(Boolean)
+          : [];
+        const invalidTitleSubstrings = Array.isArray(params.invalidTitleSubstrings)
+          ? params.invalidTitleSubstrings.map(String).filter(Boolean)
+          : ["未命名商品"];
+        const declarePriceColHeader = String(params.declarePriceColHeader || "申报价");
+        const sourcePriceColHeader = String(params.sourcePriceColHeader || "货源价格");
+        const titleSelector = String(params.titleSelector || ".collection-box-product__title");
+        const priceRegex = String(params.priceRegex || "(?:CNY|USD|¥|￥)\\s*(\\d+(?:\\.\\d+)?)");
+        const claimTimeRegex = String(params.claimTimeRegex || "\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}");
+        const uneditedTitleRegex = String(params.uneditedTitleRegex || "^[aA]{3,}|[bB]{3,}$");
+        const buttonText = String(params.buttonText || "编辑");
+        const timeoutMs = Math.max(1000, Number(params.timeoutMs) || 12000);
+
+        const explicitInput = `${targetClaimedAt} ${targetSourceId}`.trim();
+        if (explicitInput) {
+          const hitForbidParam = excludeSubstrings.find((ex) => ex && explicitInput.includes(ex));
+          if (hitForbidParam) {
+            throw new WorkflowError({
+              code: "WORKFLOW_FORBIDDEN_ROW",
+              blame: "workflow",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `指定目标不得指向禁触标准样本 ${JSON.stringify(excludeSubstrings)}`,
+              actual: `输入目标参数 "${explicitInput}" 命中禁触保护项 "${hitForbidParam}"`,
+              message: `拒绝操作禁触手工标准样本: ${hitForbidParam}`,
+            });
+          }
+        }
+
+        const selectionMode = targetClaimedAt || targetSourceId ? "by_claim_time" : "next_unedited";
+        const deadline = Date.now() + timeoutMs;
+        const rNonce = `selrow_${++nonceCounter}`;
+        let probe = null;
+
+        while (true) {
+          probe = await evalJs(
+            `/* select_row_and_open_probe */
+            const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+            const normBtn = (s) => norm(s).replace(/([\\u4e00-\\u9fff])\\s+(?=[\\u4e00-\\u9fff])/g, "$1");
+            const ths = [...document.querySelectorAll("thead th")];
+            const decColIdx = ths.findIndex((th) => norm(th.innerText || th.textContent).includes(${JSON.stringify(declarePriceColHeader)}));
+            const srcColIdx = ths.findIndex((th) => norm(th.innerText || th.textContent).includes(${JSON.stringify(sourcePriceColHeader)}));
+            const rawRows = [...document.querySelectorAll(${JSON.stringify(rowSelector)})].filter((r) => {
+              const cls = String(r.className || "");
+              if (cls.includes("ant-table-measure-row") || cls.includes("ant-table-placeholder")) return false;
+              const rc = r.getBoundingClientRect();
+              return rc.width > 0 && rc.height > 0;
+            });
+            const pRe = new RegExp(${JSON.stringify(priceRegex)});
+            const tRe = new RegExp(${JSON.stringify(claimTimeRegex)});
+            const uRe = new RegExp(${JSON.stringify(uneditedTitleRegex)});
+            const excludes = ${JSON.stringify(excludeSubstrings)};
+            const invalids = ${JSON.stringify(invalidTitleSubstrings)};
+            const wantTime = ${JSON.stringify(targetClaimedAt)};
+            const wantSrcId = ${JSON.stringify(targetSourceId)};
+            const mode = ${JSON.stringify(selectionMode)};
+            const wantBtn = ${JSON.stringify(normalizeCjkText(buttonText))};
+
+            const parsed = rawRows.map((r, idx) => {
+              const text = norm(r.innerText);
+              const hrefs = [...r.querySelectorAll("a[href]")].map((a) => String(a.getAttribute("href") || "")).join(" ");
+              const tEl = r.querySelector(${JSON.stringify(titleSelector)});
+              const title = tEl ? norm(tEl.innerText || tEl.textContent) : "";
+              const decCell = decColIdx >= 0 && r.cells && r.cells[decColIdx] ? norm(r.cells[decColIdx].innerText) : "";
+              const srcCell = srcColIdx >= 0 && r.cells && r.cells[srcColIdx] ? norm(r.cells[srcColIdx].innerText) : "";
+              const pm = pRe.exec(srcCell || text);
+              const tm = tRe.exec(text);
+              const idm = /-g-(\\d+)\\.html/i.exec(hrefs);
+              const priceText = pm ? pm[0].replace(/\\s+/g, "") : "";
+              const priceNum = pm ? pm[1] : "";
+              const claimedAt = tm ? norm(tm[0]) : "";
+              const sourceId = idm ? idm[1] : "";
+              const excluded = excludes.some((ex) => text.includes(ex) || hrefs.includes(ex));
+              const invalid = invalids.some((inv) => (title && title.includes(inv)) || text.includes(inv)) || !priceNum || !claimedAt;
+              const isUnedited = decColIdx >= 0 ? decCell === "-" || decCell === "" : (title ? uRe.test(title) : uRe.test(text));
+              return { r, idx, text, title, decCell, priceText, priceNum, claimedAt, sourceId, excluded, invalid, isUnedited };
+            });
+
+            let candidates = [];
+            if (mode === "by_claim_time") {
+              candidates = parsed.filter(
+                (x) =>
+                  !x.excluded &&
+                  (!wantTime || x.text.includes(wantTime)) &&
+                  (!wantSrcId || x.sourceId === wantSrcId || x.text.includes(wantSrcId)),
+              );
+              if (candidates.length !== 1) {
+                return {
+                  ok: false,
+                  reason: "match_count",
+                  mode,
+                  count: candidates.length,
+                  totalRows: parsed.length,
+                  samples: parsed.slice(0, 6).map((x) => ({ claimedAt: x.claimedAt, priceText: x.priceText, title: x.title.slice(0, 40), excluded: x.excluded }))
+                };
+              }
+            } else {
+              const firstUnedited = parsed.find((x) => !x.excluded && !x.invalid && x.isUnedited);
+              if (!firstUnedited) {
+                return {
+                  ok: false,
+                  reason: "no_unedited",
+                  mode,
+                  totalRows: parsed.length,
+                  samples: parsed.slice(0, 8).map((x) => ({ claimedAt: x.claimedAt, priceText: x.priceText, decCell: x.decCell, title: x.title.slice(0, 40), excluded: x.excluded, invalid: x.invalid }))
+                };
+              }
+              candidates = [firstUnedited];
+            }
+
+            const chosen = candidates[0];
+            if (chosen.invalid) {
+              return {
+                ok: false,
+                reason: "chosen_invalid",
+                chosen: { claimedAt: chosen.claimedAt, priceText: chosen.priceText, title: chosen.title }
+              };
+            }
+            const btn = [...chosen.r.querySelectorAll("button")].find((b) => {
+              const rc = b.getBoundingClientRect();
+              return !b.disabled && rc.width > 0 && rc.height > 0 && normBtn(b.innerText) === wantBtn;
+            });
+            if (!btn) {
+              return { ok: false, reason: "no_button", chosen: { claimedAt: chosen.claimedAt, title: chosen.title } };
+            }
+            btn.setAttribute("data-pl-wf-act", ${JSON.stringify(rNonce)});
+            return {
+              ok: true,
+              mode,
+              claimedAt: chosen.claimedAt,
+              priceText: chosen.priceText,
+              priceNum: chosen.priceNum,
+              sourceId: chosen.sourceId,
+              title: chosen.title,
+              isUnedited: chosen.isUnedited,
+              rowIndex: chosen.idx + 1
+            };`,
+            stepCtx,
+          );
+
+          if (probe?.ok) break;
+          if (Date.now() >= deadline) {
+            if (probe?.reason === "no_unedited") {
+              throw new WorkflowError({
+                code: "WORKFLOW_NO_UNEDITED_ROW",
+                blame: "workflow",
+                stepIndex: stepCtx.stepIndex,
+                stepId: stepCtx.stepId,
+                op: stepCtx.op,
+                expected: "当前列表页存在至少 1 件未编辑有效商品（排除禁触样本及缺货源价异常行）",
+                actual: `总行数=${probe?.totalRows ?? 0}，未找到未编辑有效行: ${JSON.stringify(probe?.samples || [])}`,
+                message: "当前页无待首次填写的未编辑商品；如需核对已保存商品，请在 binds.target.claimedAt 指定认领时间",
+              });
+            }
+            throw new WorkflowError({
+              code: "WORKFLOW_SELECT_ROW_FAILED",
+              blame: "workflow",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected:
+                selectionMode === "by_claim_time"
+                  ? `唯一命中指定认领时间 "${targetClaimedAt}" 的有效商品行且含可用 "${buttonText}" 按钮`
+                  : `命中下一件未编辑商品行且含可用 "${buttonText}" 按钮`,
+              actual: JSON.stringify(probe),
+              message: `目标商品行定位失败 (${probe?.reason || "timeout"})`,
+            });
+          }
+          await sleepWithAbort(200, signal);
+        }
+
+        runtimeBinds.runtime.selectionMode = probe.mode;
+        runtimeBinds.runtime.claimedAt = probe.claimedAt;
+        runtimeBinds.runtime.sourcePriceText = probe.priceText;
+        runtimeBinds.runtime.sourcePriceNumber = probe.priceNum;
+        runtimeBinds.runtime.sourceProductId = probe.sourceId || "";
+        runtimeBinds.runtime.rowInitialTitle = probe.title || "";
+        runtimeBinds.runtime.rowInitiallyUnedited = Boolean(probe.isUnedited);
+        runtimeBinds.runtime.targetSummary = [
+          probe.sourceId ? `ID:${probe.sourceId}` : "",
+          probe.claimedAt,
+          probe.priceText,
+          probe.isUnedited ? "初始未编辑" : "初始已保存",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+
+        await clickMarkedElement({
+          markNonce: rNonce,
+          buttonText,
+          stepCtx,
+          targetUrl: currentUrl,
+        });
+
+        if (params.waitText || params.waitSelector) {
+          const waitArgs = {
+            ...(params.waitText ? { text: String(params.waitText) } : {}),
+            ...(params.waitSelector ? { selector: String(params.waitSelector) } : {}),
+            timeoutMs: Math.max(1000, Number(params.waitTimeoutMs) || 15000),
+          };
+          const { parsed, text } = await invokeRawTool("wait_for", waitArgs, stepCtx);
+          if (!parsed || parsed.ok !== true) {
+            throw new WorkflowError({
+              code: "WORKFLOW_ROW_WAIT_TIMEOUT",
+              blame: "工具",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `点击 "${buttonText}" 后出现 ${params.waitText || params.waitSelector}`,
+              actual: text.slice(0, 300),
+              message: `点击 "${buttonText}" 后等待编辑弹窗超时`,
+            });
+          }
+        }
+
+        return {
+          ok: true,
+          selectionMode: probe.mode,
+          rowIndex: probe.rowIndex,
+          claimedAt: probe.claimedAt,
+          sourcePriceText: probe.priceText,
+          sourceProductId: probe.sourceId || null,
+          rowInitiallyUnedited: Boolean(probe.isUnedited),
+        };
+      }
+
+      case "ensure_checkboxes": {
+        const containerSelector = String(params.containerSelector || "body");
+        const wantList = Array.isArray(params.equals) ? params.equals.map((s) => normalizeSpaces(s)).filter(Boolean) : [];
+        const ignoreList = Array.isArray(params.ignoreLabels)
+          ? params.ignoreLabels.map((s) => normalizeSpaces(s))
+          : ["全选"];
+        const hydrateWaitMs = Math.max(0, Number(params.hydrateWaitMs) || 0);
+        let mutatedCount = 0;
+
+        if (hydrateWaitMs > 0) {
+          const hDeadline = Date.now() + hydrateWaitMs;
+          while (true) {
+            const hProbe = await evalJs(
+              `const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+              const scope = document.querySelector(${JSON.stringify(containerSelector)});
+              if (!scope) return { scopeFound: false };
+              const ignore = new Set(${JSON.stringify(ignoreList)});
+              const want = new Set(${JSON.stringify(wantList)});
+              const items = [...scope.querySelectorAll('input[type="checkbox"]')].map((cb) => {
+                const lbl = cb.closest("label");
+                return { checked: Boolean(cb.checked), text: lbl ? norm(lbl.innerText || lbl.textContent) : "" };
+              }).filter((x) => x.text && !ignore.has(x.text));
+              const curChecked = items.filter((x) => x.checked).map((x) => x.text);
+              const allMatch = items.length > 0 && curChecked.length === want.size && curChecked.every((t) => want.has(t));
+              return { scopeFound: true, allMatch, checked: curChecked, count: items.length };`,
+              stepCtx,
+            );
+            if (hProbe?.allMatch) {
+              return { ok: true, skipped: true, mutatedCount: 0, checked: hProbe.checked };
+            }
+            if (Date.now() >= hDeadline) break;
+            await sleepWithAbort(120, signal);
+          }
+        }
+
+        for (let round = 0; round < wantList.length + 4; round += 1) {
+          const cbNonce = `cb_${++nonceCounter}`;
+          const cbProbe = await evalJs(
+            `const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+            const scope = document.querySelector(${JSON.stringify(containerSelector)});
+            if (!scope) return { scopeFound: false };
+            const ignore = new Set(${JSON.stringify(ignoreList)});
+            const want = new Set(${JSON.stringify(wantList)});
+            const items = [...scope.querySelectorAll('input[type="checkbox"]')].map((cb) => {
+              const lbl = cb.closest("label");
+              return { cb, lbl, checked: Boolean(cb.checked), text: lbl ? norm(lbl.innerText || lbl.textContent) : "" };
+            }).filter((x) => x.text && !ignore.has(x.text));
+            const curChecked = items.filter((x) => x.checked).map((x) => x.text);
+            const toClick = items.find((x) => (want.has(x.text) && !x.checked) || (!want.has(x.text) && x.checked));
+            if (!toClick) {
+              const missing = [...want].filter((w) => !items.some((x) => x.text === w));
+              return { scopeFound: true, done: missing.length === 0, missing, checked: curChecked, allLabels: items.map((x) => x.text) };
+            }
+            (toClick.lbl || toClick.cb).setAttribute("data-pl-wf-act", ${JSON.stringify(cbNonce)});
+            return { scopeFound: true, done: false, toggleText: toClick.text };`,
+            stepCtx,
+          );
+          if (!cbProbe?.scopeFound) {
+            throw new WorkflowError({
+              code: "WORKFLOW_CHECKBOX_SCOPE_MISSING",
+              blame: "workflow",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `复选框容器存在: ${containerSelector}`,
+              actual: "容器未找到",
+              message: `未找到复选框容器: ${containerSelector}`,
+            });
+          }
+          if (cbProbe.done) {
+            return { ok: true, skipped: mutatedCount === 0, mutatedCount, checked: cbProbe.checked };
+          }
+          if (!cbProbe.toggleText) {
+            throw new WorkflowError({
+              code: "WORKFLOW_CHECKBOX_OPTION_MISSING",
+              blame: "workflow",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `复选框组包含 ${JSON.stringify(wantList)}`,
+              actual: `缺少 ${JSON.stringify(cbProbe.missing || [])}；可选: ${JSON.stringify(cbProbe.allLabels || [])}`,
+              message: `未找到目标复选框选项`,
+            });
+          }
+          await clickMarkedElement({
+            markNonce: cbNonce,
+            buttonText: cbProbe.toggleText,
+            stepCtx,
+            targetUrl: currentUrl,
+          });
+          mutatedCount += 1;
+          await sleepWithAbort(120, signal);
+        }
+        return { ok: true, skipped: mutatedCount === 0, mutatedCount };
+      }
+
+      case "resolve_form_context": {
+        const phase = params.phase === "sales" ? "sales" : "category";
+        const containerSelector = String(params.containerSelector || ".ant-modal");
+        const timeoutMs = Math.max(1000, Number(params.timeoutMs) || 8000);
+
+        if (params.navButtonSelector && params.navButtonText) {
+          assertClickTargetSafe({
+            labelText: params.navButtonText,
+            domElementText: params.navButtonText,
+            forbidClickTexts: directive.forbidClickTexts,
+            settings,
+            targetUrl: currentUrl,
+            stepCtx,
+          });
+          await invokeRawTool(
+            "click",
+            { selector: String(params.navButtonSelector), text: String(params.navButtonText) },
+            stepCtx,
+          );
+        }
+
+        if (phase === "category") {
+          const categoryInputSelector = String(params.categoryInputSelector || "input#category");
+          const titleCnSelector = String(params.titleCnSelector || "input#productNameCn");
+          const titleEnSelector = String(params.titleEnSelector || "input#productName");
+          const attrFieldSelector = String(params.attrFieldSelector || ".store-template-attr__field");
+          const attrLabelSelector = String(params.attrLabelSelector || ".store-template-attr__label");
+
+          const deadline = Date.now() + Math.min(timeoutMs, 6000);
+          let snap = null;
+          while (true) {
+            snap = await evalJs(
+              `/* resolve_form_context_category */
+              const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+              const isLive = (n) => {
+                if (!n) return false;
+                for (let p = n; p && p.nodeType === 1; p = p.parentElement) {
+                  const cl = String(p.className || "");
+                  if (p.hidden || /\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cl)) return false;
+                  const st = getComputedStyle(p);
+                  if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+                }
+                return true;
+              };
+              const roots = [...document.querySelectorAll(${JSON.stringify(containerSelector)})].filter(isLive);
+              const root = roots[roots.length - 1] || null;
+              if (!root) return { ready: false, reason: "no_container" };
+              const cnEl = root.querySelector(${JSON.stringify(titleCnSelector)});
+              if (!cnEl) return { ready: false, reason: "no_title_input" };
+              const catSpin = Boolean(root.querySelector("#category .ant-spin-spinning"));
+              if (catSpin) return { ready: false, reason: "category_spinning" };
+              const enEl = root.querySelector(${JSON.stringify(titleEnSelector)});
+              const catInp = root.querySelector(${JSON.stringify(categoryInputSelector)});
+              const catWrap = catInp ? catInp.closest(".ant-select") : null;
+              const catItem = catWrap ? catWrap.querySelector(".ant-select-selection-item") : null;
+              const currentCategory = catItem
+                ? norm((catItem.querySelector(".ant-select-selection-item-content") || catItem).textContent || "")
+                : "";
+              const starred = [];
+              for (const f of root.querySelectorAll(${JSON.stringify(attrFieldSelector)})) {
+                const l = norm((f.querySelector(${JSON.stringify(attrLabelSelector)}) || {}).innerText || "");
+                if (l && (l.includes("*") || f.querySelector(".ant-form-item-required, .is-required"))) {
+                  starred.push(l);
+                }
+              }
+              for (const fi of root.querySelectorAll(".ant-form-item")) {
+                const lblEl = fi.querySelector(".ant-form-item-label");
+                if (!lblEl) continue;
+                const l = norm(lblEl.innerText || "");
+                const req = l.includes("*") || Boolean(lblEl.querySelector(".ant-form-item-required"));
+                if (req && l) starred.push(l.startsWith("*") ? l : "*" + l);
+              }
+              return {
+                ready: true,
+                currentCategory,
+                titleCnRaw: String(cnEl.value ?? ""),
+                titleEnRaw: enEl ? String(enEl.value ?? "") : "",
+                starredLabels: starred
+              };`,
+              stepCtx,
+            );
+            if (snap?.ready || Date.now() >= deadline) break;
+            await sleepWithAbort(120, signal);
+          }
+
+          if (!snap?.ready) {
+            throw new WorkflowError({
+              code: "WORKFLOW_FORM_CONTEXT_TIMEOUT",
+              blame: "工具",
+              stepIndex: stepCtx.stepIndex,
+              stepId: stepCtx.stepId,
+              op: stepCtx.op,
+              expected: `弹窗表单完成挂载与类目水合 (${containerSelector})`,
+              actual: JSON.stringify(snap),
+              message: "读取商品弹窗上下文超时",
+            });
+          }
+
+          const resolved = resolveFormProfileFromSnapshot({
+            snapshot: snap,
+            categoryMap: params.categoryMap || {},
+            categoryOrder: Array.isArray(params.categoryOrder) ? params.categoryOrder : [],
+            enKeywordDictionary: Array.isArray(params.enKeywordDictionary) ? params.enKeywordDictionary : [],
+            noisePrefixRegex: params.noisePrefixRegex ?? "^[aA]{3,}",
+            noiseSuffixRegex: params.noiseSuffixRegex ?? "[bB]{3,}$",
+            forbidTitleSubstrings: Array.isArray(params.forbidTitleSubstrings)
+              ? params.forbidTitleSubstrings
+              : ["测试"],
+            stepCtx,
+          });
+
+          Object.assign(runtimeBinds.runtime, {
+            categoryKey: resolved.categoryKey,
+            categorySearch: resolved.categorySearch,
+            categoryPath: resolved.categoryPath,
+            titleCn: resolved.titleCn,
+            titleEn: resolved.titleEn,
+            attrRules: resolved.attrRules,
+            pkgLength: resolved.pkgLength,
+            pkgWidth: resolved.pkgWidth,
+            pkgHeight: resolved.pkgHeight,
+            pkgWeight: resolved.pkgWeight,
+            requiresSizeChart: resolved.requiresSizeChart,
+            sizeChartName: resolved.sizeChartName,
+            requiresModel: resolved.requiresModel,
+            modelName: resolved.modelName,
+            modelFitOption: resolved.modelFitOption,
+            modelSizePrefer: resolved.modelSizePrefer,
+          });
+          if (runtimeBinds.runtime.targetSummary) {
+            runtimeBinds.runtime.targetSummary = `${resolved.categoryKey} · ${runtimeBinds.runtime.targetSummary}`;
+          }
+
+          return {
+            ok: true,
+            phase: "category",
+            categoryKey: resolved.categoryKey,
+            categoryPath: resolved.categoryPath,
+            titleCn: resolved.titleCn,
+            titleEn: resolved.titleEn,
+            requiresSizeChart: resolved.requiresSizeChart,
+            requiresModel: resolved.requiresModel,
+          };
+        }
+
+        const skuTableSelector = String(params.skuTableSelector || ".store-template__sku-list");
+        const sDeadline = Date.now() + timeoutMs;
+        let salesSnap = null;
+        while (true) {
+          salesSnap = await evalJs(
+            `/* resolve_form_context_sales */
+            const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+            const isLive = (n) => {
+              if (!n) return false;
+              for (let p = n; p && p.nodeType === 1; p = p.parentElement) {
+                const cl = String(p.className || "");
+                if (p.hidden || /\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cl)) return false;
+                const st = getComputedStyle(p);
+                if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+              }
+              return true;
+            };
+            const roots = [...document.querySelectorAll(${JSON.stringify(containerSelector)})].filter(isLive);
+            const root = roots[roots.length - 1] || document;
+            const wrap = root.querySelector(${JSON.stringify(skuTableSelector)});
+            if (!wrap) return { ready: false, reason: "no_sku_list" };
+            const rows = [...wrap.querySelectorAll("tbody tr")].filter((r) => {
+              const cls = String(r.className || "");
+              if (cls.includes("ant-table-measure-row") || cls.includes("ant-table-placeholder")) return false;
+              const rc = r.getBoundingClientRect();
+              return rc.width > 0 && rc.height > 0;
+            });
+            if (!rows.length) return { ready: false, reason: "zero_sku_rows" };
+            const ths = [...wrap.querySelectorAll("thead th")].map((th) => norm(th.innerText || th.textContent));
+            const refIdx = ths.findIndex((t) => t.includes("参考链接") || t.includes("申报价"));
+            const specEnd = refIdx > 0 ? refIdx : Math.min(3, ths.length);
+            const firstSpecTokens = [];
+            const allSpecTokens = [];
+            rows.forEach((r, rIdx) => {
+              const cells = [...(r.cells || [])];
+              for (let c = 0; c < specEnd && c < cells.length; c += 1) {
+                if (ths[c] && ths[c].includes("预览图")) continue;
+                const v = norm(cells[c].innerText || cells[c].textContent);
+                if (v && v !== "-") {
+                  if (rIdx === 0) firstSpecTokens.push(v);
+                  if (!allSpecTokens.includes(v)) allSpecTokens.push(v);
+                }
+              }
+            });
+            const readPh = (ph) =>
+              [...wrap.querySelectorAll("input")]
+                .filter((i) => i.getAttribute("placeholder") === ph && isLive(i))
+                .map((i) => String(i.value ?? "").trim());
+            return {
+              ready: true,
+              skuRowCount: rows.length,
+              firstSpecTokens,
+              allSpecTokens,
+              prices: readPh("单位元"),
+              stocks: readPh("未填默认0"),
+              lens: readPh("长"),
+              widths: readPh("宽"),
+              heights: readPh("高"),
+              weights: readPh("重量")
+            };`,
+            stepCtx,
+          );
+          if (salesSnap?.ready || Date.now() >= sDeadline) break;
+          await sleepWithAbort(150, signal);
+        }
+
+        if (!salesSnap?.ready) {
+          throw new WorkflowError({
+            code: "WORKFLOW_SKU_CONTEXT_TIMEOUT",
+            blame: "workflow",
+            stepIndex: stepCtx.stepIndex,
+            stepId: stepCtx.stepId,
+            op: stepCtx.op,
+            expected: `SKU 列表至少渲染 1 行有效规格 (${skuTableSelector})`,
+            actual: JSON.stringify(salesSnap),
+            message: "销售属性 SKU 列表未渲染出有效规格行",
+          });
+        }
+
+        const isUniformPositive = (arr) =>
+          Array.isArray(arr) &&
+          arr.length > 0 &&
+          arr.every((v) => /^\d+(?:\.\d+)?$/.test(v) && Number(v) > 0 && v === arr[0]);
+        const isUniformNonNegInt = (arr) =>
+          Array.isArray(arr) &&
+          arr.length > 0 &&
+          arr.every((v) => /^\d+$/.test(v) && v === arr[0]);
+
+        const resolvedSkuPrice = isUniformPositive(salesSnap.prices)
+          ? salesSnap.prices[0]
+          : String(runtimeBinds.runtime.sourcePriceNumber || "");
+        if (!resolvedSkuPrice || !(Number(resolvedSkuPrice) > 0)) {
+          throw new WorkflowError({
+            code: "WORKFLOW_SKU_PRICE_MISSING",
+            blame: "workflow",
+            stepIndex: stepCtx.stepIndex,
+            stepId: stepCtx.stepId,
+            op: stepCtx.op,
+            expected: "从列表货源价格或已填申报价解析出正数价格",
+            actual: JSON.stringify({
+              prices: salesSnap.prices,
+              sourcePriceNumber: runtimeBinds.runtime.sourcePriceNumber,
+            }),
+            message: "无法解析有效的 SKU 申报价",
+          });
+        }
+
+        const resolvedSkuStock = isUniformNonNegInt(salesSnap.stocks) ? salesSnap.stocks[0] : "0";
+        const hasValidSavedVolume =
+          isUniformPositive(salesSnap.lens) &&
+          isUniformPositive(salesSnap.widths) &&
+          isUniformPositive(salesSnap.heights) &&
+          isUniformPositive(salesSnap.weights) &&
+          Number(salesSnap.lens[0]) >= Number(salesSnap.widths[0]) &&
+          Number(salesSnap.widths[0]) >= Number(salesSnap.heights[0]);
+
+        if (hasValidSavedVolume) {
+          runtimeBinds.runtime.pkgLength = salesSnap.lens[0];
+          runtimeBinds.runtime.pkgWidth = salesSnap.widths[0];
+          runtimeBinds.runtime.pkgHeight = salesSnap.heights[0];
+          runtimeBinds.runtime.pkgWeight = salesSnap.weights[0];
+        }
+        runtimeBinds.runtime.skuPrice = resolvedSkuPrice;
+        runtimeBinds.runtime.skuStock = resolvedSkuStock;
+        runtimeBinds.runtime.skuRowCount = salesSnap.skuRowCount;
+        runtimeBinds.runtime.skuMustIncludeTexts = [
+          ...(Array.isArray(salesSnap.firstSpecTokens) ? salesSnap.firstSpecTokens.slice(0, 2) : []),
+          "否",
+        ];
+        const prevPrefer = Array.isArray(runtimeBinds.runtime.modelSizePrefer)
+          ? runtimeBinds.runtime.modelSizePrefer
+          : [];
+        const mergedSizePrefer = [];
+        for (const tok of [...(salesSnap.allSpecTokens || []), ...prevPrefer]) {
+          const s = String(tok || "").trim();
+          if (s && !mergedSizePrefer.includes(s)) mergedSizePrefer.push(s);
+        }
+        runtimeBinds.runtime.modelSizePrefer = mergedSizePrefer;
+
+        return {
+          ok: true,
+          phase: "sales",
+          skuRowCount: salesSnap.skuRowCount,
+          skuPrice: resolvedSkuPrice,
+          skuStock: resolvedSkuStock,
+          pkg: [
+            runtimeBinds.runtime.pkgLength,
+            runtimeBinds.runtime.pkgWidth,
+            runtimeBinds.runtime.pkgHeight,
+            runtimeBinds.runtime.pkgWeight,
+          ],
+          skuMustIncludeTexts: runtimeBinds.runtime.skuMustIncludeTexts,
+          modelSizePrefer: mergedSizePrefer,
+        };
       }
 
       case "row_action": {
@@ -1452,8 +2819,17 @@ export async function runDeterministicWorkflow({
       }
 
       case "scroll_container": {
-        const containerSelector = String(params.containerSelector || "");
-        const direction = String(params.direction || "down");
+        const containerSelector = String(
+          params.containerSelector ||
+            (params.scrollLeft !== undefined || params.fallbackSelector ? params.selector || "" : ""),
+        );
+        const fallbackSelector = String(params.fallbackSelector || "");
+        const direction =
+          params.scrollLeft === "max"
+            ? "maxRight"
+            : params.scrollLeft === 0 || params.scrollLeft === "min"
+              ? "maxLeft"
+              : String(params.direction || "down");
         const amount = Number(params.amount) || 500;
         if (!containerSelector) {
           const { parsed } = await invokeRawTool(
@@ -1464,7 +2840,9 @@ export async function runDeterministicWorkflow({
           return parsed || { ok: true };
         }
         const res = await evalJs(
-          `const el = document.querySelector(${JSON.stringify(containerSelector)});
+          `const el =
+            document.querySelector(${JSON.stringify(containerSelector)}) ||
+            (${JSON.stringify(fallbackSelector)} ? document.querySelector(${JSON.stringify(fallbackSelector)}) : null);
           if (!el) return { found: false };
           const dir = ${JSON.stringify(direction)};
           const amt = ${JSON.stringify(amount)};
@@ -1493,7 +2871,7 @@ export async function runDeterministicWorkflow({
             stepIndex: stepCtx.stepIndex,
             stepId: stepCtx.stepId,
             op: stepCtx.op,
-            expected: `滚动容器存在: ${containerSelector}`,
+            expected: `滚动容器存在: ${containerSelector}${fallbackSelector ? ` 或 ${fallbackSelector}` : ""}`,
             actual: "未找到匹配滚动容器",
             message: `未找到滚动容器: ${containerSelector}`,
           });
@@ -1622,6 +3000,9 @@ export async function runDeterministicWorkflow({
                 nth: params.nth,
                 values: params.values,
                 value: params.value,
+                preserveExistingNonEmpty: params.preserveExistingNonEmpty,
+                saveSelectedBindKey: params.saveSelectedBindKey,
+                hydrateWaitMs: params.hydrateWaitMs,
               },
             ];
         const results = [];
@@ -1629,6 +3010,73 @@ export async function runDeterministicWorkflow({
           const targets = Array.isArray(spec.values)
             ? spec.values.map((v) => String(v))
             : [String(spec.value ?? "")];
+          const preserveNonEmpty = Boolean(spec.preserveExistingNonEmpty ?? params.preserveExistingNonEmpty);
+          const saveBindKey = String(spec.saveSelectedBindKey || params.saveSelectedBindKey || "");
+          const hydrateWaitMs = Math.max(0, Number(spec.hydrateWaitMs ?? params.hydrateWaitMs) || 0);
+
+          if (preserveNonEmpty || hydrateWaitMs > 0) {
+            const pDeadline = Date.now() + hydrateWaitMs;
+            let preItems = [];
+            while (true) {
+              preItems = await evalJs(
+                `const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+                const cleanLbl = (s) => norm(s).replace(/^\\*\\s*/, "").replace(/\\s*[:：]\\s*$/, "");
+                const modals = [...document.querySelectorAll(".ant-modal")].filter((m) => {
+                  const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+                  const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+                  const r = m.getBoundingClientRect();
+                  return ws.display !== "none" && ws.visibility !== "hidden" && r.width > 0 && r.height > 0;
+                });
+                const scope = modals.length ? modals[modals.length - 1] : document;
+                let host = null;
+                if (${JSON.stringify(String(spec.selector || ""))}) {
+                  const all = [...scope.querySelectorAll(${JSON.stringify(String(spec.selector || ""))})];
+                  host = all[${Number(spec.nth) || 0}] || null;
+                } else if (${JSON.stringify(String(spec.label || ""))}) {
+                  const wantL = cleanLbl(${JSON.stringify(String(spec.label || ""))});
+                  const fields = [...scope.querySelectorAll(".ant-form-item")];
+                  const hitF =
+                    fields.find((f) => cleanLbl((f.querySelector(".ant-form-item-label, label") || {}).innerText || "") === wantL) ||
+                    fields.find((f) => cleanLbl((f.querySelector(".ant-form-item-label, label") || {}).innerText || "").includes(wantL));
+                  host = hitF ? hitF.querySelector(".ant-select, select") : null;
+                }
+                if (!host) return [];
+                return [...host.querySelectorAll(".ant-select-selection-item")]
+                  .map((i) => norm((i.querySelector(".ant-select-selection-item-content") || i).textContent || ""))
+                  .filter(Boolean);`,
+                stepCtx,
+              );
+              const itemsArr = Array.isArray(preItems) ? preItems : [];
+              const allTargetsAlready = targets.length > 0 && targets.every((t) => itemsArr.includes(t));
+              if (allTargetsAlready || (preserveNonEmpty && itemsArr.length > 0)) {
+                preItems = itemsArr;
+                break;
+              }
+              if (Date.now() >= pDeadline) {
+                preItems = itemsArr;
+                break;
+              }
+              await sleepWithAbort(120, signal);
+            }
+            const curItems = Array.isArray(preItems) ? preItems : [];
+            const allTargetsPresent = targets.length > 0 && targets.every((t) => curItems.includes(t));
+            if (allTargetsPresent || (preserveNonEmpty && curItems.length > 0)) {
+              if (saveBindKey) {
+                runtimeBinds.runtime[saveBindKey] = allTargetsPresent ? [...targets] : [...curItems];
+              }
+              for (const v of allTargetsPresent ? targets : curItems) {
+                results.push({
+                  target: spec.label || spec.selector,
+                  value: v,
+                  alreadySelected: true,
+                  selected: v,
+                });
+              }
+              continue;
+            }
+          }
+
+          const chosenForBind = [];
           for (const val of targets) {
             const selArgs = {
               ...(spec.label ? { label: String(spec.label) } : {}),
@@ -1649,12 +3097,16 @@ export async function runDeterministicWorkflow({
                 message: `下拉选择失败 (${spec.label || spec.selector} -> ${val})`,
               });
             }
+            chosenForBind.push(String(parsed.selected || val));
             results.push({
               target: spec.label || spec.selector,
               value: val,
               alreadySelected: Boolean(parsed.alreadySelected),
               selected: parsed.selected,
             });
+          }
+          if (saveBindKey && chosenForBind.length > 0) {
+            runtimeBinds.runtime[saveBindKey] = chosenForBind;
           }
         }
         return { ok: true, results };
@@ -2220,7 +3672,10 @@ export async function runDeterministicWorkflow({
         const fieldSelector = String(params.fieldSelector || ".ant-form-item");
         const labelSelector = String(params.labelSelector || ".ant-form-item-label, label");
         const rules = Array.isArray(params.rules) ? params.rules : [];
+        const preserveExisting = Boolean(params.preserveExisting);
+        const saveExpectedBindKey = params.saveExpectedBindKey ? String(params.saveExpectedBindKey) : "";
         const summary = [];
+        const expectedFields = [];
         let mutatedCount = 0;
 
         if (params.navButtonSelector && params.navButtonText) {
@@ -2243,6 +3698,57 @@ export async function runDeterministicWorkflow({
           checkAbort(signal);
           if (rule.kind === "composition") {
             const matSel = String(rule.materialSelector || "");
+            const propSel = String(rule.proportionSelector || "");
+            const propVal = String(rule.proportionValue ?? "100");
+            const compLabel = String(rule.labelIncludes || "成分");
+
+            if (preserveExisting) {
+              const curComp = await evalJs(
+                `const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+                const matHost = document.querySelector(${JSON.stringify(matSel)});
+                const matItems = matHost
+                  ? [...matHost.querySelectorAll(".ant-select-selection-item")]
+                      .map((i) => norm((i.querySelector(".ant-select-selection-item-content") || i).textContent || ""))
+                      .filter(Boolean)
+                  : [];
+                const pEl = document.querySelector(${JSON.stringify(propSel)});
+                const pVal = pEl ? String(pEl.value ?? "").trim() : "";
+                return { matItems, pVal };`,
+                stepCtx,
+              );
+              if (
+                Array.isArray(curComp?.matItems) &&
+                curComp.matItems.length > 0 &&
+                curComp.pVal === propVal
+              ) {
+                if (rule.summaryMustInclude) {
+                  const bodyHas = await evalJs(
+                    `return (document.body ? document.body.innerText : "").includes(${JSON.stringify(String(rule.summaryMustInclude))});`,
+                    stepCtx,
+                  );
+                  if (!bodyHas) {
+                    throw new WorkflowError({
+                      code: "WORKFLOW_ATTR_COMPOSITION_SUM_INVALID",
+                      blame: "workflow",
+                      stepIndex: stepCtx.stepIndex,
+                      stepId: stepCtx.stepId,
+                      op: stepCtx.op,
+                      expected: `页面出现校验文案 "${rule.summaryMustInclude}"`,
+                      actual: "未检测到成分比例 100% 校验通过文案",
+                      message: `成分比例合计校验未通过`,
+                    });
+                  }
+                }
+                summary.push({ label: "composition", value: `${curComp.matItems[0]}:${curComp.pVal}`, preserved: true });
+                expectedFields.push({
+                  labelIncludes: compLabel,
+                  items: [curComp.matItems[0]],
+                  inputs: [curComp.pVal],
+                });
+                continue;
+              }
+            }
+
             const existsCount = await evalJs(
               `return document.querySelectorAll(${JSON.stringify(matSel)}).length;`,
               stepCtx,
@@ -2297,8 +3803,6 @@ export async function runDeterministicWorkflow({
               });
             }
             if (!selRes.alreadySelected) mutatedCount += 1;
-            const propSel = String(rule.proportionSelector);
-            const propVal = String(rule.proportionValue);
             const curProp = await evalJs(
               `const el = document.querySelector(${JSON.stringify(propSel)});
               return el ? String(el.value ?? "") : null;`,
@@ -2343,8 +3847,35 @@ export async function runDeterministicWorkflow({
               }
             }
             summary.push({ label: "composition", value: `${rule.materialValue}:${propVal}` });
+            expectedFields.push({
+              labelIncludes: compLabel,
+              items: [String(rule.materialValue)],
+              inputs: [propVal],
+            });
           } else if (rule.kind === "select") {
             const vals = Array.isArray(rule.values) ? rule.values.map(String) : [String(rule.value)];
+            if (preserveExisting) {
+              const curSelItems = await evalJs(
+                `const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+                const cleanLbl = (s) => norm(s).replace(/^\\*\\s*/, "").replace(/\\s*[:：]\\s*$/, "");
+                const root = document.querySelector(${JSON.stringify(containerSelector)}) || document;
+                const want = cleanLbl(${JSON.stringify(String(rule.label || ""))});
+                const fields = [...root.querySelectorAll(${JSON.stringify(fieldSelector)})];
+                const hit =
+                  fields.find((f) => cleanLbl((f.querySelector(${JSON.stringify(labelSelector)}) || {}).innerText || "") === want) ||
+                  fields.find((f) => cleanLbl((f.querySelector(${JSON.stringify(labelSelector)}) || {}).innerText || "").includes(want));
+                if (!hit) return [];
+                return [...hit.querySelectorAll(".ant-select-selection-item")]
+                  .map((s) => norm((s.querySelector(".ant-select-selection-item-content") || s).textContent || ""))
+                  .filter(Boolean);`,
+                stepCtx,
+              );
+              if (Array.isArray(curSelItems) && curSelItems.length > 0) {
+                summary.push({ label: rule.label, values: curSelItems, preserved: true });
+                expectedFields.push({ labelIncludes: String(rule.label), items: curSelItems });
+                continue;
+              }
+            }
             for (const val of vals) {
               const { parsed: sRes, text: sTxt } = await invokeRawTool(
                 "select_option",
@@ -2366,6 +3897,7 @@ export async function runDeterministicWorkflow({
               if (!sRes.alreadySelected) mutatedCount += 1;
             }
             summary.push({ label: rule.label, values: vals });
+            expectedFields.push({ labelIncludes: String(rule.label), items: vals });
           } else if (rule.kind === "number") {
             const inSel = String(rule.inputSelector);
             const nth = Number(rule.nth) || 0;
@@ -2387,7 +3919,11 @@ export async function runDeterministicWorkflow({
                 message: `未找到数值属性输入框: ${inSel}`,
               });
             }
-            if (curNum !== targetVal) {
+            const curNumTrim = String(curNum).trim();
+            const hasValidExistingNum =
+              preserveExisting && /^\d+(?:\.\d+)?$/.test(curNumTrim) && Number(curNumTrim) > 0;
+            const finalNumVal = hasValidExistingNum ? curNumTrim : targetVal;
+            if (!hasValidExistingNum && curNum !== targetVal) {
               const { parsed: nRes, text: nTxt } = await invokeRawTool(
                 "fill",
                 { selector: inSel, ...(nth > 0 ? { nth } : {}), value: targetVal, blur: true },
@@ -2428,7 +3964,14 @@ export async function runDeterministicWorkflow({
                 });
               }
             }
-            summary.push({ label: rule.label || inSel, value: targetVal });
+            summary.push({ label: rule.label || inSel, value: finalNumVal, ...(hasValidExistingNum ? { preserved: true } : {}) });
+            if (rule.label) {
+              expectedFields.push({
+                labelIncludes: String(rule.label),
+                ...(rule.expectedUnit ? { items: [String(rule.expectedUnit)] } : {}),
+                inputs: [finalNumVal],
+              });
+            }
           } else if (rule.kind === "field_input") {
             const labelKey = String(rule.labelIncludes || rule.label || "");
             const targetVal = String(rule.value ?? "");
@@ -2444,10 +3987,11 @@ export async function runDeterministicWorkflow({
               const inp = [...hit.querySelectorAll("input")].find((i) => i.type !== "search" && i.type !== "checkbox" && i.type !== "radio");
               if (!inp) return { found: false, reason: "no_input" };
               const cur = String(inp.value ?? "");
-              if (cur !== ${JSON.stringify(targetVal)}) {
+              const preserve = ${preserveExisting ? "true" : "false"} && cur.trim() !== "";
+              if (!preserve && cur !== ${JSON.stringify(targetVal)}) {
                 inp.setAttribute("data-pl-wf-act", ${JSON.stringify(fNonce)});
               }
-              return { found: true, value: cur };`,
+              return { found: true, value: cur, preserve };`,
               stepCtx,
             );
             if (!fProbe?.found) {
@@ -2462,7 +4006,8 @@ export async function runDeterministicWorkflow({
                 message: `未找到属性输入框: ${labelKey}`,
               });
             }
-            if (fProbe.value !== targetVal) {
+            const finalFieldVal = fProbe.preserve ? String(fProbe.value).trim() : targetVal;
+            if (!fProbe.preserve && fProbe.value !== targetVal) {
               const sel = `[data-pl-wf-act="${fNonce}"]`;
               try {
                 const { parsed: fiRes, text: fiTxt } = await invokeRawTool(
@@ -2493,8 +4038,15 @@ export async function runDeterministicWorkflow({
                 ).catch(() => {});
               }
             }
-            summary.push({ label: labelKey, value: targetVal });
+            summary.push({ label: labelKey, value: finalFieldVal, ...(fProbe.preserve ? { preserved: true } : {}) });
+            if (labelKey) {
+              expectedFields.push({ labelIncludes: labelKey, inputs: [finalFieldVal] });
+            }
           }
+        }
+
+        if (saveExpectedBindKey) {
+          runtimeBinds.runtime[saveExpectedBindKey] = expectedFields;
         }
 
         if (params.requireAllStarredFilled !== false) {
@@ -2586,6 +4138,13 @@ export async function runDeterministicWorkflow({
           alreadyBoundTexts.every((sub) => String(existing).includes(sub)) &&
           (!alreadyBoundRegex || alreadyBoundRegex.test(String(existing)))
         ) {
+          if (params.saveVerifyBindKey) {
+            const rxHit = alreadyBoundRegex ? alreadyBoundRegex.exec(String(existing))?.[0] || "" : "";
+            runtimeBinds.runtime[String(params.saveVerifyBindKey)] = [
+              ...alreadyBoundTexts,
+              ...(rxHit ? [rxHit] : []),
+            ];
+          }
           return { ok: true, skipped: true, boundText: clipBound(existing) };
         }
 
@@ -3028,6 +4587,9 @@ export async function runDeterministicWorkflow({
           }
           await sleepWithAbort(120, signal);
         }
+        if (params.saveVerifyBindKey) {
+          runtimeBinds.runtime[String(params.saveVerifyBindKey)] = [...mustIncludeAfter];
+        }
         return { ok: true, skipped: false, selectedOptions, boundText: clipBound(boundAfter) };
       }
 
@@ -3324,6 +4886,8 @@ export async function runDeterministicWorkflow({
               stepCtx,
               currentUrl,
             });
+            runtimeBinds.runtime.wasModified = false;
+            commitMeta = { mode: "idempotent_short_circuit", elapsedMs: Math.max(1, Date.now() - startedMs) };
             return {
               ok: true,
               mode: "idempotent_short_circuit",
@@ -3373,6 +4937,9 @@ export async function runDeterministicWorkflow({
           actionLabel: confirmText,
           stepCtx,
         });
+
+        runtimeBinds.runtime.wasModified = true;
+        commitMeta = { mode: "committed_via_confirm", elapsedMs: Math.max(1, Date.now() - startedMs) };
 
         return {
           ok: true,
@@ -3458,7 +5025,7 @@ export async function runDeterministicWorkflow({
       if (typeof out.changed === "number") return out.changed;
       return out.skipped === false ? 1 : 0;
     }
-    if (op === "ensure_attr_fields") {
+    if (op === "ensure_attr_fields" || op === "ensure_checkboxes") {
       return Number(out.mutatedCount) || 0;
     }
     return 0;
@@ -3478,7 +5045,7 @@ export async function runDeterministicWorkflow({
     let startedEmitted = false;
 
     try {
-      const shouldRun = evaluateWhenPredicate(step.when, directive.binds, stepCtx);
+      const shouldRun = evaluateWhenPredicate(step.when, runtimeBinds, stepCtx);
       if (!shouldRun) {
         skippedSteps += 1;
         const skipTs = Date.now();
@@ -3514,7 +5081,7 @@ export async function runDeterministicWorkflow({
         continue;
       }
 
-      const params = interpolateParams(step.params || {}, directive.binds, stepCtx);
+      const params = interpolateParams(step.params || {}, runtimeBinds, stepCtx);
       summaryArgs = summarizeStepArgs(step.id, params);
       onStepStart?.({ stepIndex, stepId: step.id, name: step.op, args: summaryArgs });
       startedEmitted = true;
@@ -3670,6 +5237,11 @@ export async function runDeterministicWorkflow({
     executedSteps,
     skippedSteps,
     durationMs: Math.max(1, Date.now() - startedMs),
+    commitMode: commitMeta.mode,
+    commitElapsedMs: commitMeta.elapsedMs,
+    mutationsCount,
+    targetSummary: String(runtimeBinds.runtime.targetSummary || ""),
+    runtime: runtimeBinds.runtime,
     errorMessage: null,
     failure: null,
   };
