@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>剪藏知识图谱 · PageLens</title><link rel="stylesheet" href="graph.css"></head>
+<body><main><header><small>PageLens / 知识盘点</small><h1>剪藏知识图谱</h1></header>
+<div class="layout"><aside><label>搜索主题或剪藏<input id="query" type="search"></label>
+<label>领域<select id="domain"></select></label><h2>主题索引</h2><div id="topics"></div></aside>
+<section><h2 id="heading">选择主题</h2><p id="summary" role="status"></p>
+<form id="assign" hidden><label>主题所属领域<input id="custom" placeholder="输入领域名" maxlength="60" required></label>
+<button>保存归类</button></form><h3>共同出现的主题</h3><div id="map"></div><div id="edges"></div><h3>来源剪藏</h3><div id="sources"></div></section>
+</div></main><script type="module" src="graph.js"></script></body></html>

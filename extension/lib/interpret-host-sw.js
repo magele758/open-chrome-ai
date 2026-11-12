@@ -5,6 +5,9 @@
  *   host   --pl.interpret.native-> SW (native messaging, e.g. media helper start)
  *   host   --pl.interpret.event--> panel (and SW, which closes an idle document)
  */
+import { loadSettings } from "./storage.js";
+import { loadDubJobs, unfinished } from "./dub-queue.js";
+import { videoIdentity } from "./library.js";
 import { injectVideo } from "./chrome.js";
 import { NATIVE_HOST_NAME } from "./native-host.js";
 import { AUDIO_PAGE, offscreenDoc } from "./offscreen-doc.js";
@@ -24,6 +27,24 @@ export function createInterpretRouter({
   const forward = msg => doc.send({ ...msg, type: INTERPRET_HOST });
 
   async function command(msg) {
+    if (msg.op === "queueAdd") {
+      const { url, title, id: tabId } = msg.tab;
+      if (!/^https?:\/\//i.test(url)) throw Error("请选择视频网页");
+      let media;
+      if (tabId && (await chromeApi.tabs.get(tabId).catch(() => null))?.url === url) {
+        const found = await video(tabId, "media").catch(() => null);
+        if (found && (await chromeApi.tabs.get(tabId).catch(() => null))?.url === url) {
+          media = { src: found.src, audioSrc: found.audioSrc, duration: found.duration };
+        }
+      }
+      await chromeApi.alarms.create("pl.queue.watch", { delayInMinutes: 1 });
+      return doc.withDocument(() => forward({ op: msg.op, job: { url, title, id: videoIdentity(url), media } }));
+    }
+    if (msg.op === "queueList" && !(await doc.exists())) {
+      const jobs = await loadDubJobs();
+      if (jobs.some(unfinished)) await resumePending();
+      return { ok: true, jobs: jobs.map(({ media, ...row }) => row) };
+    }
     if (msg.op === "start") return doc.withDocument(() => forward(msg));
     if (!(await doc.exists())) {
       if (msg.op === "list") return { ok: true, tasks: [] };
@@ -41,6 +62,9 @@ export function createInterpretRouter({
   /** Returns a promise for handled requests, or null when the message is not ours. */
   function handle(msg, sender) {
     switch (msg?.type) {
+      case "pl.queue.settings":
+        if (!fromOffscreen(sender)) return Promise.resolve({ ok: false });
+        return loadSettings().then(result => ({ ok: true, result }));
       case INTERPRET_CMD:
         return command(msg);
       case INTERPRET_VIDEO:
@@ -55,6 +79,7 @@ export function createInterpretRouter({
   }
 
   function observe(msg) {
+    if (msg?.type === "pl.queue.idle") { void doc.release().catch(() => {}); return; }
     if (msg?.type !== INTERPRET_EVENT || msg.event?.type !== "idle") return;
     if ((msg.tasks || []).some(isActiveState)) return;
     void doc.release().catch(() => {});
@@ -64,7 +89,18 @@ export function createInterpretRouter({
     if (await doc.exists()) await forward({ op: "tabRemoved", tabId }).catch(() => {});
   }
 
+  async function resumePending() {
+    if (!(await loadDubJobs()).some(unfinished)) return;
+    await chromeApi.alarms.create("pl.queue.watch", { delayInMinutes: 1 });
+    await doc.withDocument(() => forward({ op: "queueResume" }));
+  }
+
   function install() {
+    chromeApi.runtime.onStartup?.addListener(() => { void resumePending(); });
+    chromeApi.runtime.onInstalled?.addListener(() => { void resumePending(); });
+    chromeApi.alarms?.onAlarm.addListener(alarm => {
+      if (alarm.name === "pl.queue.watch") void resumePending();
+    });
     chromeApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       observe(msg);
       const pending = handle(msg, sender);

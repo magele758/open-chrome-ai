@@ -6,6 +6,7 @@
  * 3. Local storage index for URL-based smart recall & browsing
  */
 
+import { describeClip } from "./clipping-graph.js";
 import { readLibraryText, writeLibraryText, deleteLibraryFile, videoIdentity } from "./library.js";
 import { requireOptionalFeature } from "./optional-permissions.js";
 
@@ -457,6 +458,7 @@ export async function saveClippingRecord(clipping) {
     clipping.pageKey = clippingPageKey(clipping.url);
   }
   const list = await listAllClippings();
+  clipping.topicIndex = { version: 1, ...describeClip(clipping) };
   const next = [clipping, ...list.filter((item) => item.id !== clipping.id)];
   const capped = next.slice(0, 1000);
   await chrome.storage.local.set({ [CLIPPINGS_STORAGE_KEY]: capped });

@@ -734,6 +734,7 @@ async function toggleDubPlayback() {
 
   const tabId = dubTab?.id;
   if (!tabId) return;
+  if (interpretController.isRunning(tabId)) await interpretController.stop(tabId);
 
   try {
     const buf = await archive.audioBlob.slice(0, 16).arrayBuffer();

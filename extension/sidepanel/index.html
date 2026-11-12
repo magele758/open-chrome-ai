@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PageLens</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="dub-queue.css" />
   <link rel="stylesheet" href="themes.css" />
   <link rel="stylesheet" href="settings.css" />
   <link rel="stylesheet" href="../vendor/katex/katex.min.css" />
@@ -70,6 +71,14 @@
         </button>
       </nav>
     </header>
+
+    <details id="dub-queue">
+      <summary>同传预处理队列</summary>
+      <button type="button" class="secondary mini" id="queue-add">将当前视频加入队列</button>
+      <div id="queue-status" role="status"></div>
+      <ol id="queue-items"></ol>
+      <audio id="queue-player" controls hidden></audio>
+    </details>
 
     <section id="media-zone" class="media-zone hidden" aria-label="音视频工具">
       <div class="media-bar">
@@ -876,6 +885,7 @@
       <section id="view-review" class="settings hidden">
         <div class="review-header-row panel-head">
           <h2>💡 知识回顾与复盘</h2>
+          <a href="graph.html" target="_blank" rel="noopener">剪藏知识图谱</a>
           <button class="secondary mini" type="button" id="btn-review-back">返回对话</button>
         </div>
         <p class="lead">按天、周、月聚合你收藏的内容，深入提炼核心认知图谱与个人思考，沉淀长久思维资产。</p>

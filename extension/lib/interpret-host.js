@@ -7,6 +7,8 @@
  * Offscreen documents only expose chrome.runtime, so page control and native
  * messaging are proxied through the service worker.
  */
+import { DubQueue } from "./dub-queue.js";
+import { preprocessAudio } from "./preprocess-audio.js";
 import { InterpretController } from "./interpret-controller.js";
 import { INTERPRET_EVENT, INTERPRET_HOST, INTERPRET_NATIVE, INTERPRET_VIDEO, isActiveState, toMessage } from "./interpret-messages.js";
 
@@ -48,8 +50,24 @@ export function createInterpretHost({ runtime = globalThis.chrome?.runtime, isBu
     queueMicrotask(() => broadcast({ type: INTERPRET_EVENT, ...payload, tasks: snapshot() }));
   });
 
+  const queue = new DubQueue({ process: async (row, progress) =>
+    preprocessAudio(row, await rpc(runtime, { type: "pl.queue.settings" }), progress) });
+  function resumeQueue() {
+    void queue.drain().then(() => broadcast({ type: "pl.queue.idle" }))
+      .catch(err => console.error("[dub-queue]", err));
+  }
+
   async function handle(msg) {
     switch (msg?.op) {
+      case "queueAdd":
+        await queue.enqueue(msg.job);
+        resumeQueue();
+        return { ok: true };
+      case "queueResume":
+        resumeQueue();
+        return { ok: true };
+      case "queueList":
+        return { ok: true, jobs: await queue.list() };
       case "start": {
         const tab = msg.tab;
         if (!tab?.id) throw new Error("没有可操作的标签页");
@@ -71,7 +89,7 @@ export function createInterpretHost({ runtime = globalThis.chrome?.runtime, isBu
       case "list":
         return { ok: true, tasks: snapshot(), currentTabId: ctrl.currentTabId };
       case "busy":
-        return { ok: true, busy: ctrl.listStates().some(isActiveState) || Boolean(isBusy()) };
+        return { ok: true, busy: Boolean(queue.worker) || ctrl.listStates().some(isActiveState) || Boolean(isBusy()) };
       case "toggleOriginalAudio":
         return { ok: true, originalAudioOn: await ctrl.toggleOriginalAudio(msg.tabId) };
       case "editLine":

@@ -117,3 +117,19 @@ export async function idbListKeys() {
     return [];
   }
 }
+
+/** Read one namespace in a single transaction without scanning media blobs. */
+export async function idbValuesWithPrefix(prefix) {
+  if (!idbAvailable()) return [];
+  const db = await openDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const store = db.transaction(DATA_STORE, "readonly").objectStore(DATA_STORE);
+      const req = store.getAll(IDBKeyRange.bound(prefix, prefix + "\uffff"));
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  } finally {
+    db.close();
+  }
+}
