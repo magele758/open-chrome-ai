@@ -1,0 +1,8 @@
+#dub-queue {padding: 5px 12px; border-bottom: 1px solid var(--line); max-height: 38vh; overflow: auto; flex: none}
+#dub-queue summary {cursor: pointer; color: var(--ink); font-weight: 600}
+#dub-queue[open] summary {margin-bottom: 6px}
+#queue-add {max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis}
+#queue-items {margin: 4px 0; padding-left: 22px}
+#queue-items li {margin: 6px 0; overflow-wrap: anywhere}
+#queue-status {color: var(--muted)}
+#queue-player {max-width: 100%}

@@ -87,16 +87,18 @@ function renderSettingsForm() {
 }
 
 function asrExtraFields(asr) {
-  const lang = asr?.language || "";
-  return `
-    <label class="field">识别语言
-      <select data-k="asr.language">
-        <option value="" ${lang === "" ? "selected" : ""}>自动</option>
-        <option value="zh" ${lang === "zh" ? "selected" : ""}>中文</option>
-        <option value="en" ${lang === "en" ? "selected" : ""}>English</option>
-      </select>
-    </label>
-  `;
+  const languageField = (key, label) => {
+    const lang = asr?.[key] || "";
+    return `
+      <label class="field">${label}
+        <select data-k="asr.${key}">
+          <option value="" ${lang === "" ? "selected" : ""}>自动</option>
+          <option value="zh" ${lang === "zh" ? "selected" : ""}>中文</option>
+          <option value="en" ${lang === "en" ? "selected" : ""}>English</option>
+        </select>
+      </label>`;
+  };
+  return languageField("language", "普通转写识别语言") + languageField("interpretLanguage", "同传原声语言");
 }
 
 function ttsFields(tts) {

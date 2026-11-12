@@ -3,7 +3,6 @@ import { $ } from "./dom.js";
 import { flagInjection, ingestTaint, showHitlModal, updateHitlBadge } from "./hitl-ui.js";
 import { renderContext } from "./media-chrome.js";
 import {
-  createMessageFooter,
   createThinkingBox,
   fillBotBody,
   fillToolTrace,
@@ -13,6 +12,7 @@ import {
   renderMessages,
   renderSkills,
   setUiErrorObserver,
+  syncLiveStatus,
   updateThinkingBox,
 } from "./messages.js";
 import { applyUiFont, renderModelLine, setSendButton, skillsOn } from "./model-line.js";
@@ -111,17 +111,24 @@ function isPlaceholderBotText(text) {
   return !s || s === "…";
 }
 
+function afterLive(wrap) {
+  return wrap.querySelector(":scope > .stream-live") || wrap.querySelector(":scope > .who");
+}
+
 function paintBot(botMsg) {
   const bots = document.querySelectorAll("#msgs .msg.bot");
   const wrap = bots[bots.length - 1];
   if (!wrap) return;
+  syncLiveStatus(wrap, botMsg, { streaming: state.busy && !botMsg.metrics && !botMsg.error });
   const trace = Array.isArray(botMsg.trace) ? botMsg.trace : [];
   let traceEl = wrap.querySelector(".tool-trace") || wrap.querySelector(".trace");
   if (trace.length) {
     if (!traceEl) {
       traceEl = document.createElement("div");
       traceEl.className = "tool-trace";
-      wrap.querySelector(".who")?.after(traceEl);
+      const anchor = afterLive(wrap);
+      if (anchor) anchor.after(traceEl);
+      else wrap.prepend(traceEl);
     }
     traceEl.className = "tool-trace";
     const sig = trace.map((t) => [t.id, t.status, t.ok, t.preview?.length, t.durationMs].join(":")).join("|");
@@ -138,7 +145,7 @@ function paintBot(botMsg) {
   if (thinking) {
     if (!thinkingEl) {
       thinkingEl = createThinkingBox(thinking, { isStreaming: isThinkingNow });
-      const anchor = wrap.querySelector(".tool-trace") || wrap.querySelector(".trace") || wrap.querySelector(".who");
+      const anchor = wrap.querySelector(".tool-trace") || wrap.querySelector(".trace") || afterLive(wrap);
       anchor ? anchor.after(thinkingEl) : wrap.prepend(thinkingEl);
     } else {
       updateThinkingBox(thinkingEl, thinking, { isStreaming: isThinkingNow });
@@ -149,12 +156,12 @@ function paintBot(botMsg) {
   }
 
   let body = wrap.querySelector(".body");
-  const displayText = answer || (isThinkingNow ? "" : (botMsg.text || "…"));
+  const displayText = answer && answer !== "…" ? answer : "";
   if (displayText) {
     if (!body) {
       body = document.createElement("div");
       body.className = "body";
-      const afterEl = thinkingEl || wrap.querySelector(".tool-trace") || wrap.querySelector(".trace") || wrap.querySelector(".who");
+      const afterEl = thinkingEl || wrap.querySelector(".tool-trace") || wrap.querySelector(".trace") || afterLive(wrap);
       if (afterEl) afterEl.after(body);
       else wrap.appendChild(body);
     }
@@ -163,11 +170,7 @@ function paintBot(botMsg) {
     body.innerHTML = "";
   }
 
-  if (botMsg.metrics) {
-    const existing = wrap.querySelector(".msg-footer");
-    if (existing) existing.remove();
-    wrap.appendChild(createMessageFooter(botMsg));
-  }
+  wrap.querySelector(".msg-footer")?.remove();
   messageScroll?.onContentGrow();
 }
 
@@ -551,7 +554,14 @@ async function executeLoop({
     if (!setupFailed) {
       state.abort = new AbortController();
       if (isWorkflowRun) {
-        state.run = null;
+        state.run = {
+          status: "running",
+          workflow: true,
+          history: [],
+          lastText: "",
+          turnsUsed: 0,
+          startedAt: Date.now(),
+        };
       } else {
         state.run = {
           status: "running",
@@ -801,7 +811,7 @@ async function executeLoop({
     setUiErrorObserver(null);
     const userStop = state.stopIntent === "user";
     const finished = ["stop", "max_turns", "empty_assistant"].includes(result?.reason);
-    if (userStop || finished || failed) state.run = null;
+    if (isWorkflowRun || userStop || finished || failed) state.run = null;
     state.busy = false;
     state.abort = null;
     state.stopIntent = null;

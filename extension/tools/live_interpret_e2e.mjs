@@ -127,6 +127,11 @@ const running = runPlannedInterpret({ tabId: 1, sourceUrl: url, settings, signal
   audioDuration: duration, createAudio,
   openSource: async args => {
     const source = await openInterpretSource(args);
+    // Exercise the production ASR path even when the provider now offers captions.
+    if (process.env.E2E_ASR_ONLY === '1') {
+      source.subtitles = null;
+      source.subtitlesComplete = false;
+    }
     state.duration = source.duration;
     subtitleCues = source.subtitles?.filter(c => (c.src || c.text || '').trim()) || null;
     console.log(`[${el()}s] source ready: duration=${source.duration}s subtitles=${source.subtitles?.length || 0} complete=${source.subtitlesComplete}`);

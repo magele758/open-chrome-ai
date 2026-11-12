@@ -363,7 +363,7 @@ export function packForModel(history, { budget = CHAR_BUDGET, sessionId = "defau
 }
 
 export function isResumableRun(run, now = Date.now()) {
-  if (!run || run.status !== "running") return false;
+  if (!run || run.status !== "running" || run.workflow) return false;
   if (run.startedAt && now - Number(run.startedAt) > RUN_STALE_MS) return false;
   const hist = run.history || [];
   if (!hist.some((m) => m.role === "user")) return false;

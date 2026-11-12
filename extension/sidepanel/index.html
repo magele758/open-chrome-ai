@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PageLens</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="dub-queue.css" />
   <link rel="stylesheet" href="themes.css" />
   <link rel="stylesheet" href="settings.css" />
   <link rel="stylesheet" href="../vendor/katex/katex.min.css" />
@@ -70,6 +71,14 @@
         </button>
       </nav>
     </header>
+
+    <details id="dub-queue">
+      <summary>同传预处理队列</summary>
+      <button type="button" class="secondary mini" id="queue-add">将当前视频加入队列</button>
+      <div id="queue-status" role="status"></div>
+      <ol id="queue-items"></ol>
+      <audio id="queue-player" controls hidden></audio>
+    </details>
 
     <section id="media-zone" class="media-zone hidden" aria-label="音视频工具">
       <div class="media-bar">
@@ -483,8 +492,9 @@
 
             <details class="card shortcut-card accordion" id="settings-group-shortcuts">
               <summary>
-                <span style="font-weight:600">快捷问题</span>
-                <span class="muted" id="settings-state-shortcuts">3 条　›</span>
+                <span class="chev" aria-hidden="true"></span>
+                <span class="group-text"><strong>快捷问题</strong></span>
+                <span class="muted" id="settings-state-shortcuts">0 条</span>
               </summary>
               <div class="inner" style="border:0;padding:12px 0 2px">
                 <p class="hint" style="margin-top:0">出现在输入框上方。点一下就把这段话发给模型。</p>
@@ -869,12 +879,13 @@
           <button class="secondary" type="button" id="btn-import-all-obsidian">全部入库</button>
           <span class="status" id="hist-status"></span>
         </div>
-        <div id="hist-list"></div>
+        <div id="hist-list" aria-label="按网站分组的对话"></div>
       </section>
 
       <section id="view-review" class="settings hidden">
         <div class="review-header-row panel-head">
           <h2>💡 知识回顾与复盘</h2>
+          <a href="graph.html" target="_blank" rel="noopener">剪藏知识图谱</a>
           <button class="secondary mini" type="button" id="btn-review-back">返回对话</button>
         </div>
         <p class="lead">按天、周、月聚合你收藏的内容，深入提炼核心认知图谱与个人思考，沉淀长久思维资产。</p>

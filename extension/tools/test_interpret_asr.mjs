@@ -63,3 +63,16 @@ const recovered = await transcribeInterpretSlice({}, { blob: longBlob }, {
 assert.equal(recursiveCalls, 7);
 assert.deepEqual(recovered.map(s => [s.start, s.end]), [[0, 2.5], [2.5, 5], [5, 7.5], [7.5, 10]]);
 console.log('PASS bounded recursive recovery and isolated unrecoverable spans');
+
+const credit = '优优独播剧场——YoYo Television Series Exclusive';
+const goodLine = { start: 1, end: 3, text: 'Now look at the tests.' };
+const rejected = [];
+const fixture = [{ start: 0, end: 0.86, text: credit }, goodLine];
+const checked = await transcribeInterpretSlice({}, item, {
+  transcribe: async () => fixture,
+  onUnrecognized: range => rejected.push(range),
+});
+assert.deepEqual(checked, [goodLine]);
+assert.deepEqual(rejected, [{ start: 0, end: 0.86 }]);
+const plausible = [{ start: 0, end: 5, text: credit }];
+assert.deepEqual(await transcribeInterpretSlice({}, item, { transcribe: async () => plausible }), plausible);

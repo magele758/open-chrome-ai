@@ -17,8 +17,9 @@ import { interpretSourceUrls } from './media-url.js';
 import { prepareSpeakerReference } from './interpret-reference.js';
 import { stripSubtitleDirections } from './subtitle-text.js';
 import { retryInterpretRequest, hedgeInterpretRequest } from './interpret-retry.js';
-import { INTERPRET_VERSION, DUB_ARCHIVE_VERSION, speechUnits, safeBudgetRewrite, failedTranslation, bufferingTarget, stableAudioIdentity, ttsAudioIdentity } from './interpret-policy.js';
+import { INTERPRET_VERSION, dubArchiveVersion, speechUnits, safeBudgetRewrite, failedTranslation, bufferingTarget, stableAudioIdentity, ttsAudioIdentity } from './interpret-policy.js';
 
+const interpretAsr = asr => ({ ...asr, language: asr?.interpretLanguage || '' });
 const modelIdentity = model => ({ baseUrl: model?.baseUrl, model: model?.model, language: model?.language, preset: model?.preset });
 const parseJson = text => parseTolerantJson(text);
 // Punctuation-only cues ("。") carry no speech; models return empty text for them.
@@ -387,7 +388,7 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
   const sourceKey = analysis.fingerprint || await dubKey({ analysis, url: source.url });
   const subtitles = source.subtitles?.map((c, n) => ({ ...c, src: stripSubtitleDirections(c.src || c.text), ...subtitleSpeaker(c, spans, n) })).filter(c => c.src);
   const useSubtitles = Boolean(source.subtitles?.length) && !subtitles.some(c => c.crossSpeaker);
-  const recognitionKey = await dubKey({ sourceKey, spans, subtitles, analysisVersion: analysis.version, asr: modelIdentity(settings.asr), version: 5 });
+  const recognitionKey = await dubKey({ sourceKey, spans, subtitles, analysisVersion: analysis.version, asr: modelIdentity(interpretAsr(settings.asr)), version: 6 });
   let incompleteRecognition = false;
   let cues = await cacheGet(recognitionKey);
   if (!cues) {
@@ -426,7 +427,7 @@ export async function prepareDubPlan({ source, settings, signal, status = () => 
             const slice = await source.slice(window.start, window.end - window.start);
             if (!slice) throw new Error('原音轨切片缺失');
             let missed = false;
-            segments = await transcribe(settings.asr, slice, { signal, onUnrecognized: range => {
+            segments = await transcribe(interpretAsr(settings.asr), slice, { signal, onUnrecognized: range => {
               missed = incompleteRecognition = true;
               recoveryStatus(`无法确认 ${(sourceOffset + window.start + range.start).toFixed(1)}–${(sourceOffset + window.start + range.end).toFixed(1)} 秒的人声，已跳过并继续处理后续内容。`);
             } });
@@ -774,7 +775,7 @@ export async function runPlannedInterpret(opts) {
     if (hasSubtitles) status('检测到视频字幕，正在使用字幕优先极速起播（免 ASR）…');
     const savedPlanKey = await dubKey({ videoId: videoIdentity(opts.sourceUrl), duration: source.duration,
       subtitles: source.subtitles, text: modelIdentity(resolveModel(settings, 'text')),
-      asr: modelIdentity(settings.asr), contextMode: dubContextMode(settings), preparationMode: settings.tts?.preparationMode, version: INTERPRET_VERSION });
+      asr: modelIdentity(interpretAsr(settings.asr)), contextMode: dubContextMode(settings), preparationMode: settings.tts?.preparationMode, version: INTERPRET_VERSION });
     const savedPlan = opts.plan || await cacheGet(savedPlanKey);
     const realtime = !['full', 'buffered'].includes(settings.tts?.preparationMode);
     const progressive = !savedPlan && realtime;
@@ -1466,7 +1467,7 @@ export async function runPlannedInterpret(opts) {
     }
     }
     signal.throwIfAborted();
-    if (plan.incompleteRecognition) emit({ type: 'warn', message: '部分人声重试后仍无法确认，已跳过；可重试补全，已完成分段会复用，当前结果未标记为完整音频。' });
+    if (plan.incompleteRecognition) emit({ type: 'warn', message: '部分原声无法可靠识别，已跳过；可重试补全，已完成分段会复用，当前结果未标记为完整音频。' });
     return { mode: 'audio', lines, captions: linesToCaptions(lines), prepared: ready.size, streamPlayer,
       complete: !plan.incompleteRecognition && !plan.incompleteTranslation && !plan.incompleteAudio };
   } catch (error) {
@@ -1522,7 +1523,7 @@ export async function runPlannedInterpret(opts) {
           compactCues: compactAudio.cues,
           audioBlob: fullAudio,
           compactAudioBlob: compactAudio.blob,
-          processingVersion: DUB_ARCHIVE_VERSION,
+          processingVersion: dubArchiveVersion(settings.asr),
           complete: true,
         });
         if (!opts.signal?.aborted) opts.onEvent?.({ type: 'archive_saved', mode: 'audio', archive });

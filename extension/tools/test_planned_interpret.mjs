@@ -16,6 +16,21 @@ assert.deepEqual(plan.lines.map(l=>[l.start,l.end]),[[2,6],[7,10]]);
 const requests=chats;
 await prepareDubPlan({source,settings,signal:new AbortController().signal,transcribe,chat,cacheGet,cacheSet});
 assert.equal(asr,2);assert.equal(chats,requests,'completed original and translated documents are reused');
+{
+  const commonAsr = { ...settings.asr, language: 'zh' };
+  const seen = [];
+  const capture = async (model, slice) => {
+    seen.push(model.language);
+    return transcribe(model, slice);
+  };
+  const languageCache = new Map();
+  for (const interpretLanguage of [undefined, 'en', 'en']) {
+    await prepareDubPlan({ source, settings: { ...settings, asr: { ...commonAsr, interpretLanguage } },
+      signal: new AbortController().signal, transcribe: capture, chat,
+      cacheGet: async key => languageCache.get(key), cacheSet: async (key, value) => languageCache.set(key, value) });
+  }
+  assert.deepEqual(seen, ['', '', 'en', 'en'], 'interpretation language is independent and partitions cached recognition');
+}
 let dubCalls=0;
 for(const mode of ['full','buffered']){
  const state={ok:true,currentTime:0,duration:10,paused:false,userPaused:false,seekRevision:0,readyState:4,playbackRate:1};
