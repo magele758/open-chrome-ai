@@ -6,11 +6,46 @@
  */
 
 import { encodeMonoWav } from "./tts.js";
-import { idbGet, idbSet, idbDel, idbListKeys } from "./idb-kv.js";
+import { idbGet, idbSet, idbSetAll, idbDel, idbListKeys, idbValuesWithPrefix } from "./idb-kv.js";
 
 export const ARCHIVE_TTL_DAYS = 7;
 export const ARCHIVE_TTL_MS = ARCHIVE_TTL_DAYS * 24 * 60 * 60 * 1000;
 export const ARCHIVE_PREFIX = "pl.media.archive.";
+
+const infoPrefix = "pl.media.info.";
+const legacyInfo = new Map();
+
+function archiveInfo(record) {
+  const audio = [record.audioBuffer?.byteLength, record.compactAudioBuffer?.byteLength,
+    record.audioBlob?.size, record.compactAudioBlob?.size].some(size => size > 100);
+  return { id: record.videoId, url: record.url, title: record.title, added: record.createdAt || 0,
+    expireAt: record.expireAt, status: "ready", playable: Boolean(audio && record.complete !== false) };
+}
+
+export function archiveKeys(id) {
+  return [ARCHIVE_PREFIX + id, infoPrefix + id];
+}
+
+export async function listDubArchives() {
+  const info = new Map((await idbValuesWithPrefix(infoPrefix)).map(row => [row.id, row]));
+  const rows = [];
+  const keys = await idbListKeys(ARCHIVE_PREFIX);
+  for (const key of keys) {
+    if (!String(key).startsWith(ARCHIVE_PREFIX)) continue;
+    const id = key.slice(ARCHIVE_PREFIX.length);
+    let row = info.get(id) || legacyInfo.get(id);
+    if (!row) {
+      // Old archives lack a metadata record. Read those one at a time and
+      // retain only the lightweight fields for subsequent panel refreshes.
+      const archive = await idbGet(key);
+      if (!archive) continue;
+      row = archiveInfo({ ...archive, videoId: id });
+      legacyInfo.set(id, row);
+    }
+    if (row.playable && !isArchiveExpired(row.expireAt)) rows.push(row);
+  }
+  return rows.sort((a, b) => b.added - a.added);
+}
 
 export function calculateExpireAt(fromTime = Date.now()) {
   return Number(fromTime || Date.now()) + ARCHIVE_TTL_MS;
@@ -351,7 +386,7 @@ export async function saveFullMediaArchive({
   };
 
   const key = ARCHIVE_PREFIX + videoId;
-  if (!await idbSet(key, archiveRecord)) throw new Error("音频保存失败，请检查浏览器存储空间后重试");
+  if (!await idbSetAll({ [key]: archiveRecord, [infoPrefix + videoId]: archiveInfo(archiveRecord) })) throw new Error("音频保存失败，请检查浏览器存储空间后重试");
   return {
     ...archiveRecord,
     audioBlob: audioBuffer ? new Blob([audioBuffer], { type: 'audio/wav' }) : null,
@@ -369,7 +404,7 @@ export async function loadFullMediaArchive(videoId) {
   if (!item) return null;
 
   if (isArchiveExpired(item.expireAt)) {
-    await idbDel(key);
+    await idbDel(archiveKeys(videoId));
     return null;
   }
 
@@ -411,7 +446,7 @@ export async function loadFullMediaArchive(videoId) {
     // Purge corrupted/empty archive entries
     if (!audioBlob && !compactAudioBlob && (item.hasAudio || item.hasCompactAudio)) {
       console.warn('[audio-composer] All archive audio blobs are unreadable/missing, purging key:', key);
-      await idbDel(key);
+      await idbDel(archiveKeys(videoId));
       return null;
     }
 
@@ -427,7 +462,7 @@ export async function loadFullMediaArchive(videoId) {
     }
   } catch (err) {
     console.warn('[audio-composer] Failed to process archive blobs:', err);
-    await idbDel(key);
+    await idbDel(archiveKeys(videoId));
     return null;
   }
 
@@ -451,7 +486,7 @@ export async function loadFullMediaArchive(videoId) {
  * Automatically purges expired archives older than 7 days.
  */
 export async function cleanExpiredMediaArchives() {
-  const keys = await idbListKeys();
+  const keys = await idbListKeys(ARCHIVE_PREFIX);
   const deleted = [];
   const now = Date.now();
 
@@ -459,7 +494,7 @@ export async function cleanExpiredMediaArchives() {
     if (typeof key === "string" && key.startsWith(ARCHIVE_PREFIX)) {
       const val = await idbGet(key);
       if (!val?.expireAt || now > Number(val.expireAt)) {
-        await idbDel(key);
+        await idbDel(archiveKeys(key.slice(ARCHIVE_PREFIX.length)));
         deleted.push(key);
       }
     }
@@ -472,6 +507,5 @@ export async function cleanExpiredMediaArchives() {
  */
 export async function deleteMediaArchive(videoId) {
   if (!videoId) return;
-  const key = ARCHIVE_PREFIX + videoId;
-  await idbDel(key);
+  await idbDel(archiveKeys(videoId));
 }

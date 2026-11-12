@@ -7,7 +7,7 @@ import { $ } from "./dom.js";
 
 export function bindDubQueue(toggleDubPlayback) {
   const panel = $("dub-queue"), list = $("queue-items"), status = $("queue-status"), player = $("queue-player");
-  let timer, signature, objectUrl;
+  let timer, signature, objectUrl, previewId, revision = 0;
   const missing = new Set();
   const report = err => { status.textContent = err.message; };
   async function command(op, data = {}) {
@@ -24,14 +24,16 @@ export function bindDubQueue(toggleDubPlayback) {
   }
   async function listen(row) {
     const archive = await loadFullMediaArchive(row.id);
-    if (!archive?.compactAudioBlob) {
+    const audio = archive?.compactAudioBlob || archive?.audioBlob;
+    if (!audio) {
       missing.add(row.id);
       await refresh();
       throw Error("音频缓存已清除或过期，请重新处理");
     }
     player.pause();
     if (objectUrl) URL.revokeObjectURL(objectUrl);
-    player.src = objectUrl = URL.createObjectURL(archive.compactAudioBlob);
+    previewId = row.id;
+    player.src = objectUrl = URL.createObjectURL(audio);
     player.hidden = false;
     await player.play();
   }
@@ -48,9 +50,11 @@ export function bindDubQueue(toggleDubPlayback) {
     await toggleDubPlayback();
   }
   async function refresh() {
+    const request = ++revision;
     const { jobs } = await command("queueList");
-    const labels = { ready: "已完成", queued: "排队中", running: "处理中", failed: "失败", expired: "缓存已过期" };
-    const rows = jobs.map(row => row.status === "ready" && (row.expireAt <= Date.now() || missing.has(row.id)) ? { ...row, status: "expired" } : row);
+    if (request !== revision) return;
+    const labels = { live: "实时同传 · 优先", ready: "已完成", queued: "排队中", running: "处理中", failed: "失败", expired: "缓存已过期" };
+    const rows = jobs.map(row => row.status === "ready" && ((row.expireAt && row.expireAt <= Date.now()) || missing.has(row.id)) ? { ...row, status: "expired" } : row);
     const tab = state.tab;
     const canAdd = Boolean(tab?.id && (isVideoPack(state.pack) || isVideoUrl(tab.url)));
     $("queue-add").disabled = !canAdd;
@@ -61,6 +65,7 @@ export function bindDubQueue(toggleDubPlayback) {
     signature = next;
     list.replaceChildren();
     if (!rows.length) status.textContent = "队列为空";
+    else if (status.textContent === "队列为空") status.textContent = "";
     for (const row of rows) {
       const item = document.createElement("li");
       item.textContent = [row.title || row.url, labels[row.status], row.detail].filter(Boolean).join(" · ");
@@ -70,6 +75,29 @@ export function bindDubQueue(toggleDubPlayback) {
         button.textContent = row.status === "ready" ? "试听" : "重新处理";
         button.onclick = () => (row.status === "ready" ? listen(row) : add({ url: row.url, title: row.title })).catch(report);
         item.append(" ", button);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = row.status === "ready" ? "删除成品" : "删除记录";
+        remove.onclick = async () => {
+          try {
+            await command("queueDelete", { id: row.id });
+            if (previewId === row.id) {
+              player.pause();
+              player.removeAttribute("src");
+              player.load();
+              player.hidden = true;
+              URL.revokeObjectURL(objectUrl);
+              previewId = null;
+            }
+            for (const pack of [state.pack, state.mediaPack]) {
+              if (pack?.archive?.videoId === row.id) pack.archive = null;
+            }
+            missing.delete(row.id);
+            status.textContent = "已删除";
+            await refresh();
+          } catch (err) { report(err); }
+        };
+        item.append(" ", remove);
         if (row.status === "ready" && row.id === currentId) {
           const synced = document.createElement("button");
           synced.type = "button";

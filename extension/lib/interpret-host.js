@@ -7,6 +7,7 @@
  * Offscreen documents only expose chrome.runtime, so page control and native
  * messaging are proxied through the service worker.
  */
+import { videoIdentity } from "./library.js";
 import { DubQueue } from "./dub-queue.js";
 import { preprocessAudio } from "./preprocess-audio.js";
 import { InterpretController } from "./interpret-controller.js";
@@ -43,15 +44,25 @@ export function createInterpretHost({ runtime = globalThis.chrome?.runtime, isBu
     }
   };
   const snapshot = () => toMessage(ctrl.listStates());
+  const queue = new DubQueue({ process: async (row, progress, signal) =>
+    preprocessAudio(row, await rpc(runtime, { type: "pl.queue.settings" }), progress, signal) });
+
+  function liveJobs() {
+    return ctrl.getRunningTasks().sort((a, b) => Number(b.tabId === ctrl.currentTabId) - Number(a.tabId === ctrl.currentTabId))
+      .map(task => ({ id: videoIdentity(task.url), url: task.url, title: task.title, status: "live", detail: task.message }));
+  }
   // The controller drops a finished task right after its final notify; reading
   // the task list a microtask later keeps mirrors from holding stale tasks.
   ctrl.subscribe((event, state) => {
+    const foreground = ctrl.isRunning();
+    if (Boolean(queue.foreground) !== foreground) {
+      queue.setForeground(foreground);
+      if (!foreground) resumeQueue();
+    }
     const payload = { event: toMessage(event), state: toMessage(state) };
     queueMicrotask(() => broadcast({ type: INTERPRET_EVENT, ...payload, tasks: snapshot() }));
   });
 
-  const queue = new DubQueue({ process: async (row, progress) =>
-    preprocessAudio(row, await rpc(runtime, { type: "pl.queue.settings" }), progress) });
   function resumeQueue() {
     void queue.drain().then(() => broadcast({ type: "pl.queue.idle" }))
       .catch(err => console.error("[dub-queue]", err));
@@ -67,7 +78,12 @@ export function createInterpretHost({ runtime = globalThis.chrome?.runtime, isBu
         resumeQueue();
         return { ok: true };
       case "queueList":
-        return { ok: true, jobs: await queue.list() };
+        return { ok: true, jobs: await queue.list(), live: liveJobs() };
+      case "queueDelete":
+        if (liveJobs().some(row => row.id === msg.id)) throw Error("请先停止这段实时同传");
+        await queue.remove(msg.id);
+        broadcast({ type: "pl.queue.idle" });
+        return { ok: true };
       case "start": {
         const tab = msg.tab;
         if (!tab?.id) throw new Error("没有可操作的标签页");
