@@ -11,15 +11,15 @@ import { checkHitlRequirement, createAgentTools } from "../lib/agent/tools.js";
 const require = createRequire(import.meta.url);
 const { JSDOM } = require("jsdom");
 
-// ── 0. ADR-014: 调试日志环形缓冲扩容至 4000 ──
+// ── 0. 调试日志环形缓冲容量与元素动作别名校验 ──
 assert.equal(DEBUG_LIMIT, 4000, "DEBUG_LIMIT raised to 4000 so 200+ step runs keep startup/capsule entries");
 assert.equal(actOnElement, actOnRef, "actOnElement aliases actOnRef");
 
-// ── 1. 构建真实 DOM 场景（含可见/隐藏 file input、label 包裹、Ant Design 上传组件、已上传列表移除按钮、普通弹窗按钮与 Shadow DOM 不可逆按钮） ──
+// ── 1. 构建通用 DOM 场景（含可见/隐藏 file input、label 包裹、自定义上传触发器、已上传列表移除按钮、普通弹窗按钮与 Shadow DOM 不可逆按钮） ──
 const dom = new JSDOM(
   `<!doctype html><html><body>
-    <div id="modal" class="ant-modal" role="dialog" aria-modal="true" data-r="50,40,900,760">
-      <div class="ant-modal-body" data-r="60,80,880,640">
+    <div id="modal" role="dialog" aria-modal="true" data-r="50,40,900,760">
+      <section id="modal-body" data-r="60,80,880,640">
         <!-- 1) 原生可见 file input 与隐藏 file input -->
         <input id="visible-file" type="file" data-r="100,100,220,30" />
         <input id="hidden-file" type="file" style="display: none" data-r="0,0,0,0" />
@@ -32,37 +32,35 @@ const dom = new JSDOM(
         <input id="for-file" type="file" style="display: none" data-r="0,0,0,0" />
         <label id="for-file-label" for="for-file" role="button" tabindex="0" data-r="280,150,160,32">关联上传文件</label>
 
-        <!-- 3) Ant Design 上传包裹器：同时包含触发器 span.ant-upload[role=button] 与同级 .ant-upload-list 移除按钮 -->
-        <span class="ant-upload-wrapper" data-r="380,710,320,90">
-          <div class="ant-upload ant-upload-select" data-r="380,720,120,36">
-            <span id="ant-upload-trigger" class="ant-upload" role="button" tabindex="0" data-r="380,720,120,36">
-              <input id="ant-video-file" type="file" style="display: none" data-r="0,0,0,0" />
-              <button id="ant-upload-btn" type="button" class="ant-btn" data-r="380,720,120,36">+ 上传视频</button>
-            </span>
+        <!-- 3) 自定义上传包裹器：同时包含触发器 [role=button] 与同级已上传列表 [data-upload-list] 移除按钮 -->
+        <div class="upload-section" data-r="380,710,320,90">
+          <div id="custom-upload-trigger" role="button" tabindex="0" data-r="380,720,120,36">
+            <input id="custom-attach-file" type="file" style="display: none" data-r="0,0,0,0" />
+            <button id="custom-upload-btn" type="button" data-r="380,720,120,36">+ 上传附件</button>
           </div>
-          <div class="ant-upload-list ant-upload-list-text" data-r="380,762,300,28">
-            <div class="ant-upload-list-item" data-r="380,762,300,28">
-              <span data-r="384,764,180,24">demo.mp4</span>
-              <button id="btn-remove-uploaded" type="button" class="ant-btn" data-r="610,762,64,26">移除</button>
+          <div role="list" data-upload-list="true" class="upload-list" data-r="380,762,300,28">
+            <div class="upload-list-item" data-r="380,762,300,28">
+              <span data-r="384,764,180,24">report.pdf</span>
+              <button id="btn-remove-uploaded" type="button" data-r="610,762,64,26">移除</button>
             </div>
           </div>
-        </span>
+        </div>
 
         <!-- 4) 动态 JS 触发文件框的普通按钮（DOM 内无 input[type=file]，用于验证引擎级兜底） -->
         <button id="btn-dyn-chooser" type="button" data-r="100,220,140,32">动态选择文件</button>
 
-        <!-- 5) 弹窗底部普通业务/关闭按钮与不可逆按钮 -->
-        <button id="btn-next-step" type="button" data-r="520,660,150,34">下一步：分配图片</button>
+        <!-- 5) 弹窗底部普通流转/关闭按钮与不可逆按钮 -->
+        <button id="btn-next-step" type="button" data-r="520,660,150,34">下一步：确认归档</button>
         <button id="btn-cancel" type="button" data-r="690,660,80,34"><span>取 消</span></button>
         <button id="btn-publish" type="button" data-r="790,660,80,34"><span>发 布</span></button>
         <div id="shadow-host" data-r="100,280,100,34"></div>
-      </div>
+      </section>
     </div>
   </body></html>`,
   {
     pretendToBeVisual: true,
     runScripts: "outside-only",
-    url: "https://app.example.com/items",
+    url: "https://portal.example.test/items",
   },
 );
 
@@ -110,7 +108,6 @@ const hitTestInRoot = (root, x, y) => {
 doc.elementFromPoint = (x, y) => hitTestInRoot(doc, x, y);
 shadowRoot.elementFromPoint = (x, y) => hitTestInRoot(shadowRoot, x, y);
 
-// 用 toString() 在独立 JSDOM realm 执行，强制校验所有注入页面函数 100% 自包含
 const evalInPage = (fn, ...args) =>
   win.eval(`(${fn.toString()})(${args.map((a) => JSON.stringify(a)).join(", ")})`);
 
@@ -122,9 +119,9 @@ for (const id of [
   "nested-file-label",
   "for-file",
   "for-file-label",
-  "ant-video-file",
-  "ant-upload-trigger",
-  "ant-upload-btn",
+  "custom-attach-file",
+  "custom-upload-trigger",
+  "custom-upload-btn",
   "btn-remove-uploaded",
   "btn-next-step",
   "btn-cancel",
@@ -135,7 +132,7 @@ for (const id of [
   });
 }
 
-// ── 2. ADR-013a (路径 1): pageAct("click") 前置拦截文件上传控件且零误伤正常按钮 ──
+// ── 2. 路径 1: pageAct("click") 默认 fileChooserPolicy="deny" 拦截上传控件，显式 "allow" 放行，且零误伤正常按钮 ──
 {
   for (const spec of [
     { selector: "#visible-file" },
@@ -143,9 +140,9 @@ for (const id of [
     { selector: "#nested-file-label" },
     { text: "选择本地文件" },
     { selector: "#for-file-label" },
-    { selector: "#ant-upload-trigger" },
-    { selector: "#ant-upload-btn" },
-    { text: "+ 上传视频" },
+    { selector: "#custom-upload-trigger" },
+    { selector: "#custom-upload-btn" },
+    { text: "+ 上传附件" },
   ]) {
     const res = { ...(await evalInPage(pageAct, "click", spec)) };
     assert.equal(res.ok, false, `pageAct click should block ${JSON.stringify(spec)}`);
@@ -156,14 +153,20 @@ for (const id of [
   assert.equal(clickCounts["hidden-file"], 0);
   assert.equal(clickCounts["nested-file-label"], 0);
   assert.equal(clickCounts["for-file-label"], 0);
-  assert.equal(clickCounts["ant-upload-btn"], 0);
+  assert.equal(clickCounts["custom-upload-btn"], 0);
 
-  // 同级 .ant-upload-list 内「移除」与普通弹窗按钮正常点击通过
+  // 双向策略验证：fileChooserPolicy="allow" 时允许点击上传触发器
+  const allowedTrigger = { ...(await evalInPage(pageAct, "click", { selector: "#custom-upload-btn", fileChooserPolicy: "allow" })) };
+  assert.equal(allowedTrigger.ok, true);
+  assert.equal(clickCounts["custom-upload-btn"], 1);
+  clickCounts["custom-upload-btn"] = 0;
+
+  // 同级已上传列表内「移除」与普通弹窗按钮正常点击通过
   const rmRes = { ...(await evalInPage(pageAct, "click", { text: "移除" })) };
   assert.equal(rmRes.ok, true);
   assert.equal(clickCounts["btn-remove-uploaded"], 1);
 
-  const nextRes = { ...(await evalInPage(pageAct, "click", { text: "下一步：分配图片" })) };
+  const nextRes = { ...(await evalInPage(pageAct, "click", { text: "下一步：确认归档" })) };
   assert.equal(nextRes.ok, true);
   assert.equal(clickCounts["btn-next-step"], 1);
 
@@ -172,10 +175,9 @@ for (const id of [
   assert.equal(clickCounts["btn-cancel"], 1);
 }
 
-// ── 3. ADR-013a (路径 2): actOnElement / actOnRef("click") 前置拦截文件上传控件且零误伤 ──
+// ── 3. 路径 2: actOnElement / actOnRef("click") 策略拦截文件上传控件且零误伤 ──
 {
   const snap = JSON.parse(JSON.stringify(evalInPage(snapshotControls, { limit: 100 })));
-  // 将原生 #visible-file 也手工挂入 __pagelensSnap.nodes，确保直接对 input[type=file] 引用调用 actOnElement 同样拦截
   const rawFileNodeId = win.eval(`(() => {
     const c = window.__pagelensSnap;
     const el = document.getElementById("visible-file");
@@ -192,24 +194,23 @@ for (const id of [
     })()`);
 
   const nestedLabelNode = byIdNode("nested-file-label");
-  const antTriggerNode = byIdNode("ant-upload-trigger");
-  const antBtnNode = byIdNode("ant-upload-btn");
+  const customTriggerNode = byIdNode("custom-upload-trigger");
+  const customBtnNode = byIdNode("custom-upload-btn");
   const removeBtnNode = byIdNode("btn-remove-uploaded");
   const nextStepNode = byIdNode("btn-next-step");
   const cancelBtnNode = byIdNode("btn-cancel");
-  assert.ok(nestedLabelNode && antTriggerNode && antBtnNode && removeBtnNode && nextStepNode && cancelBtnNode);
+  assert.ok(nestedLabelNode && customTriggerNode && customBtnNode && removeBtnNode && nextStepNode && cancelBtnNode);
   assert.ok(snap.items.length > 0);
 
-  for (const node of [rawFileNodeId, nestedLabelNode, antTriggerNode, antBtnNode]) {
+  for (const node of [rawFileNodeId, nestedLabelNode, customTriggerNode, customBtnNode]) {
     const res = { ...(await evalInPage(actOnElement, "click", { node })) };
     assert.equal(res.ok, false, `actOnElement should block node=${node}`);
     assert.equal(res.blockedFileChooser, true);
     assert.match(res.error, /upload_file/);
   }
   assert.equal(clickCounts["visible-file"], 0);
-  assert.equal(clickCounts["ant-upload-btn"], 0);
+  assert.equal(clickCounts["custom-upload-btn"], 0);
 
-  // 移除按钮、下一步与取消按钮正常通过
   assert.equal((await evalInPage(actOnElement, "click", { node: removeBtnNode })).ok, true);
   assert.equal(clickCounts["btn-remove-uploaded"], 2);
   assert.equal((await evalInPage(actOnElement, "click", { node: nextStepNode })).ok, true);
@@ -218,7 +219,7 @@ for (const id of [
   assert.equal(clickCounts["btn-cancel"], 2);
 }
 
-// ── 4. ADR-013a (路径 3) + ADR-013b: trusted_click 前置拦截 + Page.setInterceptFileChooserDialog 兜底 + upload_file 零影响 ──
+// ── 4. 路径 3: trusted_click 策略双向验证（deny / allow）+ Page.setInterceptFileChooserDialog 兜底 + upload_file ──
 {
   const cdpCalls = [];
   const listeners = { event: [], detach: [] };
@@ -251,7 +252,6 @@ for (const id of [
 
   const cdp = createCdp({ api, idleMs: 0 });
 
-  // 验证 watchFileChooser：收到事件时 resolve，取消后不再保留监听器且不抛超时错误
   const w1 = cdp.watchFileChooser(5);
   w1.cancel();
   const w2 = cdp.watchFileChooser(5);
@@ -260,7 +260,7 @@ for (const id of [
 
   const prevChrome = globalThis.chrome;
   globalThis.chrome = {
-    tabs: { get: async (id) => ({ id, url: "https://app.example.com/items", title: "Items" }) },
+    tabs: { get: async (id) => ({ id, url: "https://portal.example.test/items", title: "Items" }) },
     scripting: {
       executeScript: async ({ func, args = [] }) => {
         const result = await evalInPage(func, ...args);
@@ -270,21 +270,27 @@ for (const id of [
   };
 
   try {
+    let activePolicy = { fileChooserPolicy: "deny" };
     const tools = Object.fromEntries(
-      createAgentTools({ getTabId: () => 5, settings: { cdpInput: true }, cdp }).map((t) => [t.name, t]),
+      createAgentTools({
+        getTabId: () => 5,
+        settings: { cdpInput: true },
+        cdp,
+        getPolicy: () => activePolicy,
+      }).map((t) => [t.name, t]),
     );
     const mouseEvents = () => cdpCalls.filter((c) => c.method === "Input.dispatchMouseEvent");
     const interceptStates = () =>
       cdpCalls.filter((c) => c.method === "Page.setInterceptFileChooserDialog").map((c) => c.params.enabled);
 
-    // 4a. 复现 round-04 真机故障：平滑滚动后盲点坐标 (423, 738) 落入 Ant Design "+ 上传视频"
+    // 4a. 默认 fileChooserPolicy="deny"：坐标或选择器落入上传按钮时 0 鼠标事件前置拦截
     for (const args of [
       { x: 423, y: 738 },
       { selector: "#visible-file" },
       { selector: "#hidden-file" },
       { selector: "#nested-file-label" },
-      { selector: "#ant-upload-trigger" },
-      { text: "+ 上传视频" },
+      { selector: "#custom-upload-trigger" },
+      { text: "+ 上传附件" },
     ]) {
       cdpCalls.length = 0;
       const res = JSON.parse(await tools.trusted_click.execute(args));
@@ -294,14 +300,22 @@ for (const id of [
       assert.equal(mouseEvents().length, 0, "blocked upload target must dispatch zero mouse events");
     }
 
-    // 4b. hover 悬停在上传按钮上不受影响（resolvePoint 未被污染）
+    // 4b. 显式 fileChooserPolicy="allow" 时放行上传按钮点击
+    activePolicy = { fileChooserPolicy: "allow" };
     cdpCalls.length = 0;
-    const hovered = JSON.parse(await tools.hover.execute({ text: "+ 上传视频" }));
+    const allowedByPolicy = JSON.parse(await tools.trusted_click.execute({ text: "+ 上传附件" }));
+    assert.equal(allowedByPolicy.ok, true);
+    assert.equal(mouseEvents().length, 3);
+    activePolicy = { fileChooserPolicy: "deny" };
+
+    // 4c. hover 悬停在上传按钮上不受影响
+    cdpCalls.length = 0;
+    const hovered = JSON.parse(await tools.hover.execute({ text: "+ 上传附件" }));
     assert.equal(hovered.ok, true);
     assert.equal(mouseEvents().length, 1);
 
-    // 4c. 同级 .ant-upload-list「移除」、普通按钮「下一步：分配图片」「取 消」正常点击，且拦截开关成对关闭
-    for (const args of [{ text: "移除" }, { text: "下一步：分配图片" }, { text: "取消" }, { x: 560, y: 675 }]) {
+    // 4d. 同级已上传列表「移除」、普通按钮「下一步：确认归档」「取 消」正常点击，且拦截开关成对关闭
+    for (const args of [{ text: "移除" }, { text: "下一步：确认归档" }, { text: "取消" }, { x: 560, y: 675 }]) {
       cdpCalls.length = 0;
       const res = JSON.parse(await tools.trusted_click.execute(args));
       assert.equal(res.ok, true, `trusted_click should allow ${JSON.stringify(args)}: ${JSON.stringify(res)}`);
@@ -309,7 +323,7 @@ for (const id of [
       assert.deepEqual(interceptStates(), [true, false], "chooser interception cleanly toggled on then off");
     }
 
-    // 4d. ADR-013b：页面 JS 动态创建 input[type=file].click() 触发 Page.fileChooserOpened 被引擎兜底拦截，开关不泄漏
+    // 4e. 页面 JS 动态创建 input[type=file].click() 触发 Page.fileChooserOpened 被引擎兜底拦截，开关不泄漏
     cdpCalls.length = 0;
     dynamicChooserOnMouseRelease = true;
     const dynRes = JSON.parse(await tools.trusted_click.execute({ selector: "#btn-dyn-chooser" }));
@@ -319,7 +333,7 @@ for (const id of [
     assert.match(dynRes.error, /已自动拦截/);
     assert.deepEqual(interceptStates(), [true, false], "chooser interception switched off in finally");
 
-    // 4e. upload_file 工具在直传 input[type=file] 与点击自定义 Ant Design 上传按钮两条路径均正常可用
+    // 4f. upload_file 工具在直传 input[type=file] 与点击自定义上传按钮两条路径均正常可用
     cdpCalls.length = 0;
     const upDirect = JSON.parse(
       await tools.upload_file.execute({ selector: "#visible-file", paths: ["/tmp/spec.png"] }),
@@ -330,14 +344,14 @@ for (const id of [
     cdpCalls.length = 0;
     uploadChooserOnMouseRelease = true;
     const upCustom = JSON.parse(
-      await tools.upload_file.execute({ text: "+ 上传视频", paths: ["/tmp/demo.mp4"] }),
+      await tools.upload_file.execute({ text: "+ 上传附件", paths: ["/tmp/report.pdf"] }),
     );
     uploadChooserOnMouseRelease = false;
     assert.equal(upCustom.ok, true);
     assert.equal(upCustom.via, "file_chooser");
     assert.deepEqual(
       cdpCalls.find((c) => c.method === "DOM.setFileInputFiles")?.params,
-      { files: ["/tmp/demo.mp4"], backendNodeId: 92 },
+      { files: ["/tmp/report.pdf"], backendNodeId: 92 },
     );
     assert.equal(interceptStates().at(-1), false);
   } finally {
@@ -345,7 +359,7 @@ for (const id of [
   }
 }
 
-// ── 5. ADR-013c: resolveClickElementText 纯坐标 { x, y } 命中控件文案与不可逆动作守卫联动 ──
+// ── 5. resolveClickElementText 纯坐标 { x, y } 命中控件文案与不可逆动作守卫联动 ──
 {
   const injectInDom = async (_tabId, func, args = []) => {
     const r = await evalInPage(func, ...args);
@@ -353,17 +367,15 @@ for (const id of [
   };
 
   scrollCount = 0;
-  // 命中普通按钮「下一步：分配图片」
   const nextLabel = await resolveClickElementText({
     toolName: "trusted_click",
     args: { x: 560, y: 675 },
     tabId: 5,
     inject: injectInDom,
   });
-  assert.equal(nextLabel, "下一步：分配图片");
+  assert.equal(nextLabel, "下一步：确认归档");
   assert.equal(scrollCount, 0, "locatePointLabel must never scroll the page");
 
-  // 命中双字空格不可逆按钮「发 布」 -> checkHitlRequirement 即使在 autonomous 模式也强制拦截确认
   const pubLabel = await resolveClickElementText({
     toolName: "trusted_click",
     args: { x: 820, y: 675 },
@@ -376,13 +388,12 @@ for (const id of [
     args: { x: 820, y: 675 },
     elementText: pubLabel,
     hitlMode: "autonomous",
-    targetUrl: "https://app.example.com/items",
-    userUrl: "https://app.example.com/items",
+    targetUrl: "https://portal.example.test/items",
+    userUrl: "https://portal.example.test/items",
   });
   assert.equal(pubDecision.decision, "confirm");
   assert.equal(pubDecision.irreversible?.id, "publish_send");
 
-  // 穿透 Shadow DOM 命中「删 除」按钮 -> 触发 delete 不可逆守卫
   const shadowDelLabel = await resolveClickElementText({
     toolName: "trusted_click",
     args: { x: 140, y: 295 },
@@ -395,13 +406,12 @@ for (const id of [
     args: { x: 140, y: 295 },
     elementText: shadowDelLabel,
     hitlMode: "autonomous",
-    targetUrl: "https://app.example.com/items",
-    userUrl: "https://app.example.com/items",
+    targetUrl: "https://portal.example.test/items",
+    userUrl: "https://portal.example.test/items",
   });
   assert.equal(delDecision.decision, "confirm");
   assert.equal(delDecision.irreversible?.id, "delete");
 
-  // 点击弹窗空白背景区（命中外层大容器 .ant-modal-body）不应把容器内其他按钮文字「发 布 / 删 除」误读出来
   const blankBgLabel = await resolveClickElementText({
     toolName: "trusted_click",
     args: { x: 70, y: 90 },
@@ -410,10 +420,10 @@ for (const id of [
   });
   assert.equal(blankBgLabel, "");
 
-  // locateElement / inspectFileUploadTarget / locatePointLabel 函数名导出完整可用
   assert.equal(typeof locateElement, "function");
   assert.equal(typeof inspectFileUploadTarget, "function");
   assert.equal(typeof locatePointLabel, "function");
 }
 
-console.log("PASS test_round04_fixes.mjs");
+dom.window.close();
+console.log("PASS test_file_chooser_policy_and_point_label.mjs");

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { pageAct, runJs, scrollPage } from "../lib/agent/page-fns.js";
 import { createAgentTools, resolveActiveTools } from "../lib/agent/tools.js";
@@ -10,27 +9,27 @@ import { buildRunRecord, classifyToolOutcome } from "../lib/run-recorder.js";
 const require = createRequire(import.meta.url);
 const { JSDOM } = require("jsdom");
 
-// ── 1. ADR-007a: pageAct("wait", { text }) matches modal titles / headings / text nodes (deepest visible),
+// ── 1. pageAct("wait", { text }) matches modal headings / text nodes (deepest visible),
 //    while click stays strictly on CONTROLS, and already-visible / oversized modals do not scrollIntoView ──
 {
   const dom = new JSDOM(
     `<!doctype html><html><body>
       <div id="app">
-        <div class="ant-modal-wrap" role="dialog" aria-modal="true">
-          <div class="ant-modal collection-create-modal">
-            <div class="ant-modal-header">
-              <div class="ant-modal-title" id="modal-title">编辑商品</div>
-            </div>
-            <div class="ant-modal-body">
-              <span class="field-label">*商品名称</span>
+        <div class="modal-backdrop" role="dialog" aria-modal="true">
+          <div class="modal-panel">
+            <header>
+              <div role="heading" id="modal-title">编辑工单</div>
+            </header>
+            <section>
+              <span class="field-label">*工单名称</span>
               <button id="cancel-btn" type="button">取消</button>
-            </div>
+            </section>
           </div>
         </div>
         <div id="below-fold">底部延迟块</div>
       </div>
     </body></html>`,
-    { url: "https://10.2.31.12:21006/ai-shop-cross-country/#/ai-tools-kj-cross", runScripts: "outside-only" },
+    { url: "https://192.0.2.10:8443/workspace/#/tasks", runScripts: "outside-only" },
   );
 
   try {
@@ -48,13 +47,12 @@ const { JSDOM } = require("jsdom");
       scrollCalls.push({ id: this.id || this.className || this.tagName, opts });
     };
 
-    // Give visible layout rects: modal wrap is tall (800px > 900 * 0.6), modal title is inside viewport, below-fold is at y=1400
     win.HTMLElement.prototype.getBoundingClientRect = function () {
       if (this.style?.display === "none") return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 };
       if (this.id === "below-fold") {
         return { top: 1400, bottom: 1432, left: 40, right: 240, width: 200, height: 32 };
       }
-      if (this.classList.contains("ant-modal-wrap") || this.classList.contains("ant-modal")) {
+      if (this.classList.contains("modal-backdrop") || this.classList.contains("modal-panel")) {
         return { top: 40, bottom: 840, left: 100, right: 1300, width: 1200, height: 800 };
       }
       return { top: 64, bottom: 92, left: 120, right: 320, width: 200, height: 28 };
@@ -63,42 +61,36 @@ const { JSDOM } = require("jsdom");
     const runPageAct = (kind, spec) =>
       win.eval(`(${pageAct.toString()})(${JSON.stringify(kind)}, ${JSON.stringify(spec)})`);
 
-    // 1a. wait({ text: "编辑商品" }) matches deepest visible <div id="modal-title" class="ant-modal-title">编辑商品</div>
-    //     and does NOT call scrollIntoView because it is already in viewport!
-    const waitHit = await runPageAct("wait", { text: "编辑商品", timeoutMs: 500 });
+    const waitHit = await runPageAct("wait", { text: "编辑工单", timeoutMs: 500 });
     assert.equal(waitHit.ok, true);
     assert.equal(waitHit.match.tag, "div");
     assert.equal(waitHit.match.id, "modal-title", "must pick deepest matching element rather than outer dialog wrapper");
-    assert.equal(waitHit.match.text, "编辑商品");
+    assert.equal(waitHit.match.text, "编辑工单");
     assert.equal(scrollCalls.length, 0, "must not scrollIntoView when element is already inside viewport");
 
-    // 1b. click({ text: "编辑商品" }) still strictly searches CONTROLS only and refuses to click non-control title div
-    const clickTitle = await runPageAct("click", { text: "编辑商品" });
+    const clickTitle = await runPageAct("click", { text: "编辑工单" });
     assert.equal(clickTitle.ok, false);
     assert.equal(clickTitle.notFound, true);
-    assert.match(clickTitle.error, /没有匹配「编辑商品」的可见控件/);
+    assert.match(clickTitle.error, /没有匹配「编辑工单」的可见控件/);
 
-    // 1c. click({ text: "取消" }) still clicks real button control normally
     const clickCancel = await runPageAct("click", { text: "取消" });
     assert.equal(clickCancel.ok, true);
     assert.equal(clickCancel.match.id, "cancel-btn");
     scrollCalls.length = 0;
 
-    // 1d. Below-fold non-control element DOES scrollIntoView({ block: "nearest", behavior: "instant" }) on wait
     const waitBelow = await runPageAct("wait", { text: "底部延迟块", timeoutMs: 400 });
     assert.equal(waitBelow.ok, true);
     assert.equal(waitBelow.match.id, "below-fold");
     assert.equal(scrollCalls.length, 1);
     assert.deepEqual({ ...scrollCalls[0].opts }, { block: "nearest", behavior: "instant" });
 
-    // 1e. Delayed dynamic modal render succeeds within timeoutMs; missing text reports updated error classified as failure
     win.setTimeout(() => {
       const toast = win.document.createElement("div");
       toast.id = "async-banner";
-      toast.textContent = "分配商品图片";
+      toast.textContent = "归档节点附件";
       win.document.getElementById("app").appendChild(toast);
     }, 60);
-    const delayedWait = await runPageAct("wait", { text: "分配商品图片", timeoutMs: 1200 });
+    const delayedWait = await runPageAct("wait", { text: "归档节点附件", timeoutMs: 1200 });
     assert.equal(delayedWait.ok, true);
     assert.equal(delayedWait.match.id, "async-banner");
 
@@ -109,8 +101,7 @@ const { JSDOM } = require("jsdom");
     assert.equal(classifyToolOutcome("wait_for", JSON.stringify(missWait), false).ok, false);
     assert.equal(classifyToolOutcome("wait_for", missWait.error, false).ok, false);
 
-    // 1f. waitProbe works for cross-frame actInFrames fallback in tools.js
-    const probeHit = await runPageAct("waitProbe", { text: "编辑商品" });
+    const probeHit = await runPageAct("waitProbe", { text: "编辑工单" });
     assert.equal(probeHit.ok, true);
     assert.equal(probeHit.match.id, "modal-title");
   } finally {
@@ -121,8 +112,8 @@ const { JSDOM } = require("jsdom");
   const seenFrameCalls = [];
   globalThis.chrome = {
     tabs: {
-      get: async (id) => ({ id, windowId: 1, url: "https://10.2.31.12:21006/app", active: true }),
-      query: async () => [{ id: 5, windowId: 1, url: "https://10.2.31.12:21006/app", active: true }],
+      get: async (id) => ({ id, windowId: 1, url: "https://192.0.2.10:8443/app", active: true }),
+      query: async () => [{ id: 5, windowId: 1, url: "https://192.0.2.10:8443/app", active: true }],
     },
     scripting: {
       executeScript: async ({ target, func, args }) => {
@@ -141,27 +132,26 @@ const { JSDOM } = require("jsdom");
       },
     },
     storage: { local: { get: async () => ({}), set: async () => {} } },
-    runtime: { id: "ext-r2" },
+    runtime: { id: "ext-scroll-unit" },
   };
   const frameTools = createAgentTools({ getTabId: () => 5, getWindowId: () => 1, settings: { cdpInput: false } });
   const frameWaitOut = JSON.parse(await frameTools.find((t) => t.name === "wait_for").execute({ text: "子帧标题", timeoutMs: 300 }));
   assert.equal(frameWaitOut.ok, true);
   assert.equal(frameWaitOut.frameId, 3);
-  console.log("PASS 1. wait_for({ text }) modal title / text container & cross-frame waitProbe");
 }
 
-// ── 2. ADR-007b: scrollPage scrolls active modal internal scroller with behavior: "auto" ──
+// ── 2. scrollPage supports scope ("auto" | "modal" | "window") & behavior: "instant" ──
 {
   const dom = new JSDOM(
     `<!doctype html><html><body>
       <div id="page-el">页面节点</div>
-      <div class="ant-modal-wrap" role="dialog" style="z-index: 1000;">
-        <div class="ant-modal collection-create-modal">
-          <div class="collection-create-modal__content" id="modal-scroller" style="overflow-y: auto;">内容</div>
+      <div id="modal-root" role="dialog" aria-modal="true" style="z-index: 1000;">
+        <div class="modal-panel">
+          <div id="modal-scroller" style="overflow-y: auto;">内容</div>
         </div>
       </div>
     </body></html>`,
-    { url: "https://10.2.31.12:21006/app", runScripts: "outside-only" },
+    { url: "https://192.0.2.10:8443/app", runScripts: "outside-only" },
   );
   try {
     const win = dom.window;
@@ -188,7 +178,7 @@ const { JSDOM } = require("jsdom");
 
     const runScroll = (opts) => win.eval(`(${scrollPage.toString()})(${JSON.stringify(opts)})`);
 
-    // 2a. scrollPage({ y: 600 }) scrolls .collection-create-modal__content with behavior: "instant"
+    // 2a. Default scope="auto" scrolls active modal scroller with behavior: "instant"
     const resY = runScroll({ y: 600 });
     assert.equal(resY.ok, true);
     assert.equal(resY.via, "modal-y");
@@ -196,21 +186,28 @@ const { JSDOM } = require("jsdom");
     assert.equal(modalScrollToArgs?.behavior, "instant");
     assert.equal(windowScrollCalls.length, 0, "must scroll modal container rather than window");
 
-    // 2b. scrollPage({ percent: 50 }) scrolls modal container to 50% of (2200 - 500) = 850
-    const resPct = runScroll({ percent: 50 });
+    // 2b. Explicit scope="window" scrolls window directly even while modal is open
+    const resExplicitWin = runScroll({ y: 240, scope: "window" });
+    assert.equal(resExplicitWin.ok, true);
+    assert.equal(resExplicitWin.via, "y");
+    assert.deepEqual({ ...windowScrollCalls[0] }, { top: 240, behavior: "instant" });
+    windowScrollCalls.length = 0;
+
+    // 2c. scrollPage({ percent: 50, scope: "modal" }) scrolls modal container to 50% of (2200 - 500) = 850
+    const resPct = runScroll({ percent: 50, scope: "modal" });
     assert.equal(resPct.ok, true);
     assert.equal(resPct.via, "modal-percent");
     assert.equal(scroller.scrollTop, 850);
     assert.equal(modalScrollToArgs?.behavior, "instant");
 
-    // 2c. When modal is hidden, scrollPage({ y: 300 }) falls back to window with behavior: "instant"
-    win.document.querySelector(".ant-modal-wrap").style.display = "none";
+    // 2d. When modal is hidden, scrollPage({ y: 300 }) falls back to window with behavior: "instant"
+    win.document.getElementById("modal-root").style.display = "none";
     const resWin = runScroll({ y: 300 });
     assert.equal(resWin.ok, true);
     assert.equal(resWin.via, "y");
     assert.deepEqual({ ...windowScrollCalls[0] }, { top: 300, behavior: "instant" });
 
-    // 2d. selector scroll uses behavior: "instant"
+    // 2e. selector scroll uses behavior: "instant"
     const resSel = runScroll({ selector: "#page-el" });
     assert.equal(resSel.ok, true);
     assert.equal(resSel.via, "selector");
@@ -218,18 +215,17 @@ const { JSDOM } = require("jsdom");
   } finally {
     dom.window.close();
   }
-  console.log("PASS 2. scrollPage modal internal scroller & behavior === 'instant'");
 }
 
-// ── 3. ADR-008: runJs returns value for sync IIFE, async IIFE, object literal, trailing semicolon, and multi-statement ──
+// ── 3. runJs returns value for sync IIFE, async IIFE, object literal, trailing semicolon, and multi-statement ──
 {
   const iifeSync = await runJs("(() => { const x = 42; return { x, ok: true }; })()");
   assert.deepEqual(iifeSync, { ok: true, result: { x: 42, ok: true } });
 
-  const iifeAsyncSemi = await runJs("(async () => ({ ok: 1, tag: 'temu' }))();");
-  assert.deepEqual(iifeAsyncSemi, { ok: true, result: { ok: 1, tag: "temu" } });
+  const iifeAsyncSemi = await runJs("(async () => ({ ok: 1, tag: 'ops' }))();");
+  assert.deepEqual(iifeAsyncSemi, { ok: true, result: { ok: 1, tag: "ops" } });
 
-  const iifeWithComment = await runJs("(() => { const hits = [1, 2]; return { count: hits.length }; })(); // R2 inspect");
+  const iifeWithComment = await runJs("(() => { const hits = [1, 2]; return { count: hits.length }; })(); // inspect");
   assert.deepEqual(iifeWithComment, { ok: true, result: { count: 2 } });
 
   const objLiteral = await runJs("{ a: 1, b: 'two' }");
@@ -239,33 +235,30 @@ const { JSDOM } = require("jsdom");
   assert.deepEqual(multiStmt, { ok: true, result: 6 });
 
   const sideEffectOnce = (() => {
-    globalThis.__plR2Count = 0;
-    return runJs("globalThis.__plR2Count += 1; return globalThis.__plR2Count;");
+    globalThis.__plOnceCount = 0;
+    return runJs("globalThis.__plOnceCount += 1; return globalThis.__plOnceCount;");
   })();
   assert.deepEqual(await sideEffectOnce, { ok: true, result: 1 }, "multi-statement fallback must execute only once");
-  delete globalThis.__plR2Count;
+  delete globalThis.__plOnceCount;
 
   const syntaxBad = await runJs("function ( {");
   assert.equal(syntaxBad.ok, false);
-  console.log("PASS 3. runJs sync/async IIFE, object literal, and multi-statement return values");
 }
 
-// ── 4. ADR-009a: sendPrompt / executeLoop / buildRunRecord isolate userPrompt & resolveActiveTools from 【页面正文】<untrusted_page> ──
+// ── 4. sendPrompt / executeLoop / buildRunRecord isolate userPrompt & resolveActiveTools from 【页面正文】<untrusted_page> ──
 {
-  const rawPrompt = "请核对当前采集箱第一行商品标题并点击编辑按钮（保留此句首尾精确字符）";
+  const rawPrompt = "请核对当前工作台第一行工单标题并点击编辑按钮（保留此句首尾精确字符）";
   const noisyPack = {
-    title: "探果采集箱",
-    url: "https://10.2.31.12:21006/ai-shop-cross-country/#/ai-tools-kj-cross?view=tools&menu=collectionBox",
+    title: "工单工作台",
+    url: "https://portal.example.test/workspace/#/tasks?view=board",
     kind: "generic",
-    // Contains noisy keywords from the web page that previously polluted resolveActiveTools:
-    text: "全部 30 | 未发布 30 | 历史记录 | 书签同步 | 产品视频 | 字幕文稿 | 保存到文稿知识库 | 切换深色主题设置",
+    text: "全部 30 | 待处理 30 | 历史记录 | 书签同步 | 演示视频 | 字幕文稿 | 保存到文稿知识库 | 切换深色主题设置",
   };
   const pageContext = packToContext(noisyPack);
   const combinedText = `${rawPrompt}\n\n${pageContext}`;
 
-  // 4a. buildRunRecord strips accidental attached page context while keeping attachedContextChars
   const directBundle = buildRunRecord({
-    runId: "run_r2_prompt_clean",
+    runId: "run_raw_prompt_clean",
     source: "sidepanel",
     startedAt: "2026-11-11T16:40:00.000Z",
     endedAt: "2026-11-11T16:40:02.000Z",
@@ -280,14 +273,13 @@ const { JSDOM } = require("jsdom");
     "conversationMessages still retains full model input",
   );
 
-  // 4b. resolveActiveTools ignores <untrusted_page> in userText AND tool messages in history
   const allTools = createAgentTools({ getTabId: () => 1, getWindowId: () => 1, settings: {} });
   const routed = resolveActiveTools({
     userText: combinedText,
     history: [
       {
         role: "tool",
-        content: '<untrusted_page source="extract_page">\n历史记录 产品视频 保存到文稿 深色主题设置 shell 命令\n</untrusted_page>',
+        content: '<untrusted_page source="extract_page">\n历史记录 演示视频 保存到文稿 深色主题设置 shell 命令\n</untrusted_page>',
       },
     ],
     tools: allTools,
@@ -299,10 +291,9 @@ const { JSDOM } = require("jsdom");
   assert.ok(!routed.includes("write_library") && !routed.includes("run_shell"), "untrusted page 文稿/shell must not activate system_ops");
   assert.ok(!routed.includes("update_settings"), "untrusted page 深色主题设置 must not activate settings");
 
-  // 4c. Real sidepanel sendPrompt -> executeLoop -> persistRunBundle end-to-end check
   const spDom = new JSDOM(
     "<!doctype html><html><body><div id='msgs'></div><button id='send'></button><div id='save-status'></div></body></html>",
-    { url: "chrome-extension://ext-r2-sp/sidepanel/index.html" },
+    { url: "chrome-extension://ext-prompt-sp/sidepanel/index.html" },
   );
   globalThis.window = spDom.window;
   globalThis.document = spDom.window.document;
@@ -328,9 +319,9 @@ const { JSDOM } = require("jsdom");
       session: { get: async () => ({}), set: async () => {}, remove: async () => {} },
     },
     runtime: {
-      id: "ext-r2-sp",
+      id: "ext-prompt-sp",
       getManifest: () => ({ version: "0.12.1" }),
-      getURL: (p) => `chrome-extension://ext-r2-sp/${p}`,
+      getURL: (p) => `chrome-extension://ext-prompt-sp/${p}`,
       sendMessage: async () => ({ ok: true }),
     },
   };
@@ -354,7 +345,7 @@ const { JSDOM } = require("jsdom");
     const { state } = await import("../sidepanel/state.js");
     const { sendPrompt } = await import("../sidepanel/agent-loop.js");
 
-    state.sessionId = "sess_r2_prompt_isolation";
+    state.sessionId = "sess_prompt_isolation";
     state.share = true;
     state.tab = { id: 31, windowId: 1, url: noisyPack.url, title: noisyPack.title };
     state.pack = { ...noisyPack, hasVideo: false };
@@ -364,9 +355,9 @@ const { JSDOM } = require("jsdom");
       ...state.settings,
       skillsEnabled: false,
       diagnostics: { autoExportRunBundle: false },
-      providers: [{ id: "p1", name: "Test", baseUrl: "https://llm.example/v1", apiKey: "sk-unit-test-only", models: [{ id: "m1" }] }],
+      providers: [{ id: "p1", name: "UnitModel", baseUrl: "https://llm.example/v1", apiKey: "sk-unit-fake-key", models: [{ id: "m1" }] }],
       textRef: { providerId: "p1", modelId: "m1" },
-      text: { baseUrl: "https://llm.example/v1", apiKey: "sk-unit-test-only", model: "m1" },
+      text: { baseUrl: "https://llm.example/v1", apiKey: "sk-unit-fake-key", model: "m1" },
     };
 
     await sendPrompt(rawPrompt);
@@ -392,7 +383,6 @@ const { JSDOM } = require("jsdom");
     globalThis.fetch = origFetch;
     spDom.window.close();
   }
-  console.log("PASS 4. sendPrompt / executeLoop / buildRunRecord userPrompt verbatim isolation");
 }
 
 // ── 5. Generic prohibition clause stripping & active tool routing verification ──
@@ -418,8 +408,6 @@ const { JSDOM } = require("jsdom");
   assert.ok(!activeNames.includes("seek_video"), "no media_player bloat");
   assert.ok(!activeNames.includes("update_settings"), "no settings bloat");
   assert.ok(active.length <= 40, `active tools trimmed to core_reader + dom_interact, got ${active.length}`);
-
-  console.log("PASS 5. Generic prohibition clause capsule & active tool routing verified");
 }
 
-console.log("ALL PASS test_round02_fixes.mjs");
+console.log("PASS test_scroll_and_raw_prompt.mjs");
