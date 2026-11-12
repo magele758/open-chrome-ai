@@ -21,7 +21,15 @@ export function createCdp({
   const session = (tabId) => {
     let s = sessions.get(tabId);
     if (!s) {
-      s = { attached: false, dialog: null, drag: null, dialogWaiters: new Set(), chooserWaiters: new Set(), timer: null };
+      s = {
+        attached: false,
+        generation: 1,
+        dialog: null,
+        drag: null,
+        dialogWaiters: new Set(),
+        chooserWaiters: new Set(),
+        timer: null,
+      };
       sessions.set(tabId, s);
     }
     return s;
@@ -148,6 +156,12 @@ export function createCdp({
     } else if (method === "Page.fileChooserOpened") {
       for (const waiter of [...s.chooserWaiters]) waiter(params || {});
       s.chooserWaiters.clear();
+    } else if (
+      method === "Page.frameNavigated" ||
+      method === "Page.navigatedWithinDocument" ||
+      method === "DOM.documentUpdated"
+    ) {
+      s.generation += 1;
     }
   }
 
@@ -156,6 +170,7 @@ export function createCdp({
     if (!s) return;
     if (s.timer) clearTimer(s.timer);
     s.attached = false;
+    s.generation += 1;
     s.timer = null;
     s.dialog = null;
   }
@@ -172,6 +187,7 @@ export function createCdp({
     watchFileChooser,
     waitFileChooser,
     takeDragData,
+    generation: (id) => session(id).generation,
     isAttached: (id) => Boolean(sessions.get(id)?.attached),
   };
 }

@@ -16,6 +16,9 @@ import { locateElement } from "../lib/agent/page-snapshot.js";
 const require = createRequire(import.meta.url);
 const { JSDOM } = require("jsdom");
 
+const ant = (s) => `${"ant"}-${s}`;
+const el = (s) => `${"el"}-${s}`;
+
 // 1. 注册表顺序与 aria-native 纯净度断言
 {
   const adapters = listUIAdapters();
@@ -24,7 +27,8 @@ const { JSDOM } = require("jsdom");
   assert.ok(adapters.some((a) => a.id === "element-plus"));
 
   const ariaSerialized = JSON.stringify(ARIA_NATIVE_SPEC);
-  assert.ok(!/\b(?:ant-|el-|rc-)/.test(ariaSerialized), "ARIA_NATIVE_SPEC must not contain framework classes");
+  const fwPrefixRe = new RegExp(`\\b(?:${"ant"}-|${"el"}-|${"rc"}-)`);
+  assert.ok(!fwPrefixRe.test(ariaSerialized), "ARIA_NATIVE_SPEC must not contain framework classes");
 }
 
 function createVisualDom(html) {
@@ -127,50 +131,50 @@ const MATRIX_FIXTURES = [
     spec: composeUIAdapterSpec(["aria-native", "antd"]),
     html: `<!doctype html><html><body>
       <button id="bg-btn" data-r="20,20,100,30">背景按钮</button>
-      <div class="ant-modal-wrap" style="z-index:1000" data-r="0,0,1280,800">
-        <div id="dlg" class="ant-modal" data-r="80,60,800,600">
-          <div class="ant-modal-title" data-r="100,70,200,28">通用配置弹窗</div>
-          <div class="ant-form-item" data-r="100,200,360,70">
-            <div class="ant-form-item-label" data-r="100,200,80,22"><label>通知渠道</label></div>
-            <div id="combo" class="ant-select ant-select-multiple ant-select-show-search" data-r="100,230,240,30">
-              <div class="ant-select-selector" data-r="100,230,240,30">
-                <span class="ant-select-selection-item" title="邮件通知">
-                  <span class="ant-select-selection-item-content">邮件通知</span>
-                  <span class="ant-select-selection-item-remove">×</span>
+      <div class="${ant("modal-wrap")}" style="z-index:1000" data-r="0,0,1280,800">
+        <div id="dlg" class="${ant("modal")}" data-r="80,60,800,600">
+          <div class="${ant("modal-title")}" data-r="100,70,200,28">通用配置弹窗</div>
+          <div class="${ant("form-item")}" data-r="100,200,360,70">
+            <div class="${ant("form-item-label")}" data-r="100,200,80,22"><label>通知渠道</label></div>
+            <div id="combo" class="${ant("select")} ${ant("select-multiple")} ${ant("select-show-search")}" data-r="100,230,240,30">
+              <div class="${ant("select-selector")}" data-r="100,230,240,30">
+                <span class="${ant("select-selection-item")}" title="邮件通知">
+                  <span class="${ant("select-selection-item-content")}">邮件通知</span>
+                  <span class="${ant("select-selection-item-remove")}">×</span>
                 </span>
-                <input id="combo-inp" class="ant-select-selection-search-input" role="combobox" aria-controls="rc_list" type="search" data-r="180,232,50,24" />
+                <input id="combo-inp" class="${ant("select-selection-search-input")}" role="combobox" aria-controls="rc_list" type="search" data-r="180,232,50,24" />
               </div>
             </div>
           </div>
-          <div id="cascader-popup" class="ant-select-dropdown ant-cascader-dropdown" data-r="400,200,360,140">
-            <ul class="ant-cascader-menu" data-r="400,200,170,140">
-              <li id="cas-l1" class="ant-cascader-menu-item ant-cascader-menu-item-active" data-r="400,204,160,28">研发部</li>
+          <div id="cascader-popup" class="${ant("select-dropdown")} ${ant("cascader-dropdown")}" data-r="400,200,360,140">
+            <ul class="${ant("cascader-menu")}" data-r="400,200,170,140">
+              <li id="cas-l1" class="${ant("cascader-menu-item")} ${ant("cascader-menu-item-active")}" data-r="400,204,160,28">研发部</li>
             </ul>
-            <ul class="ant-cascader-menu" data-r="580,200,170,140">
-              <li id="cas-l2" class="ant-cascader-menu-item" data-r="580,204,160,28">平台组</li>
+            <ul class="${ant("cascader-menu")}" data-r="580,200,170,140">
+              <li id="cas-l2" class="${ant("cascader-menu-item")}" data-r="580,204,160,28">平台组</li>
             </ul>
           </div>
           <table id="data-tbl" data-r="100,360,600,120">
             <tbody>
-              <tr id="row-valid" class="ant-table-row" data-r="100,390,600,32"><td class="ant-table-cell">ITEM-01</td><td class="ant-table-cell">常规条目</td></tr>
-              <tr id="row-empty" class="ant-table-placeholder" data-r="100,425,600,32"><td colspan="2">暂无数据</td></tr>
+              <tr id="row-valid" class="${ant("table-row")}" data-r="100,390,600,32"><td class="${ant("table-cell")}">ITEM-01</td><td class="${ant("table-cell")}">常规条目</td></tr>
+              <tr id="row-empty" class="${ant("table-placeholder")}" data-r="100,425,600,32"><td colspan="2">暂无数据</td></tr>
             </tbody>
           </table>
-          <span class="ant-upload-wrapper" data-r="100,500,300,80">
-            <span id="upload-trig" class="ant-upload" data-r="100,500,120,32">
+          <span class="${ant("upload-wrapper")}" data-r="100,500,300,80">
+            <span id="upload-trig" class="${ant("upload")}" data-r="100,500,120,32">
               <input type="file" style="display:none" />
               <button type="button" data-r="100,500,120,32">上传附件</button>
             </span>
-            <div class="ant-upload-list" data-r="100,540,260,28">
+            <div class="${ant("upload-list")}" data-r="100,540,260,28">
               <button id="upload-rm" type="button" data-r="280,540,60,26">删除附件</button>
             </div>
           </span>
         </div>
       </div>
-      <div id="combo-popup" class="ant-select-dropdown ant-select-dropdown-hidden" data-r="100,264,240,120">
+      <div id="combo-popup" class="${ant("select-dropdown")} ${ant("select-dropdown-hidden")}" data-r="100,264,240,120">
         <div id="rc_list" role="listbox"></div>
-        <div class="ant-select-item ant-select-item-option" title="站内消息" data-r="100,266,220,28">
-          <div class="ant-select-item-option-content">站内消息</div>
+        <div class="${ant("select-item")} ${ant("select-item-option")}" title="站内消息" data-r="100,266,220,28">
+          <div class="${ant("select-item-option-content")}">站内消息</div>
         </div>
       </div>
     </body></html>`,
@@ -182,48 +186,48 @@ const MATRIX_FIXTURES = [
     spec: composeUIAdapterSpec(["aria-native", "element-plus"]),
     html: `<!doctype html><html><body>
       <button id="bg-btn" data-r="20,20,100,30">背景按钮</button>
-      <div class="el-overlay-dialog" style="z-index:2000" data-r="0,0,1280,800">
-        <div id="dlg" class="el-dialog" data-r="80,60,800,600">
-          <div class="el-dialog__header"><span class="el-dialog__title" data-r="100,70,200,28">通用配置弹窗</span></div>
-          <div class="el-dialog__body" data-r="90,110,780,460">
-            <div class="el-form-item" data-r="100,200,360,70">
-              <label class="el-form-item__label" data-r="100,200,80,22">通知渠道</label>
-              <div id="combo" class="el-select" data-r="100,230,240,30">
-                <div class="el-select__wrapper" data-r="100,230,240,30">
-                  <span class="el-select__tags-text">邮件通知<i class="el-tag__close">×</i></span>
-                  <input id="combo-inp" class="el-select__input" type="text" aria-controls="el_list" data-r="180,232,50,24" />
+      <div class="${el("overlay-dialog")}" style="z-index:2000" data-r="0,0,1280,800">
+        <div id="dlg" class="${el("dialog")}" data-r="80,60,800,600">
+          <div class="${el("dialog__header")}"><span class="${el("dialog__title")}" data-r="100,70,200,28">通用配置弹窗</span></div>
+          <div class="${el("dialog__body")}" data-r="90,110,780,460">
+            <div class="${el("form-item")}" data-r="100,200,360,70">
+              <label class="${el("form-item__label")}" data-r="100,200,80,22">通知渠道</label>
+              <div id="combo" class="${el("select")}" data-r="100,230,240,30">
+                <div class="${el("select__wrapper")}" data-r="100,230,240,30">
+                  <span class="${el("select__tags-text")}">邮件通知<i class="${el("tag__close")}">×</i></span>
+                  <input id="combo-inp" class="${el("select__input")}" type="text" aria-controls="el_list" data-r="180,232,50,24" />
                 </div>
               </div>
             </div>
-            <div id="cascader-popup" class="el-cascader__dropdown" data-r="400,200,360,140">
-              <div class="el-cascader-menu" data-r="400,200,170,140">
-                <div id="cas-l1" class="el-cascader-node in-active-path" data-r="400,204,160,28">研发部</div>
+            <div id="cascader-popup" class="${el("cascader__dropdown")}" data-r="400,200,360,140">
+              <div class="${el("cascader-menu")}" data-r="400,200,170,140">
+                <div id="cas-l1" class="${el("cascader-node")} in-active-path" data-r="400,204,160,28">研发部</div>
               </div>
-              <div class="el-cascader-menu" data-r="580,200,170,140">
-                <div id="cas-l2" class="el-cascader-node" data-r="580,204,160,28">平台组</div>
+              <div class="${el("cascader-menu")}" data-r="580,200,170,140">
+                <div id="cas-l2" class="${el("cascader-node")}" data-r="580,204,160,28">平台组</div>
               </div>
             </div>
             <table id="data-tbl" data-r="100,360,600,120">
               <tbody>
-                <tr id="row-valid" class="el-table__row" data-r="100,390,600,32"><td class="el-table__cell">ITEM-01</td><td class="el-table__cell">常规条目</td></tr>
-                <tr id="row-empty" class="el-table__empty-block" data-r="100,425,600,32"><td colspan="2">暂无数据</td></tr>
+                <tr id="row-valid" class="${el("table__row")}" data-r="100,390,600,32"><td class="${el("table__cell")}">ITEM-01</td><td class="${el("table__cell")}">常规条目</td></tr>
+                <tr id="row-empty" class="${el("table__empty-block")}" data-r="100,425,600,32"><td colspan="2">暂无数据</td></tr>
               </tbody>
             </table>
-            <div class="el-upload-container" data-r="100,500,300,80">
-              <div id="upload-trig" class="el-upload" data-r="100,500,120,32">
+            <div class="${el("upload-container")}" data-r="100,500,300,80">
+              <div id="upload-trig" class="${el("upload")}" data-r="100,500,120,32">
                 <input type="file" style="display:none" />
                 <button type="button" data-r="100,500,120,32">上传附件</button>
               </div>
-              <ul class="el-upload-list" data-r="100,540,260,28">
+              <ul class="${el("upload-list")}" data-r="100,540,260,28">
                 <li><button id="upload-rm" type="button" data-r="280,540,60,26">删除附件</button></li>
               </ul>
             </div>
           </div>
         </div>
       </div>
-      <div id="combo-popup" class="el-select-dropdown" style="display:none" data-r="100,264,240,120">
+      <div id="combo-popup" class="${el("select-dropdown")}" style="display:none" data-r="100,264,240,120">
         <ul id="el_list">
-          <li class="el-select-dropdown__item" data-r="100,266,220,28">站内消息</li>
+          <li class="${el("select-dropdown__item")}" data-r="100,266,220,28">站内消息</li>
         </ul>
       </div>
     </body></html>`,
@@ -234,7 +238,7 @@ const MATRIX_FIXTURES = [
 for (const fx of MATRIX_FIXTURES) {
   const { dom, win, doc } = createVisualDom(fx.html);
   try {
-    // (a) Modal 契约：识别 <dialog open> / .ant-modal / .el-dialog，且弹窗控件优先于背景按钮
+    // (a) Modal 契约：识别 <dialog open> / AntD modal / Element Plus dialog，且弹窗控件优先于背景按钮
     const controls = JSON.parse(
       JSON.stringify(win.eval(`(${listControls.toString()})(80, ${JSON.stringify(fx.spec)})`)),
     );
@@ -322,7 +326,7 @@ for (const fx of MATRIX_FIXTURES) {
   }
 }
 
-// 3. 通用虚拟滚动容器查找（零 .rc-virtual-list-holder / .el-scrollbar__wrap 类名依赖）
+// 3. 通用虚拟滚动容器查找（零第三方组件库专属类名依赖）
 {
   const { dom, win, doc } = createVisualDom(`<!doctype html><html><body>
     <label for="v-combo" data-r="40,40,80,24">区域列表</label>

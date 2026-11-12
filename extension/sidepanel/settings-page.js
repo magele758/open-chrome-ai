@@ -2,6 +2,22 @@ import { enabledModelOptions } from "../lib/text-providers.js";
 import { isModelReady, isAsrReady, isTtsReady } from "../lib/storage.js";
 import { normalizeJevSettings, isJevConfigured, testJevConnection } from "../lib/jev.js";
 
+const SETTINGS_DISCLOSURE_PREFIX = "pagelens.settingsDisclosure.";
+
+function rememberDisclosures(root) {
+  for (const node of root.querySelectorAll("details.accordion, details.settings-group")) {
+    if (!node.id) continue;
+    const key = SETTINGS_DISCLOSURE_PREFIX + node.id;
+    let stored = null;
+    try { stored = localStorage.getItem(key); } catch { stored = null; }
+    if (stored === "open") node.open = true;
+    else if (stored === "collapsed") node.open = false;
+    node.addEventListener("toggle", () => {
+      try { localStorage.setItem(key, node.open ? "open" : "collapsed"); } catch { /* 存储不可用时仍可展开 */ }
+    });
+  }
+}
+
 /** Grouping is presentational: never recreate forms when switching tabs. */
 export function createSettingsPage({ root, getSettings, onModelChange }) {
   const find = (id) => root.querySelector(`#${id}`);
@@ -46,7 +62,7 @@ export function createSettingsPage({ root, getSettings, onModelChange }) {
     setText("settings-state-native", settings.nativeShell === false ? "命令已关闭" : ({ strict: "严格", balanced: "智能审查", autonomous: "全自动" }[settings.hitlMode] || "智能审查"));
     setText("settings-state-trace", settings.debug?.enabled ? "已开启" : "未启用");
     setText("settings-state-colors", Object.keys(settings.uiThemeColors?.[settings.uiTheme] || {}).length ? "自定义" : "默认");
-    setText("settings-state-shortcuts", `${settings.shortcuts?.length || 0} 条　›`);
+    setText("settings-state-shortcuts", `${settings.shortcuts?.length || 0} 条`);
     setText("jev-toggle-label", settings.jev?.enabled ? "已开启" : "已关闭");
     setText("settings-state-jev", isJevConfigured(settings.jev) ? "已填写" : "待配置");
   }
@@ -167,6 +183,7 @@ export function createSettingsPage({ root, getSettings, onModelChange }) {
   root.addEventListener("click", (event) => {
     if (event.target.closest('[data-ui-theme],#btn-theme-reset,#btn-add-shortcut,[data-del]')) queueMicrotask(refreshSummary);
   });
+  rememberDisclosures(root);
   render();
   return { render, refreshModels, refreshSummary, showTab, reveal };
 }

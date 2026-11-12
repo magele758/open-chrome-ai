@@ -127,10 +127,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 0 0 9px;
-  font-size: 13px;
-  font-weight: 650;
-  color: var(--ink);
+  margin: 4px 0 0;
+  padding: 8px 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
 }
 
 .badge,
@@ -431,7 +432,7 @@
 
 /* Shortcut card */
 .shortcut-card {
-  padding: 12px 13px;
+  padding: 0;
 }
 
 .shortcut-card > summary {
@@ -456,36 +457,38 @@
 }
 
 .group-label {
-  font-size: 10px;
+  margin: 16px 0 0;
+  padding: 8px 2px 4px;
   color: var(--muted, #7b7268);
-  letter-spacing: 1px;
-  margin: 18px 0 8px;
+  font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .group-label:first-of-type {
   margin-top: 0;
 }
 
-/* Accordions in Advanced Tab */
+/* Accordions match Lab sidebar groups: flat, independently collapsible. */
 .accordion,
 .settings-group {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface, white);
-  margin-bottom: 9px;
+  margin: 0;
   overflow: hidden;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .accordion > summary,
 .settings-group > summary {
   display: flex;
-  gap: 11px;
+  gap: 8px;
   align-items: center;
-  padding: 13px 12px;
-  min-height: 68px;
+  min-height: 0;
+  padding: 8px 4px;
   cursor: pointer;
   list-style: none;
 }
@@ -495,9 +498,12 @@
   display: none;
 }
 
+.accordion > summary .chev,
+.settings-group > summary .chev { order: -1; }
+
 .group-icon {
-  width: 31px;
-  height: 31px;
+  width: 24px;
+  height: 24px;
   background: var(--accent-soft, #f4f1eb);
   border-radius: 8px;
   display: grid;
@@ -508,8 +514,8 @@
 
 .group-icon svg,
 .group-icon .ico {
-  width: 17px;
-  height: 17px;
+  width: 14px;
+  height: 14px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.6;
@@ -550,16 +556,23 @@
 }
 
 .chev {
-  color: var(--muted, #8a8175);
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  overflow: hidden;
+  border: solid var(--muted, #8a8175);
+  border-width: 0 1.5px 1.5px 0;
+  color: transparent;
+  font-size: 0;
+  line-height: 0;
+  transform: rotate(-45deg);
   transition: transform 0.15s ease;
-  font-size: 15px;
-  font-family: monospace;
-  font-weight: bold;
 }
 
 .accordion[open] > summary .chev,
 .settings-group[open] > summary .chev {
-  transform: rotate(90deg);
+  transform: rotate(45deg);
 }
 
 .accordion .inner,

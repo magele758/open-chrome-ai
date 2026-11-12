@@ -258,6 +258,7 @@ export async function actOnRef(kind, spec) {
     return false;
   };
   const deepFromPoint = (x, y) => {
+    if (typeof document.elementFromPoint !== "function") return null;
     let hit = document.elementFromPoint(x, y);
     while (hit?.shadowRoot && typeof hit.shadowRoot.elementFromPoint === "function") {
       const inner = hit.shadowRoot.elementFromPoint(x, y);
@@ -279,6 +280,7 @@ export async function actOnRef(kind, spec) {
   if (hit && !composedContains(el, hit) && !composedContains(hit, el)) {
     return {
       ok: false,
+      occluded: true,
       covered: true,
       error: "目标被其他元素遮挡（弹窗/遮罩/悬浮层），先处理遮挡物或关闭它",
       blocker: describe(hit),
@@ -581,7 +583,7 @@ export function locateElement(spec) {
     for (let n = b; n; n = n.parentNode || n.host) if (n === a) return true;
     return false;
   };
-  let hit = document.elementFromPoint(x, y);
+  let hit = typeof document.elementFromPoint === "function" ? document.elementFromPoint(x, y) : null;
   while (hit?.shadowRoot && typeof hit.shadowRoot.elementFromPoint === "function") {
     const inner = hit.shadowRoot.elementFromPoint(x, y);
     if (!inner || inner === hit) break;
@@ -590,9 +592,10 @@ export function locateElement(spec) {
   if (hit && !composedContains(el, hit) && !composedContains(hit, el)) {
     return {
       ok: false,
+      occluded: true,
       covered: true,
       error: "目标被其他元素遮挡（弹窗/遮罩/悬浮层），先处理遮挡物",
-      blocker: { tag: hit.tagName.toLowerCase(), text: clean(hit.innerText || "").slice(0, 60) },
+      blocker: { tag: hit.tagName.toLowerCase(), text: clean(hit.innerText || hit.textContent || "").slice(0, 60) },
     };
   }
   const uploadListSel = A?.uploadListSelector || '[role="list"][data-upload-list], [class*="upload-list"]';

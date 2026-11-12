@@ -1,0 +1,19 @@
+:root {color-scheme:light dark;font:16px/1.55 system-ui,sans-serif;color:CanvasText;background:Canvas}
+* {box-sizing:border-box}
+main {max-width:1120px;margin:auto;padding:clamp(16px,4vw,56px)}
+header {border-bottom:1px solid GrayText;margin-bottom:24px}
+h1 {font-size:clamp(26px,4vw,42px);margin:.25em 0 .6em} h2,h3 {margin:1em 0 .4em}
+.layout {display:grid;grid-template-columns:minmax(190px,28%) 1fr;gap:clamp(16px,4vw,56px)}
+label {display:grid;gap:4px;margin:8px 0} button,input,select {font:inherit;padding:5px 9px}
+button {cursor:pointer} #topics {max-height:58vh;overflow:auto} #topics button {display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit}
+#topics button[aria-pressed=true] {background:Highlight;color:HighlightText}
+#map svg {width:100%;max-height:290px}
+#map line {stroke:GrayText}
+#map rect {fill:Canvas;stroke:GrayText}
+#map text {fill:CanvasText;font-size:15px}
+#map .focus-topic rect {fill:Highlight;stroke:Highlight}
+#map .focus-topic text {fill:HighlightText}
+#map g[role=button] {cursor:pointer}
+#edges {display:flex;flex-wrap:wrap;gap:6px}
+article {padding:12px 0;border-top:1px solid color-mix(in srgb,CanvasText 20%,transparent);overflow-wrap:anywhere} article p {white-space:pre-line;margin:6px 0}
+@media(max-width:650px){.layout{grid-template-columns:1fr}#topics{max-height:180px}}

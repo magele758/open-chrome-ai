@@ -1,0 +1,10 @@
+id: preprocess-knowledge
+status: implemented
+notes: "assumedApproval: standing-order-2026-10-22"
+criteria:
+  - id: AC-1
+    then: Opt-in video jobs are durable, deduplicated while pending, processed serially, and individually retryable after failure.
+  - id: AC-2
+    then: Only a saved audio archive marks a job ready, and the list exposes progress and playback.
+  - id: AC-3
+    then: Existing and new clippings are discoverable by content-derived topic, domain, shared topics and source.

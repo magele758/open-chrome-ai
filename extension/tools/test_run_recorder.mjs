@@ -78,7 +78,7 @@ function makeFakeChrome({ stampJson = null, throwOnDownload = false, tabsMap = n
     tabs: {
       async get(tabId) {
         if (tabsMap.has(tabId)) return tabsMap.get(tabId);
-        return { id: tabId, windowId: 1, url: "https://agentseller.temu.com/mmsos/goods.html#/list", title: "商品列表" };
+        return { id: tabId, windowId: 1, url: "https://portal.example.test/console/tasks.html#/list", title: "工单列表" };
       },
       async query() {
         return [...tabsMap.values()];
@@ -137,7 +137,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
     stampJson: {
       timestamp: "2026-11-11T14:30:00Z",
       gitCommit: "abc1234",
-      gitBranch: "feat/temu-e2e-loop",
+      gitBranch: "feat/test-branch",
     },
   });
 
@@ -150,7 +150,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
       endedAt: "2026-11-11T14:31:03.250Z",
       status: "done",
       endReason: "stop",
-      model: "gpt-test-model",
+      model: "gpt-unit-model",
       metrics: {
         durationMs: 3250,
         inputTokens: 120,
@@ -158,11 +158,11 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
         totalTokens: 165,
         finishReason: "stop",
       },
-      initialPage: { tabId: 42, url: "https://agentseller.temu.com/mmsos/goods.html#/home", title: "卖家首页" },
-      finalPage: { tabId: 42, url: "https://agentseller.temu.com/mmsos/goods.html#/edit?id=9", title: "编辑商品" },
+      initialPage: { tabId: 42, url: "https://portal.example.test/console/tasks.html#/home", title: "控制台首页" },
+      finalPage: { tabId: 42, url: "https://portal.example.test/console/tasks.html#/edit?id=9", title: "编辑工单" },
       userPrompt: "请打开编辑页",
       thinking: "先定位按钮再点击",
-      botResponse: "已进入编辑商品页。",
+      botResponse: "已进入编辑工单页。",
       steps: [
         {
           type: "model_turn",
@@ -179,20 +179,20 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
           type: "tool_exec",
           turn: 1,
           name: "click",
-          args: { selector: "#edit", apiKey: "FAKE_TEST_KEY_DO_NOT_USE" },
+          args: { selector: "#edit", apiKey: "FAKE_UNIT_KEY_DO_NOT_USE" },
           result: "{\"ok\":true,\"clicked\":\"#edit\"}",
           ok: true,
           jsOk: true,
           durationMs: 85,
           tabId: 42,
-          pageUrl: "https://agentseller.temu.com/mmsos/goods.html#/edit?id=9",
-          pageTitle: "编辑商品",
+          pageUrl: "https://portal.example.test/console/tasks.html#/edit?id=9",
+          pageTitle: "编辑工单",
           timestamp: 1794407461100,
         },
       ],
       history: [
         { role: "user", content: "请打开编辑页" },
-        { role: "assistant", content: "已进入编辑商品页。" },
+        { role: "assistant", content: "已进入编辑工单页。" },
       ],
       systemPrompt: "你是助手",
     },
@@ -202,7 +202,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
       autoExport: true,
       exportDebugFn: async () =>
         JSON.stringify({
-          entries: [{ event: "sw.startup", authorization: "Bearer fake_unit_test_jwt_000" }],
+          entries: [{ event: "sw.startup", authorization: "Bearer fake_unit_jwt_000" }],
         }),
     },
   );
@@ -226,10 +226,10 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
   assert.equal(traceJson.endedAt, "2026-11-11T14:31:03.250Z");
   assert.equal(traceJson.status, "done");
   assert.equal(traceJson.endReason, "stop");
-  assert.equal(traceJson.initialPage.url, "https://agentseller.temu.com/mmsos/goods.html#/home");
-  assert.equal(traceJson.finalPage.url, "https://agentseller.temu.com/mmsos/goods.html#/edit?id=9");
-  assert.equal(traceJson.botResponse, "已进入编辑商品页。");
-  assert.equal(traceJson.content, "已进入编辑商品页。");
+  assert.equal(traceJson.initialPage.url, "https://portal.example.test/console/tasks.html#/home");
+  assert.equal(traceJson.finalPage.url, "https://portal.example.test/console/tasks.html#/edit?id=9");
+  assert.equal(traceJson.botResponse, "已进入编辑工单页。");
+  assert.equal(traceJson.content, "已进入编辑工单页。");
   assert.ok(Array.isArray(traceJson.sidepanelErrors));
   assert.ok(Array.isArray(traceJson.artifacts));
   assert.equal(traceJson.toolSteps.length, 1);
@@ -244,8 +244,8 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
   assert.equal(ts0.failureReason, null);
   assert.equal(ts0.durationMs, 85);
   assert.equal(ts0.tabId, 42);
-  assert.equal(ts0.pageUrl, "https://agentseller.temu.com/mmsos/goods.html#/edit?id=9");
-  assert.equal(ts0.pageTitle, "编辑商品");
+  assert.equal(ts0.pageUrl, "https://portal.example.test/console/tasks.html#/edit?id=9");
+  assert.equal(ts0.pageTitle, "编辑工单");
   assert.equal(ts0.archiveHandle, null);
 
   const debugJson = decodeDataUrlJson(downloads[1].url);
@@ -265,7 +265,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
   assert.equal(cJsonErr.jsOk, true);
   assert.match(cJsonErr.failureReason, /disabled/);
 
-  const cNotFound = classifyToolOutcome("query_dom", "<untrusted_page source=\"query_dom\">\n{\"notFound\":true,\"selector\":\".sku-row\"}\n</untrusted_page>", true);
+  const cNotFound = classifyToolOutcome("query_dom", "<untrusted_page source=\"query_dom\">\n{\"notFound\":true,\"selector\":\".task-row\"}\n</untrusted_page>", true);
   assert.equal(cNotFound.ok, false);
   assert.equal(cNotFound.jsOk, true);
   assert.equal(cNotFound.failureReason, "not_found");
@@ -326,8 +326,8 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
     systemPrompt: "guardian test",
     getToolPageContext: async () => ({
       tabId: 99,
-      url: "https://agentseller.temu.com/mmsos/goods.html#/ai-tools-kj-cross?view=tools",
-      title: "AI 跨境工具箱",
+      url: "https://portal.example.test/console/tasks.html#/tools?view=board",
+      title: "运维工具台",
     }),
     model: {
       async runTurn({ messages }) {
@@ -345,7 +345,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
       },
     },
   });
-  await kernel.run("检查页面上传结果", { sessionId: "sess_guardian", traceSteps });
+  await kernel.run("检查页面同步结果", { sessionId: "sess_guardian", traceSteps });
   const execStep = traceSteps.find((s) => s.type === "tool_exec");
   assert.ok(execStep, "tool_exec recorded");
   assert.equal(execStep.ok, false, "business failure detected BEFORE tool-guardian archiving");
@@ -356,7 +356,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
   assert.equal(execStep.archivedContent.length, 24_000, "archivedContent capped at 24000 chars");
   assert.ok(secondTurnToolMessage.length < 4_000, "model context receives compact summary, NOT archivedContent");
   assert.equal(execStep.tabId, 99);
-  assert.equal(execStep.pageUrl, "https://agentseller.temu.com/mmsos/goods.html#/ai-tools-kj-cross?view=tools");
+  assert.equal(execStep.pageUrl, "https://portal.example.test/console/tasks.html#/tools?view=board");
 
   const built = buildRunRecord({ runId: "run_guardian", steps: traceSteps });
   assert.equal(built.traceRecord.toolSteps[0].ok, false);
@@ -367,10 +367,10 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
 
 // ── 3. 敏感参数脱敏与非敏感完整 URL（含 query 与 #hash）保留 ──
 {
-  const temuHashUrl =
-    "https://agentseller.temu.com/mmsos/goods.html?mallId=8899&pageSize=50#/ai-tools-kj-cross?view=tools&menu=collectionBox";
+  const portalHashUrl =
+    "https://portal.example.test/console/tasks.html?orgId=8899&pageSize=50#/workspace?view=board&menu=inbox";
   const urlWithSensitiveQuery =
-    "https://example.com/callback?mallId=8899&access_token=tok_fake_query_000&signature=sig_fake_000#/dashboard?tab=1";
+    "https://example.com/callback?orgId=8899&access_token=tok_fake_query_000&signature=sig_fake_000#/dashboard?tab=1";
 
   const sanitized = sanitizeTraceValue({
     apiKey: "FAKE_API_KEY_000",
@@ -381,10 +381,10 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
       settingItem: { key: "openai.api_key", value: "FAKE_SETTING_KEY_000", label: "OpenAI" },
     },
     headers: {
-      Authorization: "Bearer fake_unit_test_jwt_000",
+      Authorization: "Bearer fake_unit_jwt_000",
     },
-    inlineNote: "Using key sk-fakeTestOnly0000000000 and https://admin:fake_pass_000@internal.example/v1",
-    pageUrl: temuHashUrl,
+    inlineNote: "Using key sk-fakeUnitOnly0000000000 and https://admin:fake_pass_000@internal.example/v1",
+    pageUrl: portalHashUrl,
     callbackUrl: urlWithSensitiveQuery,
   });
 
@@ -395,16 +395,16 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
   assert.equal(sanitized.nested.settingItem.value, "[REDACTED]");
   assert.equal(sanitized.nested.settingItem.label, "OpenAI");
   assert.equal(sanitized.headers.Authorization, "[REDACTED]");
-  assert.ok(!sanitized.inlineNote.includes("sk-fakeTestOnly0000000000"));
+  assert.ok(!sanitized.inlineNote.includes("sk-fakeUnitOnly0000000000"));
   assert.ok(!sanitized.inlineNote.includes("fake_pass_000"));
   assert.equal(
     sanitized.pageUrl,
-    temuHashUrl,
+    portalHashUrl,
     "non-sensitive URL with normal query params and #hash route must be 100% preserved",
   );
   assert.equal(
     sanitized.callbackUrl,
-    "https://example.com/callback?mallId=8899&access_token=[REDACTED]&signature=[REDACTED]#/dashboard?tab=1",
+    "https://example.com/callback?orgId=8899&access_token=[REDACTED]&signature=[REDACTED]#/dashboard?tab=1",
   );
   console.log("PASS 3. sensitive redaction + 100% preservation of non-sensitive URLs & #hash routes");
 }
@@ -517,7 +517,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
   const swEnv = makeFakeChrome({
     stampJson: { timestamp: "2026-11-11T15:00:00Z", gitCommit: "def5678" },
     tabsMap: new Map([
-      [7, { id: 7, windowId: 1, url: "https://agentseller.temu.com/mmsos/goods.html#/list", title: "Temu 列表" }],
+      [7, { id: 7, windowId: 1, url: "https://portal.example.test/console/tasks.html#/list", title: "工单列表" }],
     ]),
   });
 
@@ -528,7 +528,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
         description: "extract",
         parameters: { type: "object", properties: {} },
         async execute() {
-          return "商品标题：测试保温杯";
+          return "工单标题：常规缓存巡检";
         },
       },
       {
@@ -551,18 +551,18 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
         tools,
         systemPrompt: "sw delegate sys",
         modelName: "sw-model-v1",
-        initialPage: { tabId: task.tabId, url: task.sourceUrl, title: "Temu 列表" },
+        initialPage: { tabId: task.tabId, url: task.sourceUrl, title: "工单列表" },
         getToolPageContext: async () => ({
           tabId: 7,
-          url: "https://agentseller.temu.com/mmsos/goods.html#/list",
-          title: "Temu 列表",
+          url: "https://portal.example.test/console/tasks.html#/list",
+          title: "工单列表",
         }),
         getFinalPage: async () => ({
           tabId: 7,
-          url: "https://agentseller.temu.com/mmsos/goods.html#/detail?id=1",
-          title: "Temu 详情",
+          url: "https://portal.example.test/console/tasks.html#/detail?id=1",
+          title: "工单详情",
         }),
-        getTabUrl: async () => "https://agentseller.temu.com/mmsos/goods.html#/list",
+        getTabUrl: async () => "https://portal.example.test/console/tasks.html#/list",
         model,
       }),
       onTaskFinished: (payload) =>
@@ -594,9 +594,9 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
       },
     });
     const started = await mgr.start({
-      prompt: "读取商品标题",
+      prompt: "读取工单标题",
       tabId: 7,
-      sourceUrl: "https://agentseller.temu.com/mmsos/goods.html#/list",
+      sourceUrl: "https://portal.example.test/console/tasks.html#/list",
     });
     const done = await mgr.wait(started.id);
     assert.equal(done.status, TASK_STATUS.DONE);
@@ -623,7 +623,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
     const started = await mgr.start({
       prompt: "中途报错任务",
       tabId: 7,
-      sourceUrl: "https://agentseller.temu.com/mmsos/goods.html#/list",
+      sourceUrl: "https://portal.example.test/console/tasks.html#/list",
     });
     const failed = await mgr.wait(started.id);
     assert.equal(failed.status, TASK_STATUS.FAILED);
@@ -659,7 +659,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
     const started = await mgr.start({
       prompt: "中途取消任务",
       tabId: 7,
-      sourceUrl: "https://agentseller.temu.com/mmsos/goods.html#/list",
+      sourceUrl: "https://portal.example.test/console/tasks.html#/list",
     });
     await turn2Entered;
     const cancelled = await mgr.cancel(started.id);
@@ -688,7 +688,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
       prompt: "发布到知乎",
       capsule: { actions: ["publish"], platforms: ["zhihu"] },
       tabId: 7,
-      sourceUrl: "https://agentseller.temu.com/mmsos/goods.html#/list",
+      sourceUrl: "https://portal.example.test/console/tasks.html#/list",
     });
     const pending = await mgr.wait(started.id);
     assert.equal(pending.status, TASK_STATUS.NEEDS_APPROVAL);
@@ -708,8 +708,8 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
     assert.equal(t.gitCommit, "def5678");
     assert.equal(t.toolSteps.length, 1, `completed/intercepted step preserved for status=${t.status}`);
     assert.equal(t.toolSteps[0].tabId, 7);
-    assert.equal(t.toolSteps[0].pageUrl, "https://agentseller.temu.com/mmsos/goods.html#/list");
-    assert.equal(t.toolSteps[0].pageTitle, "Temu 列表");
+    assert.equal(t.toolSteps[0].pageUrl, "https://portal.example.test/console/tasks.html#/list");
+    assert.equal(t.toolSteps[0].pageTitle, "工单列表");
   }
   assert.equal(swTraces[1].endReason, "error");
   assert.match(swTraces[1].error.message, /502 Bad Gateway/);
@@ -733,7 +733,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
   const spEnv = makeFakeChrome({
     stampJson: { timestamp: "2026-11-11T15:10:00Z", gitCommit: "9876fed" },
     tabsMap: new Map([
-      [11, { id: 11, windowId: 1, url: "https://agentseller.temu.com/mmsos/goods.html#/box", title: "采集箱" }],
+      [11, { id: 11, windowId: 1, url: "https://portal.example.test/console/tasks.html#/inbox", title: "待办箱" }],
     ]),
   });
   globalThis.chrome = spEnv.chromeRef;
@@ -759,7 +759,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
   const { pushError } = await import("../sidepanel/messages.js");
   const { executeLoop } = await import("../sidepanel/agent-loop.js");
 
-  state.sessionId = "sess_sidepanel_test";
+  state.sessionId = "sess_sidepanel_unit";
   state.settings = {
     ...state.settings,
     debug: {
@@ -769,7 +769,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
       autoExportRunBundle: true,
     },
   };
-  state.tab = { id: 11, windowId: 1, url: "https://agentseller.temu.com/mmsos/goods.html#/box", title: "采集箱" };
+  state.tab = { id: 11, windowId: 1, url: "https://portal.example.test/console/tasks.html#/inbox", title: "待办箱" };
   state.pack = { url: state.tab.url, title: state.tab.title, hasVideo: false };
 
   // 6a. 第 1 轮执行 list_tabs 工具成功，运行期间触发 pushError，第 2 轮模型请求抛异常 -> 验证 steps 不丢失且 sidepanelErrors 落盘
@@ -805,7 +805,7 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
     history: [],
     resume: false,
     botMsg: botMsgFail,
-    model: { baseUrl: "https://llm.example/v1", apiKey: "FAKE_SP_KEY_000", model: "sp-test-model" },
+    model: { baseUrl: "https://llm.example/v1", apiKey: "FAKE_SP_KEY_000", model: "sp-unit-model" },
   });
 
   assert.equal(botMsgFail.error, true);
@@ -817,8 +817,8 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
   assert.equal(botMsgFail.traceLog.toolSteps.length, 1, "completed list_tabs step preserved on mid-run error (not steps: [])");
   assert.equal(botMsgFail.traceLog.toolSteps[0].toolName, "list_tabs");
   assert.equal(botMsgFail.traceLog.toolSteps[0].tabId, 11);
-  assert.equal(botMsgFail.traceLog.toolSteps[0].pageUrl, "https://agentseller.temu.com/mmsos/goods.html#/box");
-  assert.equal(botMsgFail.traceLog.toolSteps[0].pageTitle, "采集箱");
+  assert.equal(botMsgFail.traceLog.toolSteps[0].pageUrl, "https://portal.example.test/console/tasks.html#/inbox");
+  assert.equal(botMsgFail.traceLog.toolSteps[0].pageTitle, "待办箱");
   assert.equal(botMsgFail.traceLog.sidepanelErrors.length, 1);
   assert.match(botMsgFail.traceLog.sidepanelErrors[0].message, /上游网关临时超时/);
   assert.ok(botMsgFail.traceLog.steps.some((s) => s.type === "ui_error"));

@@ -1,6 +1,7 @@
 import { transcribeAudio, filenameForMime } from './asr.js';
 import { readPcmWav, pcmWav } from './downloaded-audio-source.js';
-import { hasRunawayRepetition } from './speech-quality.js';
+import { speechUnits } from './interpret-policy.js';
+import { hasRunawayRepetition, WHISPER_HALLUCINATION_PATTERNS } from './speech-quality.js';
 import { withInterpretDeadline } from './interpret-semantic.js';
 import { debugLog } from './debug-log.js';
 
@@ -28,17 +29,26 @@ export async function transcribeInterpretSlice(model, item, { signal, trace,
   const request = blob => withInterpretDeadline(requestSignal => transcribe(model, blob, {
     filename: filenameForMime(blob.type || item.mime), signal: requestSignal, allowEmpty: true, trace,
   }), signal, timeoutMs, { stage: 'ASR 语音识别', trace });
-  const validate = segments => {
+  const validate = (segments, from, duration) => {
     if (hasRunawayRepetition(segments.map(s => s.text || '').join(' '))) {
       const error = new Error('语音识别出现异常重复，重试后仍无法确认本段内容。');
       error.code = 'ASR_REPETITION';
       throw error;
     }
-    return segments;
+    return segments.filter(segment => {
+      const start = Math.max(0, Number(segment.start) || 0);
+      const end = Math.min(segment.end ?? duration, duration);
+      // A credit can be genuine speech. Reject it only when the words cannot fit the audio.
+      if (!(end > start) || speechUnits(segment.text) <= Math.max(8, (end - start) * 12)
+          || !WHISPER_HALLUCINATION_PATTERNS.some(pattern => pattern.test(segment.text))) return true;
+      debugLog('audio.skipped', { ...trace, reason: 'implausible-credit', start: from + start, end: from + end });
+      onUnrecognized?.({ start: from + start, end: from + end });
+      return false;
+    });
   };
-  const recognize = async (blob, from = 0, depth = 0) => {
+  const recognize = async (blob, duration, from = 0, depth = 0) => {
     try {
-      const result = validate(await request(blob));
+      const result = validate(await request(blob), from, duration);
       signal?.throwIfAborted();
       return result;
     } catch (error) {
@@ -52,8 +62,8 @@ export async function transcribeInterpretSlice(model, item, { signal, trace,
         const segments = [];
         for (const [lo, hi] of [[0, middle], [middle, bytes.length]]) {
           signal?.throwIfAborted();
-          const result = await recognize(pcmWav([bytes.subarray(lo, hi)]), from + lo / 32000, depth + 1);
           const duration = (hi - lo) / 32000;
+          const result = await recognize(pcmWav([bytes.subarray(lo, hi)]), duration, from + lo / 32000, depth + 1);
           for (const s of result) segments.push({ ...s,
             start: lo / 32000 + Math.max(0, Math.min(duration, Number(s.start) || 0)),
             end: lo / 32000 + (Number.isFinite(s.end) ? Math.max(0, Math.min(duration, s.end)) : duration),
@@ -64,7 +74,7 @@ export async function transcribeInterpretSlice(model, item, { signal, trace,
       try {
         // Split windows already are retries; only retry the original request.
         if (depth > 0) throw error;
-        const result = validate(await request(blob));
+        const result = validate(await request(blob), from, duration);
         signal?.throwIfAborted();
         return result;
       } catch (lastError) {
@@ -75,5 +85,5 @@ export async function transcribeInterpretSlice(model, item, { signal, trace,
       }
     }
   };
-  return recognize(item.blob);
+  return recognize(item.blob, pcm ? pcm.length / 32000 : Number(item.seconds) || Infinity);
 }
