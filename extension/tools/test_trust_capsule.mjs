@@ -184,24 +184,21 @@ assert.deepEqual(normalizeCapsule(null).actions, []);
   ]);
 }
 
-// 7. ADR-005：否定/禁止句剥离、被动状态名词过滤与 IPv4 站点抽取（Round 01 回归）
+// 7. 否定/禁止分句剥离、RFC 5737 IPv4 站点抽取与 /workflow 按步骤最小授权
 {
-  const r1Prompt = [
-    "请打开 http://10.2.31.12:5173/#/goods/collect 逐步执行采集箱表单巡检与填写。",
-    "当前页面状态栏显示：未发布 30 / 发布中 0 / 已发布 0；表单包含 *发布站点、已选标签、视频（保持空白）。",
-    "若搜索无结果请清空改搜；检查完毕后停在「发布」按钮前一步（未点击），关闭抽屉前确认字段已回显。",
-    "输出失败归属：工具 / workflow / 其他，然后结束运行。",
-    "硬性红线：绝对禁止点击「发布」/「删除」/「本地上传商品」按钮；绝对禁止打开或跳转到 Temu 卖家端（agentseller.temu.com）；严禁发送 Escape 键；禁点保存；不要运行 `rm -rf /tmp/x`。",
+  const promptWithProhibitions = [
+    "请打开 http://192.0.2.10:8080/#/tasks 填写任务标题并勾选优先级。",
+    "硬性限制：绝对禁止点击「发布」或「删除」按钮；绝对禁止打开或跳转到 external.example.org；严禁上传文件；禁点保存；不要运行 `rm -rf /tmp/x`。",
   ].join("\n");
 
-  const stripped = stripProhibitedClauses(r1Prompt);
-  assert.ok(!stripped.includes("agentseller.temu.com"), "prohibited domain stripped");
-  assert.ok(!stripped.includes("本地上传商品"), "prohibited upload phrase stripped");
+  const stripped = stripProhibitedClauses(promptWithProhibitions);
+  assert.ok(!stripped.includes("external.example.org"), "prohibited domain stripped");
+  assert.ok(!stripped.includes("上传文件"), "prohibited upload phrase stripped");
   assert.ok(!stripped.includes("rm -rf"), "prohibited command stripped");
 
-  const c = extractCapsule(r1Prompt);
-  assert.deepEqual(c.urls, ["http://10.2.31.12:5173/#/goods/collect"]);
-  assert.deepEqual(c.origins, ["10.2.31.12"], "keeps affirmative IPv4 origin and excludes prohibited agentseller.temu.com");
+  const c = extractCapsule(promptWithProhibitions);
+  assert.deepEqual(c.urls, ["http://192.0.2.10:8080/#/tasks"]);
+  assert.deepEqual(c.origins, ["192.0.2.10"], "keeps affirmative IPv4 origin and excludes prohibited external.example.org");
   assert.ok(c.actions.includes("navigate") && c.actions.includes("input"), "keeps navigate and input");
   for (const forbidden of ["publish", "delete", "upload", "send", "shell", "write", "close", "automation"]) {
     assert.ok(!c.actions.includes(forbidden), `must not grant ${forbidden}, got actions=${JSON.stringify(c.actions)}`);
@@ -209,9 +206,37 @@ assert.deepEqual(normalizeCapsule(null).actions, []);
   assert.deepEqual(c.commands, []);
 
   // 括号内禁令不应污染外层肯定分句，也不应泄漏括号内禁止域名
-  const paren = extractCapsule("请在 https://erp.example.com 填写标题（严禁点击发布，不要打开 agentseller.temu.com）并勾选规格");
+  const paren = extractCapsule("请在 https://erp.example.com 填写标题（严禁点击发布，不要打开 external.example.org）并勾选选项");
   assert.deepEqual(paren.origins, ["erp.example.com"]);
   assert.deepEqual([...paren.actions].sort(), ["input", "navigate"]);
+
+  // /workflow 最小权限：只读步骤不授予 navigate/input；写步骤与步骤参数 URL 按实际需求授权
+  const readOnlyWf = extractCapsule(
+    `/workflow\n${JSON.stringify({
+      id: "readonly-audit",
+      binds: { pageUrl: "https://console.example.org/dashboard" },
+      forbidUrlSubstrings: ["https://forbidden.example.org"],
+      steps: [
+        { id: "s1", op: "assert_url", params: { mustStartWith: "{{pageUrl}}" } },
+        { id: "s2", op: "wait_for", params: { selector: "#ready" } },
+        { id: "s3", op: "assert_state", params: { checks: [{ kind: "text_present", text: "OK" }] } },
+      ],
+    })}`,
+  );
+  assert.deepEqual(readOnlyWf.actions, [], "read-only workflow grants zero mutating actions");
+  assert.deepEqual(readOnlyWf.origins, ["console.example.org"]);
+
+  const interactiveWf = extractCapsule(
+    `/workflow\n${JSON.stringify({
+      id: "interactive-flow",
+      steps: [
+        { id: "s1", op: "navigate", params: { url: "https://console.example.org/forms/1" } },
+        { id: "s2", op: "fill_input", params: { selector: "#title", value: "Demo" } },
+      ],
+    })}`,
+  );
+  assert.deepEqual(interactiveWf.actions, ["navigate", "input"], "interactive workflow derives navigate + input from steps");
+  assert.deepEqual(interactiveWf.origins, ["console.example.org"], "extracts URLs directly from step params even without binds");
 
   // 明确肯定的 shell / workflow 仍正常授权
   assert.ok(extractCapsule("运行 shell 命令检查环境").actions.includes("shell"));

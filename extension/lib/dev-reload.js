@@ -13,7 +13,7 @@ import { getDelegateManager } from "./agent/delegate.js";
 import { isInboxPromptActive } from "./agent/inbox-agent.js";
 import { debugLog } from "./debug-log.js";
 
-export const DEV_AUTO_RELOAD_DEFAULT = true;
+export const DEV_AUTO_RELOAD_DEFAULT = false;
 export const DEV_AUTO_RELOAD_STORAGE_KEY = "devAutoReloadEnabled";
 export const DEV_RELOAD_ALARM_NAME = "pagelens-dev-reload";
 export const DEV_RELOAD_PERIOD_MINUTES = 0.25;
@@ -137,18 +137,46 @@ export async function resolveBuildInfo({
   return { ...cachedBuildInfo };
 }
 
+async function readLocalSettingsDevReloadFlag({
+  chromeRef = globalThis.chrome,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  try {
+    const getUrl = chromeRef?.runtime?.getURL;
+    if (typeof getUrl !== "function" || typeof fetchImpl !== "function") return null;
+    const url = getUrl.call(chromeRef.runtime, "local-settings.json");
+    if (!url) return null;
+    const res = await fetchImpl(url, { cache: "no-store" });
+    if (!res || !res.ok) return null;
+    const text = typeof res.text === "function" ? await res.text() : JSON.stringify(await res.json());
+    const parsed = JSON.parse(String(text || ""));
+    if (typeof parsed?.dev?.autoReload === "boolean") return parsed.dev.autoReload;
+    if (typeof parsed?.devAutoReloadEnabled === "boolean") return parsed.devAutoReloadEnabled;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function isDevAutoReloadEnabled({
   chromeRef = globalThis.chrome,
+  fetchImpl = globalThis.fetch,
   defaultEnabled = DEV_AUTO_RELOAD_DEFAULT,
 } = {}) {
-  if (!defaultEnabled) return false;
   try {
-    const data = await chromeRef?.storage?.local?.get?.(DEV_AUTO_RELOAD_STORAGE_KEY);
-    if (data && data[DEV_AUTO_RELOAD_STORAGE_KEY] === false) return false;
+    const data = await chromeRef?.storage?.local?.get?.([DEV_AUTO_RELOAD_STORAGE_KEY, "settings"]);
+    if (data && typeof data[DEV_AUTO_RELOAD_STORAGE_KEY] === "boolean") {
+      return data[DEV_AUTO_RELOAD_STORAGE_KEY];
+    }
+    if (data && typeof data?.settings?.dev?.autoReload === "boolean") {
+      return data.settings.dev.autoReload;
+    }
   } catch {
     /* ignore local storage errors */
   }
-  return true;
+  const localFlag = await readLocalSettingsDevReloadFlag({ chromeRef, fetchImpl });
+  if (typeof localFlag === "boolean") return localFlag;
+  return Boolean(defaultEnabled);
 }
 
 export async function clearDevReloadAlarm({ chromeRef = globalThis.chrome } = {}) {
@@ -163,9 +191,10 @@ export async function clearDevReloadAlarm({ chromeRef = globalThis.chrome } = {}
 
 export async function syncDevReloadAlarm({
   chromeRef = globalThis.chrome,
+  fetchImpl = globalThis.fetch,
   defaultEnabled = DEV_AUTO_RELOAD_DEFAULT,
 } = {}) {
-  const enabled = await isDevAutoReloadEnabled({ chromeRef, defaultEnabled });
+  const enabled = await isDevAutoReloadEnabled({ chromeRef, fetchImpl, defaultEnabled });
   if (!enabled) {
     await clearDevReloadAlarm({ chromeRef });
     return { enabled: false };
@@ -192,6 +221,7 @@ export async function setDevAutoReloadEnabled(
   enabled,
   {
     chromeRef = globalThis.chrome,
+    fetchImpl = globalThis.fetch,
     defaultEnabled = DEV_AUTO_RELOAD_DEFAULT,
   } = {},
 ) {
@@ -201,7 +231,7 @@ export async function setDevAutoReloadEnabled(
   } catch {
     /* ignore storage write error */
   }
-  const alarmState = await syncDevReloadAlarm({ chromeRef, defaultEnabled });
+  const alarmState = await syncDevReloadAlarm({ chromeRef, fetchImpl, defaultEnabled });
   debugLog("devReload.toggle", { enabled: flag, effective: alarmState.enabled });
   console.info("[PageLens] devReload.toggle", JSON.stringify({ enabled: flag, effective: alarmState.enabled }));
   return { enabled: flag, effective: alarmState.enabled };
@@ -314,6 +344,7 @@ export function createDevReloadController({
     if (!initPromise) {
       initPromise = (async () => {
         const extensionVersion = readManifestVersion(chromeRef);
+        const enabled = await isDevAutoReloadEnabled({ chromeRef, fetchImpl, defaultEnabled });
         const existing = await readSession();
         if (existing && typeof existing === "object" && !existing.reloading) {
           cachedBuildInfo = {
@@ -321,8 +352,18 @@ export function createDevReloadController({
             gitCommit: String(existing.gitCommit || "dev-local"),
             stampTimestamp: String(existing.stampTimestamp || ""),
           };
-          await syncDevReloadAlarm({ chromeRef, defaultEnabled });
-          return { initialized: true, wokeFromHibernation: true, session: existing };
+          await syncDevReloadAlarm({ chromeRef, fetchImpl, defaultEnabled });
+          return { initialized: true, enabled, wokeFromHibernation: true, session: existing };
+        }
+
+        if (!enabled) {
+          cachedBuildInfo = {
+            extensionVersion,
+            gitCommit: cachedBuildInfo.gitCommit || "dev-local",
+            stampTimestamp: cachedBuildInfo.stampTimestamp || "",
+          };
+          await clearDevReloadAlarm({ chromeRef });
+          return { initialized: true, enabled: false, wokeFromHibernation: false, session: null };
         }
 
         const stamp = await readDevReloadStamp({ chromeRef, fetchImpl });
@@ -357,8 +398,8 @@ export function createDevReloadController({
           });
         }
 
-        await syncDevReloadAlarm({ chromeRef, defaultEnabled });
-        return { initialized: true, wokeFromHibernation: false, session };
+        await syncDevReloadAlarm({ chromeRef, fetchImpl, defaultEnabled });
+        return { initialized: true, enabled: true, wokeFromHibernation: false, session };
       })();
     }
     return initPromise;
@@ -369,12 +410,15 @@ export function createDevReloadController({
     if (checking) return { action: "checking" };
     checking = true;
     try {
-      await init();
-      const enabled = await isDevAutoReloadEnabled({ chromeRef, defaultEnabled });
+      const enabled = await isDevAutoReloadEnabled({ chromeRef, fetchImpl, defaultEnabled });
       if (!enabled) {
         await clearDevReloadAlarm({ chromeRef });
         return { action: "disabled" };
       }
+      if (!memorySession && !(await readSession())) {
+        initPromise = null;
+      }
+      await init();
 
       const session = (await readSession()) || memorySession;
       if (!session || session.reloading) return { action: "reloading" };
@@ -429,8 +473,10 @@ export function createDevReloadController({
     }
     if (typeof chromeRef?.storage?.onChanged?.addListener === "function") {
       chromeRef.storage.onChanged.addListener((changes, area) => {
-        if (area !== "local" || !(DEV_AUTO_RELOAD_STORAGE_KEY in (changes || {}))) return;
-        syncDevReloadAlarm({ chromeRef, defaultEnabled }).catch(() => {});
+        if (area !== "local") return;
+        const bag = changes || {};
+        if (!(DEV_AUTO_RELOAD_STORAGE_KEY in bag) && !("settings" in bag)) return;
+        syncDevReloadAlarm({ chromeRef, fetchImpl, defaultEnabled }).catch(() => {});
       });
     }
   }
@@ -445,7 +491,7 @@ export function createDevReloadController({
     checkOnce,
     wire,
     install,
-    syncAlarm: () => syncDevReloadAlarm({ chromeRef, defaultEnabled }),
+    syncAlarm: () => syncDevReloadAlarm({ chromeRef, fetchImpl, defaultEnabled }),
   };
 }
 

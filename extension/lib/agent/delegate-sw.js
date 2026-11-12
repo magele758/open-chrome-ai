@@ -60,7 +60,7 @@ async function readTabPageSnapshot(tabId, fallbackUrl = "", fallbackTitle = "") 
 }
 
 export async function recordDelegateTaskFinish(
-  { task, status, endReason, runContext } = {},
+  { task, status, endReason, runContext, settings } = {},
   recorderDeps = {},
 ) {
   if (!task) return null;
@@ -96,6 +96,7 @@ export async function recordDelegateTaskFinish(
     {
       runId: task.id,
       source: "sw-delegate",
+      settings: settings || runContext?.settings || null,
       taskId: task.id,
       sessionId: task.sessionId || task.id,
       startedAt: new Date(startedAtMs).toISOString(),
@@ -201,6 +202,7 @@ async function createSwRun({ task, settings, signal }) {
     activeTools: (wrapped) =>
       resolveActiveTools({ userText: task.prompt, tools: wrapped, hasVideo, requestedDomains: [...requestedDomains] }),
     systemPrompt: sysPrompt,
+    settings,
     modelName: String(model?.model || task.model || "unknown"),
     initialPage,
     getToolPageContext: async ({ args }) => {

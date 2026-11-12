@@ -111,6 +111,12 @@ export function defaultSettings() {
     loopEngine: "kernel",
     hitlTimeoutSeconds: 30,
     skillsEnabled: false,
+    dev: {
+      autoReload: false,
+    },
+    diagnostics: {
+      autoExportRunBundle: false,
+    },
     dailyNotesFolder: "Daily",
     shortcuts: [],
     textProviders: [],
@@ -168,6 +174,13 @@ export function normalizeSettings(raw) {
   const timeout = Number(raw?.hitlTimeoutSeconds);
   merged.hitlTimeoutSeconds = Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.max(timeout, 5), 300) : 30;
   merged.skillsEnabled = raw?.skillsEnabled === true;
+  merged.dev = {
+    autoReload: raw?.dev?.autoReload === true || raw?.devAutoReload === true,
+  };
+  merged.diagnostics = {
+    autoExportRunBundle:
+      raw?.diagnostics?.autoExportRunBundle === true || raw?.autoExportRunBundle === true,
+  };
   merged.langfuse = {
     enabled: raw?.langfuse?.enabled === true,
     baseUrl: String(raw?.langfuse?.baseUrl || "http://localhost:3000").trim().replace(/\/+$/, ""),
@@ -206,8 +219,23 @@ export async function applyOptionalLocalSettings() {
     if (extra.asr && typeof extra.asr === "object") next.asr = { ...cur.asr, ...extra.asr };
     if (extra.tts && typeof extra.tts === "object") next.tts = { ...cur.tts, ...extra.tts };
     if (extra.langfuse && typeof extra.langfuse === "object") next.langfuse = { ...cur.langfuse, ...extra.langfuse };
+    if (extra.dev && typeof extra.dev === "object") next.dev = { ...cur.dev, ...extra.dev };
+    if (extra.diagnostics && typeof extra.diagnostics === "object") {
+      next.diagnostics = { ...cur.diagnostics, ...extra.diagnostics };
+    }
     const saved = await saveSettings(next);
-    await chrome.storage.local.set({ plLocalApplied: extra.rev });
+    const localPatch = { plLocalApplied: extra.rev };
+    if (typeof extra?.dev?.autoReload === "boolean") {
+      localPatch.devAutoReloadEnabled = extra.dev.autoReload;
+    } else if (typeof extra?.devAutoReloadEnabled === "boolean") {
+      localPatch.devAutoReloadEnabled = extra.devAutoReloadEnabled;
+    }
+    if (typeof extra?.diagnostics?.autoExportRunBundle === "boolean") {
+      localPatch.autoExportRunBundle = extra.diagnostics.autoExportRunBundle;
+    } else if (typeof extra?.autoExportRunBundle === "boolean") {
+      localPatch.autoExportRunBundle = extra.autoExportRunBundle;
+    }
+    await chrome.storage.local.set(localPatch);
     return saved;
   } catch {
     return null;

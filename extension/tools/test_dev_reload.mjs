@@ -124,12 +124,57 @@ function decodeDataUrlJson(dataUrl) {
   return JSON.parse(Buffer.from(m[1], "base64").toString("utf8"));
 }
 
-assert.equal(DEV_AUTO_RELOAD_DEFAULT, true);
+assert.equal(DEV_AUTO_RELOAD_DEFAULT, false, "dev-reload must be disabled by default");
 
-// 1. 无 .dev-reload-stamp 时静默运行，不写回执、不误重载
+// 0. 默认关闭：无配置开关时不注册 alarm、不写 sw-startup-latest.json、不触发重载；支持 local-settings.json 显式开启
 {
   resetDevReloadForTests();
   const chromeRef = makeFakeChrome();
+  const fetchImpl = async (url) => {
+    if (String(url).endsWith(".dev-reload-stamp")) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ timestamp: "2026-11-12T00:00:00Z", gitCommit: "111aaaa" }),
+      };
+    }
+    return { ok: false, status: 404, text: async () => "" };
+  };
+
+  assert.equal(await isDevAutoReloadEnabled({ chromeRef, fetchImpl }), false);
+  const defaultCtrl = createDevReloadController({ chromeRef, fetchImpl });
+  const initOff = await defaultCtrl.init();
+  assert.equal(initOff.enabled, false);
+  assert.equal(chromeRef.alarmsMap.has(DEV_RELOAD_ALARM_NAME), false, "no alarm when disabled by default");
+  assert.equal(chromeRef.downloadsList.length, 0, "no startup receipt when disabled by default");
+  assert.equal((await defaultCtrl.checkOnce()).action, "disabled");
+  assert.equal(chromeRef.reloadCount, 0);
+
+  // 通过 local-settings.json 显式开启 dev.autoReload
+  resetDevReloadForTests();
+  const localCfgChrome = makeFakeChrome();
+  const localCfgFetch = async (url) => {
+    if (String(url).endsWith("local-settings.json")) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ rev: 1, dev: { autoReload: true } }) };
+    }
+    if (String(url).endsWith(".dev-reload-stamp")) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ timestamp: "2026-11-12T00:01:00Z", gitCommit: "222bbbb" }) };
+    }
+    return { ok: false, status: 404, text: async () => "" };
+  };
+  assert.equal(await isDevAutoReloadEnabled({ chromeRef: localCfgChrome, fetchImpl: localCfgFetch }), true);
+  const localCfgCtrl = createDevReloadController({ chromeRef: localCfgChrome, fetchImpl: localCfgFetch });
+  const initLocal = await localCfgCtrl.init();
+  assert.equal(initLocal.enabled, true);
+  assert.equal(localCfgChrome.alarmsMap.has(DEV_RELOAD_ALARM_NAME), true);
+  assert.equal(localCfgChrome.downloadsList.length, 1);
+  console.log("PASS 0: disabled by default and opt-in via local-settings.json or storage");
+}
+
+// 1. 显式开启后，无 .dev-reload-stamp 时静默运行，不写回执、不误重载
+{
+  resetDevReloadForTests();
+  const chromeRef = makeFakeChrome({ localInit: { [DEV_AUTO_RELOAD_STORAGE_KEY]: true } });
   const logs = [];
   const fetchImpl = async () => ({ ok: false, status: 404, text: async () => "" });
 
@@ -162,20 +207,25 @@ assert.equal(DEV_AUTO_RELOAD_DEFAULT, true);
 //    模拟 SW 休眠唤醒：同一 stamp 不误重载，休眠期间 stamp 更新也绝不覆盖 baselineRaw！
 {
   resetDevReloadForTests();
-  const chromeRef = makeFakeChrome();
+  const chromeRef = makeFakeChrome({ localInit: { [DEV_AUTO_RELOAD_STORAGE_KEY]: true } });
   const logs = [];
   let currentStampObj = {
     timestamp: "2026-11-11T14:00:00.000Z",
     epochMs: 1794405600000,
     gitCommit: "ddf1eaa",
-    gitBranch: "feat/temu-e2e-loop",
+    gitBranch: "feat/dev-reload-test",
     note: "boot",
   };
-  const fetchImpl = async () => ({
-    ok: true,
-    status: 200,
-    text: async () => JSON.stringify(currentStampObj),
-  });
+  const fetchImpl = async (url) => {
+    if (!String(url).endsWith(".dev-reload-stamp")) {
+      return { ok: false, status: 404, text: async () => "" };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(currentStampObj),
+    };
+  };
 
   // SW 首次启动
   const swBoot1 = createDevReloadController({
@@ -228,7 +278,7 @@ assert.equal(DEV_AUTO_RELOAD_DEFAULT, true);
     timestamp: "2026-11-11T14:05:00.000Z",
     epochMs: 1794405900000,
     gitCommit: "a1b2c3d",
-    gitBranch: "feat/temu-e2e-loop",
+    gitBranch: "feat/dev-reload-test",
     note: "commit-1",
   };
   const swWakeAfterUpdate = createDevReloadController({
@@ -259,17 +309,22 @@ assert.equal(DEV_AUTO_RELOAD_DEFAULT, true);
 // 3. 忙碌时延后重载（SW 委托任务 / 侧栏 pl.agent.busy / Inbox agentPromptActive），空闲后触发 reload
 {
   resetDevReloadForTests();
-  const chromeRef = makeFakeChrome();
+  const chromeRef = makeFakeChrome({ localInit: { [DEV_AUTO_RELOAD_STORAGE_KEY]: true } });
   const logs = [];
   let nowMs = 1_700_000_100_000;
   let delegateRunning = 0;
   let stampCommit = "1111111";
 
-  const fetchImpl = async () => ({
-    ok: true,
-    status: 200,
-    text: async () => JSON.stringify({ timestamp: "2026-11-11T14:10:00Z", gitCommit: stampCommit }),
-  });
+  const fetchImpl = async (url) => {
+    if (!String(url).endsWith(".dev-reload-stamp")) {
+      return { ok: false, status: 404, text: async () => "" };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ timestamp: "2026-11-11T14:10:00Z", gitCommit: stampCommit }),
+    };
+  };
 
   const ctrl = createDevReloadController({
     chromeRef,
@@ -325,16 +380,21 @@ assert.equal(DEV_AUTO_RELOAD_DEFAULT, true);
   console.log("PASS 3: busy tasks defer reload and idle triggers runtime.reload()");
 }
 
-// 4. 一键关闭开关（storage 开关与常量开关均生效并清理 alarm）
+// 4. 一键启停开关（storage 显式开启与关闭均生效并同步管理 alarm）
 {
   resetDevReloadForTests();
-  const chromeRef = makeFakeChrome();
+  const chromeRef = makeFakeChrome({ localInit: { [DEV_AUTO_RELOAD_STORAGE_KEY]: true } });
   let stampCommit = "aaaaaaa";
-  const fetchImpl = async () => ({
-    ok: true,
-    status: 200,
-    text: async () => JSON.stringify({ timestamp: "2026-11-11T14:20:00Z", gitCommit: stampCommit }),
-  });
+  const fetchImpl = async (url) => {
+    if (!String(url).endsWith(".dev-reload-stamp")) {
+      return { ok: false, status: 404, text: async () => "" };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ timestamp: "2026-11-11T14:20:00Z", gitCommit: stampCommit }),
+    };
+  };
 
   const ctrl = createDevReloadController({ chromeRef, fetchImpl });
   ctrl.wire();
@@ -342,8 +402,8 @@ assert.equal(DEV_AUTO_RELOAD_DEFAULT, true);
   assert.equal(chromeRef.alarmsMap.has(DEV_RELOAD_ALARM_NAME), true);
 
   // storage 置 false -> 立即清理 alarm，且即使 stamp 改变也不重载
-  await setDevAutoReloadEnabled(false, { chromeRef });
-  assert.equal(await isDevAutoReloadEnabled({ chromeRef }), false);
+  await setDevAutoReloadEnabled(false, { chromeRef, fetchImpl });
+  assert.equal(await isDevAutoReloadEnabled({ chromeRef, fetchImpl }), false);
   assert.equal(chromeRef.alarmsMap.has(DEV_RELOAD_ALARM_NAME), false);
 
   stampCommit = "bbbbbbb";
@@ -351,13 +411,14 @@ assert.equal(DEV_AUTO_RELOAD_DEFAULT, true);
   assert.equal(disabledCheck.action, "disabled");
   assert.equal(chromeRef.reloadCount, 0);
 
-  // 常量 defaultEnabled: false 同样彻底关闭
-  await chromeRef.storage.local.set({ [DEV_AUTO_RELOAD_STORAGE_KEY]: true });
-  assert.equal(await isDevAutoReloadEnabled({ chromeRef, defaultEnabled: false }), false);
-  const constOffCtrl = createDevReloadController({ chromeRef, fetchImpl, defaultEnabled: false });
-  assert.equal((await constOffCtrl.checkOnce()).action, "disabled");
-  assert.equal(chromeRef.alarmsMap.has(DEV_RELOAD_ALARM_NAME), false);
-  console.log("PASS 4: one-click disable switch clears alarm and prevents reload");
+  // 重新置 true -> 恢复 alarm 并在下一轮检测到新 stamp 后重载
+  await setDevAutoReloadEnabled(true, { chromeRef, fetchImpl });
+  assert.equal(await isDevAutoReloadEnabled({ chromeRef, fetchImpl }), true);
+  assert.equal(chromeRef.alarmsMap.has(DEV_RELOAD_ALARM_NAME), true);
+  const reenabledCheck = await ctrl.checkOnce();
+  assert.equal(reenabledCheck.action, "reload");
+  assert.equal(chromeRef.reloadCount, 1);
+  console.log("PASS 4: explicit toggle switch manages alarm and reload lifecycle");
 }
 
 console.log("ALL PASS test_dev_reload");

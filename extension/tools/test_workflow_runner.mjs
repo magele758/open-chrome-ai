@@ -66,15 +66,25 @@ const LARGE_FAKE_PNG_DATA_URL =
   assert.equal(userInvokedSkill(barePrompt), false, "/workflow 不触发技能扫描或侧栏重开续跑");
   assert.equal(userInvokedSkill("/browse 总结这页"), true, "常规 /skill 保持原行为");
 
-  // 胶囊纯净性：即使含超 20,000 字 JSON、forbidClickTexts 含「发布/删除/上传」、路径斜杠文本，也不污染胶囊
+  // 胶囊纯净性：只读 workflow 授权为 []，含导航/输入算子的 workflow 按步骤实际需求授权
   for (const raw of [barePrompt, fencedPrompt, oversizedPrompt]) {
     const cap = extractCapsule(raw);
-    assert.deepEqual(cap.actions, ["navigate", "input"], "workflow 胶囊仅含 navigate/input");
-    assert.deepEqual(cap.origins, ["portal.example.org"], "仅提取 binds 内合法 URL 域名");
+    assert.deepEqual(cap.actions, [], "只读 assert_url workflow 胶囊不额外授予写/跳转动作");
+    assert.deepEqual(cap.origins, ["portal.example.org"], "仅提取合法 URL 域名");
     assert.deepEqual(cap.paths, [], "斜杠分类文案不误判为本机路径");
     assert.deepEqual(cap.commands, [], "JSON 内容不误判为终端命令");
     assert.deepEqual(cap.platforms, [], "不误吸平台列表");
   }
+  const activeWfCap = extractCapsule(
+    `/workflow\n${JSON.stringify({
+      ...wfObj,
+      steps: [
+        { id: "S1.entry", op: "ensure_page_entry", params: { targetUrl: "https://portal.example.org:8443/workspace/#/catalog", entryNavText: "目录" } },
+        { id: "S2.fill", op: "fill_input", params: { selector: "#name", value: "Item" } },
+      ],
+    })}`,
+  );
+  assert.deepEqual(activeWfCap.actions, ["navigate", "input"], "含导航与输入步骤的 workflow 精确授权 navigate + input");
   console.log("PASS 1. /workflow directive parsing, slash exclusion & pure capsule extraction");
 }
 

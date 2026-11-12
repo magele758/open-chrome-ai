@@ -15,8 +15,15 @@ import { installDelegate } from "./lib/agent/delegate-sw.js";
 import { installAgentGateway } from "./lib/bridge/gateway.js";
 import { installDevAutoReload, syncDevReloadAlarm } from "./lib/dev-reload.js";
 
-applyOptionalLocalSettings().catch(() => {});
-installDevAutoReload();
+const devReloadCtrl = installDevAutoReload();
+applyOptionalLocalSettings()
+  .then((applied) => {
+    if (applied) {
+      syncDevReloadAlarm().catch(() => {});
+      devReloadCtrl.init().catch(() => {});
+    }
+  })
+  .catch(() => {});
 installDelegate();
 onAgentTaskEvent((ev) => {
   if (ev.type === AGENT_TASK_EVENTS.FINISHED) completeHeadlessAgentPrompt().catch(() => {});

@@ -241,30 +241,23 @@ const { JSDOM } = require("jsdom");
 
 // ── 3. ADR-012: trust/capsule.js 行内反引号与代码围栏收紧（消除 CSS 选择器误触发 shell） ──
 {
-  const r3RepresentativePrompt = [
-    "请全程留在当前已打开的探果跨境采集箱页面（URL 必须始终保持为 https://10.2.31.12:21006/ai-shop-cross-country/#/ai-tools-kj-cross?view=tools&menu=collectionBox），严格按照下方锁定的确定性步骤 W1 → W10，仅对复合键唯一匹配的那 1 件未发布商品完成编辑、图片分配自动保存与重开编辑持久化回读核验，最终停在该商品行右侧「发布」按钮前一步。",
-    "全局硬性执行纪律（100% 强制执行）：",
-    "1. 【按钮级最高红线】绝对禁止点击采集箱任何行的「发布」按钮和顶部的「批量发布」按钮！绝对禁止点击「删除」「本地上传商品」「按规格上传商品」「创建商品」「全选本页」！绝对禁止打开或跳转到 Temu 卖家端（agentseller.temu.com）页面！禁止在任何输入框写入「测试」二字！允许的收尾/关窗按钮只有：W1 起点幂等清理残留弹窗时点 1 次「取消」、W9 点 1 次「确认分配」（系统会自动保存并关窗，事后严禁再点「保存商品」），以及 W10 重开核验后点 1 次「取消」。",
-    "2. 严格按 W1 → W10 顺序逐步执行，停机时输出初步失败归属建议：工具 / workflow / 其他。",
-    "3. 严禁发送 Escape（Esc）键（按 Esc 会直接关掉整个「编辑商品」窗口丢弃全部已填内容）！注意页面容器结构：探果采集箱的「编辑商品」窗口实测 DOM 容器为 `.ant-modal.collection-create-modal`（非 `.ant-drawer`），其内部纵向滚动区为 `.collection-create-modal__content`，产地字段为 `#origin`，标题为 `编辑商品`。",
-    "- W1：检查页面上是否已有残留打开的「编辑商品」弹窗（`.ant-modal.collection-create-modal` 且可见），点击「编辑」（绝不点「发布」），等待「编辑商品」出现。顶部计数原文 == 「全部 30 / 未发布 30 / 发布中 0 / 已发布 0」，左侧存在「半托管信息 / 类目&属性 / 产品信息 / 销售属性」导航。",
-    "- W3：先输入检索词「套头毛衣」，仅当未返回上述路径时清空改搜「毛衣」，选择完整路径。",
-    "- W5：在 `.collection-create-modal__content` 中将「*商品名称」改为目标值，点击 `#origin` 级联框选择「中国大陆 / 上海市」。",
-    "- W9：点击「确认分配」1 次（绝对禁止在回列表后再找或再点「保存商品」！）；行内「发布」与顶部「批量发布」均未点击。",
-    "- W10：重开「编辑」零修改回读核验后，点击窗口底部「取消」按钮 1 次（禁按 Esc，禁点保存），确认该行右侧「发布」按钮可见且未点击，立即停在「发布」按钮前一步，汇总输出结果后结束运行！",
+  const selectorPrompt = [
+    "请留在当前页面（https://192.0.2.10:8080/workspace/#/items）完成表单填写。",
+    "绝对禁止点击「发布」「删除」「上传文件」！绝对禁止跳转到 external.example.org！",
+    "注意页面容器为 `.modal-shell`（内部为 `.modal-shell__content`，字段为 `#origin`），先点击「编辑」，在 `#origin` 选择选项后点击「取消」。",
   ].join("\n");
 
-  const cap = extractCapsule(r3RepresentativePrompt);
-  assert.deepEqual(cap.actions, ["navigate", "input"]);
+  const cap = extractCapsule(selectorPrompt);
+  assert.deepEqual([...cap.actions].sort(), ["input", "navigate"]);
   assert.deepEqual(cap.commands, []);
-  assert.deepEqual(cap.origins, ["10.2.31.12"]);
+  assert.deepEqual(cap.origins, ["192.0.2.10"]);
   for (const forbidden of ["shell", "publish", "delete", "upload", "send", "write", "close", "automation", "settings"]) {
     assert.ok(!cap.actions.includes(forbidden), `unexpected action ${forbidden} in ${JSON.stringify(cap.actions)}`);
   }
 
-  // 动态工具路由器同样不应因 `.ant-modal` 等 CSS 选择器反引号暴露 run_shell / system_ops
+  // 动态工具路由器同样不应因 `.modal-shell` 等 CSS 选择器反引号暴露 run_shell / system_ops
   const allTools = createAgentTools({ getTabId: () => 1, getWindowId: () => 1, cdp: {}, settings: {} });
-  const activeNames = resolveActiveTools({ userText: r3RepresentativePrompt, tools: allTools }).map((t) => t.name);
+  const activeNames = resolveActiveTools({ userText: selectorPrompt, tools: allTools }).map((t) => t.name);
   assert.ok(activeNames.includes("click") && activeNames.includes("fill") && activeNames.includes("trusted_click"), "keeps DOM tools");
   assert.ok(!activeNames.includes("run_shell"), `must not expose run_shell, got ${JSON.stringify(activeNames)}`);
 

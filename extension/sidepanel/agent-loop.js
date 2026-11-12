@@ -50,7 +50,8 @@ import { packToContext, systemPrompt } from "../lib/prompts.js";
 import {
   createRunId,
   formatTimestampForFilename,
-   persistRunBundle,
+  isAutoExportRunBundleEnabled,
+  persistRunBundle,
   predictDetachedImagePaths,
   stripAttachedPageContext,
 } from "../lib/run-recorder.js";
@@ -617,11 +618,16 @@ async function executeLoop({
           });
           lockedEndedAtIso = new Date().toISOString();
           lockedTsSlug = formatTimestampForFilename(lockedEndedAtIso);
-          const shotPaths = predictDetachedImagePaths(runTraceSteps, {
-            tsSlug: lockedTsSlug,
-            source: "sidepanel",
-            runId,
+          const shouldExportWorkflowBundle = await isAutoExportRunBundleEnabled({
+            settings: state.settings,
           });
+          const shotPaths = shouldExportWorkflowBundle
+            ? predictDetachedImagePaths(runTraceSteps, {
+                tsSlug: lockedTsSlug,
+                source: "sidepanel",
+                runId,
+              })
+            : [];
           botMsg.text = formatWorkflowSummary({
             ...wfRes,
             allShotPaths: shotPaths,
@@ -840,6 +846,7 @@ async function executeLoop({
       const persisted = await persistRunBundle({
         runId,
         source: "sidepanel",
+        settings: state.settings,
         sessionId: state.sessionId || "default",
         sessionTitle: state.sessionTitle || undefined,
         startedAt: startedAtIso,

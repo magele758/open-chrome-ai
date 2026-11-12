@@ -10,12 +10,14 @@ import { recordDelegateTaskFinish } from "../lib/agent/delegate-sw.js";
 import { createApprovalQueue, memoryAdapter } from "../lib/agent/trust/approval-queue.js";
 import { formatTracePayload } from "../lib/langfuse.js";
 import {
+  AUTO_EXPORT_RUN_BUNDLE_DEFAULT,
   IMAGE_DETACH_THRESHOLD,
   RUN_OUTPUT_DIR,
   TRACE_SCHEMA_VERSION,
   buildRunRecord,
   classifyToolOutcome,
   encodeUtf8DataUrl,
+  isAutoExportRunBundleEnabled,
   persistRunBundle,
   sanitizeTraceValue,
   unwrapUntrustedOutput,
@@ -95,10 +97,38 @@ function makeFakeChrome({ stampJson = null, throwOnDownload = false, tabsMap = n
       const raw = typeof stampJson === "string" ? stampJson : JSON.stringify(stampJson);
       return { ok: true, status: 200, text: async () => raw };
     }
+    if (String(url).endsWith("local-settings.json")) {
+      return { ok: false, status: 404, text: async () => "" };
+    }
     throw new Error(`Unexpected fetch: ${url}`);
   };
 
   return { chromeRef, fetchImpl, downloads, sessionStore, localStore };
+}
+
+assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must default to false");
+
+// ── 0. 默认不自动导出到下载目录（仍构建内存 traceRecord 供手动导出） ──
+{
+  const { chromeRef, fetchImpl, downloads } = makeFakeChrome({
+    stampJson: { timestamp: "2026-11-11T14:25:00Z", gitCommit: "000111a" },
+  });
+  assert.equal(await isAutoExportRunBundleEnabled({ chromeRef, fetchImpl }), false);
+  const res = await persistRunBundle(
+    {
+      runId: "run_default_silent",
+      source: "sidepanel",
+      userPrompt: "总结当前页",
+      botResponse: "已完成总结。",
+    },
+    { chromeRef, fetchImpl },
+  );
+  assert.equal(res.ok, true);
+  assert.equal(res.exported, false);
+  assert.equal(downloads.length, 0, "no chrome.downloads call when autoExportRunBundle is false");
+  assert.equal(res.traceRecord.runId, "run_default_silent");
+  assert.equal(res.traceRecord.gitCommit, "000111a");
+  console.log("PASS 0. persistRunBundle disabled by default while keeping in-memory traceRecord");
 }
 
 // ── 1. Schema v2.0 字段完整性、版本哈希联动与 Langfuse 向后兼容 ──
@@ -169,6 +199,7 @@ function makeFakeChrome({ stampJson = null, throwOnDownload = false, tabsMap = n
     {
       chromeRef,
       fetchImpl,
+      autoExport: true,
       exportDebugFn: async () =>
         JSON.stringify({
           entries: [{ event: "sw.startup", authorization: "Bearer fake_unit_test_jwt_000" }],
@@ -428,7 +459,7 @@ function makeFakeChrome({ stampJson = null, throwOnDownload = false, tabsMap = n
       systemPrompt: "sys",
       botResponse: "分析完成",
     },
-    { chromeRef, fetchImpl, exportDebugFn: async () => ({ entries: [] }) },
+    { chromeRef, fetchImpl, autoExport: true, exportDebugFn: async () => ({ entries: [] }) },
   );
 
   assert.equal(persisted.ok, true);
@@ -471,7 +502,7 @@ function makeFakeChrome({ stampJson = null, throwOnDownload = false, tabsMap = n
   try {
     const degraded = await persistRunBundle(
       { runId: "run_degraded", source: "sw-delegate", botResponse: "ok" },
-      { chromeRef: failingEnv.chromeRef, fetchImpl: failingEnv.fetchImpl, exportDebugFn: async () => ({ entries: [] }) },
+      { chromeRef: failingEnv.chromeRef, fetchImpl: failingEnv.fetchImpl, autoExport: true, exportDebugFn: async () => ({ entries: [] }) },
     );
     assert.equal(degraded.ok, true);
     assert.equal(degraded.files.every((f) => f.ok === false && f.via === "none"), true);
@@ -512,7 +543,10 @@ function makeFakeChrome({ stampJson = null, throwOnDownload = false, tabsMap = n
     return createDelegateManager({
       storage: memoryTaskStorage(),
       approvals,
-      loadSettings: async () => ({ hitlMode: "balanced" }),
+      loadSettings: async () => ({
+        hitlMode: "balanced",
+        diagnostics: { autoExportRunBundle: true },
+      }),
       createRun: async ({ task }) => ({
         tools,
         systemPrompt: "sw delegate sys",
@@ -726,6 +760,10 @@ function makeFakeChrome({ stampJson = null, throwOnDownload = false, tabsMap = n
   const { executeLoop } = await import("../sidepanel/agent-loop.js");
 
   state.sessionId = "sess_sidepanel_test";
+  state.settings = {
+    ...state.settings,
+    diagnostics: { autoExportRunBundle: true },
+  };
   state.tab = { id: 11, windowId: 1, url: "https://agentseller.temu.com/mmsos/goods.html#/box", title: "采集箱" };
   state.pack = { url: state.tab.url, title: state.tab.title, hasVideo: false };
 

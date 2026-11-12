@@ -30,7 +30,6 @@
     "storage",
     "scripting",
     "debugger",
-    "downloads",
     "contextMenus",
     "unlimitedStorage",
     "offscreen",
@@ -40,6 +39,7 @@
   "optional_permissions": [
     "userScripts",
     "cookies",
+    "downloads",
     "sessions",
     "search",
     "pageCapture",

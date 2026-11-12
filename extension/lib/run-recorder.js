@@ -19,6 +19,77 @@ import { getBuildInfo, resolveBuildInfo } from "./dev-reload.js";
 export const TRACE_SCHEMA_VERSION = "2.0";
 export const RUN_OUTPUT_DIR = "pagelens-runs";
 export const IMAGE_DETACH_THRESHOLD = 4096;
+export const AUTO_EXPORT_RUN_BUNDLE_DEFAULT = false;
+export const AUTO_EXPORT_RUN_BUNDLE_STORAGE_KEY = "autoExportRunBundle";
+
+async function readLocalSettingsAutoExportFlag({
+  chromeRef = globalThis.chrome,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  try {
+    const getUrl = chromeRef?.runtime?.getURL;
+    if (typeof getUrl !== "function" || typeof fetchImpl !== "function") return null;
+    const url = getUrl.call(chromeRef.runtime, "local-settings.json");
+    if (!url) return null;
+    const res = await fetchImpl(url, { cache: "no-store" });
+    if (!res || !res.ok) return null;
+    const text = typeof res.text === "function" ? await res.text() : JSON.stringify(await res.json());
+    const parsed = JSON.parse(String(text || ""));
+    if (typeof parsed?.diagnostics?.autoExportRunBundle === "boolean") {
+      return parsed.diagnostics.autoExportRunBundle;
+    }
+    if (typeof parsed?.autoExportRunBundle === "boolean") {
+      return parsed.autoExportRunBundle;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function isAutoExportRunBundleEnabled({
+  chromeRef = globalThis.chrome,
+  settings = null,
+  fetchImpl = globalThis.fetch,
+  defaultEnabled = AUTO_EXPORT_RUN_BUNDLE_DEFAULT,
+} = {}) {
+  if (typeof settings?.diagnostics?.autoExportRunBundle === "boolean") {
+    return settings.diagnostics.autoExportRunBundle;
+  }
+  if (typeof settings?.autoExportRunBundle === "boolean") {
+    return settings.autoExportRunBundle;
+  }
+  try {
+    const data = await chromeRef?.storage?.local?.get?.([AUTO_EXPORT_RUN_BUNDLE_STORAGE_KEY, "settings"]);
+    if (data && typeof data[AUTO_EXPORT_RUN_BUNDLE_STORAGE_KEY] === "boolean") {
+      return data[AUTO_EXPORT_RUN_BUNDLE_STORAGE_KEY];
+    }
+    if (data && typeof data?.settings?.diagnostics?.autoExportRunBundle === "boolean") {
+      return data.settings.diagnostics.autoExportRunBundle;
+    }
+    if (data && typeof data?.settings?.autoExportRunBundle === "boolean") {
+      return data.settings.autoExportRunBundle;
+    }
+  } catch {
+    /* ignore storage read errors */
+  }
+  const localFlag = await readLocalSettingsAutoExportFlag({ chromeRef, fetchImpl });
+  if (typeof localFlag === "boolean") return localFlag;
+  return Boolean(defaultEnabled);
+}
+
+export async function setAutoExportRunBundleEnabled(
+  enabled,
+  { chromeRef = globalThis.chrome } = {},
+) {
+  const flag = Boolean(enabled);
+  try {
+    await chromeRef?.storage?.local?.set?.({ [AUTO_EXPORT_RUN_BUNDLE_STORAGE_KEY]: flag });
+  } catch {
+    /* ignore storage write errors */
+  }
+  return flag;
+}
 
 export const SENSITIVE_KEY_RE =
   /^(api[_-]?key|password|passwd|secret|secret[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|authorization|cookie|set-cookie|private[_-]?key|client[_-]?secret)$/i;
@@ -592,6 +663,7 @@ export function buildRunRecord(input = {}) {
       pageUrl: s.pageUrl ?? null,
       pageTitle: s.pageTitle ?? null,
       archiveHandle: s.archiveHandle || null,
+      ...(s.stepMeta && typeof s.stepMeta === "object" ? { stepMeta: s.stepMeta } : {}),
       ...(s.workflowStepId ? { workflowStepId: String(s.workflowStepId) } : {}),
       ...(s.expected !== undefined ? { expected: String(s.expected) } : {}),
       ...(s.actual !== undefined ? { actual: String(s.actual) } : {}),
@@ -809,6 +881,7 @@ export async function persistRunBundle(
     fetchImpl = globalThis.fetch,
     exportDebugFn = exportDebugLogFresh,
     logDebug = debugLog,
+    autoExport = undefined,
   } = {},
 ) {
   let fallbackRecord = null;
@@ -828,6 +901,29 @@ export async function persistRunBundle(
     fallbackRecord = built.traceRecord;
 
     const { traceRecord, detachedImages, tsSlug, safeSource, safeRunId } = built;
+    const shouldExport =
+      typeof autoExport === "boolean"
+        ? autoExport
+        : await isAutoExportRunBundleEnabled({
+            chromeRef,
+            settings: input.settings || null,
+            fetchImpl,
+          });
+    if (!shouldExport) {
+      logDebug("runRecorder.autoExportDisabled", {
+        runId: traceRecord.runId,
+        source: traceRecord.source,
+        status: traceRecord.status,
+      });
+      return {
+        ok: true,
+        exported: false,
+        skippedReason: "auto_export_disabled",
+        traceRecord,
+        files: [],
+      };
+    }
+
     const files = [];
 
     for (const img of detachedImages) {
@@ -916,6 +1012,7 @@ export async function persistRunBundle(
 
     return {
       ok: true,
+      exported: true,
       traceRecord,
       traceFilename,
       debugFilename,

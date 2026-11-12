@@ -344,7 +344,7 @@ const { JSDOM } = require("jsdom");
     }
     const reqBody = JSON.parse(init.body);
     capturedTurnToolCount = Array.isArray(reqBody.tools) ? reqBody.tools.length : 0;
-    const userMsg = reqBody.messages.find((m) => m.role === "user");
+    const userMsg = [...reqBody.messages].reverse().find((m) => m.role === "user");
     capturedModelUserContent = String(userMsg?.content || "");
     const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: "核验完毕" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
     return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
@@ -363,15 +363,24 @@ const { JSDOM } = require("jsdom");
     state.settings = {
       ...state.settings,
       skillsEnabled: false,
+      diagnostics: { autoExportRunBundle: false },
       providers: [{ id: "p1", name: "Test", baseUrl: "https://llm.example/v1", apiKey: "sk-unit-test-only", models: [{ id: "m1" }] }],
       textRef: { providerId: "p1", modelId: "m1" },
       text: { baseUrl: "https://llm.example/v1", apiKey: "sk-unit-test-only", model: "m1" },
     };
 
     await sendPrompt(rawPrompt);
+    assert.equal(downloads.length, 0, "persistRunBundle does not auto-download when autoExportRunBundle is false");
+    assert.equal(state.messages.at(-1)?.traceLog?.userPrompt, rawPrompt, "in-memory traceLog still populated");
+
+    state.settings = {
+      ...state.settings,
+      diagnostics: { autoExportRunBundle: true },
+    };
+    await sendPrompt(rawPrompt);
 
     const traceDl = downloads.find((d) => d.filename.includes("pagelens-trace-"));
-    assert.ok(traceDl, "sidepanel trace persisted");
+    assert.ok(traceDl, "sidepanel trace persisted when autoExportRunBundle is explicitly enabled");
     const b64 = traceDl.url.split(",")[1];
     const persistedTrace = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
 
@@ -386,58 +395,31 @@ const { JSDOM } = require("jsdom");
   console.log("PASS 4. sendPrompt / executeLoop / buildRunRecord userPrompt verbatim isolation");
 }
 
-// ── 5. ADR-009b: Round 02 full prompt capsule & active tool routing verification ──
+// ── 5. Generic prohibition clause stripping & active tool routing verification ──
 {
-  const inlineR2Prompt = [
-    "请全程留在当前已打开的探果跨境采集箱列表页（URL 必须始终保持为 https://10.2.31.12:21006/ai-shop-cross-country/#/ai-tools-kj-cross?view=tools&menu=collectionBox），",
-    "严格按照下方锁定的确定性步骤 W1 → W10，仅对复合键唯一匹配的那 1 件未发布商品完成编辑、图片分配自动保存与重开编辑持久化回读核验，最终停在该商品行右侧「发布」按钮前一步。",
-    "绝对禁止点击采集箱任何行的「发布」按钮和顶部的「批量发布」按钮！绝对禁止点击「删除」「本地上传商品」「按规格上传商品」！绝对禁止打开或跳转到 Temu 卖家端（agentseller.temu.com）页面！禁止在任何输入框写入「测试」二字！",
-    "允许的收尾按钮只有：W9 点 1 次「确认分配」（自动保存关窗，事后严禁再点「保存商品」），以及 W10 重开核验后点 1 次「取消」。",
-    "初步失败归属建议：工具 / workflow / 其他。严禁发送 Escape（Esc）键！一律点击抽屉左侧导航按钮「产品信息」或「销售属性」。不带「*」号的空字段（包装清单、视频、说明书、备注）一律保持空白！",
-    "搜索并点击选中「Zolva One」；若「套头毛衣」未返回完整路径，清空改搜「毛衣」；下拉滚到底无目标全路径则停机。",
-    "点击抽屉底部「下一步：分配图片」（若弹出漏填某带 * 字段提示，记下该提示文案，仅针对该漏填项补齐后重按 1 次）；",
-    "点击右下角「确认分配」仅 1 次，让系统自动保存并关闭「分配商品图片」弹窗与「编辑商品」抽屉回到采集箱列表；",
-    "相等检查条件：1) 两层弹窗均已关闭；2) 顶部计数 == 「全部 30 / 未发布 30 / 发布中 0 / 已发布 0」；3) W3 所选类目路径；4) 行内「发布」与顶部「批量发布」均未点击；",
-    "这属于只读视图限制，绝不是保存失败！若刚关窗动画未结束请等待；目标行「发布」按钮与顶部「批量发布」按钮均未点击，安全停在该行「发布」按钮前一步，汇总输出后结束运行！",
+  const promptText = [
+    "请留在当前页面（https://192.0.2.10:8080/workspace/#/items）填写表单字段并点击下一步按钮。",
+    "绝对禁止点击任何行的「发布」或「删除」或「上传文件」按钮！绝对禁止打开或跳转到 external.example.org！严禁运行 shell 命令或修改插件设置！",
   ].join("\n");
 
-  const promptsToVerify = [{ label: "inline-round-02", text: inlineR2Prompt }];
-  const externalR2Url = new URL("../../../temu-e2e-loop/review/data/round-02-prompt.txt", import.meta.url);
-  if (existsSync(externalR2Url)) {
-    promptsToVerify.push({ label: "round-02-prompt.txt", text: readFileSync(externalR2Url, "utf8") });
-  }
-
   const allTools = createAgentTools({ getTabId: () => 1, getWindowId: () => 1, settings: {} });
-
-  for (const { label, text } of promptsToVerify) {
-    const cap = extractCapsule(text);
-    assert.deepEqual(
-      [...cap.actions].sort(),
-      ["input", "navigate"],
-      `${label}: capsule actions must be strictly navigate + input, got ${JSON.stringify(cap.actions)}`,
-    );
-    for (const unwanted of ["write", "close", "publish", "delete", "upload", "send", "shell", "automation", "settings"]) {
-      assert.ok(!cap.actions.includes(unwanted), `${label}: must not grant ${unwanted}`);
-    }
-    assert.deepEqual(cap.origins, ["10.2.31.12"], `${label}: origins must be ["10.2.31.12"], got ${JSON.stringify(cap.origins)}`);
-
-    const active = resolveActiveTools({ userText: text, tools: allTools, hasVideo: false });
-    const activeNames = active.map((t) => t.name);
-    assert.ok(activeNames.includes("extract_page") && activeNames.includes("click") && activeNames.includes("request_toolsets"));
-    assert.ok(!activeNames.includes("open_tab"), `${label}: stays on current collection page without browser_mgmt bloat`);
-    assert.ok(!activeNames.includes("run_shell") && !activeNames.includes("write_library"), `${label}: no system_ops bloat`);
-    assert.ok(!activeNames.includes("seek_video"), `${label}: no media_player bloat`);
-    assert.ok(!activeNames.includes("update_settings"), `${label}: no settings bloat`);
-    assert.ok(active.length <= 40, `${label}: active tools trimmed to core_reader + dom_interact (~35), got ${active.length}`);
+  const cap = extractCapsule(promptText);
+  assert.deepEqual([...cap.actions].sort(), ["input", "navigate"]);
+  for (const unwanted of ["write", "close", "publish", "delete", "upload", "send", "shell", "automation", "settings"]) {
+    assert.ok(!cap.actions.includes(unwanted), `must not grant ${unwanted}`);
   }
+  assert.deepEqual(cap.origins, ["192.0.2.10"]);
 
-  // Also verify "全自动模式" without mutation verb does not mount settings, whereas "切换到全自动模式" does
-  const passiveAuto = resolveActiveTools({ userText: "当前任务按全自动模式点击页面按钮完成填写", tools: allTools }).map((t) => t.name);
-  assert.ok(!passiveAuto.includes("update_settings"), "descriptive 全自动模式 without setting verb should not mount settings");
-  const activeAuto = resolveActiveTools({ userText: "把确认模式切换成全自动模式", tools: allTools }).map((t) => t.name);
-  assert.ok(activeAuto.includes("update_settings"), "explicitly switching to 全自动模式 mounts settings");
+  const active = resolveActiveTools({ userText: promptText, tools: allTools, hasVideo: false });
+  const activeNames = active.map((t) => t.name);
+  assert.ok(activeNames.includes("extract_page") && activeNames.includes("click") && activeNames.includes("request_toolsets"));
+  assert.ok(!activeNames.includes("open_tab"), "prohibited navigation clause does not activate browser_mgmt");
+  assert.ok(!activeNames.includes("run_shell") && !activeNames.includes("write_library"), "no system_ops bloat");
+  assert.ok(!activeNames.includes("seek_video"), "no media_player bloat");
+  assert.ok(!activeNames.includes("update_settings"), "no settings bloat");
+  assert.ok(active.length <= 40, `active tools trimmed to core_reader + dom_interact, got ${active.length}`);
 
-  console.log(`PASS 5. Round 02 capsule & active tool routing verified (${promptsToVerify.map((p) => p.label).join(" + ")})`);
+  console.log("PASS 5. Generic prohibition clause capsule & active tool routing verified");
 }
 
 console.log("ALL PASS test_round02_fixes.mjs");

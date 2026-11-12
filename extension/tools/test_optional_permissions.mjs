@@ -54,7 +54,6 @@ const INSTALL_API = [
   "alarms",
   "contextMenus",
   "debugger",
-  "downloads",
   "offscreen",
   "scripting",
   "sidePanel",
@@ -67,6 +66,7 @@ const OPTIONAL_API = [
   "clipboardRead",
   "clipboardWrite",
   "cookies",
+  "downloads",
   "favicon",
   "history",
   "nativeMessaging",
@@ -95,6 +95,8 @@ assert.deepEqual([...(manifest.optional_permissions || [])].sort(), [...OPTIONAL
 assert.deepEqual([...(manifest.host_permissions || [])].sort(), []);
 assert.deepEqual([...(manifest.optional_host_permissions || [])].sort(), [...PREVIOUS_HOSTS].sort());
 assert.equal(manifest.permissions.includes("cookies"), false, "cookies is requested on first use");
+assert.equal(manifest.permissions.includes("downloads"), false, "downloads is requested on first use");
+assert.equal((manifest.optional_permissions || []).includes("downloads"), true, "downloads is declared optional");
 assert.equal(manifest.permissions.includes("debugger"), true, "Chrome cannot make debugger optional");
 assert.equal(manifest.permissions.includes("tts"), true, "Chrome cannot make tts optional");
 assert.equal((manifest.optional_permissions || []).includes("debugger"), false);

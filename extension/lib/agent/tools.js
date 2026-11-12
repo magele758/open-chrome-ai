@@ -494,12 +494,12 @@ export function createAgentTools(ctx) {
     {
       name: "select_option",
       description:
-        "在原生 <select> 或自定义下拉框（Ant Design .ant-select / Element .el-select / ARIA combobox）中选择一项。优先用此工具而非手写 run_js 展开下拉：可传 selector 或字段 label（如 '材质'、'尺码表'）定位，已选中同名项会幂等直接返回，未选中会自动展开、检索过滤虚拟列表、点击精确匹配项并在多选模式下自动收起浮层。",
+        "在原生 <select> 或自定义下拉框（ARIA combobox / 弹层列表组件）中选择一项。优先用此工具而非手写 run_js 展开下拉：可传 selector 或字段 label（如 '状态'、'语言'）定位，已选中同名项会幂等直接返回，未选中会自动展开、检索过滤虚拟列表、点击精确匹配项并在多选模式下自动收起浮层。",
       parameters: obj(
         {
           tabId: tabIdProp(),
           selector: { type: "string", description: "下拉控件或外层容器 CSS 选择器（与 label 二选一）" },
-          label: { type: "string", description: "表单字段标签文字，如 '材质'、'细节'、'尺码表'（自动忽略星号与冒号）" },
+          label: { type: "string", description: "表单字段标签文字，如 '状态'、'语言'（自动忽略星号与冒号）" },
           value: { type: "string", description: "要选中的选项精确文本或 value" },
           nth: { type: "integer", description: "多个同名下拉时取第几个，从 0 开始" },
         },
@@ -1923,7 +1923,13 @@ export function resolveActiveTools({
   const sanitizeRouterText = (raw) => {
     const noAttached = stripAttachedPageContext(String(raw || "")).cleanPrompt;
     const noUntrusted = noAttached.replace(/<untrusted_page[\s\S]*?(?:<\/untrusted_page>|$)/gi, " ");
-    return stripProhibitedClauses(noUntrusted);
+    const noDataFences = noUntrusted
+      .replace(
+        /```([\w-]*)[ \t]*\n?([\s\S]*?)```/g,
+        (m, lang) => (lang && !/^(?:sh|bash|zsh|shell|console|cmd|powershell|ps1)$/i.test(lang) ? " " : m),
+      )
+      .replace(/`([^`\n]+)`/g, (m, inner) => (/^\s*(?:\.(?!\/)|#|\[|<|>)/.test(inner) ? " " : m));
+    return stripProhibitedClauses(noDataFences);
   };
 
   let text = sanitizeRouterText(userText).toLowerCase();
@@ -1936,9 +1942,8 @@ export function resolveActiveTools({
     text += " " + recent.toLowerCase();
   }
 
-  // 视频意图或当前页含视频（排除表单字段「视频留空/保持空白」类静态描述）
-  const mediaText = text.replace(/视频[^\n。！？!?；;，,]{0,30}?(?:留空|保持空白|不填|无需|跳过|为空)/g, " ");
-  if (hasVideo || /视频|字幕|同传|播放|时间戳|video|transcript|caption/i.test(mediaText)) {
+  // 视频意图或当前页含视频
+  if (hasVideo || /视频|字幕|同传|播放|时间戳|video|transcript|caption/i.test(text)) {
     activeDomains.add("media_player");
   }
 
@@ -1951,46 +1956,27 @@ export function resolveActiveTools({
     activeDomains.add("dom_interact");
   }
 
-  // 标签管理意图（排除商品表单中的「已选标签」「标签文本」、页内弹窗关闭、下拉框搜索与左侧栏导航词）
-  const browserText = text
-    .replace(/(?:已选|商品|特征|属性|类目|价格)标签|标签(?:文本|内容|字段|值|名|栏)/g, " ")
-    .replace(
-      /(?:关闭|关掉|关了)[^\n。！？!?；;，,]{0,28}?(?:弹窗|抽屉|浮层|对话框|模态框|下拉|提示|遮罩|面板)|(?:两层)?(?:弹窗|抽屉|浮层|对话框|模态框|下拉)[^\n。！？!?；;，,]{0,16}?(?:关闭|关掉|关了)|关窗动画|已关闭/g,
-      " ",
-    )
-    .replace(/搜索(?:框|输入词?|候选|下拉|并点击|选项)|清空改搜|改搜/g, " ")
-    .replace(/左侧[^\n。！？!?；;，,]{0,48}?导航|」导航|导航(?:栏|菜单|按钮|项|区)/g, " ");
+  // 标签管理意图
   if (
-    /标签(?!文本)|窗口|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|\btabs?\b|bookmark|history|window|download|restore|search/i.test(
-      browserText,
+    /标签|窗口|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|\btabs?\b|bookmark|history|window|download|restore|search/i.test(
+      text,
     )
   ) {
     activeDomains.add("browser_mgmt");
   }
 
-  // 系统/Shell/Skill/文件/文稿/Obsidian/授权意图（排除「逐步执行」「自动保存」「类目路径」等通用网页流程措辞）
-  const sysText = text
-    .replace(/逐步执行|按步(?:骤)?执行|依次执行|执行结果|执行状态|结束运行|正在运行/g, " ")
-    .replace(/(?:系统|图片分配)?自动保存|保存(?:商品|草稿|成功|失败|状态|结果|核验|提示|按钮)/g, " ")
-    .replace(/(?:类目|完整|目标全?|所选|候选|分类|导航|面包屑|上述|该|此|两条)路径|路径匹配/g, " ");
+  // 系统/Shell/Skill/文件/文稿/Obsidian/授权意图
   if (
     /\bshell\b|命令|终端|(?:运行|执行)\s*(?:shell|bash|zsh|sh|cmd|脚本|命令|终端|本机|skill)|`\$\s*[^`\n]+`|(?:运行|执行|跑一下|跑|\brun\b|\bexecute\b|\bexec\b)\s*(?:命令|脚本|终端)?\s*[:：]?\s*`(?![.#\[<*])[^`\n]+`|`(?![.#\[<*])(?:git|npm|pnpm|yarn|node|python3?|pip3?|curl|wget|ls|cd|cat|grep|rg|find|mkdir|rm|cp|mv|chmod|echo|make|cargo|go|docker|kubectl|brew|sh|bash|zsh|pytest)\b[^`\n]*`|脚本|\bskill\b|obsidian|文稿|入库|保存|\bnote\b|\blibrary\b|\bexec\b|\bbash\b|\bzsh\b|授权|权限|未授权|重新授权|文件|文件夹|目录|路径|知识库|笔记|读写/i.test(
-      sysText,
+      text,
     )
   ) {
     activeDomains.add("system_ops");
   }
 
-  const hasExplicitModeMutation =
-    /(?:切换|修改|改成|改为|开启|打开|设为|调成|启用|换到|切到)[^\n。！？!?；;，,]{0,14}?(?:全自动|确认模式|严格模式|智能模式|免确认)|(?:全自动|确认模式|严格模式|智能模式|免确认)[^\n。！？!?；;，,]{0,8}?(?:开启|打开|关闭)/.test(
-      text,
-    );
-  const settingsText = text
-    .replace(/(?:价格|库存|运费|规格|属性|物流|发货|站点)设置/g, " ")
-    .replace(hasExplicitModeMutation ? /(?!x)x/ : /全自动(?:模式)?/g, " ");
   if (
     /设置|配置|设定|偏好|主题|字体|深色|暗色|浅色|回答语言|确认模式|免确认|全自动|严格模式|智能模式|切换模型|换个模型|换成.*模型|setting|config|preference|theme|font/i.test(
-      settingsText,
+      text,
     )
   ) {
     activeDomains.add("settings");

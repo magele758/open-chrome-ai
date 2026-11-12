@@ -361,6 +361,7 @@ export function createDelegateManager({
     let taint = createTaintState();
     try {
       const settings = await loadSettings();
+      if (ctx) ctx.settings = settings;
       const run = await createRun({ task, settings, signal });
       if (ctx) {
         if (run.initialPage) ctx.initialPage = run.initialPage;

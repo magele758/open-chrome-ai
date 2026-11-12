@@ -199,35 +199,95 @@ export function stripProhibitedClauses(raw) {
     .replace(/__PL_FENCE_(\d+)__/g, (_m, i) => fences[Number(i)] || "");
 }
 
-function neutralizePassiveActionPhrases(src) {
-  return String(src || "")
-    .replace(
-      /未发布|已发布|发布中|预发布|发布站点|发布记录|未保存|已保存|(?:系统|图片分配)?自动保存|保存(?:商品|草稿|成功|失败|状态|结果|核验|提示|按钮)|持久化/g,
-      " ",
-    )
-    .replace(/记下(?:该|此|当前)?(?:提示|报错|错误|文案|字段|原因|行号|数量|计数)/g, " ")
-    .replace(/停在[^\n。！？!?；;，,]{0,40}?(?:发布|提交|保存)[^\n。！？!?；;，,]{0,15}?前(?:一步)?/g, " ")
-    .replace(/(?:(?:目标行|行内|右侧|顶部|底部|按钮|「[^」]{1,24}」|与|和|及|均|都|可见|且|\s|\d+\))+?)未点击/g, " ")
-    .replace(/[^\n。！？!?；;，,]{0,24}?未点击/g, " ")
-    .replace(/清空(?:改搜|输入|搜索框?)/g, " ")
-    .replace(
-      /(?:关闭|关掉|关了)[^\n。！？!?；;，,]{0,28}?(?:弹窗|抽屉|浮层|对话框|模态框|下拉|提示|遮罩|面板)|(?:两层)?(?:弹窗|抽屉|浮层|对话框|模态框|下拉)[^\n。！？!?；;，,]{0,16}?(?:关闭|关掉|关了)|关窗动画|已关闭/g,
-      " ",
-    );
-}
+const READ_ONLY_WORKFLOW_OPS = new Set([
+  "wait_for",
+  "assert_state",
+  "query_dom",
+  "set_binds",
+  "fail",
+  "noop",
+]);
 
-function collectBindStrings(node, out, depth = 0) {
-  if (depth > 12 || node == null) return;
+const NAVIGATE_WORKFLOW_OPS = new Set([
+  "navigate",
+  "open_tab",
+  "ensure_page_entry",
+]);
+
+function collectWorkflowStrings(node, out, depth = 0) {
+  if (depth > 14 || node == null) return;
   if (typeof node === "string") {
     out.push(node);
     return;
   }
   if (Array.isArray(node)) {
-    for (const item of node) collectBindStrings(item, out, depth + 1);
+    for (const item of node) collectWorkflowStrings(item, out, depth + 1);
     return;
   }
   if (typeof node === "object") {
-    for (const val of Object.values(node)) collectBindStrings(val, out, depth + 1);
+    for (const [k, val] of Object.entries(node)) {
+      if (/^forbid/i.test(k) || k === "policy") continue;
+      collectWorkflowStrings(val, out, depth + 1);
+    }
+  }
+}
+
+function collectWorkflowStepActions(steps, macros, actionSet, visitedMacros = new Set(), depth = 0) {
+  if (!Array.isArray(steps) || depth > 12) return;
+  for (const step of steps) {
+    if (!step || typeof step !== "object") continue;
+    const op = String(step.op || "").trim().toLowerCase();
+    const params = step.params && typeof step.params === "object" ? step.params : {};
+
+    for (const nestedKey of ["steps", "thenSteps", "elseSteps", "then", "else"]) {
+      if (Array.isArray(step[nestedKey])) {
+        collectWorkflowStepActions(step[nestedKey], macros, actionSet, visitedMacros, depth + 1);
+      }
+      if (Array.isArray(params[nestedKey])) {
+        collectWorkflowStepActions(params[nestedKey], macros, actionSet, visitedMacros, depth + 1);
+      }
+    }
+
+    if (!op || op === "if_state" || op === "foreach") continue;
+
+    if (op === "call_macro") {
+      const macroName = String(step.macro || params.macro || "").trim();
+      const macroDef = macroName && macros && typeof macros === "object" ? macros[macroName] : null;
+      const macroSteps = Array.isArray(macroDef) ? macroDef : macroDef?.steps;
+      if (Array.isArray(macroSteps) && !visitedMacros.has(macroName)) {
+        visitedMacros.add(macroName);
+        collectWorkflowStepActions(macroSteps, macros, actionSet, visitedMacros, depth + 1);
+      } else if (!Array.isArray(macroSteps)) {
+        actionSet.add("input");
+      }
+      continue;
+    }
+
+    if (op === "assert_url") {
+      if (params.recoverUrl || params.autoNavigate) actionSet.add("navigate");
+      continue;
+    }
+    if (READ_ONLY_WORKFLOW_OPS.has(op)) continue;
+    if (NAVIGATE_WORKFLOW_OPS.has(op)) {
+      actionSet.add("navigate");
+      if (op === "ensure_page_entry" && (params.entryNavText || params.entryNavSelector)) {
+        actionSet.add("input");
+      }
+      continue;
+    }
+    if (op === "upload_file") {
+      actionSet.add("upload");
+      continue;
+    }
+    if (op === "download_file") {
+      actionSet.add("download");
+      continue;
+    }
+    if (op === "close_tab") {
+      actionSet.add("close");
+      continue;
+    }
+    actionSet.add("input");
   }
 }
 
@@ -246,17 +306,25 @@ function extractWorkflowCapsule(rawText, principal = "user") {
     return capsule;
   }
   if (!parsed || typeof parsed !== "object") return capsule;
-  const bindStrings = [];
+  const candidateStrings = [];
   if (parsed.binds && typeof parsed.binds === "object") {
-    collectBindStrings(parsed.binds, bindStrings);
+    collectWorkflowStrings(parsed.binds, candidateStrings);
   }
-  const joined = bindStrings.join("\n");
+  if (Array.isArray(parsed.steps)) {
+    collectWorkflowStrings(parsed.steps, candidateStrings);
+  }
+  if (parsed.macros && typeof parsed.macros === "object") {
+    collectWorkflowStrings(parsed.macros, candidateStrings);
+  }
+  const joined = candidateStrings.join("\n");
   const urls = uniq(
     [...joined.matchAll(URL_RE)]
       .map((m) => m[0].replace(/[.,;:!?]+$/, ""))
       .filter((u) => urlOrigin(u)),
   );
-  capsule.actions = ["navigate", "input"];
+  const actionSet = new Set();
+  collectWorkflowStepActions(parsed.steps, parsed.macros, actionSet);
+  capsule.actions = ACTION_CATEGORIES.filter((a) => actionSet.has(a));
   capsule.urls = urls;
   capsule.origins = uniq(urls.map(normalizeDomain));
   return capsule;
@@ -275,10 +343,9 @@ export function extractCapsule(text, { principal = "user", allowBareTickCommands
   if (!src.trim()) return capsule;
 
   const affirmativeSrc = stripProhibitedClauses(src);
-  const nonShellFencesStripped = affirmativeSrc.replace(FENCE_RE, (m, lang) =>
-    lang && !SHELL_FENCE_LANG_RE.test(lang) ? " " : m,
-  );
-  const actionSrc = neutralizePassiveActionPhrases(nonShellFencesStripped);
+  const actionSrc = affirmativeSrc
+    .replace(FENCE_RE, (m, lang) => (lang && !SHELL_FENCE_LANG_RE.test(lang) ? " " : m))
+    .replace(TICK_RE, (m, inner) => (/^\s*(?:\.(?!\/)|#|\[|<|>)/.test(inner) ? " " : m));
   const hasShellIntent = ACTION_KEYWORDS.shell.test(actionSrc);
 
   const commands = extractCommands(affirmativeSrc, { hasShellIntent, allowBareTickCommands });
