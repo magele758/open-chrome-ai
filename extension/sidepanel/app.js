@@ -1,4 +1,5 @@
 import "./panel-log.js";
+import { bindDubQueue } from "./dub-queue-ui.js";
 import { createAgentGatewayPanel } from "./agent-gateway-panel.js";
 import { lastUserAskedForSkill, resumeInterruptedRun, sendPrompt } from "./agent-loop.js";
 import {
@@ -282,6 +283,7 @@ function wire() {
     startTranscribe({ force: capsReady });
   });
   $("btn-summarize-video")?.addEventListener("click", () => startSummarizeVideo());
+  bindDubQueue(toggleDubPlayback);
   $("btn-interpret")?.addEventListener("click", () => {
     getSharedAudioContext();
     startInterpret();
