@@ -4,6 +4,8 @@
  * 默认在隔离世界执行：节点缓存挂在该世界的 window 上，页面脚本读不到。
  */
 
+import "./ui-adapters/index.js";
+
 export function snapshotControls(opts) {
   const o = opts || {};
   if (!document.body) return null;
@@ -190,13 +192,56 @@ export function snapshotControls(opts) {
  */
 export async function actOnRef(kind, spec) {
   const o = spec || {};
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
+  const blockFileChooser = o.fileChooserPolicy !== "allow";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
   const cache = window.__pagelensSnap;
   const stale = (why) => ({ ok: false, stale: true, error: `${why}，请重新 snapshot_controls 后再操作` });
+  const FILE_CHOOSER_BLOCKED_MSG =
+    "目标位置命中文件上传控件（点击会弹出系统文件选择框），已拦截；如需上传文件请使用 upload_file 工具，如系滚动后坐标偏移请改用 selector 定位目标控件";
+  const uploadListSel = A?.uploadListSelector || '[role="list"][data-upload-list], [class*="upload-list"]';
+  const uploadTrigSel = A?.uploadTriggerSelector || 'button, [role="button"]';
+  const hitsFileInput = (node) => {
+    const start = node && node.nodeType === 1 ? node : node?.parentElement || null;
+    if (!start) return false;
+    if (
+      start.tagName === "INPUT" &&
+      String(start.type || start.getAttribute("type") || "").toLowerCase() === "file" &&
+      !start.disabled
+    ) {
+      return true;
+    }
+    for (
+      let cur = start;
+      cur && cur !== document.body && cur !== document.documentElement;
+      cur = cur.parentElement || cur.getRootNode?.()?.host || null
+    ) {
+      if (uploadListSel && cur.matches?.(uploadListSel)) break;
+      if (cur.tagName === "LABEL") {
+        const forId = cur.getAttribute?.("for");
+        const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
+        if (
+          (ctrl?.tagName === "INPUT" &&
+            String(ctrl.type || ctrl.getAttribute?.("type") || "").toLowerCase() === "file" &&
+            !ctrl.disabled) ||
+          cur.querySelector?.('input[type="file"]:not([disabled])')
+        ) {
+          return true;
+        }
+      }
+      if (uploadTrigSel && cur.matches?.(uploadTrigSel) && cur.querySelector?.('input[type="file"]:not([disabled])')) {
+        return true;
+      }
+    }
+    return false;
+  };
 
   const el = cache?.nodes.get(Number(o.node));
   if (!el || !el.isConnected) return stale("目标元素已不在页面上");
+  if (kind === "click" && blockFileChooser && hitsFileInput(el)) {
+    return { ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MSG };
+  }
   if (!cache.visible(el)) return stale("目标元素已不可见");
   if (o.label != null) {
     const now = clean(cache.name(el)).slice(0, 80) || cache.role(el);
@@ -213,6 +258,7 @@ export async function actOnRef(kind, spec) {
     return false;
   };
   const deepFromPoint = (x, y) => {
+    if (typeof document.elementFromPoint !== "function") return null;
     let hit = document.elementFromPoint(x, y);
     while (hit?.shadowRoot && typeof hit.shadowRoot.elementFromPoint === "function") {
       const inner = hit.shadowRoot.elementFromPoint(x, y);
@@ -234,6 +280,7 @@ export async function actOnRef(kind, spec) {
   if (hit && !composedContains(el, hit) && !composedContains(hit, el)) {
     return {
       ok: false,
+      occluded: true,
       covered: true,
       error: "目标被其他元素遮挡（弹窗/遮罩/悬浮层），先处理遮挡物或关闭它",
       blocker: describe(hit),
@@ -257,6 +304,9 @@ export async function actOnRef(kind, spec) {
   };
 
   if (kind === "click") {
+    if (blockFileChooser && hit && hitsFileInput(hit)) {
+      return { ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MSG };
+    }
     el.focus?.();
     const init = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
     for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
@@ -321,6 +371,8 @@ export async function actOnRef(kind, spec) {
   return { ok: false, error: `未知动作 ${kind}` };
 }
 
+export const actOnElement = actOnRef;
+
 export function scrollViewport(dir, amount) {
   const step = Math.round(window.innerHeight * Math.min(Math.max(Number(amount) || 0.8, 0.1), 1));
   const before = window.scrollY;
@@ -341,12 +393,55 @@ export function scrollViewport(dir, amount) {
  */
 export function locateElement(spec) {
   const o = spec || {};
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
+  const blockFileChooser = o.fileChooserPolicy !== "allow";
+  const hiddenPortalClasses = A?.hiddenPortalClasses || [];
+  const leaveRe = A?.leaveClassPattern ? new RegExp(A.leaveClassPattern) : null;
   const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
+  const compactCjk = (s) => String(s || "").replace(/([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g, "$1");
   const visible = (el) => {
-    const st = getComputedStyle(el);
-    if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+    if (!el) return false;
+    let cur = el;
+    while (cur && cur.nodeType === 1) {
+      const cls = typeof cur.className === "string" ? cur.className : "";
+      if (
+        cur.hidden ||
+        hiddenPortalClasses.some((c) => cur.classList?.contains(c)) ||
+        (cls && leaveRe && leaveRe.test(cls))
+      ) {
+        return false;
+      }
+      const st = getComputedStyle(cur);
+      if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+      if (
+        cur !== el &&
+        cur.style?.overflow === "hidden" &&
+        (cur.style?.width === "0px" || cur.style?.height === "0px")
+      ) {
+        return false;
+      }
+      cur = cur.parentElement;
+    }
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
+  };
+  const priProxySel =
+    A?.proxyTriggerSelector ||
+    '[role="combobox"], [role="listbox"], [role="switch"], [role="checkbox"], [role="radio"]';
+  const secProxySel = A?.proxySecondarySelector || "label";
+  const resolveProxy = (el) => {
+    if (!el || !/^(INPUT|SELECT|TEXTAREA)$/i.test(el.tagName)) return null;
+    if (String(el.getAttribute("type") || el.type || "").toLowerCase() === "hidden") return null;
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") return null;
+    if (visible(el)) return null;
+    const anc = el.parentElement;
+    const primary = priProxySel ? anc?.closest(priProxySel) : null;
+    if (primary && visible(primary)) return primary;
+    const secondary = secProxySel ? anc?.closest(secProxySel) : null;
+    if (secondary && visible(secondary)) return secondary;
+    const lbl = el.labels?.[0] || null;
+    if (lbl && visible(lbl)) return lbl;
+    return null;
   };
   const collect = (selector) => {
     const out = [...document.querySelectorAll(selector)];
@@ -362,6 +457,70 @@ export function locateElement(spec) {
     return out;
   };
 
+  const CONTROLS =
+    "a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio'], [role='option'], [role='treeitem'], [role='checkbox'], [role='radio'], [role='switch'], [onclick]";
+  const POPUP_LAYER_SEL = A?.popupLayerSelector || "[role='listbox'], [role='menu'], [role='tree']";
+  const DIALOG_LAYER_SEL =
+    A?.dialogSelector || "[role='dialog'], [role='alertdialog'], [aria-modal='true'], dialog[open]";
+  const notDisabled = (n) =>
+    Boolean(n) && !n.disabled && n.getAttribute("aria-disabled") !== "true" && !n.closest?.("[aria-disabled='true']");
+  const textFieldsOf = (n) =>
+    [n.innerText ?? n.textContent ?? "", n.value, n.getAttribute("aria-label"), n.getAttribute("placeholder"), n.getAttribute("title")]
+      .filter(Boolean)
+      .map((s) => clean(s).toLowerCase())
+      .filter(Boolean);
+  const prioritizeTopLayer = (items) => {
+    if (items.length <= 1) return items;
+    const inPopup = (n) => {
+      const p = n.closest?.(POPUP_LAYER_SEL);
+      return Boolean(p && visible(p) && !p.closest?.("[aria-hidden='true']"));
+    };
+    const rawDialogs = [...document.querySelectorAll(DIALOG_LAYER_SEL)].filter(
+      (d) => visible(d) && !d.closest?.("[aria-hidden='true']"),
+    );
+    const outerDialogs = rawDialogs
+      .filter((d) => !rawDialogs.some((other) => other !== d && other.contains(d)))
+      .map((d, idx) => {
+        let bestZ = 0;
+        let cur = d;
+        while (cur && cur !== document.documentElement) {
+          const z = Number.parseInt(getComputedStyle(cur).zIndex, 10);
+          if (Number.isFinite(z) && z > bestZ) bestZ = z;
+          cur = cur.parentElement;
+        }
+        return { d, idx, z: bestZ };
+      })
+      .sort((a, b) => (b.z !== a.z ? b.z - a.z : b.idx - a.idx));
+    return items
+      .map((n, order) => {
+        let tier = 1 + outerDialogs.length;
+        if (inPopup(n)) {
+          tier = 0;
+        } else {
+          const mIdx = outerDialogs.findIndex(({ d }) => d.contains(n));
+          if (mIdx >= 0) tier = 1 + mIdx;
+        }
+        return { n, order, tier };
+      })
+      .sort((a, b) => (a.tier !== b.tier ? a.tier - b.tier : a.order - b.order))
+      .map((x) => x.n);
+  };
+  const rankByText = (candidates, rawNeedle) => {
+    const needle = clean(rawNeedle).toLowerCase();
+    const cNeedle = compactCjk(needle);
+    const exact = [];
+    const partial = [];
+    for (const n of candidates) {
+      const fields = textFieldsOf(n);
+      if (fields.some((f) => f === needle || (Boolean(cNeedle) && compactCjk(f) === cNeedle))) {
+        exact.push(n);
+      } else if (fields.some((f) => f.includes(needle) || (Boolean(cNeedle) && compactCjk(f).includes(cNeedle)))) {
+        partial.push(n);
+      }
+    }
+    return prioritizeTopLayer(exact.length ? exact : partial);
+  };
+
   let el = null;
   let count = 1;
   if (o.node != null) {
@@ -369,23 +528,29 @@ export function locateElement(spec) {
     if (!el || !el.isConnected) return { ok: false, stale: true, error: "目标元素已不在页面上，请重新 snapshot_controls" };
   } else {
     const nth = Math.max(0, Number(o.nth) || 0);
+    const rawTextFilter = clean(o.text);
     let nodes;
     if (o.selector) {
+      let raw;
       try {
-        nodes = collect(String(o.selector)).filter(visible);
+        raw = collect(String(o.selector));
       } catch (err) {
         return { ok: false, error: err?.message || String(err) };
       }
+      nodes = raw.filter(visible);
+      if (!nodes.length && raw.length) {
+        nodes = [...new Set(raw.map(resolveProxy).filter(Boolean))];
+      }
       if (!nodes.length) return { ok: false, notFound: true, error: `没有可见元素：${o.selector}` };
+      if (rawTextFilter) {
+        nodes = rankByText(nodes, rawTextFilter);
+        if (!nodes.length) {
+          return { ok: false, notFound: true, error: `选择器 ${o.selector} 中没有匹配「${o.text}」的可见元素` };
+        }
+      }
     } else {
-      const needle = clean(o.text).toLowerCase();
-      if (!needle) return { ok: false, error: "需要 node、selector 或 text" };
-      nodes = collect("a, button, [role='button'], input, textarea, select, label, summary, [role='link'], [role='tab'], [role='menuitem'], [onclick]")
-        .filter(visible)
-        .filter((n) => {
-          const t = clean(`${n.innerText || ""} ${n.value || ""} ${n.getAttribute("aria-label") || ""} ${n.getAttribute("placeholder") || ""}`).toLowerCase();
-          return t === needle || t.includes(needle);
-        });
+      if (!rawTextFilter) return { ok: false, error: "需要 node、selector 或 text" };
+      nodes = rankByText(collect(CONTROLS).filter((n) => visible(n) && notDisabled(n)), rawTextFilter);
       if (!nodes.length) return { ok: false, notFound: true, error: `没有匹配「${o.text}」的可见控件` };
     }
     count = nodes.length;
@@ -418,7 +583,7 @@ export function locateElement(spec) {
     for (let n = b; n; n = n.parentNode || n.host) if (n === a) return true;
     return false;
   };
-  let hit = document.elementFromPoint(x, y);
+  let hit = typeof document.elementFromPoint === "function" ? document.elementFromPoint(x, y) : null;
   while (hit?.shadowRoot && typeof hit.shadowRoot.elementFromPoint === "function") {
     const inner = hit.shadowRoot.elementFromPoint(x, y);
     if (!inner || inner === hit) break;
@@ -427,11 +592,48 @@ export function locateElement(spec) {
   if (hit && !composedContains(el, hit) && !composedContains(hit, el)) {
     return {
       ok: false,
+      occluded: true,
       covered: true,
       error: "目标被其他元素遮挡（弹窗/遮罩/悬浮层），先处理遮挡物",
-      blocker: { tag: hit.tagName.toLowerCase(), text: clean(hit.innerText || "").slice(0, 60) },
+      blocker: { tag: hit.tagName.toLowerCase(), text: clean(hit.innerText || hit.textContent || "").slice(0, 60) },
     };
   }
+  const uploadListSel = A?.uploadListSelector || '[role="list"][data-upload-list], [class*="upload-list"]';
+  const uploadTrigSel = A?.uploadTriggerSelector || 'button, [role="button"]';
+  const hitsFileInput = (node) => {
+    const start = node && node.nodeType === 1 ? node : node?.parentElement || null;
+    if (!start) return false;
+    if (
+      start.tagName === "INPUT" &&
+      String(start.type || start.getAttribute("type") || "").toLowerCase() === "file" &&
+      !start.disabled
+    ) {
+      return true;
+    }
+    for (
+      let cur = start;
+      cur && cur !== document.body && cur !== document.documentElement;
+      cur = cur.parentElement || cur.getRootNode?.()?.host || null
+    ) {
+      if (uploadListSel && cur.matches?.(uploadListSel)) break;
+      if (cur.tagName === "LABEL") {
+        const forId = cur.getAttribute?.("for");
+        const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
+        if (
+          (ctrl?.tagName === "INPUT" &&
+            String(ctrl.type || ctrl.getAttribute?.("type") || "").toLowerCase() === "file" &&
+            !ctrl.disabled) ||
+          cur.querySelector?.('input[type="file"]:not([disabled])')
+        ) {
+          return true;
+        }
+      }
+      if (uploadTrigSel && cur.matches?.(uploadTrigSel) && cur.querySelector?.('input[type="file"]:not([disabled])')) {
+        return true;
+      }
+    }
+    return false;
+  };
   return {
     ok: true,
     x,
@@ -445,6 +647,7 @@ export function locateElement(spec) {
     tag: el.tagName.toLowerCase(),
     text: clean(el.innerText || el.value || el.getAttribute("aria-label")).slice(0, 60),
     count,
+    fileUpload: blockFileChooser ? Boolean(hitsFileInput(hit || el) || hitsFileInput(el)) : false,
   };
 }
 

@@ -9,6 +9,7 @@ import {
   normalizeCapsule,
   normalizeCommand,
   setCapsuleActions,
+  stripProhibitedClauses,
   widenCapsule,
 } from "../lib/agent/trust/capsule.js";
 import {
@@ -181,6 +182,65 @@ assert.deepEqual(normalizeCapsule(null).actions, []);
     { tool: "extract_page", source: "page" },
     { tool: "click", source: "tool_result" },
   ]);
+}
+
+// 7. 否定/禁止分句剥离、RFC 5737 IPv4 站点抽取与 /workflow 按步骤最小授权
+{
+  const promptWithProhibitions = [
+    "请打开 http://192.0.2.10:8080/#/tasks 填写任务标题并勾选优先级。",
+    "硬性限制：绝对禁止点击「发布」或「删除」按钮；绝对禁止打开或跳转到 external.example.org；严禁上传文件；禁点保存；不要运行 `rm -rf /tmp/x`。",
+  ].join("\n");
+
+  const stripped = stripProhibitedClauses(promptWithProhibitions);
+  assert.ok(!stripped.includes("external.example.org"), "prohibited domain stripped");
+  assert.ok(!stripped.includes("上传文件"), "prohibited upload phrase stripped");
+  assert.ok(!stripped.includes("rm -rf"), "prohibited command stripped");
+
+  const c = extractCapsule(promptWithProhibitions);
+  assert.deepEqual(c.urls, ["http://192.0.2.10:8080/#/tasks"]);
+  assert.deepEqual(c.origins, ["192.0.2.10"], "keeps affirmative IPv4 origin and excludes prohibited external.example.org");
+  assert.ok(c.actions.includes("navigate") && c.actions.includes("input"), "keeps navigate and input");
+  for (const forbidden of ["publish", "delete", "upload", "send", "shell", "write", "close", "automation"]) {
+    assert.ok(!c.actions.includes(forbidden), `must not grant ${forbidden}, got actions=${JSON.stringify(c.actions)}`);
+  }
+  assert.deepEqual(c.commands, []);
+
+  // 括号内禁令不应污染外层肯定分句，也不应泄漏括号内禁止域名
+  const paren = extractCapsule("请在 https://erp.example.com 填写标题（严禁点击发布，不要打开 external.example.org）并勾选选项");
+  assert.deepEqual(paren.origins, ["erp.example.com"]);
+  assert.deepEqual([...paren.actions].sort(), ["input", "navigate"]);
+
+  // /workflow 最小权限：只读步骤不授予 navigate/input；写步骤与步骤参数 URL 按实际需求授权
+  const readOnlyWf = extractCapsule(
+    `/workflow\n${JSON.stringify({
+      id: "readonly-audit",
+      binds: { pageUrl: "https://console.example.org/dashboard" },
+      forbidUrlSubstrings: ["https://forbidden.example.org"],
+      steps: [
+        { id: "s1", op: "assert_url", params: { mustStartWith: "{{pageUrl}}" } },
+        { id: "s2", op: "wait_for", params: { selector: "#ready" } },
+        { id: "s3", op: "assert_state", params: { checks: [{ kind: "text_present", text: "OK" }] } },
+      ],
+    })}`,
+  );
+  assert.deepEqual(readOnlyWf.actions, [], "read-only workflow grants zero mutating actions");
+  assert.deepEqual(readOnlyWf.origins, ["console.example.org"]);
+
+  const interactiveWf = extractCapsule(
+    `/workflow\n${JSON.stringify({
+      id: "interactive-flow",
+      steps: [
+        { id: "s1", op: "navigate", params: { url: "https://console.example.org/forms/1" } },
+        { id: "s2", op: "fill_input", params: { selector: "#title", value: "Demo" } },
+      ],
+    })}`,
+  );
+  assert.deepEqual(interactiveWf.actions, ["navigate", "input"], "interactive workflow derives navigate + input from steps");
+  assert.deepEqual(interactiveWf.origins, ["console.example.org"], "extracts URLs directly from step params even without binds");
+
+  // 明确肯定的 shell / workflow 仍正常授权
+  assert.ok(extractCapsule("运行 shell 命令检查环境").actions.includes("shell"));
+  assert.ok(extractCapsule("调用 workflow 同步状态").actions.includes("automation"));
 }
 
 console.log("PASS test_trust_capsule.mjs");

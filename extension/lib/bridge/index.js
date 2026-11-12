@@ -61,7 +61,9 @@ export function createDefaultEnv() {
       update: (id, props) => chrome.windows.update(id, props),
       remove: (id) => chrome.windows.remove(id),
     },
-    downloads: chrome.downloads,
+    get downloads() {
+      return chrome.downloads;
+    },
     get cookies() {
       return chrome.cookies;
     },

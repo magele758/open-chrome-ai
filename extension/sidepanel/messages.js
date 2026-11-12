@@ -11,7 +11,7 @@ import { redactSettingsArgs } from "../lib/agent/settings-tools.js";
 import { injectVideo } from "../lib/chrome.js";
 import { writeClipboardRich } from "../lib/clipboard.js";
 import { highlightQuote } from "../lib/extract.js";
-import { isLangfuseConfigured, sendTraceToLangfuse } from "../lib/langfuse.js";
+import { exportManualMessageTrace } from "../lib/debug/hooks.js";
 import { bindMarkdownLinks, decorateInlines, enhanceMermaid, formatAnswer, splitThinking } from "../lib/markdown.js";
 import { visibleSkills } from "../lib/prompts.js";
 import { isModelReady, resolveModel } from "../lib/storage.js";
@@ -22,6 +22,11 @@ const thinkingScrolls = new WeakMap();
 const liveSamples = new WeakMap();
 const liveStarts = new WeakMap();
 let liveTick = 0;
+let uiErrorObserver = null;
+
+function setUiErrorObserver(fn) {
+  uiErrorObserver = typeof fn === "function" ? fn : null;
+}
 
 function hostOf(url) {
   try {
@@ -140,15 +145,24 @@ function pushTraceItem(botMsg, item) {
 
 function finishTraceTool(botMsg, ev) {
   const running = [...(botMsg.trace || [])].reverse().find((t) => t.name === ev.name && t.status === "running");
+  const ts = Date.now();
   const next = {
     kind: "tool",
     name: ev.name,
     ok: ev.ok,
+    jsOk: ev.jsOk !== undefined ? Boolean(ev.jsOk) : Boolean(ev.ok),
     status: ev.ok ? "ok" : "fail",
     args: pickToolArgs(ev, running?.args),
     preview: ev.content || "",
     durationMs: ev.durationMs || 0,
     archived: Boolean(ev.archived),
+    timestamp: ts,
+    isoTime: new Date(ts).toISOString(),
+    tabId: ev.tabId ?? null,
+    pageUrl: ev.pageUrl ?? null,
+    pageTitle: ev.pageTitle ?? null,
+    failureReason: ev.ok ? null : (ev.failureReason ?? null),
+    archiveHandle: ev.archiveHandle ?? null,
   };
   if (running) Object.assign(running, next);
   else pushTraceItem(botMsg, next);
@@ -322,7 +336,7 @@ function createMessageFooter(msg) {
     actions.appendChild(obsidianBtn);
   }
 
-  if (msg.traceLog || msg.metrics) {
+  if (state?.settings?.debug?.enabled === true && (msg.traceLog || msg.metrics)) {
     const dlBtn = document.createElement("button");
     dlBtn.type = "button";
     dlBtn.className = "btn-download-trace";
@@ -342,61 +356,32 @@ function createMessageFooter(msg) {
 }
 
 function downloadMessageTrace(msg) {
-  const ts = new Date().toISOString().replace(/[:.]/g, "-");
-  const sid = state.sessionId ? state.sessionId.slice(0, 8) : "session";
-  const filename = `pagelens-trace-${sid}-${ts}.json`;
-
-  const traceData = msg.traceLog || {
-    version: "1.0",
+  exportManualMessageTrace(msg, {
+    settings: state.settings,
     sessionId: state.sessionId,
-    timestamp: new Date().toISOString(),
-    metrics: msg.metrics,
-    trace: msg.trace,
-    content: msg.text,
-    steps: [],
-  };
-
-  const exportPayload = {
-    ...traceData,
-    conversationContext: {
-      sessionId: state.sessionId,
-      sessionTitle: state.sessionTitle,
-      page: state.tab ? { url: state.tab.url, title: state.tab.title } : null,
-      messagesSummary: (state.messages || []).map((m) => ({
-        role: m.role,
-        textPreview: String(m.text || "").slice(0, 100),
-        metrics: m.metrics,
-      })),
-    },
-  };
-
-  const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: "application/json;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => {
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, 1000);
+  }).catch(() => {});
 }
 
 function maybeUploadTraceToLangfuse(traceLog) {
   try {
     if (!traceLog) return;
+    if (state?.settings?.debug?.enabled !== true) return;
     const cfg = state?.settings?.langfuse;
-    if (!isLangfuseConfigured(cfg)) return;
+    if (!cfg?.enabled) return;
     const pageInfo = state.tab ? { url: state.tab.url, title: state.tab.title } : null;
     const enriched = {
       ...traceLog,
       page: pageInfo,
       sessionTitle: state.sessionTitle || undefined,
     };
-    sendTraceToLangfuse(enriched, cfg).catch(() => {
-      // Background telemetry: never disturb user workflow on network failure
-    });
+    import("../lib/debug/langfuse-exporter.js")
+      .then((mod) => {
+        if (mod.isLangfuseConfigured(cfg)) {
+          return mod.sendTraceToLangfuse(enriched, cfg);
+        }
+        return null;
+      })
+      .catch(() => {});
   } catch {
     // Fail-safe
   }
@@ -482,7 +467,7 @@ function renderMessages() {
         wrap.appendChild(body);
       }
       if (streamingThis) syncLiveStatus(wrap, msg, { streaming: true });
-      if (messageShowsActionRow(state.messages, index, state.busy)) {
+      if (messageShowsActionRow(state.messages, index, state.busy) || (!streamingThis && msg.error && msg.traceLog)) {
         wrap.appendChild(createMessageFooter(msg));
       }
     }
@@ -701,8 +686,16 @@ function bindAnswerActions(root) {
 }
 
 function pushError(text) {
+  const message = String(text ?? "");
+  if (uiErrorObserver) {
+    try {
+      uiErrorObserver(message);
+    } catch {
+      /* ignore observer error */
+    }
+  }
   messageScroll?.reset();
-  state.messages.push({ role: "bot", text, error: true });
+  state.messages.push({ role: "bot", text: message, error: true });
   renderMessages();
 }
 
@@ -712,6 +705,7 @@ function pushNotice(text) {
 
 
 export {
+  setUiErrorObserver,
   thinkingScrolls,
   hostOf,
   renderSkills,

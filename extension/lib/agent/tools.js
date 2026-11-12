@@ -31,6 +31,7 @@ import {
   waitForTabNavigation,
 } from "../chrome.js";
 import {
+  completeSelectOption,
   findInPage,
   getLinks,
   getPageInfo,
@@ -39,13 +40,20 @@ import {
   listControls,
   pasteIntoPage,
   pageAct,
+  prepareSelectOption,
   queryDom,
   runJs,
   scrollPage,
 } from "./page-fns.js";
-import { actOnRef, scrollContainerOf, scrollViewport, snapshotControls } from "./page-snapshot.js";
+import { actOnRef, iframeRect, locateElement, scrollContainerOf, scrollViewport, snapshotControls } from "./page-snapshot.js";
 import { cdpAvailable, getCdp } from "../cdp.js";
-import { cdpScreenshot, createCdpTools, withDialogGuard } from "./cdp-tools.js";
+import {
+  cdpScreenshot,
+  createCdpTools,
+  dispatchSafeCdpClick,
+  inspectFileUploadTarget,
+  withDialogGuard,
+} from "./cdp-tools.js";
 import { createBrowserApiTools } from "./browser-api-tools.js";
 import { createCookieTools } from "./cookie-tools.js";
 import { createSettingsTools } from "./settings-tools.js";
@@ -59,6 +67,8 @@ import { requireHostUrl, requireOptionalFeature } from "../optional-permissions.
 import { aliasAgentPath, isAllowedAgentReadName, isBlockedAgentRoot } from "./fs-policy.js";
 import { isShellCommandWhitelisted, shellPolicyBlock } from "./shell-policy.js";
 import { debugLog } from "../debug-log.js";
+import { stripAttachedPageContext } from "../debug/trace-utils.js";
+import { stripProhibitedClauses } from "./trust/capsule.js";
 import { decideToolCall } from "./trust/decide.js";
 import {
   ORIGIN_SCOPED_NAV_TOOLS,
@@ -76,6 +86,14 @@ import {
   probeCompanions,
 } from "./companions.js";
 import { searchArtifacts, readArtifactPage } from "./artifact-store.js";
+import {
+  FILE_CHOOSER_BLOCKED_MESSAGE,
+  evaluateClickPolicy,
+  evaluateUrlPolicy,
+  normalizeExecutionPolicy,
+  shouldBlockFileChooser,
+} from "./policy-guard.js";
+import { getCompositeUIAdapterSpec } from "./ui-adapters/index.js";
 
 const NOTES_KEY = "pagelensNotes";
 
@@ -193,9 +211,10 @@ async function loadNotes() {
 async function actInFrames(tabId, kind, spec) {
   const first = await injectMain(tabId, pageAct, [kind, spec]);
   if (!first || first.ok !== false || !first.notFound) return first;
+  const probeKind = kind === "wait" ? "waitProbe" : "probe";
   let probes = [];
   try {
-    probes = await injectFrames(tabId, pageAct, ["probe", spec], { world: "MAIN" });
+    probes = await injectFrames(tabId, pageAct, [probeKind, spec], { world: "MAIN" });
   } catch {
     return first;
   }
@@ -210,6 +229,30 @@ const MAX_JEV_HISTORY = 10;
 export function createAgentTools(ctx) {
   const cdp = ctx.cdp || (cdpAvailable() ? getCdp() : null);
   const cdpEnabled = Boolean(cdp) && ctx.settings?.cdpInput !== false;
+  const getPolicy = () =>
+    normalizeExecutionPolicy(typeof ctx.getPolicy === "function" ? ctx.getPolicy() : ctx.policy);
+  const getAdapterSpec = () => getCompositeUIAdapterSpec(getPolicy().uiAdapters);
+  const withExecContext = (spec = {}) => ({
+    ...spec,
+    adapterSpec: getAdapterSpec(),
+    fileChooserPolicy: getPolicy().fileChooserPolicy,
+  });
+  const canUseTrustedCdpInput = async () => {
+    if (!cdpEnabled) return false;
+    if (ctx.forceCdpInput === true) return true;
+    if (typeof globalThis.chrome?.permissions?.contains !== "function") return false;
+    try {
+      return Boolean(await globalThis.chrome.permissions.contains({ permissions: ["debugger"] }));
+    } catch {
+      return false;
+    }
+  };
+  const resolveCdpFrameOffset = async (tabId, frameId) => {
+    if (!frameId) return { x: 0, y: 0 };
+    const info = await globalThis.chrome?.webNavigation?.getFrame?.({ tabId, frameId }).catch(() => null);
+    if (!info || info.parentFrameId !== 0) return null;
+    return (await inject(tabId, iframeRect, [info.url]).catch(() => null)) || null;
+  };
   const snapshots = new Map();
   // HITL 需要按编号操作的控件文字来匹配不可逆清单（「发布」「删除」类按钮）
   ctx.exposeRefLabel?.((tabId, index) => {
@@ -237,9 +280,12 @@ export function createAgentTools(ctx) {
       return inject(tabId, scrollViewport, [dir]);
     }
     const kind = action === "select" ? "select" : action;
-    return inject(tabId, actOnRef, [kind, { node: item.node, label: item.label, value, submit }], {
-      frameId: item.frameId,
-    });
+    return inject(
+      tabId,
+      actOnRef,
+      [kind, withExecContext({ node: item.node, label: item.label, value, submit })],
+      { frameId: item.frameId },
+    );
   };
   const tools = [
     {
@@ -323,10 +369,37 @@ export function createAgentTools(ctx) {
             ctx.setImage?.(dataUrl);
             return `已截取${args.selector ? "元素" : "整页"}画面（${clip?.width}×${clip?.height}），已附加到本轮对话。请描述关键信息，或继续回答用户。`;
           }
-          const dataUrl = ctx.capture
-            ? await ctx.capture(tabId)
-            : await captureTab(tabId, ctx.getWindowId?.());
-          if (!dataUrl) return "截图失败：未获取到页面画面。";
+          let dataUrl = null;
+          let primaryErr = null;
+          let cdpErr = null;
+          try {
+            dataUrl = ctx.capture
+              ? await ctx.capture(tabId, { silent: Boolean(cdpEnabled && tabId) })
+              : await captureTab(tabId, ctx.getWindowId?.());
+          } catch (err) {
+            primaryErr = err;
+          }
+          const isRestrictedPage = /受限页/.test(String(primaryErr?.message || ""));
+          if (!dataUrl && cdpEnabled && tabId && !isRestrictedPage) {
+            try {
+              console.info("[PageLens] screenshot falling back to CDP", {
+                tabId,
+                reason: primaryErr?.message || "empty_capture",
+              });
+              debugLog("screenshot.cdpFallback", {
+                tabId,
+                reason: String(primaryErr?.message || "empty_capture").slice(0, 200),
+              });
+              const cdpShot = await cdpScreenshot(cdp, tabId, {});
+              dataUrl = cdpShot?.dataUrl || null;
+            } catch (err) {
+              cdpErr = err;
+            }
+          }
+          if (!dataUrl) {
+            const reason = cdpErr?.message || primaryErr?.message || "未获取到页面画面。";
+            return `截图失败：${reason}`;
+          }
           ctx.setImage?.(dataUrl);
           return "已截取当前画面，已附加到本轮对话。请用文字描述你看到的关键信息，或继续回答用户。";
         } catch (err) {
@@ -406,37 +479,118 @@ export function createAgentTools(ctx) {
       }),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
-        if (!args?.allFrames) return toToolText(await inject(tabId, listControls, [args?.limit]));
-        const frames = await injectFrames(tabId, listControls, [args?.limit]);
+        const adapterSpec = getAdapterSpec();
+        if (!args?.allFrames) return toToolText(await inject(tabId, listControls, [args?.limit, adapterSpec]));
+        const frames = await injectFrames(tabId, listControls, [args?.limit, adapterSpec]);
         return toToolText(frames.filter((f) => f.result?.length).map((f) => ({ frameId: f.frameId, controls: f.result })));
       },
     },
     {
       name: "click",
-      description: "点击页面上的按钮或链接。用 selector（CSS）或 text（可见文字）。操作前可用 list_controls / query_dom 定位。",
+      description:
+        "点击页面上的按钮、链接、菜单项或级联选项。可单传 selector（CSS）或 text（可见文字，精确匹配优先且顶层浮层/弹窗优先），也可同时传 selector + text 在匹配选择器的可见元素中按文字精确筛选。",
       parameters: obj({
         tabId: tabIdProp(),
-        selector: { type: "string", description: "CSS 选择器" },
-        text: { type: "string", description: "按钮/链接上的可见文字" },
+        selector: { type: "string", description: "CSS 选择器（可单独使用，或与 text 组合过滤）" },
+        text: { type: "string", description: "控件上的可见文字（精确匹配优先）" },
         nth: { type: "integer", description: "多个匹配时取第几个，从 0 开始" },
       }),
       async execute(args) {
+        const policy = getPolicy();
+        const preCheck = evaluateClickPolicy({ text: args.text, selector: args.selector }, policy);
+        if (!preCheck.allowed) {
+          return toToolText({ ok: false, blockedByPolicy: true, code: preCheck.code, error: preCheck.error });
+        }
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
+        if (await canUseTrustedCdpInput()) {
+          const targetSpec = withExecContext({
+            selector: args.selector,
+            text: args.text,
+            nth: args.nth,
+          });
+          let frameId = 0;
+          let hit = await injectMain(tabId, locateElement, [targetSpec]);
+          if (!hit?.ok && hit?.notFound) {
+            const all = await injectFrames(tabId, locateElement, [targetSpec], { world: "MAIN" }).catch(() => []);
+            const found = all.find((f) => f.frameId > 0 && f.result?.ok);
+            if (found) {
+              hit = found.result;
+              frameId = found.frameId;
+            }
+          }
+          if (!hit?.ok) {
+            if (hit?.notFound && args.selector && shouldBlockFileChooser(policy)) {
+              const hiddenUpload = await injectMain(tabId, inspectFileUploadTarget, [
+                withExecContext({ selector: String(args.selector) }),
+              ]).catch(() => null);
+              if (hiddenUpload?.blocked) {
+                return toToolText({ ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MESSAGE });
+              }
+            }
+            return toToolText(hit || { ok: false, error: "定位失败" });
+          }
+          const postCheck = evaluateClickPolicy(
+            { text: args.text, domElementText: hit.text || "", selector: args.selector },
+            policy,
+          );
+          if (!postCheck.allowed) {
+            return toToolText({ ok: false, blockedByPolicy: true, code: postCheck.code, error: postCheck.error });
+          }
+          if (shouldBlockFileChooser(policy) && hit.fileUpload) {
+            return toToolText({ ok: false, blockedFileChooser: true, error: FILE_CHOOSER_BLOCKED_MESSAGE });
+          }
+          const offset = await resolveCdpFrameOffset(tabId, frameId);
+          if (offset) {
+            const cx = hit.x + offset.x;
+            const cy = hit.y + offset.y;
+            const cdpRes = await dispatchSafeCdpClick(cdp, tabId, cx, cy, {
+              fileChooserPolicy: policy.fileChooserPolicy,
+            });
+            if (!cdpRes.ok) return toToolText(cdpRes);
+            return toToolText({
+              ok: true,
+              action: "click",
+              via: "cdp",
+              tag: hit.tag,
+              text: hit.text,
+              count: hit.count,
+              at: { x: cx, y: cy },
+              ...(frameId ? { frameId } : {}),
+            });
+          }
+        }
+        if (!args.text && args.selector && policy.forbidClickTexts.length > 0) {
+          const probed = await actInFrames(
+            tabId,
+            "probe",
+            withExecContext({ selector: args.selector, nth: args.nth }),
+          );
+          if (probed?.ok && probed.match?.text) {
+            const postCheck = evaluateClickPolicy(
+              { domElementText: probed.match.text, selector: args.selector },
+              policy,
+            );
+            if (!postCheck.allowed) {
+              return toToolText({ ok: false, blockedByPolicy: true, code: postCheck.code, error: postCheck.error });
+            }
+          }
+        }
         return toToolText(
-          await actInFrames(tabId, "click", { selector: args.selector, text: args.text, nth: args.nth }),
+          await actInFrames(tabId, "click", withExecContext({ selector: args.selector, text: args.text, nth: args.nth })),
         );
       },
     },
     {
       name: "fill",
-      description: "向输入框填文字。用 selector 或 text 定位。submit=true 时尝试回车/提交表单。",
+      description: "向输入框填文字。用 selector 或 text 定位。blur=true 时填完失焦提交受控数值框；submit=true 时尝试回车/提交表单。",
       parameters: obj(
         {
           tabId: tabIdProp(),
           selector: { type: "string" },
           text: { type: "string", description: "用可见文字定位控件" },
           value: { type: "string", description: "要填入的内容" },
+          blur: { type: "boolean", description: "填完后是否触发 blur（适用于数值输入框等失焦校验控件）" },
           submit: { type: "boolean", description: "填完是否提交" },
           nth: { type: "integer" },
         },
@@ -446,34 +600,136 @@ export function createAgentTools(ctx) {
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
         return toToolText(
-          await actInFrames(tabId, "fill", {
-            selector: args.selector,
-            text: args.text,
-            value: args.value,
-            submit: args.submit,
-            nth: args.nth,
-          }),
+          await actInFrames(
+            tabId,
+            "fill",
+            withExecContext({
+              selector: args.selector,
+              text: args.text,
+              value: args.value,
+              blur: args.blur,
+              submit: args.submit,
+              nth: args.nth,
+            }),
+          ),
         );
       },
     },
     {
       name: "select_option",
-      description: "在 <select> 里选一项，value 可以是 option 的 value 或可见文本。",
+      description:
+        "在原生 <select> 或自定义下拉框（ARIA combobox / 弹层列表组件）中选择一项。优先用此工具而非手写 run_js 展开下拉：可传 selector 或字段 label（如 '状态'、'语言'）定位，已选中同名项会幂等直接返回，未选中会自动展开、检索过滤虚拟列表、点击精确匹配项并在多选模式下自动收起浮层。",
       parameters: obj(
         {
           tabId: tabIdProp(),
-          selector: { type: "string" },
-          value: { type: "string" },
-          nth: { type: "integer" },
+          selector: { type: "string", description: "下拉控件或外层容器 CSS 选择器（与 label 二选一）" },
+          label: { type: "string", description: "表单字段标签文字，如 '状态'、'语言'（自动忽略星号与冒号）" },
+          value: { type: "string", description: "要选中的选项精确文本或 value" },
+          nth: { type: "integer", description: "多个同名下拉时取第几个，从 0 开始" },
         },
-        ["selector", "value"],
+        ["value"],
       ),
       async execute(args) {
+        const policy = getPolicy();
+        if (args.selector) {
+          const selCheck = evaluateClickPolicy({ selector: args.selector }, policy);
+          if (!selCheck.allowed) {
+            return toToolText({ ok: false, blockedByPolicy: true, code: selCheck.code, error: selCheck.error });
+          }
+        }
         const tabId = await resolveTabId(ctx, args);
         await attachTabToTask(ctx, tabId);
-        return toToolText(
-          await actInFrames(tabId, "select", { selector: args.selector, value: args.value, nth: args.nth }),
-        );
+        const preferCdpOptionClick = await canUseTrustedCdpInput();
+        const prep = await injectMain(tabId, prepareSelectOption, [
+          withExecContext({
+            selector: args.selector,
+            label: args.label,
+            value: args.value,
+            nth: args.nth,
+            useCdp: Boolean(cdpEnabled),
+          }),
+        ]);
+        if (!prep || prep.ok === false) {
+          if (prep?.notFound && args.selector) {
+            const frameRes = await actInFrames(
+              tabId,
+              "select",
+              withExecContext({
+                selector: args.selector,
+                value: args.value,
+                nth: args.nth,
+              }),
+            );
+            if (frameRes?.ok) return toToolText(frameRes);
+          }
+          return toToolText(prep || { ok: false, error: "下拉定位失败" });
+        }
+        if (prep.done) {
+          const { done: _done, ...rest } = prep;
+          return toToolText(rest);
+        }
+        try {
+          if (prep.needCdpOpen && cdpEnabled) {
+            const clickOpen = await dispatchSafeCdpClick(cdp, tabId, prep.x, prep.y, {
+              fileChooserPolicy: policy.fileChooserPolicy,
+            });
+            if (!clickOpen.ok) {
+              await injectMain(tabId, completeSelectOption, [
+                withExecContext({ uid: prep.uid, value: args.value, stage: "cleanup" }),
+              ]).catch(() => {});
+              return toToolText(clickOpen);
+            }
+          }
+          let comp = await injectMain(tabId, completeSelectOption, [
+            withExecContext({
+              uid: prep.uid,
+              value: args.value,
+              stage: "select",
+              allowCdpFallback: Boolean(cdpEnabled),
+              preferCdpOptionClick,
+            }),
+          ]);
+          if (comp?.ok && comp.needCdpOptionClick && cdpEnabled) {
+            const clickOpt = await dispatchSafeCdpClick(cdp, tabId, comp.optX, comp.optY, {
+              fileChooserPolicy: policy.fileChooserPolicy,
+            });
+            if (!clickOpt.ok) {
+              await injectMain(tabId, completeSelectOption, [
+                withExecContext({ uid: prep.uid, value: args.value, stage: "cleanup" }),
+              ]).catch(() => {});
+              return toToolText(clickOpt);
+            }
+            comp = await injectMain(tabId, completeSelectOption, [
+              withExecContext({
+                uid: prep.uid,
+                value: args.value,
+                stage: "finalize",
+                allowCdpFallback: Boolean(cdpEnabled),
+                preferCdpOptionClick,
+              }),
+            ]);
+          }
+          if (comp?.ok && comp.needCdpCloseClick && cdpEnabled) {
+            const clickClose = await dispatchSafeCdpClick(cdp, tabId, comp.closeX, comp.closeY, {
+              fileChooserPolicy: policy.fileChooserPolicy,
+            });
+            if (!clickClose.ok) {
+              await injectMain(tabId, completeSelectOption, [
+                withExecContext({ uid: prep.uid, value: args.value, stage: "cleanup" }),
+              ]).catch(() => {});
+              return toToolText(clickClose);
+            }
+            comp = await injectMain(tabId, completeSelectOption, [
+              withExecContext({ uid: prep.uid, value: args.value, stage: "verify" }),
+            ]);
+          }
+          return toToolText(comp || { ok: false, error: "下拉选项点击未返回结果" });
+        } catch (err) {
+          await injectMain(tabId, completeSelectOption, [
+            withExecContext({ uid: prep.uid, value: args.value, stage: "cleanup" }),
+          ]).catch(() => {});
+          return toToolText({ ok: false, error: err?.message || String(err) });
+        }
       },
     },
     {
@@ -493,7 +749,7 @@ export function createAgentTools(ctx) {
         return toToolText(
           await injectMain(tabId, pageAct, [
             "press",
-            { key: args.key, selector: args.selector },
+            withExecContext({ key: args.key, selector: args.selector }),
           ]),
         );
       },
@@ -509,10 +765,15 @@ export function createAgentTools(ctx) {
       }),
       async execute(args) {
         return toToolText(
-          await injectMain(await resolveTabId(ctx, args), pageAct, [
+          await actInFrames(
+            await resolveTabId(ctx, args),
             "wait",
-            { selector: args.selector, text: args.text, timeoutMs: args.timeoutMs },
-          ]),
+            withExecContext({
+              selector: args?.selector,
+              text: args?.text,
+              timeoutMs: args?.timeoutMs,
+            }),
+          ),
         );
       },
     },
@@ -537,18 +798,29 @@ export function createAgentTools(ctx) {
     },
     {
       name: "scroll_page",
-      description: "滚动页面到选择器、百分比或 y 像素。",
+      description: "滚动页面到选择器、百分比或 y 像素（支持指定整页窗口或当前顶层弹窗作用域）。",
       parameters: obj({
         tabId: tabIdProp(),
         selector: { type: "string", description: "滚到这个元素" },
         percent: { type: "number", description: "0–100，页高百分比" },
         y: { type: "number", description: "绝对像素" },
         block: { type: "string", description: "scrollIntoView block，默认 center" },
+        scope: {
+          type: "string",
+          enum: ["auto", "window", "modal"],
+          description: "滚动作用域：auto（有弹窗优先滚弹窗，默认）、window（强制滚整页窗口）、modal（仅滚顶层弹窗）",
+        },
       }),
       async execute(args) {
         return toToolText(
           await inject(await resolveTabId(ctx, args), scrollPage, [
-            { selector: args.selector, percent: args.percent, y: args.y, block: args.block },
+            withExecContext({
+              selector: args.selector,
+              percent: args.percent,
+              y: args.y,
+              block: args.block,
+              scope: args.scope,
+            }),
           ]),
         );
       },
@@ -727,6 +999,10 @@ export function createAgentTools(ctx) {
       async execute(args) {
         const url = String(args.url || "").trim();
         if (!isHttpUrl(url)) return `只能打开 http(s) URL，收到：${url}`;
+        const urlVerdict = evaluateUrlPolicy(url, getPolicy());
+        if (!urlVerdict.allowed) {
+          return toToolText({ ok: false, blockedByPolicy: true, code: urlVerdict.code, error: urlVerdict.error });
+        }
         const hostDenied = await requireHostUrl(url);
         if (hostDenied) return hostDenied;
         const tab = await chrome.tabs.create({ url, active: Boolean(args.active) });
@@ -803,6 +1079,10 @@ export function createAgentTools(ctx) {
       async execute(args) {
         const url = String(args.url || "").trim();
         if (!isHttpUrl(url)) return `只能打开 http(s) URL，收到：${url}`;
+        const urlVerdict = evaluateUrlPolicy(url, getPolicy());
+        if (!urlVerdict.allowed) {
+          return toToolText({ ok: false, blockedByPolicy: true, code: urlVerdict.code, error: urlVerdict.error });
+        }
         const hostDenied = await requireHostUrl(url);
         if (hostDenied) return hostDenied;
         const tabId = await resolveTabId(ctx, args);
@@ -1588,6 +1868,12 @@ export function createAgentTools(ctx) {
           }
           const { item, error } = findItem(tabId, args.index);
           if (error) return error;
+          if (action === "click") {
+            const clickVerdict = evaluateClickPolicy({ domElementText: item.label || item.text || "" }, getPolicy());
+            if (!clickVerdict.allowed) {
+              return toToolText({ ok: false, blockedByPolicy: true, code: clickVerdict.code, error: clickVerdict.error });
+            }
+          }
           if (action === "fill" && item.kind !== "fill") return `[${item.index}] 不是可输入控件，请用 click。`;
           if (action === "select" && item.kind !== "select") return `[${item.index}] 不是下拉框，请用 click。`;
           if ((action === "fill" || action === "select") && args.value == null) return `${action} 需要 value。`;
@@ -1683,6 +1969,7 @@ export const TOOL_DOMAINS = {
     "extract_pages",
     "get_page_info",
     "screenshot",
+    "ax_snapshot",
     "get_selection",
     "get_links",
     "find_in_page",
@@ -1696,6 +1983,7 @@ export const TOOL_DOMAINS = {
     "clipboard_write",
     "copy_selection",
     "list_controls",
+    "ax_snapshot",
     "click",
     "fill",
     "select_option",
@@ -1812,9 +2100,25 @@ export function resolveActiveTools({
     if (TOOL_DOMAINS[d]) activeDomains.add(d);
   }
 
-  let text = String(userText || "").toLowerCase();
+  const sanitizeRouterText = (raw) => {
+    const noAttached = stripAttachedPageContext(String(raw || "")).cleanPrompt;
+    const noUntrusted = noAttached.replace(/<untrusted_page[\s\S]*?(?:<\/untrusted_page>|$)/gi, " ");
+    const noDataFences = noUntrusted
+      .replace(
+        /```([\w-]*)[ \t]*\n?([\s\S]*?)```/g,
+        (m, lang) => (lang && !/^(?:sh|bash|zsh|shell|console|cmd|powershell|ps1)$/i.test(lang) ? " " : m),
+      )
+      .replace(/`([^`\n]+)`/g, (m, inner) => (/^\s*(?:\.(?!\/)|#|\[|<|>)/.test(inner) ? " " : m));
+    return stripProhibitedClauses(noDataFences);
+  };
+
+  let text = sanitizeRouterText(userText).toLowerCase();
   if (Array.isArray(history) && history.length > 0) {
-    const recent = history.slice(-4).map((m) => (typeof m?.content === "string" ? m.content : "")).join(" ");
+    const recent = history
+      .filter((m) => m?.role !== "tool")
+      .slice(-4)
+      .map((m) => (typeof m?.content === "string" ? sanitizeRouterText(m.content) : ""))
+      .join(" ");
     text += " " + recent.toLowerCase();
   }
 
@@ -1834,7 +2138,7 @@ export function resolveActiveTools({
 
   // 标签管理意图
   if (
-    /标签|窗口|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|tab|bookmark|history|window|download|restore|search/i.test(
+    /标签|窗口|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|\btabs?\b|bookmark|history|window|download|restore|search/i.test(
       text,
     )
   ) {
@@ -1843,7 +2147,7 @@ export function resolveActiveTools({
 
   // 系统/Shell/Skill/文件/文稿/Obsidian/授权意图
   if (
-    /shell|命令|终端|运行|执行|脚本|skill|obsidian|文稿|入库|保存|note|library|exec|bash|zsh|授权|权限|未授权|重新授权|文件|文件夹|目录|路径|知识库|笔记|读写/i.test(
+    /\bshell\b|命令|终端|(?:运行|执行)\s*(?:shell|bash|zsh|sh|cmd|脚本|命令|终端|本机|skill)|`\$\s*[^`\n]+`|(?:运行|执行|跑一下|跑|\brun\b|\bexecute\b|\bexec\b)\s*(?:命令|脚本|终端)?\s*[:：]?\s*`(?![.#\[<*])[^`\n]+`|`(?![.#\[<*])(?:git|npm|pnpm|yarn|node|python3?|pip3?|curl|wget|ls|cd|cat|grep|rg|find|mkdir|rm|cp|mv|chmod|echo|make|cargo|go|docker|kubectl|brew|sh|bash|zsh|pytest)\b[^`\n]*`|脚本|\bskill\b|obsidian|文稿|入库|保存|\bnote\b|\blibrary\b|\bexec\b|\bbash\b|\bzsh\b|授权|权限|未授权|重新授权|文件|文件夹|目录|路径|知识库|笔记|读写/i.test(
       text,
     )
   ) {

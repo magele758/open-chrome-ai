@@ -17,7 +17,7 @@ import {
 } from "../lib/text-providers.js";
 
 function fieldBlock(prefix, model, hints = {}) {
-  const presetOpts = presetsFor(prefix).map(
+  const presetOpts = presetsFor(prefix, state.settings).map(
     (p) => `<option value="${p.id}" ${p.id === model.preset ? "selected" : ""}>${p.name}</option>`,
   ).join("");
   return `
@@ -92,7 +92,7 @@ function renderTextProviders() {
   const providers = state.settings.textProviders || [];
   const ui = state.textProviderUi;
   const current = state.settings.textRef;
-  const presetOpts = presetsFor("text").map((p) => `<option value="${escapeAttr(p.id)}">${escapeAttr(p.name)}</option>`).join("");
+  const presetOpts = presetsFor("text", state.settings).map((p) => `<option value="${escapeAttr(p.id)}">${escapeAttr(p.name)}</option>`).join("");
   const q = String(ui.query || "").trim().toLowerCase();
   const cards = providers.map((p) => {
     const models = q
@@ -185,7 +185,7 @@ function bindTextProvidersOnce() {
     }
     const draft = e.target.closest("[data-tp-draft=preset]");
     if (draft) {
-      const preset = presetsFor("text").find((p) => p.id === draft.value);
+      const preset = presetsFor("text", state.settings).find((p) => p.id === draft.value);
       state.textProviderUi.draftPreset = draft.value;
       if (preset) {
         const url = root.querySelector("[data-tp-draft=baseUrl]");

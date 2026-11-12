@@ -5,6 +5,8 @@ dist/
 node_modules/
 extension/local-settings.json
 extension/apply-local.html
+extension/.dev-reload-stamp
+extension/.dev-reload-stamp.tmp
 .cursor/
 __pycache__/
 *.pyc

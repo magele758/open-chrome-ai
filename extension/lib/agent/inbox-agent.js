@@ -38,6 +38,19 @@ async function getActive() {
   return data?.[ACTIVE_KEY] || null;
 }
 
+export async function isInboxPromptActive(area = globalThis.chrome?.storage?.session, now = Date.now()) {
+  try {
+    if (!area?.get) return false;
+    const data = await area.get(ACTIVE_KEY);
+    const active = data?.[ACTIVE_KEY];
+    if (!active || typeof active !== "object") return false;
+    if (active.deadline && now > Number(active.deadline) + 30_000) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function setActive(value) {
   if (value) await chrome.storage.session.set({ [ACTIVE_KEY]: value });
   else await chrome.storage.session.remove(ACTIVE_KEY);

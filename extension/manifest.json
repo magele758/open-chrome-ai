@@ -38,8 +38,8 @@
   ],
   "optional_permissions": [
     "userScripts",
-    "downloads",
     "cookies",
+    "downloads",
     "sessions",
     "search",
     "pageCapture",

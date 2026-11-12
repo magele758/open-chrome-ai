@@ -95,6 +95,8 @@ assert.deepEqual([...(manifest.optional_permissions || [])].sort(), [...OPTIONAL
 assert.deepEqual([...(manifest.host_permissions || [])].sort(), []);
 assert.deepEqual([...(manifest.optional_host_permissions || [])].sort(), [...PREVIOUS_HOSTS].sort());
 assert.equal(manifest.permissions.includes("cookies"), false, "cookies is requested on first use");
+assert.equal(manifest.permissions.includes("downloads"), false, "downloads is requested on first use");
+assert.equal((manifest.optional_permissions || []).includes("downloads"), true, "downloads is declared optional");
 assert.equal(manifest.permissions.includes("debugger"), true, "Chrome cannot make debugger optional");
 assert.equal(manifest.permissions.includes("tts"), true, "Chrome cannot make tts optional");
 assert.equal((manifest.optional_permissions || []).includes("debugger"), false);
@@ -287,8 +289,8 @@ function fakeApi(contains) {
     await gate;
     return true;
   };
-  const first = ensureOptionalAccess({ permission: "downloads", permissionsApi: api, prompt });
-  const second = ensureOptionalAccess({ permission: "downloads", permissionsApi: api, prompt });
+  const first = ensureOptionalAccess({ permission: "bookmarks", permissionsApi: api, prompt });
+  const second = ensureOptionalAccess({ permission: "bookmarks", permissionsApi: api, prompt });
   await Promise.resolve();
   assert.equal(calls, 1, "one feature shares one prompt");
   release();
@@ -300,15 +302,15 @@ function fakeApi(contains) {
 
 {
   const order = [];
-  const denied = await ensureToolPermissions(["pageCapture", "downloads"], {
+  const denied = await ensureToolPermissions(["pageCapture", "bookmarks"], {
     permissionsApi: fakeApi(() => false),
     prompt: async (info) => {
       order.push(`prompt:${info.permission}`);
       return info.permission === "pageCapture";
     },
   });
-  assert.match(denied, /下载/);
-  assert.deepEqual(order, ["prompt:pageCapture", "prompt:downloads"]);
+  assert.match(denied, /书签/);
+  assert.deepEqual(order, ["prompt:pageCapture", "prompt:bookmarks"]);
 }
 
 {
@@ -342,8 +344,8 @@ function fakeApi(contains) {
   const cancelled = [];
   const deny = mountPermissionPrompt(dom.window.document, {
     title: "需要授权",
-    reason: "需要管理下载，才能把文件保存到本机。",
-    query: { permissions: ["downloads"] },
+    reason: "需要读取和修改书签，才能搜索或保存书签。",
+    query: { permissions: ["bookmarks"] },
     request: (query) => {
       cancelled.push(query);
       return Promise.resolve(true);

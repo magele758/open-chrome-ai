@@ -3,6 +3,19 @@ import { findSkill } from "./agent/skills.js";
 const INLINE_BODY_MAX = 12000;
 const SLASH_LIMIT = 20;
 
+export const BUILTIN_DIRECTIVES = new Set(["workflow"]);
+
+export function extractBuiltinDirective(text) {
+  const m = /^\s*\/([A-Za-z0-9_-]+)(?:\s|$)/.exec(String(text ?? ""));
+  if (!m) return "";
+  const cmd = m[1].toLowerCase();
+  return BUILTIN_DIRECTIVES.has(cmd) ? cmd : "";
+}
+
+export function isBuiltinSlashDirective(text) {
+  return Boolean(extractBuiltinDirective(text));
+}
+
 export function skillCommandText(skill) {
   const name = String(skill?.name || skill?.id || "").trim() || "skill";
   return `使用 ${name} skill`;
@@ -21,14 +34,20 @@ export function slashItemsFromSkills(skills) {
     }));
 }
 
+export function isWorkflowSlashCommand(text) {
+  return extractBuiltinDirective(text) === "workflow";
+}
+
 export function parseSlashToken(text, cursor) {
   const s = String(text ?? "");
+  if (isBuiltinSlashDirective(s)) return null;
   const pos = Math.max(0, Math.min(s.length, Number.isFinite(cursor) ? cursor : s.length));
   const before = s.slice(0, pos);
   const m = before.match(/(^|\s)\/([^\s]*)$/);
   if (!m) return null;
   const query = m[2];
   const start = pos - query.length - 1;
+  if (start === 0 && BUILTIN_DIRECTIVES.has(query.toLowerCase())) return null;
   return { start, end: pos, query };
 }
 
@@ -66,6 +85,7 @@ export function applySlashItem(text, token, item) {
 
 export function userInvokedSkill(text) {
   const s = String(text || "");
+  if (isBuiltinSlashDirective(s)) return false;
   if (/使用\s+\S+\s+skill/i.test(s)) return true;
   return /^\s*\/[A-Za-z0-9_\-\u4e00-\u9fff]/.test(s);
 }

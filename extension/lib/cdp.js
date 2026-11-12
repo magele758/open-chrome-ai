@@ -21,7 +21,15 @@ export function createCdp({
   const session = (tabId) => {
     let s = sessions.get(tabId);
     if (!s) {
-      s = { attached: false, dialog: null, drag: null, dialogWaiters: new Set(), chooserWaiters: new Set(), timer: null };
+      s = {
+        attached: false,
+        generation: 1,
+        dialog: null,
+        drag: null,
+        dialogWaiters: new Set(),
+        chooserWaiters: new Set(),
+        timer: null,
+      };
       sessions.set(tabId, s);
     }
     return s;
@@ -102,6 +110,17 @@ export function createCdp({
     return data;
   }
 
+  /** 返回 { promise, cancel }：文件选择框弹出（Page.fileChooserOpened）时 resolve 参数，不抛超时异常。 */
+  function watchFileChooser(tabId) {
+    const s = session(tabId);
+    let waiter;
+    const promise = new Promise((resolve) => {
+      waiter = (event) => resolve(event || {});
+      s.chooserWaiters.add(waiter);
+    });
+    return { promise, cancel: () => s.chooserWaiters.delete(waiter) };
+  }
+
   function waitFileChooser(tabId, timeoutMs = 5000) {
     const s = session(tabId);
     return new Promise((resolve, reject) => {
@@ -137,6 +156,12 @@ export function createCdp({
     } else if (method === "Page.fileChooserOpened") {
       for (const waiter of [...s.chooserWaiters]) waiter(params || {});
       s.chooserWaiters.clear();
+    } else if (
+      method === "Page.frameNavigated" ||
+      method === "Page.navigatedWithinDocument" ||
+      method === "DOM.documentUpdated"
+    ) {
+      s.generation += 1;
     }
   }
 
@@ -145,6 +170,7 @@ export function createCdp({
     if (!s) return;
     if (s.timer) clearTimer(s.timer);
     s.attached = false;
+    s.generation += 1;
     s.timer = null;
     s.dialog = null;
   }
@@ -152,7 +178,18 @@ export function createCdp({
   api?.onEvent?.addListener?.(onEvent);
   api?.onDetach?.addListener?.(onDetach);
 
-  return { ensure, send, detach, pendingDialog, watchDialog, waitFileChooser, takeDragData, isAttached: (id) => Boolean(sessions.get(id)?.attached) };
+  return {
+    ensure,
+    send,
+    detach,
+    pendingDialog,
+    watchDialog,
+    watchFileChooser,
+    waitFileChooser,
+    takeDragData,
+    generation: (id) => session(id).generation,
+    isAttached: (id) => Boolean(sessions.get(id)?.attached),
+  };
 }
 
 let shared = null;

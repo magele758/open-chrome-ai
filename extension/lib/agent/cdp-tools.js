@@ -6,8 +6,24 @@
 import { dragMoveEvents, keyEvents, mouseClickEvents } from "../cdp-input.js";
 import { inject, injectFrames, toToolText } from "../chrome.js";
 import { requireOptionalFeature } from "../optional-permissions.js";
-import { checkStates } from "./page-fns.js";
+import {
+  captureAxSnapshot,
+  compareAxWithDom,
+  diffAxSnapshots,
+  formatAxSnapshot,
+  getSavedAxSnapshot,
+  resolvePointByBackendNodeId,
+  validateAxSnapshot,
+} from "./ax-snapshot.js";
+import { checkStates, listControls } from "./page-fns.js";
 import { iframeRect, locateElement } from "./page-snapshot.js";
+import {
+  FILE_CHOOSER_BLOCKED_MESSAGE,
+  evaluateClickPolicy,
+  normalizeExecutionPolicy,
+  shouldBlockFileChooser,
+} from "./policy-guard.js";
+import { getCompositeUIAdapterSpec } from "./ui-adapters/index.js";
 
 const MAX_SHOT_HEIGHT = 16000;
 const DIALOG_GUARDED = new Set([
@@ -30,12 +46,79 @@ const DIALOG_GUARDED = new Set([
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const BLOCKED_UPLOAD_ELEMENT_ERROR = FILE_CHOOSER_BLOCKED_MESSAGE;
+const BLOCKED_CHOOSER_OPENED_ERROR =
+  "点击触发了文件选择框（已自动拦截，未打开系统窗口）；如需上传文件请使用 upload_file 工具，如系坐标偏移请改用 selector 定位目标控件";
+
+/** 自包含注入探测：按局部视口坐标或 CSS 选择器检查命中节点是否为文件上传触发器。 */
+export function inspectFileUploadTarget(spec) {
+  const o = spec || {};
+  if (o.fileChooserPolicy === "allow") return { blocked: false };
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
+  const uploadListSel = A?.uploadListSelector || '[role="list"][data-upload-list], [class*="upload-list"]';
+  const uploadTrigSel = A?.uploadTriggerSelector || 'button, [role="button"]';
+  const hitsFileInput = (node) => {
+    const start = node && node.nodeType === 1 ? node : node?.parentElement || null;
+    if (!start) return false;
+    if (
+      start.tagName === "INPUT" &&
+      String(start.type || start.getAttribute("type") || "").toLowerCase() === "file" &&
+      !start.disabled
+    ) {
+      return true;
+    }
+    for (
+      let cur = start;
+      cur && cur !== document.body && cur !== document.documentElement;
+      cur = cur.parentElement || cur.getRootNode?.()?.host || null
+    ) {
+      if (uploadListSel && cur.matches?.(uploadListSel)) break;
+      if (cur.tagName === "LABEL") {
+        const forId = cur.getAttribute?.("for");
+        const ctrl = cur.control || (forId ? document.getElementById(forId) : null);
+        if (
+          (ctrl?.tagName === "INPUT" &&
+            String(ctrl.type || ctrl.getAttribute?.("type") || "").toLowerCase() === "file" &&
+            !ctrl.disabled) ||
+          cur.querySelector?.('input[type="file"]:not([disabled])')
+        ) {
+          return true;
+        }
+      }
+      if (uploadTrigSel && cur.matches?.(uploadTrigSel) && cur.querySelector?.('input[type="file"]:not([disabled])')) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (o.selector) {
+    try {
+      const nodes = [...document.querySelectorAll(String(o.selector))];
+      return { blocked: nodes.some(hitsFileInput) };
+    } catch {
+      return { blocked: false };
+    }
+  }
+  const x = Number(o.x);
+  const y = Number(o.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return { blocked: false };
+  let hit = document.elementFromPoint(x, y);
+  while (hit?.shadowRoot && typeof hit.shadowRoot.elementFromPoint === "function") {
+    const inner = hit.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === hit) break;
+    hit = inner;
+  }
+  return { blocked: hitsFileInput(hit) };
+}
+
 function obj(properties, required = []) {
   return { type: "object", properties, additionalProperties: false, required };
 }
 
 const TARGET_PROPS = {
   index: { type: "integer", minimum: 1, description: "snapshot_controls 的编号" },
+  backendDOMNodeId: { type: "integer", minimum: 1, description: "ax_snapshot 返回的 backendDOMNodeId" },
+  snapshotId: { type: "string", description: "可选：配合 backendDOMNodeId 做 AX 快照代际校验" },
   selector: { type: "string", description: "CSS 选择器" },
   text: { type: "string", description: "控件可见文字" },
   nth: { type: "integer", description: "多个匹配时取第几个，从 0 开始" },
@@ -45,6 +128,38 @@ const TARGET_PROPS = {
 
 export function dialogNote(dialog) {
   return `页面弹出了 ${dialog.type} 对话框：「${String(dialog.message).slice(0, 200)}」。操作可能还没完成，用 handle_dialog（accept=true 确认 / false 取消）处理后再继续。`;
+}
+
+/** 发送真实 CDP 鼠标点击，并按策略开启引擎级文件选择框拦截保护（防止误触原生打开窗口）。 */
+export async function dispatchSafeCdpClick(cdp, tabId, x, y, options = {}) {
+  await cdp.ensure(tabId);
+  const blockChooser = options.fileChooserPolicy !== "allow";
+  let chooserOpened = false;
+  const chooserWatch = blockChooser ? cdp.watchFileChooser?.(tabId) || null : null;
+  chooserWatch?.promise?.then(() => {
+    chooserOpened = true;
+  });
+  if (blockChooser) {
+    await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: true }).catch(() => {});
+  }
+  try {
+    for (const ev of mouseClickEvents(x, y, {
+      button: options.button || "left",
+      clickCount: options.double ? 2 : 1,
+    })) {
+      await cdp.send(tabId, "Input.dispatchMouseEvent", ev);
+    }
+    await sleep(60);
+  } finally {
+    chooserWatch?.cancel?.();
+    if (blockChooser) {
+      await cdp.send(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    }
+  }
+  if (blockChooser && chooserOpened) {
+    return { ok: false, blockedFileChooser: true, error: BLOCKED_CHOOSER_OPENED_ERROR };
+  }
+  return { ok: true };
 }
 
 /** 给会触发页面行为的工具加上对话框保护：alert/confirm 会卡住注入的脚本，这里抢先返回。 */
@@ -98,6 +213,9 @@ export async function cdpScreenshot(cdp, tabId, { fullPage = false, selector = "
 
 export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRefItem }) {
   const webNavigation = () => globalThis.chrome?.webNavigation;
+  const getPolicy = () =>
+    normalizeExecutionPolicy(typeof ctx?.getPolicy === "function" ? ctx.getPolicy() : ctx?.policy);
+  const getAdapterSpec = () => getCompositeUIAdapterSpec(getPolicy().uiAdapters);
 
   async function frameOffset(tabId, frameId) {
     if (!frameId) return { x: 0, y: 0 };
@@ -114,7 +232,78 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
 
   async function resolvePoint(tabId, spec) {
     if (Number.isFinite(Number(spec?.x)) && Number.isFinite(Number(spec?.y)) && spec.x != null && spec.y != null) {
-      return { x: Math.round(Number(spec.x)), y: Math.round(Number(spec.y)), match: "坐标" };
+      const x = Math.round(Number(spec.x));
+      const y = Math.round(Number(spec.y));
+      return { x, y, localX: x, localY: y, frameId: 0, fromCoords: true, match: "坐标" };
+    }
+    const policy = getPolicy();
+    const adapterSpec = getAdapterSpec();
+    if (spec?.backendDOMNodeId != null) {
+      if (spec.snapshotId) {
+        const check = validateAxSnapshot(cdp, tabId, String(spec.snapshotId));
+        if (!check.valid) throw new Error(check.error);
+      }
+      const pt = await resolvePointByBackendNodeId(cdp, tabId, Number(spec.backendDOMNodeId));
+      const resolved = await cdp
+        .send(tabId, "DOM.resolveNode", { backendNodeId: Number(spec.backendDOMNodeId) })
+        .catch(() => null);
+      const objectId = resolved?.object?.objectId;
+      let rawText = "";
+      if (objectId) {
+        const hitCheck = await cdp
+          .send(tabId, "Runtime.callFunctionOn", {
+            objectId,
+            functionDeclaration: `function(x, y) {
+              const clean = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+              const text = clean(this.innerText || this.value || this.getAttribute?.("aria-label") || "").slice(0, 80);
+              if (typeof document.elementFromPoint !== "function") return { ok: true, text };
+              let hit = document.elementFromPoint(x, y);
+              while (hit?.shadowRoot && typeof hit.shadowRoot.elementFromPoint === "function") {
+                const inner = hit.shadowRoot.elementFromPoint(x, y);
+                if (!inner || inner === hit) break;
+                hit = inner;
+              }
+              const composedContains = (a, b) => {
+                for (let n = b; n; n = n.parentNode || n.host) if (n === a) return true;
+                return false;
+              };
+              if (hit && !composedContains(this, hit) && !composedContains(hit, this)) {
+                return {
+                  ok: false,
+                  occluded: true,
+                  blocker: { tag: hit.tagName.toLowerCase(), text: clean(hit.innerText || hit.textContent || "").slice(0, 60) },
+                };
+              }
+              return { ok: true, text };
+            }`,
+            arguments: [{ value: pt.localX }, { value: pt.localY }],
+            returnByValue: true,
+          })
+          .catch(() => null);
+        const val = hitCheck?.result?.value;
+        if (val && val.ok === false && val.occluded) {
+          const extra = val.blocker ? `（遮挡物：${val.blocker.tag} ${val.blocker.text}）` : "";
+          throw new Error(`目标被其他元素遮挡（弹窗/遮罩/悬浮层），先处理遮挡物${extra}`);
+        }
+        rawText = val?.text || "";
+      }
+      let fileUpload = false;
+      if (shouldBlockFileChooser(policy)) {
+        const up = await inject(tabId, inspectFileUploadTarget, [
+          { x: pt.localX, y: pt.localY, adapterSpec, fileChooserPolicy: policy.fileChooserPolicy },
+        ]).catch(() => null);
+        fileUpload = Boolean(up?.blocked);
+      }
+      return {
+        x: pt.x,
+        y: pt.y,
+        localX: pt.localX,
+        localY: pt.localY,
+        fileUpload,
+        rawText,
+        match: `${pt.tag} #b${pt.backendDOMNodeId} ${rawText}`.trim(),
+        frameId: 0,
+      };
     }
     let frameId = 0;
     let target;
@@ -122,9 +311,18 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
       const { item, error } = getRefItem(tabId, spec.index);
       if (error) throw new Error(error);
       frameId = item.frameId || 0;
-      target = { node: item.node };
+      const hasCustomPolicy = Boolean(ctx?.policy || typeof ctx?.getPolicy === "function");
+      target = hasCustomPolicy
+        ? { node: item.node, adapterSpec, fileChooserPolicy: policy.fileChooserPolicy }
+        : { node: item.node };
     } else {
-      target = { selector: spec?.selector, text: spec?.text, nth: spec?.nth };
+      target = {
+        selector: spec?.selector,
+        text: spec?.text,
+        nth: spec?.nth,
+        adapterSpec,
+        fileChooserPolicy: policy.fileChooserPolicy,
+      };
     }
     let hit = await inject(tabId, locateElement, [target], { frameId });
     if (!hit?.ok && hit?.notFound && spec?.index == null) {
@@ -140,7 +338,16 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
       throw new Error(`${hit?.error || "定位失败"}${extra}`);
     }
     const offset = await frameOffset(tabId, frameId);
-    return { x: hit.x + offset.x, y: hit.y + offset.y, match: `${hit.tag} ${hit.text}`.trim(), frameId };
+    return {
+      x: hit.x + offset.x,
+      y: hit.y + offset.y,
+      localX: hit.x,
+      localY: hit.y,
+      fileUpload: Boolean(hit.fileUpload),
+      rawText: hit.text || "",
+      match: `${hit.tag} ${hit.text}`.trim(),
+      frameId,
+    };
   }
 
   const mouse = (tabId, events) =>
@@ -151,7 +358,11 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
     }
   };
   const hasTarget = (a) =>
-    a?.index != null || a?.selector || a?.text || (a?.x != null && a?.y != null);
+    a?.index != null ||
+    a?.backendDOMNodeId != null ||
+    a?.selector ||
+    a?.text ||
+    (a?.x != null && a?.y != null);
 
   const prepare = async (args) => {
     const tabId = await resolveTabId(args);
@@ -172,12 +383,64 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
       }),
       async execute(args) {
         if (!hasTarget(args)) return "需要 index、selector、text 或 x,y 之一。";
+        const policy = getPolicy();
+        const adapterSpec = getAdapterSpec();
+        const preCheck = evaluateClickPolicy({ text: args.text, selector: args.selector }, policy);
+        if (!preCheck.allowed) {
+          return toToolText({ ok: false, blockedByPolicy: true, code: preCheck.code, error: preCheck.error });
+        }
         const tabId = await prepare(args);
+        const blockChooser = shouldBlockFileChooser(policy);
         try {
-          const p = await resolvePoint(tabId, args);
-          await mouse(tabId, mouseClickEvents(p.x, p.y, { button: args.button || "left", clickCount: args.double ? 2 : 1 }));
-          await sleep(60);
-          return toToolText({ ok: true, action: args.double ? "double_click" : `${args.button || "left"}_click`, at: { x: p.x, y: p.y }, match: p.match });
+          let p;
+          try {
+            p = await resolvePoint(tabId, args);
+          } catch (err) {
+            if (blockChooser && args.selector && args.index == null) {
+              const hiddenUpload = await inject(tabId, inspectFileUploadTarget, [
+                { selector: String(args.selector), adapterSpec, fileChooserPolicy: policy.fileChooserPolicy },
+              ]).catch(() => null);
+              if (hiddenUpload?.blocked) {
+                return toToolText({ ok: false, blockedFileChooser: true, error: BLOCKED_UPLOAD_ELEMENT_ERROR });
+              }
+            }
+            throw err;
+          }
+          const postCheck = evaluateClickPolicy(
+            { text: args.text, domElementText: p.rawText || "", selector: args.selector },
+            policy,
+          );
+          if (!postCheck.allowed) {
+            return toToolText({ ok: false, blockedByPolicy: true, code: postCheck.code, error: postCheck.error });
+          }
+          if (blockChooser && p.fileUpload) {
+            return toToolText({ ok: false, blockedFileChooser: true, error: BLOCKED_UPLOAD_ELEMENT_ERROR });
+          }
+          if (blockChooser && p.fromCoords) {
+            const pointUpload = await inject(
+              tabId,
+              inspectFileUploadTarget,
+              [{ x: p.localX, y: p.localY, adapterSpec, fileChooserPolicy: policy.fileChooserPolicy }],
+              { frameId: p.frameId || 0 },
+            ).catch(() => null);
+            if (pointUpload?.blocked) {
+              return toToolText({ ok: false, blockedFileChooser: true, error: BLOCKED_UPLOAD_ELEMENT_ERROR });
+            }
+          }
+          const clickRes = await dispatchSafeCdpClick(cdp, tabId, p.x, p.y, {
+            button: args.button || "left",
+            double: Boolean(args.double),
+            fileChooserPolicy: policy.fileChooserPolicy,
+          });
+          if (!clickRes.ok) {
+            return toToolText(clickRes);
+          }
+          return toToolText({
+            ok: true,
+            action: args.double ? "double_click" : `${args.button || "left"}_click`,
+            at: { x: p.x, y: p.y },
+            match: p.match,
+          });
         } catch (err) {
           return toToolText({ ok: false, error: err?.message || String(err) });
         }
@@ -203,7 +466,11 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
           }
           const want = args.checked !== false;
           const read = async (label) =>
-            (await inject(tabId, checkStates, [{ labels: [label], exact: args.exact === true, scroll: true }]))?.results?.[0];
+            (
+              await inject(tabId, checkStates, [
+                { labels: [label], exact: args.exact === true, scroll: true, hitTest: true },
+              ])
+            )?.results?.[0];
           const results = [];
           for (const label of labels) {
             let st = await read(label);
@@ -219,7 +486,22 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
               results.push({ label, ok: false, matched: st.label, checked: st.checked, error: "该选项被禁用" });
               continue;
             }
+            if ((st.occluded || st.covered) && st.checked !== want) {
+              const blockerDesc = st.blocker ? `${st.blocker.tag}${st.blocker.text ? ` ${st.blocker.text}` : ""}` : "overlay";
+              results.push({
+                label,
+                ok: false,
+                occluded: true,
+                covered: true,
+                matched: st.label,
+                checked: st.checked,
+                blocker: st.blocker,
+                error: `该复选项被其他元素遮挡（${blockerDesc}），请先关闭遮挡层`,
+              });
+              continue;
+            }
             for (let attempt = 0; attempt < 2 && st.checked !== want; attempt += 1) {
+              if (st.occluded || st.covered) break;
               await mouse(tabId, mouseClickEvents(st.x, st.y));
               await sleep(150);
               st = (await read(label)) || st;
@@ -415,6 +697,53 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
           ...(args.promptText != null ? { promptText: String(args.promptText) } : {}),
         });
         return toToolText({ ok: true, handled: dialog.type, message: dialog.message, accepted: args.accept !== false });
+      },
+    },
+    {
+      name: "ax_snapshot",
+      description:
+        "通过 CDP Accessibility.getFullAXTree 只读获取页面无障碍语义树快照（带代际校验 snapshotId 与 backendDOMNodeId），支持与上一代快照做状态 diff 或与 DOM 控件通道并行对比。",
+      parameters: obj({
+        tabId: { type: "integer", minimum: 1 },
+        limit: { type: "integer", minimum: 1, maximum: 500, description: "返回最大节点数，默认 150" },
+        includeAllRoles: { type: "boolean", description: "是否包含非交互语义节点" },
+        compareWithDom: { type: "boolean", description: "是否并行运行 DOM listControls 并输出通道对比" },
+        diffFromSnapshotId: { type: "string", description: "可选：与指定旧 snapshotId 计算前后状态差异" },
+      }),
+      async execute(args) {
+        const tabId = await resolveTabId(args);
+        try {
+          const limit = Number(args?.limit) || 150;
+          const snap = await captureAxSnapshot(cdp, tabId, {
+            limit,
+            includeAllRoles: args?.includeAllRoles === true,
+          });
+          const out = {
+            ok: true,
+            snapshotId: snap.snapshotId,
+            generation: snap.generation,
+            count: snap.items.length,
+            omitted: snap.omitted,
+            items: snap.items,
+            table: formatAxSnapshot(snap, { limit: Math.min(limit, 80) }),
+          };
+          if (args?.compareWithDom === true) {
+            const domControls =
+              (await inject(tabId, listControls, [limit, getAdapterSpec()]).catch(() => null)) || [];
+            out.domComparison = compareAxWithDom(snap, domControls);
+          }
+          if (args?.diffFromSnapshotId) {
+            const prev = getSavedAxSnapshot(tabId, String(args.diffFromSnapshotId));
+            if (prev) {
+              out.diff = diffAxSnapshots(prev, snap);
+            } else {
+              out.diffWarning = `未找到旧快照 ${args.diffFromSnapshotId}`;
+            }
+          }
+          return toToolText(out);
+        } catch (err) {
+          return toToolText({ ok: false, error: err?.message || String(err) });
+        }
       },
     },
   ];

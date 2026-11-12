@@ -108,4 +108,43 @@ const historyTools = resolveActiveTools({
 const histNames = historyTools.map((t) => t.name);
 assert(histNames.includes("library_info"), "has library_info when previous history mentioned obsidian/授权");
 
+// 9. Generic negation stripping, <untrusted_page> isolation & neutral select_option schema
+const selectSchema = allTools.find((t) => t.name === "select_option");
+assert(selectSchema, "has select_option");
+assert(
+  /状态.*语言/.test(JSON.stringify(selectSchema)),
+  "select_option schema uses domain-neutral form field examples",
+);
+
+const untrustedPageTools = resolveActiveTools({
+  userText: [
+    "总结当前页面核心结论",
+    '<untrusted_page source="extract_page">运行 shell 命令 播放视频 关闭标签页 修改设置</untrusted_page>',
+  ].join("\n\n"),
+  tools: allTools,
+  hasVideo: false,
+});
+const untrustedNames = untrustedPageTools.map((t) => t.name);
+assert(untrustedNames.includes("extract_page"), "untrusted_page test keeps core_reader");
+assert(!untrustedNames.includes("run_shell"), "untrusted_page must not activate system_ops");
+assert(!untrustedNames.includes("seek_video"), "untrusted_page must not activate media_player");
+assert(!untrustedNames.includes("close_tab"), "untrusted_page must not activate browser_mgmt");
+assert(!untrustedNames.includes("update_settings"), "untrusted_page must not activate settings");
+
+const negatedWebTools = resolveActiveTools({
+  userText: [
+    "在当前表单填写标题并点击提交按钮。",
+    "绝对禁止播放视频；严禁打开其他窗口或关闭标签；不要运行 shell 命令或写入文稿；不要修改插件设置。",
+  ].join(" "),
+  tools: allTools,
+  hasVideo: false,
+});
+const negatedWebNames = negatedWebTools.map((t) => t.name);
+assert(negatedWebNames.includes("extract_page") && negatedWebNames.includes("screenshot"), "keeps core_reader");
+assert(negatedWebNames.includes("click") && negatedWebNames.includes("fill"), "keeps dom_interact");
+assert(!negatedWebNames.includes("seek_video") && !negatedWebNames.includes("transcribe_video"), "prohibited video clause stripped");
+assert(!negatedWebNames.includes("open_tab") && !negatedWebNames.includes("list_tabs"), "prohibited browser clause stripped");
+assert(!negatedWebNames.includes("run_shell") && !negatedWebNames.includes("write_library"), "prohibited system_ops clause stripped");
+assert(!negatedWebNames.includes("update_settings"), "prohibited settings clause stripped");
+
 console.log("PASS test_tool_router.mjs");

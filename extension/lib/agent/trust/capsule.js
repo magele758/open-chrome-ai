@@ -34,26 +34,35 @@ const ACTION_KEYWORDS = {
   send: /发送|发给|寄给|转发给|回复|回信|私信|邮件|\b(?:send|e-?mail|mail\s+to|reply|forward|dm)\b/i,
   download: /下载|保存到本地|\bdownload\b/i,
   upload: /上传|附件|\b(?:upload|attach)\b/i,
-  shell: /运行|执行|终端|命令行|\b(?:run|execute|exec|shell|terminal|bash)\b/i,
+  shell: /终端|命令行|(?:运行|执行)\s*(?:shell|bash|zsh|sh|cmd|脚本|命令|终端|本机命令)|\b(?:shell|terminal|bash)\b|\b(?:run|execute|exec)\s+(?:command|commands|script|shell|bash)\b/i,
   write: /保存|存到|存成|写入|记下|记到|笔记|收藏|书签|入库|\b(?:save|write|note|bookmark|remember)\b/i,
   clipboard: /复制|拷贝|剪贴板|\b(?:copy|clipboard)\b/i,
   close: /关闭|关掉|关了|\bclose\b/i,
   delete: /删除|删掉|清除|清空|移除|\b(?:delete|remove|clear|erase)\b/i,
   settings: /设置|配置|设定|偏好|主题|字体|深色|暗色|浅色|回答语言|切换模型|换个模型|\b(?:settings?|config|preference|theme|font)\b/i,
-  automation: /automa|工作流|\bworkflow\b/i,
+  automation: /automa|(?:运行|执行|调用|跑)\s*(?:工作流|workflow)|\bautoma\b/i,
   purchase: /购买|下单|付款|支付|结账|\b(?:buy|order|checkout|pay|purchase)\b/i,
 };
+
+const PROHIBIT_RE =
+  /(?:绝对|严|切)?(?:禁止|严禁|切勿|请勿|不可|不得|不准|不许|不要|绝不|决不|禁按|禁点|勿点|勿按|不点击|不打开|不跳转|不保存|不提交|不发布|不发送|不上传|不删除|不关闭|\bdo\s+not\b|\bdon't\b|\bnever\b|\bmust\s+not\b|\bforbid(?:den)?\b)/i;
+const PAREN_REMARK_RE = /[（(](?:[^（）()\n]|[（(][^（）()\n]{0,120}[）)]){1,300}[）)]/g;
 
 const URL_RE = /\bhttps?:\/\/[^\s<>"'`，。、；！？）】」』]+/gi;
 const EMAIL_RE = /[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
 const TLDS = "com|cn|net|org|io|dev|ai|app|co|me|tv|xyz|info|edu|gov|so|cc|jp|uk|de|fr|hk|tw|us|ly|gg|site|tech|top|vip|wiki|blog|news|page|cloud|link|im|to";
 const DOMAIN_RE = new RegExp(`(?<![\\w.@/-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:${TLDS}))(?::\\d+)?(?![\\w-])`, "gi");
+const IPV4_RE = /(?<![\w.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?::\d+)?(?![\w.])/g;
 const HANDLE_RE = /(?<![\w@])@([A-Za-z0-9_][\w.-]{1,38})/g;
 const PATH_RE = /(?<![\w:/.~])((?:~\/|\/)(?:[\w.@%+=-]+\/?)+|[A-Za-z]:\\[^\s"'”」)）]+)/g;
-const FENCE_RE = /```[\w-]*\n?([\s\S]*?)```/g;
+const FENCE_RE = /```([\w-]*)[ \t]*\n?([\s\S]*?)```/g;
+const SHELL_FENCE_LANG_RE = /^(?:sh|bash|zsh|shell|console|cmd|powershell|ps1)$/i;
 const TICK_RE = /`([^`\n]+)`/g;
 const DOLLAR_RE = /^[ \t]*\$[ \t]+(.+)$/gm;
-const QUOTED_RUN_RE = /(?:运行|执行|跑一下|跑|run|execute|exec)\s*[:：]?\s*[“"「『]([^”"」』\n]+)[”"」』]/gi;
+const QUOTED_RUN_RE = /(?:运行|执行|跑一下|跑|run|execute|exec)\s*(?:本机)?(?:命令|脚本|终端)?\s*[:：]?\s*[“"「『]([^”"」』\n]+)[”"」』]/gi;
+const RUN_TICK_CHAIN_RE =
+  /(?:运行|执行|跑一下|跑|\brun\b|\bexecute\b|\bexec\b)\s*(?:本机)?(?:命令|脚本|终端)?\s*[:：]?\s*`[^`\n]+`(?:\s*(?:和|与|及|、|,|或|以及|然后|接着|顺便|并|再|\band\b|\bthen\b)\s*`[^`\n]+`)*/gi;
+const FENCE_RUN_INTRO_RE = /(?:运行|执行|跑一下|跑|\brun\b|\bexecute\b|\bexec\b)\s*(?:本机)?(?:命令|脚本|终端)?\s*[:：]?\s*$/i;
 
 function uniq(list) {
   return [...new Set(list.filter(Boolean))];
@@ -94,20 +103,232 @@ export function emptyCapsule(principal = "user") {
   };
 }
 
-function extractCommands(text) {
+function isPlausibleShellCommand(raw) {
+  const cmd = normalizeCommand(String(raw || "").replace(/^\s*\$\s+/, ""));
+  if (!cmd || cmd.length > 500) return false;
+  // 排除 CSS 选择器（.class、#id、[attr]、>、+、*）、HTML 标签与注释
+  if (/^(?:\.(?!\/)|#|\[|<|>|\+|~(?![/\\])|\*|:)/.test(cmd)) return false;
+  // 排除纯 URL
+  if (/^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(cmd)) return false;
+  // 排除无参数纯路径（可执行脚本或 bin 目录命令除外）
+  if (
+    /^(?:~\/|\/|[A-Za-z]:\\)\S+$/.test(cmd) &&
+    !/\.(?:sh|bash|zsh|command|bat|cmd|ps1|py|mjs|cjs|js|rb|pl)$/i.test(cmd) &&
+    !/(?:^|\/)s?bin\/[A-Za-z0-9._-]+$/.test(cmd)
+  ) {
+    return false;
+  }
+  const strippedEnv = cmd.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+/, "");
+  const firstToken = strippedEnv.split(/\s+/)[0] || "";
+  if (!firstToken || !/[A-Za-z]/.test(firstToken)) return false;
+  if (/[^\x21-\x7e]/.test(firstToken)) return false;
+  if (/[\[\]#>+~:]/.test(firstToken)) return false;
+  if (
+    /^[a-z]+\.[a-z][\w.-]*$/i.test(firstToken) &&
+    !/\.(?:sh|bash|zsh|command|bat|cmd|ps1|py|mjs|cjs|js|ts|rb|pl|exe|out|bin)$/i.test(firstToken)
+  ) {
+    return false;
+  }
+  return /^(?:\.{1,2}\/[\w./+-]+|~\/[\w./+-]+|\/[\w./+-]+|[A-Za-z][\w.+-]*)$/.test(firstToken);
+}
+
+function extractCommands(text, { hasShellIntent = false, allowBareTickCommands = false } = {}) {
   const out = [];
   let rest = text;
-  rest = rest.replace(FENCE_RE, (_m, body) => {
+  rest = rest.replace(FENCE_RE, (_m, lang, body, offset, fullStr) => {
+    if (lang && !SHELL_FENCE_LANG_RE.test(lang)) return " ";
+    const prefix = String(fullStr || "").slice(Math.max(0, Number(offset) - 40), Number(offset));
+    const fenceIntro = FENCE_RUN_INTRO_RE.test(prefix);
     for (const line of String(body).split("\n")) {
-      const cmd = line.replace(/^\s*\$\s+/, "").trim();
-      if (cmd && !cmd.startsWith("#")) out.push(cmd);
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const hasDollar = /^\$\s+/.test(trimmed);
+      const cmd = trimmed.replace(/^\$\s+/, "").trim();
+      if ((hasDollar || hasShellIntent || fenceIntro) && isPlausibleShellCommand(cmd)) {
+        out.push(cmd);
+      }
     }
     return " ";
   });
-  for (const m of rest.matchAll(TICK_RE)) out.push(m[1]);
-  for (const m of rest.matchAll(DOLLAR_RE)) out.push(m[1]);
-  for (const m of rest.matchAll(QUOTED_RUN_RE)) out.push(m[1]);
+  for (const m of rest.matchAll(TICK_RE)) {
+    if (/^\s*\$\s+\S/.test(m[1])) {
+      const cmd = m[1].replace(/^\s*\$\s+/, "");
+      if (isPlausibleShellCommand(cmd)) out.push(cmd);
+    }
+  }
+  for (const chain of rest.matchAll(RUN_TICK_CHAIN_RE)) {
+    for (const tm of chain[0].matchAll(TICK_RE)) {
+      const cmd = tm[1].replace(/^\s*\$\s+/, "");
+      if (isPlausibleShellCommand(cmd)) out.push(cmd);
+    }
+  }
+  if (hasShellIntent || allowBareTickCommands) {
+    for (const m of rest.matchAll(TICK_RE)) {
+      const cmd = m[1].replace(/^\s*\$\s+/, "");
+      if (isPlausibleShellCommand(cmd)) out.push(cmd);
+    }
+  }
+  for (const m of rest.matchAll(DOLLAR_RE)) {
+    if (isPlausibleShellCommand(m[1])) out.push(m[1]);
+  }
+  for (const m of rest.matchAll(QUOTED_RUN_RE)) {
+    const cmd = m[1].replace(/^\s*\$\s+/, "");
+    if (isPlausibleShellCommand(cmd)) out.push(cmd);
+  }
   return uniq(out.map(normalizeCommand).filter((c) => c.length <= 500));
+}
+
+/** 剥离委托人明确表达禁止/否定的括号备注与分句，防止禁令中的动作词或域名误入授权胶囊 */
+export function stripProhibitedClauses(raw) {
+  const input = String(raw || "");
+  if (!input) return "";
+  const fences = [];
+  let text = input.replace(FENCE_RE, (m) => {
+    const idx = fences.push(m) - 1;
+    return `__PL_FENCE_${idx}__`;
+  });
+  text = text.replace(PAREN_REMARK_RE, (m) => (PROHIBIT_RE.test(m) ? " " : m));
+  const parts = text.split(/([\n。！？!?；;，,])/);
+  const kept = parts.map((part, idx) => {
+    if (idx % 2 === 1) return part;
+    const hit = PROHIBIT_RE.exec(part);
+    return hit ? part.slice(0, hit.index) : part;
+  });
+  return kept
+    .join("")
+    .replace(/__PL_FENCE_(\d+)__/g, (_m, i) => fences[Number(i)] || "");
+}
+
+const READ_ONLY_WORKFLOW_OPS = new Set([
+  "assert_url",
+  "wait_for",
+  "scroll_container",
+  "assert_state",
+  "query_dom",
+  "set_binds",
+  "fail",
+  "noop",
+]);
+
+const NAVIGATE_WORKFLOW_OPS = new Set([
+  "navigate",
+  "open_tab",
+]);
+
+function collectWorkflowStrings(node, out, depth = 0) {
+  if (depth > 14 || node == null) return;
+  if (typeof node === "string") {
+    out.push(node);
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) collectWorkflowStrings(item, out, depth + 1);
+    return;
+  }
+  if (typeof node === "object") {
+    for (const [k, val] of Object.entries(node)) {
+      if (/^forbid/i.test(k) || k === "policy") continue;
+      collectWorkflowStrings(val, out, depth + 1);
+    }
+  }
+}
+
+function collectWorkflowStepActions(steps, macros, actionSet, visitedMacros = new Set(), depth = 0) {
+  if (!Array.isArray(steps) || depth > 12) return;
+  for (const step of steps) {
+    if (!step || typeof step !== "object") continue;
+    const op = String(step.op || "").trim().toLowerCase();
+    const params = step.params && typeof step.params === "object" ? step.params : {};
+
+    for (const nestedKey of ["steps", "thenSteps", "elseSteps", "then", "else"]) {
+      if (Array.isArray(step[nestedKey])) {
+        collectWorkflowStepActions(step[nestedKey], macros, actionSet, visitedMacros, depth + 1);
+      }
+      if (Array.isArray(params[nestedKey])) {
+        collectWorkflowStepActions(params[nestedKey], macros, actionSet, visitedMacros, depth + 1);
+      }
+    }
+
+    if (!op || op === "if_state" || op === "foreach") continue;
+
+    if (op === "call_macro") {
+      const macroName = String(step.macro || params.macro || "").trim();
+      const macroDef = macroName && macros && typeof macros === "object" ? macros[macroName] : null;
+      const macroSteps = Array.isArray(macroDef) ? macroDef : macroDef?.steps;
+      if (Array.isArray(macroSteps) && !visitedMacros.has(macroName)) {
+        visitedMacros.add(macroName);
+        collectWorkflowStepActions(macroSteps, macros, actionSet, visitedMacros, depth + 1);
+      } else if (!Array.isArray(macroSteps)) {
+        actionSet.add("input");
+      }
+      continue;
+    }
+
+    if (op === "assert_url") {
+      if (params.recoverUrl || params.autoNavigate) actionSet.add("navigate");
+      continue;
+    }
+    if (READ_ONLY_WORKFLOW_OPS.has(op)) continue;
+    if (NAVIGATE_WORKFLOW_OPS.has(op)) {
+      actionSet.add("navigate");
+      continue;
+    }
+    if (params.openUrl) {
+      actionSet.add("navigate");
+    }
+    if (op === "upload_file") {
+      actionSet.add("upload");
+      continue;
+    }
+    if (op === "download_file") {
+      actionSet.add("download");
+      continue;
+    }
+    if (op === "close_tab") {
+      actionSet.add("close");
+      continue;
+    }
+    actionSet.add("input");
+  }
+}
+
+function extractWorkflowCapsule(rawText, principal = "user") {
+  const raw = String(rawText || "");
+  if (!/^\s*\/workflow(?:\s|$)/i.test(raw)) return null;
+  const capsule = emptyCapsule(principal);
+  let body = raw.replace(/^\s*\/workflow\b/i, "").trim();
+  const fenced = /^```(?:json)?[ \t]*\r?\n?([\s\S]*?)\r?\n?```$/i.exec(body);
+  if (fenced) body = fenced[1].trim();
+  if (!body) return capsule;
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return capsule;
+  }
+  if (!parsed || typeof parsed !== "object") return capsule;
+  const candidateStrings = [];
+  if (parsed.binds && typeof parsed.binds === "object") {
+    collectWorkflowStrings(parsed.binds, candidateStrings);
+  }
+  if (Array.isArray(parsed.steps)) {
+    collectWorkflowStrings(parsed.steps, candidateStrings);
+  }
+  if (parsed.macros && typeof parsed.macros === "object") {
+    collectWorkflowStrings(parsed.macros, candidateStrings);
+  }
+  const joined = candidateStrings.join("\n");
+  const urls = uniq(
+    [...joined.matchAll(URL_RE)]
+      .map((m) => m[0].replace(/[.,;:!?]+$/, ""))
+      .filter((u) => urlOrigin(u)),
+  );
+  const actionSet = new Set();
+  collectWorkflowStepActions(parsed.steps, parsed.macros, actionSet);
+  capsule.actions = ACTION_CATEGORIES.filter((a) => actionSet.has(a));
+  capsule.urls = urls;
+  capsule.origins = uniq(urls.map(normalizeDomain));
+  return capsule;
 }
 
 /**
@@ -115,22 +336,31 @@ function extractCommands(text) {
  * @param {string} text
  * @param {{ principal?: "user"|"agent" }} [opts]
  */
-export function extractCapsule(text, { principal = "user" } = {}) {
+export function extractCapsule(text, { principal = "user", allowBareTickCommands = false } = {}) {
+  const wfCapsule = extractWorkflowCapsule(text, principal);
+  if (wfCapsule) return wfCapsule;
   const capsule = emptyCapsule(principal);
   const src = String(text || "").slice(0, 20000);
   if (!src.trim()) return capsule;
 
-  const commands = extractCommands(src);
-  const urls = uniq([...src.matchAll(URL_RE)].map((m) => m[0].replace(/[.,;:!?]+$/, "")).filter((u) => urlOrigin(u)));
-  const emails = uniq([...src.matchAll(EMAIL_RE)].map((m) => m[0].toLowerCase()));
-  const noUrls = src.replace(URL_RE, " ").replace(EMAIL_RE, " ");
+  const affirmativeSrc = stripProhibitedClauses(src);
+  const actionSrc = affirmativeSrc
+    .replace(FENCE_RE, (m, lang) => (lang && !SHELL_FENCE_LANG_RE.test(lang) ? " " : m))
+    .replace(TICK_RE, (m, inner) => (/^\s*(?:\.(?!\/)|#|\[|<|>)/.test(inner) ? " " : m));
+  const hasShellIntent = ACTION_KEYWORDS.shell.test(actionSrc);
+
+  const commands = extractCommands(affirmativeSrc, { hasShellIntent, allowBareTickCommands });
+  const urls = uniq([...affirmativeSrc.matchAll(URL_RE)].map((m) => m[0].replace(/[.,;:!?]+$/, "")).filter((u) => urlOrigin(u)));
+  const emails = uniq([...affirmativeSrc.matchAll(EMAIL_RE)].map((m) => m[0].toLowerCase()));
+  const noUrls = affirmativeSrc.replace(URL_RE, " ").replace(EMAIL_RE, " ");
   const domains = [...noUrls.matchAll(DOMAIN_RE)].map((m) => normalizeDomain(m[1]));
+  const ipv4Hosts = [...noUrls.matchAll(IPV4_RE)].map((m) => normalizeDomain(m[1]));
   const handles = [...noUrls.matchAll(HANDLE_RE)].map((m) => `@${m[1]}`);
-  const pathSrc = src.replace(URL_RE, " ");
+  const pathSrc = affirmativeSrc.replace(URL_RE, " ");
   const paths = uniq([...pathSrc.matchAll(PATH_RE)].map((m) => m[1].replace(/[.,;:!?]+$/, "")).filter((p) => p.length > 1));
 
-  const platforms = KNOWN_PLATFORMS.filter((p) => p.re.test(src));
-  const actions = ACTION_CATEGORIES.filter((a) => ACTION_KEYWORDS[a]?.test(src));
+  const platforms = KNOWN_PLATFORMS.filter((p) => p.re.test(affirmativeSrc));
+  const actions = ACTION_CATEGORIES.filter((a) => ACTION_KEYWORDS[a]?.test(actionSrc));
   if (urls.length && !actions.includes("navigate")) actions.push("navigate");
   if (commands.length && !actions.includes("shell")) actions.push("shell");
 
@@ -139,6 +369,7 @@ export function extractCapsule(text, { principal = "user" } = {}) {
   capsule.origins = uniq([
     ...urls.map(normalizeDomain),
     ...domains,
+    ...ipv4Hosts,
     ...platforms.flatMap((p) => p.domains),
   ]);
   capsule.platforms = platforms.map((p) => p.id);
@@ -190,7 +421,7 @@ export function mergeCapsules(a, b) {
  * 用户在侧栏手动扩大授权。additions 里的 text 按委托人指令抽取（每行可写域名、URL、`$ 命令`）。
  */
 export function widenCapsule(capsule, { actions = [], text = "" } = {}) {
-  const fromText = extractCapsule(text);
+  const fromText = extractCapsule(text, { allowBareTickCommands: true });
   fromText.actions = [];
   const extra = normalizeCapsule({ ...fromText, actions });
   extra.widened = true;

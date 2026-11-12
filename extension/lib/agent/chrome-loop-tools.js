@@ -19,9 +19,11 @@ import {
   shellPolicyBlock,
 } from "./shell-policy.js";
 import { debugLog } from "../debug-log.js";
+import { classifyToolOutcome } from "../debug/trace-utils.js";
 import { foldedToChromeHistory } from "./chrome-loop-codec.js";
 
 const TOOL_RESULT_CHARS = 12000;
+const ARCHIVED_TRACE_CHARS = 24000;
 
 function listHostTools(host) {
   return Array.isArray(host.tools) ? host.tools : [];
@@ -35,15 +37,51 @@ function findTool(host, name) {
   return listHostTools(host).find((t) => t.name === name) || listAllTools(host).find((t) => t.name === name);
 }
 
+async function resolveToolPageContext(host, toolName, args) {
+  const fallbackTabId =
+    args?.tabId != null && args?.tabId !== "" && Number.isFinite(Number(args.tabId))
+      ? Number(args.tabId)
+      : null;
+  if (typeof host?.getToolPageContext !== "function") {
+    return { tabId: fallbackTabId, pageUrl: null, pageTitle: null };
+  }
+  try {
+    const ctx = await host.getToolPageContext({ name: toolName, args });
+    if (!ctx || typeof ctx !== "object") {
+      return { tabId: fallbackTabId, pageUrl: null, pageTitle: null };
+    }
+    const rawTabId = ctx.tabId ?? ctx.id;
+    const rawUrl = ctx.pageUrl ?? ctx.url;
+    const rawTitle = ctx.pageTitle ?? ctx.title;
+    return {
+      tabId:
+        rawTabId != null && Number.isFinite(Number(rawTabId))
+          ? Number(rawTabId)
+          : fallbackTabId,
+      pageUrl: rawUrl != null && rawUrl !== "" ? String(rawUrl) : null,
+      pageTitle: rawTitle != null ? String(rawTitle) : null,
+    };
+  } catch {
+    return { tabId: fallbackTabId, pageUrl: null, pageTitle: null };
+  }
+}
+
 function emitToolsDone(onEvent, payload) {
   onEvent({
     type: "tools_done",
     name: payload.name,
     ok: payload.ok,
+    jsOk: payload.jsOk !== undefined ? Boolean(payload.jsOk) : Boolean(payload.ok),
+    failureReason: payload.failureReason ?? null,
+    resultSummary: payload.resultSummary ?? "",
+    tabId: payload.tabId ?? null,
+    pageUrl: payload.pageUrl ?? null,
+    pageTitle: payload.pageTitle ?? null,
+    archiveHandle: payload.archiveHandle ?? null,
     args: payload.args || {},
     content: String(payload.content ?? "").slice(0, 4000),
     durationMs: payload.durationMs || 0,
-    archived: /已归档为分页本地文档/.test(String(payload.content || "")),
+    archived: Boolean(payload.archiveHandle) || /已归档为分页本地文档/.test(String(payload.content || "")),
   });
 }
 
@@ -81,6 +119,12 @@ export async function executeChromeToolCalls({
     };
     const tool = findTool(host, call.name);
     let ok = true;
+    let jsOk = true;
+    let wasIntercepted = false;
+    let archiveHandle = null;
+    let originalLength = null;
+    let archivedContent = null;
+    let outcome = null;
     let content = "";
     let args = call.input && typeof call.input === "object" ? { ...call.input } : {};
     const t0 = Date.now();
@@ -89,15 +133,33 @@ export async function executeChromeToolCalls({
     try {
       if (!tool) {
         ok = false;
+        jsOk = false;
         content = `unknown tool: ${call.name}`;
+        outcome = classifyToolOutcome(call.name, content, false, false);
       } else {
         if (typeof host.interceptToolCall === "function") {
           const check = await host.interceptToolCall({ tool, args, call: chromeCall, signal });
           if (check && check.allow === false) {
             ok = false;
+            jsOk = true;
             content = check.reason || `[安全拦截] 用户拒绝或未授权执行工具: ${call.name}`;
+            const pageCtx = await resolveToolPageContext(host, call.name, args);
+            const interceptOutcome = classifyToolOutcome(call.name, content, true, true);
+            const ts = Date.now();
+            const durationMs = ts - t0;
             onEvent({ type: "tools_intercepted", name: call.name, args, reason: content });
-            emitToolsDone(onEvent, { name: call.name, ok, args, content, durationMs: Date.now() - t0 });
+            emitToolsDone(onEvent, {
+              name: call.name,
+              ok: false,
+              jsOk: true,
+              failureReason: interceptOutcome.failureReason,
+              resultSummary: interceptOutcome.resultSummary,
+              args,
+              content,
+              durationMs,
+              ...pageCtx,
+              archiveHandle: null,
+            });
             if (gate && call.name === "run_shell") {
               gate.blockedShell += 1;
               if (gate.blockedShell >= BLOCKED_SHELL_STREAK) gate.forceAnswer = true;
@@ -106,10 +168,20 @@ export async function executeChromeToolCalls({
               type: "tool_intercepted",
               turn,
               name: call.name,
+              toolName: call.name,
               args,
+              ok: false,
+              jsOk: true,
+              failureReason: interceptOutcome.failureReason,
+              resultSummary: interceptOutcome.resultSummary,
               reason: content,
-              durationMs: Date.now() - t0,
-              timestamp: Date.now(),
+              durationMs,
+              tabId: pageCtx.tabId,
+              pageUrl: pageCtx.pageUrl,
+              pageTitle: pageCtx.pageTitle,
+              archiveHandle: null,
+              timestamp: ts,
+              isoTime: new Date(ts).toISOString(),
             });
             results.push({ toolCallId: call.toolCallId, name: call.name, ok, content });
             continue;
@@ -128,23 +200,29 @@ export async function executeChromeToolCalls({
             : 0;
         if (prior >= REPEAT_TOOL_LIMIT) {
           ok = false;
+          wasIntercepted = true;
           content = `已拦截重复工具调用：${call.name} 同样参数已执行 ${prior} 次。请基于已有结果作答，不要再打开目录或重复同一条命令。`;
         } else if (policy) {
           ok = false;
+          wasIntercepted = true;
           content = policy;
         } else if (dirUsed >= DIR_BROWSE_LIMIT) {
           ok = false;
+          wasIntercepted = true;
           content = `已拦截：本轮列目录已 ${dirUsed} 次。不要再 ls/find/open，请根据已有结果直接回答。`;
         } else if (searchUsed >= SEARCH_SHELL_LIMIT) {
           ok = false;
+          wasIntercepted = true;
           content = `已拦截：本轮代码搜索已 ${searchUsed} 次。请用 read_tool_page / search_tool_artifact 阅读已归档结果后直接回答，不要再换关键词 rg/grep。`;
           if (gate) gate.forceAnswer = true;
         } else if (similarSearch >= SIMILAR_SEARCH_LIMIT) {
           ok = false;
+          wasIntercepted = true;
           content = `已拦截：同类搜索已执行 ${similarSearch} 次。先 read_tool_page / search_tool_artifact，不要改几个词再搜一遍。`;
           if (gate) gate.forceAnswer = true;
         } else if (gate && isCodeSearchCommand(command) && (gate.archivedSearch || 0) >= ARCHIVE_SEARCH_STREAK) {
           ok = false;
+          wasIntercepted = true;
           content = `已拦截：连续 ${gate.archivedSearch} 次搜索结果已归档且未翻页。请先 read_tool_page 或 search_tool_artifact，不要再开新的 rg。`;
           gate.forceAnswer = true;
         } else {
@@ -159,14 +237,20 @@ export async function executeChromeToolCalls({
           }
         }
         if (content != null && typeof content !== "string") content = JSON.stringify(content);
-        if (ok && content) {
+        const rawText = String(content ?? "");
+        outcome = classifyToolOutcome(call.name, rawText, jsOk, wasIntercepted);
+        ok = outcome.ok;
+        if (jsOk && !wasIntercepted && rawText) {
           const guarded = await interceptToolOutput({
             sessionId,
             toolName: call.name,
-            content,
+            content: rawText,
             threshold: host.toolArchiveThreshold,
           });
           if (guarded.intercepted) {
+            archiveHandle = guarded.handle;
+            originalLength = guarded.originalLength;
+            archivedContent = rawText.slice(0, ARCHIVED_TRACE_CHARS);
             onEvent({
               type: "tool_archived",
               name: call.name,
@@ -185,31 +269,62 @@ export async function executeChromeToolCalls({
       }
     } catch (err) {
       ok = false;
+      jsOk = false;
       content = err?.message || String(err);
+      outcome = classifyToolOutcome(call.name, content, false, false);
     }
-    const durationMs = Date.now() - t0;
+    if (!outcome) {
+      outcome = classifyToolOutcome(call.name, content, jsOk, wasIntercepted);
+      ok = outcome.ok;
+    }
+    const pageCtx = await resolveToolPageContext(host, call.name, args);
+    const ts = Date.now();
+    const durationMs = ts - t0;
     content = String(content ?? "").slice(0, TOOL_RESULT_CHARS);
     traceSteps.push({
       type: "tool_exec",
       turn,
       name: call.name,
+      toolName: call.name,
       args,
-      ok,
+      ok: outcome.ok,
+      jsOk: outcome.jsOk,
+      failureReason: outcome.failureReason,
+      resultSummary: outcome.resultSummary,
       durationMs,
+      tabId: pageCtx.tabId,
+      pageUrl: pageCtx.pageUrl,
+      pageTitle: pageCtx.pageTitle,
+      archiveHandle,
+      ...(archiveHandle ? { originalLength, archivedContent } : {}),
       result: String(content ?? ""),
       resultPreview: String(content ?? "").slice(0, 4000),
-      timestamp: Date.now(),
+      timestamp: ts,
+      isoTime: new Date(ts).toISOString(),
     });
-    emitToolsDone(onEvent, { name: call.name, ok, args, content, durationMs });
+    emitToolsDone(onEvent, {
+      name: call.name,
+      ok: outcome.ok,
+      jsOk: outcome.jsOk,
+      failureReason: outcome.failureReason,
+      resultSummary: outcome.resultSummary,
+      args,
+      content,
+      durationMs,
+      ...pageCtx,
+      archiveHandle,
+    });
     debugLog("agent.tool", {
       name: call.name,
-      ok,
+      ok: outcome.ok,
+      jsOk: outcome.jsOk,
+      failureReason: outcome.failureReason || undefined,
       durationMs,
       args,
       preview: String(content).slice(0, 300),
-      blocked: !ok && /拦截/.test(String(content || "")),
+      blocked: !outcome.ok && /拦截/.test(String(content || "")),
     });
-    results.push({ toolCallId: call.toolCallId, name: call.name, ok, content });
+    results.push({ toolCallId: call.toolCallId, name: call.name, ok: outcome.ok, content });
     history.push({ role: "tool", tool_call_id: call.toolCallId, content });
   }
   return results;

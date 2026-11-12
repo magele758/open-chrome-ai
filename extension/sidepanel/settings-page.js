@@ -60,7 +60,7 @@ export function createSettingsPage({ root, getSettings, onModelChange }) {
     setText("settings-state-parameters", Number(settings.text?.summaryInputTokens) === 200000 ? "默认" : "自定义");
     setText("settings-state-skills", settings.skillsEnabled ? "已启用" : "未启用");
     setText("settings-state-native", settings.nativeShell === false ? "命令已关闭" : ({ strict: "严格", balanced: "智能审查", autonomous: "全自动" }[settings.hitlMode] || "智能审查"));
-    setText("settings-state-trace", settings.langfuse?.enabled ? "已启用" : "未启用");
+    setText("settings-state-trace", settings.debug?.enabled ? "已开启" : "未启用");
     setText("settings-state-colors", Object.keys(settings.uiThemeColors?.[settings.uiTheme] || {}).length ? "自定义" : "默认");
     setText("settings-state-shortcuts", `${settings.shortcuts?.length || 0} 条`);
     setText("jev-toggle-label", settings.jev?.enabled ? "已开启" : "已关闭");

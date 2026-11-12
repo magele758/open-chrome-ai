@@ -57,7 +57,7 @@
         <button type="button" id="btn-history" class="icon-btn" aria-label="历史会话" data-tooltip="历史会话">
           <svg class="ico"><use href="#i-history"/></svg>
         </button>
-        <button type="button" id="btn-debug-export" class="icon-btn" aria-label="运行日志" data-tooltip="运行日志">
+        <button type="button" id="btn-debug-export" class="icon-btn hidden" aria-label="运行日志" data-tooltip="运行日志">
           <svg class="ico"><use href="#i-log"/></svg>
         </button>
         <button type="button" id="btn-review" class="icon-btn" aria-label="知识盘点" data-tooltip="知识盘点">
@@ -818,19 +818,36 @@
                   <svg class="ico"><use href="#i-activity"/></svg>
                 </span>
                 <span class="group-text">
-                  <strong>运行追踪</strong>
-                  <small>Langfuse · 调用、耗时与用量</small>
+                  <strong>调试与诊断</strong>
+                  <small>脱敏诊断导出 · 开发者调试模式</small>
                 </span>
                 <span class="state settings-state" id="settings-state-trace">未启用</span>
                 <span class="chev">›</span>
               </summary>
               <div class="inner">
-                <div id="block-langfuse">
+                <div id="block-debug-diagnostic">
+                  <p class="hint">遇到异常时可一键导出已严格脱敏的内存诊断包（不含网页正文、截图与密钥，无需下载权限）。</p>
+                  <div class="row" style="margin-top:6px">
+                    <button type="button" class="compact secondary" id="btn-debug-export-l1">导出脱敏诊断包</button>
+                    <span class="status" id="debug-l1-status" role="status"></span>
+                  </div>
+                </div>
+                <div class="divider" style="margin:10px 0"></div>
+                <div id="block-debug-master">
+                  <label class="check">
+                    <input type="checkbox" id="debug-mode-enabled" />
+                    调试模式
+                  </label>
+                  <p class="hint">默认关闭。开启后按需申请下载权限，启用开发态热重载、失败截图取证与本机 Trace 自动落盘；关闭后立即停止并回收下载权限。</p>
+                  <span class="status" id="debug-mode-status" role="status"></span>
+                </div>
+                <div id="block-langfuse" class="hidden" style="margin-top:10px">
+                  <div class="divider" style="margin:8px 0"></div>
                   <label class="check">
                     <input type="checkbox" id="langfuse-enabled" />
-                    启用 Langfuse 追踪
+                    启用 Langfuse 追踪（仅调试模式生效）
                   </label>
-                  <p class="hint">启用后，对话和工具调用会发送至你配置的服务。</p>
+                  <p class="hint">启用后，已严格脱敏的运行摘要会发送至你配置并授权域名的服务。</p>
                   <div id="langfuse-fields" style="margin-top:8px">
                     <label class="field">Host 地址
                       <input id="langfuse-url" type="text" spellcheck="false" placeholder="http://localhost:3000" />

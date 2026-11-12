@@ -1,5 +1,7 @@
 /** Injected into the page. Must stay self-contained (no module locals). */
-export async function extractPage() {
+export async function extractPage(opts) {
+  const o = opts || {};
+  const A = o.adapterSpec || globalThis.__pagelensAdapterSpec || null;
   const MAX_CHARS = 9000;
   const title = document.title || "";
   const url = location.href;
@@ -232,13 +234,146 @@ export async function extractPage() {
       if (fallback.length > text.length) text = fallback;
     }
 
+    let textTruncated = text.length > MAX_CHARS;
+    let textLength = text.length;
+
+    if (text.length < 80) {
+      let budget = 0;
+      const SKIP_TAGS = /^(SCRIPT|STYLE|NOSCRIPT|SVG|TEMPLATE)$/i;
+      const BLOCK_TAGS = /^(DIV|P|H1|H2|H3|H4|H5|H6|LI|UL|OL|SECTION|ARTICLE|HEADER|MAIN|FORM|FIELDSET|DT|DD|TR|BR)$/i;
+
+      const formatTableRows = (tableEl, skipSet) => {
+        const rows = [...tableEl.querySelectorAll('tr, [role="row"]')].filter(
+          (r) => !skipSet.has(r) && visible(r) && r.closest('table, [role="table"], [role="grid"]') === tableEl,
+        );
+        const rowLines = [];
+        let tableChars = 0;
+        for (const row of rows.slice(0, 250)) {
+          if (tableChars > MAX_CHARS + 1000) break;
+          const cells = [
+            ...row.querySelectorAll('th, td, [role="columnheader"], [role="gridcell"], [role="cell"]'),
+          ].filter((c) => visible(c) && c.closest('tr, [role="row"]') === row);
+          const cellTexts = [];
+          for (const cell of cells) {
+            let ct = clean(cell.innerText ?? cell.textContent ?? "").replace(/\s*\n\s*/g, " ");
+            const inputs = cell.querySelectorAll("input, textarea, select");
+            for (const inp of inputs) {
+              const tp = String(inp.getAttribute("type") || "").toLowerCase();
+              if (tp === "hidden" || tp === "password" || tp === "file") continue;
+              const val =
+                inp.tagName === "SELECT"
+                  ? clean(inp.selectedOptions?.[0]?.textContent || inp.value || "")
+                  : clean(inp.value || inp.getAttribute("value") || "");
+              if (val && !ct.includes(val)) ct = ct ? `${ct} ${val}` : val;
+            }
+            if (ct) cellTexts.push(ct);
+          }
+          if (cellTexts.length) {
+            const line = cellTexts.join(" | ");
+            rowLines.push(line);
+            tableChars += line.length + 1;
+          }
+        }
+        return rowLines.join("\n");
+      };
+
+      const walkReadable = (node, skipSet, skipNav, depth) => {
+        if (!node || depth > 40 || budget > 25000) return "";
+        budget += 1;
+        if (node.nodeType === 3) {
+          return String(node.nodeValue || "").replace(/\s+/g, " ");
+        }
+        if (node.nodeType !== 1) return "";
+        const el = node;
+        if (skipSet.has(el) || SKIP_TAGS.test(el.tagName)) return "";
+        if (skipNav && el.matches?.('nav, footer, aside, [role="navigation"], [role="complementary"], [role="banner"]')) {
+          return "";
+        }
+        if (!visible(el)) return "";
+        if (el.tagName === "BR") return "\n";
+        if (el.matches?.('table, [role="table"], [role="grid"]')) {
+          const tbl = formatTableRows(el, skipSet);
+          return tbl ? `\n${tbl}\n` : "";
+        }
+        if (el.matches?.("input, textarea, select")) {
+          const tp = String(el.getAttribute("type") || "").toLowerCase();
+          if (tp === "hidden" || tp === "password" || tp === "file") return "";
+          if (tp === "checkbox" || tp === "radio") return el.checked ? "[checked]" : "";
+          if (el.tagName === "SELECT") {
+            return clean(el.selectedOptions?.[0]?.textContent || el.value || "");
+          }
+          return clean(el.value || el.getAttribute("value") || el.getAttribute("placeholder") || "");
+        }
+        let buf = "";
+        for (const child of el.childNodes) {
+          const piece = walkReadable(child, skipSet, skipNav, depth + 1);
+          if (!piece) continue;
+          if (!buf || buf.endsWith("\n") || piece.startsWith("\n")) buf += piece;
+          else buf += ` ${piece}`;
+        }
+        return BLOCK_TAGS.test(el.tagName) ? `\n${buf}\n` : buf;
+      };
+
+      const dedupLines = (rawBlock) => {
+        const out = [];
+        const seenLong = new Set();
+        for (const rawLine of String(rawBlock || "").split("\n")) {
+          const line = clean(rawLine);
+          if (!line) continue;
+          if (out.length && out[out.length - 1] === line) continue;
+          if (line.length >= 16) {
+            if (seenLong.has(line)) continue;
+            seenLong.add(line);
+          }
+          out.push(line);
+        }
+        return out.join("\n");
+      };
+
+      const dialogSel =
+        A?.dialogSelector || 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
+      const rawDialogs = [...document.querySelectorAll(dialogSel)].filter((el) => visible(el));
+      const openDialogs = rawDialogs.filter(
+        (el) => !rawDialogs.some((other) => other !== el && other.contains(el)),
+      );
+
+      const skipSet = new Set();
+      const sections = [];
+      for (const dlg of openDialogs) {
+        const dlgText = dedupLines(walkReadable(dlg, skipSet, false, 0));
+        if (dlgText) sections.push(`[dialog]\n${dlgText}`);
+        skipSet.add(dlg);
+      }
+
+      const appRootSel = A?.appRootSelector || 'main, [role="main"], #app, #root';
+      const appRoot = document.querySelector(appRootSel) || document.body;
+      if (appRoot && !skipSet.has(appRoot)) {
+        const appText = dedupLines(walkReadable(appRoot, skipSet, true, 0));
+        if (appText) sections.push(appText);
+      }
+
+      const fullAppText = sections.join("\n\n").trim();
+      if (fullAppText.length > text.length) {
+        text = fullAppText;
+        textTruncated = fullAppText.length > MAX_CHARS;
+        textLength = fullAppText.length;
+      }
+    }
+
     const quotes = [];
     for (const p of parts) {
       if (quotes.length >= 8) break;
       if (p.length >= 40 && p.length <= 400) quotes.push({ id: `q_${quotes.length + 1}`, text: p.slice(0, 280) });
     }
 
-    return { text: text.slice(0, MAX_CHARS), quotes, kind: "generic", videoIsPrimary: false };
+    return {
+      text: text.slice(0, MAX_CHARS),
+      textTruncated,
+      textLength,
+      quotes,
+      kind: "generic",
+      videoIsPrimary: false,
+    };
   }
 
   function findPdfHints() {

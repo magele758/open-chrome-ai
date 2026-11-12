@@ -165,9 +165,12 @@ export function createDelegateManager({
   newId = randomTaskId,
   maxConcurrent = 3,
   onActivityChange = () => {},
+  onTaskFinished = null,
 } = {}) {
   const tasks = new Map();
   const controllers = new Map();
+  const runContexts = new Map();
+  const finishing = new Map();
   let loaded = null;
   let writeTail = Promise.resolve();
 
@@ -207,6 +210,7 @@ export function createDelegateManager({
         const idx = list.findIndex((t) => t.status !== TASK_STATUS.RUNNING);
         if (idx < 0) break;
         tasks.delete(list[idx].id);
+        runContexts.delete(list[idx].id);
         list.splice(idx, 1);
       }
       await storage.save(list);
@@ -234,6 +238,7 @@ export function createDelegateManager({
   }
 
   function finish(task, status, { answer, error, endReason } = {}) {
+    if (finishing.has(task.id)) return finishing.get(task.id);
     if (task.status !== TASK_STATUS.RUNNING) return Promise.resolve();
     Object.assign(task, {
       status,
@@ -242,10 +247,25 @@ export function createDelegateManager({
       endReason: endReason || task.endReason || "",
       finishedAt: now(),
     });
-    controllers.delete(task.id);
-    onActivityChange(runningCount());
-    emit({ type: AGENT_TASK_EVENTS.FINISHED, taskId: task.id, at: now(), status, answer: task.answer, error: task.error });
-    return touch(task);
+    const ctx = runContexts.get(task.id) || null;
+    runContexts.delete(task.id);
+    const p = (async () => {
+      if (typeof onTaskFinished === "function") {
+        try {
+          await onTaskFinished({ task, status, endReason: task.endReason, runContext: ctx });
+        } catch (err) {
+          console.info("[PageLens] delegate onTaskFinished failed safely:", String(err?.message || err));
+        }
+      }
+      controllers.delete(task.id);
+      onActivityChange(runningCount());
+      emit({ type: AGENT_TASK_EVENTS.FINISHED, taskId: task.id, at: now(), status, answer: task.answer, error: task.error });
+      await touch(task);
+    })().finally(() => {
+      finishing.delete(task.id);
+    });
+    finishing.set(task.id, p);
+    return p;
   }
 
   function ownedBy(task, owner) {
@@ -337,10 +357,18 @@ export function createDelegateManager({
 
   async function execute(task, controller, session) {
     const signal = controller.signal;
+    const ctx = runContexts.get(task.id) || null;
     let taint = createTaintState();
     try {
       const settings = await loadSettings();
+      if (ctx) ctx.settings = settings;
       const run = await createRun({ task, settings, signal });
+      if (ctx) {
+        if (run.initialPage) ctx.initialPage = run.initialPage;
+        if (typeof run.getFinalPage === "function") ctx.getFinalPage = run.getFinalPage;
+        if (run.systemPrompt) ctx.systemPrompt = run.systemPrompt;
+        if (run.modelName) ctx.modelName = run.modelName;
+      }
       const tools = withUntrustedOutput(run.tools || [], {
         onIngest: (info) => {
           taint = ingestData(taint, info);
@@ -355,15 +383,25 @@ export function createDelegateManager({
       const loop = createLoop({
         maxTurns: task.maxSteps,
         allTools: tools,
-        tools: run.activeTools ? run.activeTools(tools) : tools,
+        get tools() {
+          return run.activeTools ? run.activeTools(tools) : tools;
+        },
         systemPrompt: run.systemPrompt,
+        getToolPageContext: run.getToolPageContext,
         interceptToolCall: interceptorFor(task, run, settings, session, () => taint),
         model: run.model,
       });
       const result = await loop.run(task.prompt, {
         sessionId: task.id,
         signal,
+        traceSteps: ctx?.runTraceSteps,
+        onReasoningDelta: (delta) => {
+          if (ctx) ctx.thinking += delta;
+        },
         onEvent: (ev) => {
+          if (ev.type === "checkpoint" && Array.isArray(ev.history) && ctx) {
+            ctx.latestHistory = ev.history;
+          }
           if (ev.type === "tools_done") {
             if (task.steps.at(-1)?.kind === "blocked" && task.steps.at(-1)?.name === ev.name && !ev.ok) return;
             addStep(task, { kind: "tool", name: ev.name, ok: Boolean(ev.ok), args: clip(ev.args, 200), summary: clip(ev.content) });
@@ -373,6 +411,11 @@ export function createDelegateManager({
           }
         },
       });
+      if (ctx) {
+        if (Array.isArray(result?.history)) ctx.latestHistory = result.history;
+        if (result?.metrics) ctx.metrics = result.metrics;
+        if (result?.reasoning && !ctx.thinking) ctx.thinking = result.reasoning;
+      }
       if (signal.aborted || result?.reason === "abort") {
         await finish(task, TASK_STATUS.CANCELLED, { answer: result?.text || task.answer, endReason: "abort" });
         return;
@@ -380,15 +423,23 @@ export function createDelegateManager({
       const stillPending = task.pending.length > 0;
       await finish(task, stillPending ? TASK_STATUS.NEEDS_APPROVAL : TASK_STATUS.DONE, {
         answer: result?.text || task.answer || "",
-        endReason: result?.reason || "stop",
+        endReason: stillPending ? "needs_approval" : (result?.reason || "stop"),
       });
     } catch (err) {
+      if (ctx) {
+        if (Array.isArray(err?.history) && err.history.length > 0) ctx.latestHistory = err.history;
+        if (err?.metrics) ctx.metrics = err.metrics;
+        if (ctx.runTraceSteps.length === 0 && Array.isArray(err?.traceSteps) && err.traceSteps.length > 0) {
+          ctx.runTraceSteps.push(...err.traceSteps);
+        }
+      }
       if (signal.aborted) {
         await finish(task, TASK_STATUS.CANCELLED, { endReason: "abort" });
         return;
       }
       await finish(task, TASK_STATUS.FAILED, {
         error: { code: err?.code || "TASK_FAILED", message: String(err?.message || err).slice(0, 500) },
+        endReason: "error",
       });
     }
   }
@@ -444,6 +495,19 @@ export function createDelegateManager({
         finishedAt: null,
       };
       tasks.set(task.id, task);
+      runContexts.set(task.id, {
+        runTraceSteps: [],
+        latestHistory: [],
+        initialPage:
+          task.tabId != null || task.sourceUrl
+            ? { tabId: task.tabId, url: task.sourceUrl || "", title: "" }
+            : null,
+        getFinalPage: null,
+        systemPrompt: "",
+        modelName: task.model || "",
+        metrics: null,
+        thinking: "",
+      });
       const controller = new AbortController();
       controllers.set(task.id, controller);
       onActivityChange(runningCount());
@@ -471,7 +535,10 @@ export function createDelegateManager({
 
     async cancel(taskId, { owner = null } = {}) {
       const task = await getTask(taskId, owner);
-      if (task.status !== TASK_STATUS.RUNNING) return { ...publicTask(task, { withSteps: false }), alreadyFinished: true };
+      if (task.status !== TASK_STATUS.RUNNING) {
+        if (finishing.has(task.id)) await finishing.get(task.id);
+        return { ...publicTask(task, { withSteps: false }), alreadyFinished: true };
+      }
       const controller = controllers.get(task.id);
       if (controller) {
         controller.abort();
@@ -480,7 +547,11 @@ export function createDelegateManager({
         await Promise.race([task.done?.catch?.(() => {}), grace]);
         clearTimeout(timer);
       }
-      if (task.status === TASK_STATUS.RUNNING) await finish(task, TASK_STATUS.CANCELLED, { endReason: "abort" });
+      if (task.status === TASK_STATUS.RUNNING) {
+        await finish(task, TASK_STATUS.CANCELLED, { endReason: "abort" });
+      } else if (finishing.has(task.id)) {
+        await finishing.get(task.id);
+      }
       return publicTask(task, { withSteps: false });
     },
 
@@ -496,6 +567,7 @@ export function createDelegateManager({
     async wait(taskId) {
       const task = await getTask(taskId);
       await task.done;
+      if (finishing.has(task.id)) await finishing.get(task.id);
       return publicTask(task);
     },
 

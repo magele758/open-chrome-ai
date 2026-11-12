@@ -268,3 +268,60 @@ console.log("PASS original distill loop still available");
   assert.equal(calls, 3, "one call plus two automatic retries");
   console.log("PASS empty-reply recovery reaches the model and ends as empty_assistant");
 }
+
+// Dynamic host.tools getter alongside host.allTools must NOT re-merge allTools into every turn
+{
+  let expandSystem = false;
+  const allHostTools = [
+    { name: "extract_page", description: "read", parameters: { type: "object", properties: {} }, execute: async () => "PAGE" },
+    {
+      name: "request_toolsets",
+      description: "expand",
+      parameters: { type: "object", properties: {} },
+      execute: async () => {
+        expandSystem = true;
+        return "expanded";
+      },
+    },
+    { name: "run_shell", description: "shell", parameters: { type: "object", properties: {} }, execute: async () => "SHELL_OK" },
+    { name: "update_settings", description: "settings", parameters: { type: "object", properties: {} }, execute: async () => "SET_OK" },
+  ];
+  const perTurnToolNames = [];
+  const dynamicLoop = createKernelAgentLoop({
+    maxTurns: 4,
+    systemPrompt: "test",
+    allTools: allHostTools,
+    get tools() {
+      return allHostTools.filter(
+        (t) => t.name === "extract_page" || t.name === "request_toolsets" || (expandSystem && t.name === "run_shell"),
+      );
+    },
+    model: {
+      async runTurn({ tools }) {
+        const names = (tools || []).map((t) => t.function?.name || t.name);
+        perTurnToolNames.push(names);
+        if (perTurnToolNames.length === 1) {
+          return {
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [{ id: "d1", name: "request_toolsets", arguments: "{}" }],
+          };
+        }
+        if (perTurnToolNames.length === 2) {
+          return {
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [{ id: "d2", name: "run_shell", arguments: "{}" }],
+          };
+        }
+        return { content: "DYNAMIC_DONE", toolCalls: [], finishReason: "stop" };
+      },
+    },
+  });
+  const dynOut = await dynamicLoop.run("check");
+  assert.equal(dynOut.text, "DYNAMIC_DONE");
+  assert.deepEqual(perTurnToolNames[0], ["extract_page", "request_toolsets"], "turn 1 sends only active routed tools, not allTools");
+  assert.deepEqual(perTurnToolNames[1], ["extract_page", "request_toolsets", "run_shell"], "turn 2 reflects expanded active tools");
+  assert.ok(!perTurnToolNames.flat().includes("update_settings"), "unrequested domain never sent");
+  console.log("PASS kernel resolveTurnTools respects dynamic host.tools without allTools bloat");
+}
