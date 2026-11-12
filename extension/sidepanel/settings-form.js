@@ -65,6 +65,7 @@ function renderSettingsForm() {
   if ($("loop-engine-label")) $("loop-engine-label").textContent = LOOP_ENGINE_ID;
   if ($("skills-enabled")) $("skills-enabled").checked = skillsOn();
   if ($("daily-notes-folder")) $("daily-notes-folder").value = state.settings.dailyNotesFolder ?? "Daily";
+  syncDebugModeUi();
   const lf = state.settings.langfuse || {};
   if ($("langfuse-enabled")) $("langfuse-enabled").checked = lf.enabled === true;
   if ($("langfuse-url")) $("langfuse-url").value = lf.baseUrl || "http://localhost:3000";
@@ -282,7 +283,7 @@ function writeField(el) {
   else if (key === "bufferSegments" || key === "bufferSeconds") state.settings[group][key] = Number(el.value) || 5;
   else state.settings[group][key] = el.value;
   if (key === "preset") {
-    const preset = presetsFor(group).find((p) => p.id === el.value);
+    const preset = presetsFor(group, state.settings).find((p) => p.id === el.value);
     if (preset) {
       state.settings[group].baseUrl = preset.baseUrl || "";
       const input = document.querySelector(`[data-k="${group}.baseUrl"]`);
@@ -329,9 +330,18 @@ async function runTest(group) {
 }
 
 
+function syncDebugModeUi() {
+  const debugOn = Boolean(state.settings?.debug?.enabled);
+  if ($("debug-mode-enabled")) $("debug-mode-enabled").checked = debugOn;
+  $("btn-debug-export")?.classList.toggle("hidden", !debugOn);
+  $("block-langfuse")?.classList.toggle("hidden", !debugOn);
+  settingsPage?.refreshSummary();
+}
+
 export {
   renderIrreversibleList,
   renderSettingsForm,
+  syncDebugModeUi,
   asrExtraFields,
   ttsFields,
   refreshTtsRefLabel,

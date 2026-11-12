@@ -327,6 +327,7 @@ export async function runDeterministicWorkflow({
   clearLastCapturedImage = () => {},
   resolvePageSnapshot = async () => null,
   settings = {},
+  captureFailureEvidence = undefined,
   signal = null,
   traceSteps = [],
   onStepStart = null,
@@ -334,6 +335,10 @@ export async function runDeterministicWorkflow({
 } = {}) {
   const startedMs = Date.now();
   const toolMap = buildToolMap(rawTools);
+  const shouldCaptureFailureEvidence = Boolean(
+    captureFailureEvidence ??
+      (settings?.debug?.enabled === true && settings?.debug?.captureFailureScreenshot !== false),
+  );
   const executedSingleShots = new Set();
   const preamble = buildDomPreamble(adapterSpec);
   let nonceCounter = 0;
@@ -465,7 +470,9 @@ export async function runDeterministicWorkflow({
               message: err?.message || String(err),
             });
       const now = Date.now();
-      const shotUrl = await captureStepScreenshot({ stepIndex: 1, stepId: wfErr.stepId, op: wfErr.op });
+      const shotUrl = shouldCaptureFailureEvidence
+        ? await captureStepScreenshot({ stepIndex: 1, stepId: wfErr.stepId, op: wfErr.op })
+        : null;
       const snap = await resolvePageSnapshot().catch(() => null);
       traceSteps.push({
         type: "tool_exec",
@@ -2276,10 +2283,10 @@ export async function runDeterministicWorkflow({
       if (!startedEmitted) {
         onStepStart?.({ stepIndex, stepId: step.id, name: step.op, args: summaryArgs });
       }
-      if (toolMap.has("screenshot")) {
+      if (shouldCaptureFailureEvidence && toolMap.has("screenshot")) {
         await sleepWithAbort(200, signal).catch(() => {});
       }
-      const failShotUrl = await captureStepScreenshot(stepCtx);
+      const failShotUrl = shouldCaptureFailureEvidence ? await captureStepScreenshot(stepCtx) : null;
       const failSnap = await resolvePageSnapshot().catch(() => null);
       const endTs = Date.now();
       const durMs = Math.max(1, endTs - stepStartMs);

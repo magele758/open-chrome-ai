@@ -38,11 +38,6 @@ export const AGENT_SETTINGS_SCHEMA = [
   { key: "jev.model", label: "JEV 模型名", type: "string", max: 200 },
   { key: "jev.baseUrl", label: "JEV 服务地址", type: "url", sensitive: true },
   { key: "jev.apiKey", label: "JEV API Key", type: "string", secret: true, sensitive: true },
-  { key: "langfuse.enabled", label: "Langfuse 追踪（会外发对话内容）", type: "boolean", sensitive: true },
-  { key: "langfuse.environment", label: "Langfuse 环境名", type: "string", max: 60 },
-  { key: "langfuse.baseUrl", label: "Langfuse 地址", type: "url", sensitive: true },
-  { key: "langfuse.publicKey", label: "Langfuse Public Key", type: "string", secret: true, sensitive: true },
-  { key: "langfuse.secretKey", label: "Langfuse Secret Key", type: "string", secret: true, sensitive: true },
   { key: "hitlMode", label: "特权操作确认模式", type: "enum", values: ["strict", "balanced", "autonomous"], sensitive: true },
   { key: "hitlTimeoutSeconds", label: "确认弹窗超时（秒）", type: "number", min: 5, max: 300, integer: true, sensitive: true },
   { key: "nativeShell", label: "允许执行本机命令", type: "boolean", sensitive: true },
@@ -56,21 +51,39 @@ const SCHEMA_BY_KEY = new Map(AGENT_SETTINGS_SCHEMA.map((f) => [f.key, f]));
 
 /**
  * Never listed, read or changed by any agent, even with confirmation: these grant agents their own
- * access (gateway switch, per-agent tokens), so an agent could otherwise escalate itself.
+ * access (gateway switch, per-agent tokens) or control local/remote telemetry & debug hooks,
+ * so a cloud Bot or prompt injection could otherwise escalate itself or exfiltrate user sessions.
  */
-export const AGENT_HIDDEN_SETTINGS = Object.freeze(["agentGatewayEnabled", "agentTokens"]);
+export const AGENT_HIDDEN_SETTINGS = Object.freeze([
+  "agentGatewayEnabled",
+  "agentTokens",
+  "debug",
+  "langfuse",
+  "dev",
+  "diagnostics",
+  "devAutoReloadEnabled",
+  "autoExportRunBundle",
+]);
+
+export function isAgentHiddenSetting(key) {
+  const k = String(key || "").trim();
+  if (!k) return false;
+  if (AGENT_HIDDEN_SETTINGS.includes(k)) return true;
+  const root = k.split(".")[0];
+  return root === "debug" || root === "langfuse" || root === "dev" || root === "diagnostics";
+}
 
 // Defence in depth: a future schema entry that forgets `sensitive` still gets flagged.
-const SENSITIVE_KEY = /key|secret|token|password|baseurl|endpoint|origin|allow|inbox|hitl|bridge|shell|cdp|irreversible|langfuse\.enabled/i;
+const SENSITIVE_KEY = /key|secret|token|password|baseurl|endpoint|origin|allow|inbox|hitl|bridge|shell|cdp|irreversible|langfuse|debug/i;
 
 /**
  * Safety settings the chat agent may never change, not even with confirmation: they decide what needs
  * confirmation in the first place. Absent from AGENT_SETTINGS_SCHEMA, so planSettingsChange rejects them.
  */
-export const AGENT_FORBIDDEN_SETTINGS = Object.freeze(["irreversibleActions", "agentTokens"]);
+export const AGENT_FORBIDDEN_SETTINGS = Object.freeze(["irreversibleActions", "agentTokens", "debug", "langfuse"]);
 
 export function isSensitiveSetting(key) {
-  if (AGENT_HIDDEN_SETTINGS.includes(key)) return true;
+  if (isAgentHiddenSetting(key)) return true;
   const field = SCHEMA_BY_KEY.get(key);
   return Boolean(field?.sensitive) || SENSITIVE_KEY.test(String(key || ""));
 }
@@ -203,8 +216,12 @@ export function planSettingsChange(current, changes) {
   for (const item of list) {
     const key = String(item?.key || "").trim();
     const field = SCHEMA_BY_KEY.get(key);
-    if (AGENT_HIDDEN_SETTINGS.includes(key)) {
-      errors.push(`${key}：外部 Agent 授权只能由用户在设置页「外部 Agent」里修改。`);
+    if (isAgentHiddenSetting(key)) {
+      if (key === "agentGatewayEnabled" || key === "agentTokens") {
+        errors.push(`${key}：外部 Agent 授权只能由用户在设置页「外部 Agent」里修改。`);
+      } else {
+        errors.push(`${key}：调试模式与遥测设置受硬隔离保护（禁止对话或外部 Agent 修改），只能由用户本人在设置页操作。`);
+      }
       continue;
     }
     if (!field) {

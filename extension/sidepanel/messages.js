@@ -11,17 +11,9 @@ import { redactSettingsArgs } from "../lib/agent/settings-tools.js";
 import { injectVideo } from "../lib/chrome.js";
 import { writeClipboardRich } from "../lib/clipboard.js";
 import { highlightQuote } from "../lib/extract.js";
-import { isLangfuseConfigured, sendTraceToLangfuse } from "../lib/langfuse.js";
+import { exportManualMessageTrace } from "../lib/debug/hooks.js";
 import { bindMarkdownLinks, decorateInlines, enhanceMermaid, formatAnswer, splitThinking } from "../lib/markdown.js";
 import { visibleSkills } from "../lib/prompts.js";
-import {
-  TRACE_SCHEMA_VERSION,
-  buildRunRecord,
-  downloadFileBestEffort,
-  encodeUtf8DataUrl,
-  formatTimestampForFilename,
-  sanitizeTraceValue,
-} from "../lib/run-recorder.js";
 import { isModelReady, resolveModel } from "../lib/storage.js";
 
 const thinkingScrolls = new WeakMap();
@@ -331,7 +323,7 @@ function createMessageFooter(msg) {
     actions.appendChild(obsidianBtn);
   }
 
-  if (msg.traceLog || msg.metrics) {
+  if (state?.settings?.debug?.enabled === true && (msg.traceLog || msg.metrics)) {
     const dlBtn = document.createElement("button");
     dlBtn.type = "button";
     dlBtn.className = "btn-download-trace";
@@ -350,70 +342,32 @@ function createMessageFooter(msg) {
 }
 
 function downloadMessageTrace(msg) {
-  const ts = formatTimestampForFilename();
-  const sid = state.sessionId ? state.sessionId.slice(0, 8) : "session";
-  const filename = `pagelens-runs/pagelens-trace-manual-${ts}-${sid}.json`;
-
-  const pageSnapshot = state.tab
-    ? { tabId: state.tab.id ?? null, url: state.tab.url || "", title: state.tab.title || "" }
-    : null;
-  const messagesSummary = (state.messages || []).map((m) => ({
-    role: m.role,
-    textPreview: String(m.text || "").slice(0, 100),
-    metrics: m.metrics,
-  }));
-
-  const exportPayload =
-    msg.traceLog?.version === TRACE_SCHEMA_VERSION
-      ? sanitizeTraceValue({
-          ...msg.traceLog,
-          conversationContext: {
-            ...(msg.traceLog.conversationContext || {}),
-            sessionId: state.sessionId,
-            sessionTitle: state.sessionTitle,
-            page: pageSnapshot,
-            messagesSummary,
-          },
-        })
-      : buildRunRecord({
-          ...(msg.traceLog || {}),
-          source: "sidepanel",
-          sessionId: state.sessionId,
-          sessionTitle: state.sessionTitle,
-          metrics: msg.metrics,
-          trace: msg.trace,
-          botResponse: msg.text,
-          content: msg.text,
-          steps: msg.traceLog?.steps || [],
-          initialPage: pageSnapshot,
-          finalPage: pageSnapshot,
-          messagesSummary,
-        }).traceRecord;
-
-  const jsonText = JSON.stringify(exportPayload, null, 2);
-  downloadFileBestEffort({
-    url: encodeUtf8DataUrl(jsonText, "application/json;charset=utf-8"),
-    filename,
-    rawText: jsonText,
-    mimeType: "application/json;charset=utf-8",
-    conflictAction: "uniquify",
+  exportManualMessageTrace(msg, {
+    settings: state.settings,
+    sessionId: state.sessionId,
   }).catch(() => {});
 }
 
 function maybeUploadTraceToLangfuse(traceLog) {
   try {
     if (!traceLog) return;
+    if (state?.settings?.debug?.enabled !== true) return;
     const cfg = state?.settings?.langfuse;
-    if (!isLangfuseConfigured(cfg)) return;
+    if (!cfg?.enabled) return;
     const pageInfo = state.tab ? { url: state.tab.url, title: state.tab.title } : null;
     const enriched = {
       ...traceLog,
       page: pageInfo,
       sessionTitle: state.sessionTitle || undefined,
     };
-    sendTraceToLangfuse(enriched, cfg).catch(() => {
-      // Background telemetry: never disturb user workflow on network failure
-    });
+    import("../lib/debug/langfuse-exporter.js")
+      .then((mod) => {
+        if (mod.isLangfuseConfigured(cfg)) {
+          return mod.sendTraceToLangfuse(enriched, cfg);
+        }
+        return null;
+      })
+      .catch(() => {});
   } catch {
     // Fail-safe
   }

@@ -16,7 +16,7 @@ import {
   resetDevReloadForTests,
   resolveBuildInfo,
   setDevAutoReloadEnabled,
-} from "../lib/dev-reload.js";
+} from "../lib/debug/reload-dev.js";
 
 function makeStorageArea(initial = {}) {
   const bag = { ...initial };

@@ -60,7 +60,8 @@ import { copyText, nativeInstallCommand, paintNativeHostStatus, refreshNativeHos
 import { bindMessageScroll, bindSettingsPage, messageScroll, settingsPage } from "./panel-refs.js";
 import { initReviewView } from "./review-view.js";
 import { applySession, downloadText, persistSession, resolveWindowId, setView, startNewSession } from "./session.js";
-import { renderSettingsForm } from "./settings-form.js";
+import { renderSettingsForm, syncDebugModeUi } from "./settings-form.js";
+import { renderTextProviders } from "./text-providers-ui.js";
 import { createSettingsPage } from "./settings-page.js";
 import { applyFolderPathsFromInputs, paintSkillFolderStatus } from "./skill-folder-ui.js";
 import {
@@ -88,8 +89,22 @@ import { DELEGATE_STORAGE_KEY } from "../lib/agent/delegate.js";
 import { APPROVAL_STORAGE_KEY } from "../lib/agent/trust/approval-queue.js";
 import { cleanExpiredMediaArchives } from "../lib/audio-composer.js";
 import { injectVideo } from "../lib/chrome.js";
-import { debugLog, exportDebugLogFresh } from "../lib/debug-log.js";
-import { testLangfuseConnection } from "../lib/langfuse.js";
+import { debugLog } from "../lib/debug-log.js";
+import {
+  exportManualDebugLogFile,
+  exportManualDiagnosticL1,
+  syncSidepanelDebugRuntime,
+  testLangfuseInDebugMode,
+} from "../lib/debug/hooks.js";
+import {
+  DEFAULT_DEBUG_SETTINGS,
+  collectActiveNonDebugOrigins,
+  isDevelopmentInstall,
+  migrateLegacyDebugSettings,
+  requestDownloadsPermissionInGesture,
+  requestLangfuseHostPermission,
+  revokeDebugPermissions,
+} from "../lib/debug/policy.js";
 import { clearSavedHandle, pickLibraryFolder, setLibraryPath, syncPackToLibrary } from "../lib/library.js";
 import { initMarkdown } from "../lib/markdown.js";
 import { formatTime } from "../lib/prompts.js";
@@ -189,8 +204,68 @@ function wire() {
   }));
   if (!messageScroll) bindMessageScroll(createMessageScroll($("msgs"), $("btn-messages-bottom")));
   $("btn-debug-export")?.addEventListener("click", async () => {
-    const json = await exportDebugLogFresh();
-    downloadText(`pagelens-debug-${Date.now()}.json`, json, "application/json");
+    await exportManualDebugLogFile();
+  });
+  $("btn-debug-export-l1")?.addEventListener("click", () => {
+    const extVer = chrome.runtime?.getManifest?.()?.version || "0.0.0";
+    const res = exportManualDiagnosticL1({
+      extensionVersion: extVer,
+      sessionMeta: { sessionId: state.sessionId, title: state.sessionTitle },
+    });
+    const status = $("debug-l1-status");
+    if (status) {
+      status.textContent = res.ok ? `已导出 ${res.filename}` : "导出失败";
+      status.className = res.ok ? "status ok" : "status bad";
+    }
+  });
+  $("debug-mode-enabled")?.addEventListener("change", async (e) => {
+    const toggle = e.target;
+    const status = $("debug-mode-status");
+    if (toggle.checked) {
+      const dlGrant = await requestDownloadsPermissionInGesture();
+      const devInstall = await isDevelopmentInstall();
+      state.settings.debug = {
+        enabled: true,
+        traceLevel: dlGrant.granted ? "full" : "manual",
+        autoExportRunBundle: Boolean(dlGrant.granted),
+        captureFailureScreenshot: Boolean(dlGrant.granted),
+        devAutoReload: Boolean(devInstall),
+        writeStartupReceipt: Boolean(devInstall && dlGrant.granted),
+        showLocalMockPreset: Boolean(devInstall),
+      };
+      state.settings = await saveSettings(state.settings);
+      await syncSidepanelDebugRuntime({ settings: state.settings });
+      syncDebugModeUi();
+      renderTextProviders();
+      renderMessages();
+      if (status) {
+        status.textContent = dlGrant.granted
+          ? "调试模式已开启（Trace 自动落盘与开发态热重载已就绪）"
+          : (dlGrant.message || "已切换为免权限手动诊断模式（L1）");
+        status.className = "status ok";
+      }
+    } else {
+      const prevLfUrl = state.settings?.langfuse?.baseUrl || "";
+      state.settings.debug = { ...DEFAULT_DEBUG_SETTINGS };
+      if (state.settings.langfuse) {
+        state.settings.langfuse.enabled = false;
+        if ($("langfuse-enabled")) $("langfuse-enabled").checked = false;
+      }
+      state.settings = await saveSettings(state.settings);
+      await revokeDebugPermissions({
+        langfuseUrl: prevLfUrl,
+        keepOrigins: collectActiveNonDebugOrigins(state.settings),
+        revokeDownloads: true,
+      });
+      await syncSidepanelDebugRuntime({ settings: state.settings });
+      syncDebugModeUi();
+      renderTextProviders();
+      renderMessages();
+      if (status) {
+        status.textContent = "调试模式已关闭，已停止自动记录并回收下载权限";
+        status.className = "status";
+      }
+    }
   });
   bindComposer();
   try {
@@ -528,7 +603,7 @@ function wire() {
       }
       if ($("langfuse-enabled")) {
         if (!state.settings.langfuse) state.settings.langfuse = {};
-        state.settings.langfuse.enabled = $("langfuse-enabled").checked;
+        state.settings.langfuse.enabled = Boolean(state.settings.debug?.enabled) && $("langfuse-enabled").checked;
         if ($("langfuse-url")) state.settings.langfuse.baseUrl = $("langfuse-url").value.trim();
         if ($("langfuse-pk")) state.settings.langfuse.publicKey = $("langfuse-pk").value.trim();
         if ($("langfuse-sk")) state.settings.langfuse.secretKey = $("langfuse-sk").value.trim();
@@ -536,6 +611,8 @@ function wire() {
       }
       const pathErrors = await applyFolderPathsFromInputs();
       state.settings = await saveSettings(state.settings);
+      await syncSidepanelDebugRuntime({ settings: state.settings });
+      syncDebugModeUi();
       applyUiFont(state.settings.uiFont);
       renderModelLine();
       renderShortcutList();
@@ -552,8 +629,22 @@ function wire() {
       $("save-status").className = "status bad";
     } finally { button.disabled = false; }
   });
-  $("langfuse-enabled")?.addEventListener("change", (e) => {
+  $("langfuse-enabled")?.addEventListener("change", async (e) => {
     if (!state.settings.langfuse) state.settings.langfuse = {};
+    if (e.target.checked) {
+      const url = $("langfuse-url")?.value?.trim() || state.settings.langfuse.baseUrl || "http://localhost:3000";
+      const grant = await requestLangfuseHostPermission(url);
+      if (!grant.granted) {
+        e.target.checked = false;
+        state.settings.langfuse.enabled = false;
+        const status = $("langfuse-status");
+        if (status) {
+          status.textContent = grant.message || "未授予网络权限";
+          status.className = "status bad";
+        }
+        return;
+      }
+    }
     state.settings.langfuse.enabled = e.target.checked;
   });
   $("langfuse-url")?.addEventListener("input", (e) => {
@@ -582,7 +673,7 @@ function wire() {
       publicKey: $("langfuse-pk")?.value?.trim() || state.settings?.langfuse?.publicKey,
       secretKey: $("langfuse-sk")?.value?.trim() || state.settings?.langfuse?.secretKey,
     };
-    const res = await testLangfuseConnection(cfg);
+    const res = await testLangfuseInDebugMode(cfg, { requestPermission: true });
     status.textContent = res.message;
     status.className = res.ok ? "status ok" : "status bad";
   });
@@ -725,7 +816,9 @@ async function boot() {
       console.warn("[pagelens] initMarkdown", err);
     }
     try {
+      await migrateLegacyDebugSettings();
       state.settings = (await applyOptionalLocalSettings()) || (await loadSettings());
+      await syncSidepanelDebugRuntime({ settings: state.settings });
       applyUiFont(state.settings.uiFont);
     } catch (err) {
       console.error("[pagelens] boot settings", err);
@@ -736,6 +829,7 @@ async function boot() {
     state.toolsExpanded = readUiPref("toolsExpanded", false);
     state.tasksExpanded = readUiPref("tasksExpanded", true);
     wire();
+    syncDebugModeUi();
     markWired();
     applyMediaLayout();
     renderComposerChip();

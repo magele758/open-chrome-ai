@@ -18,6 +18,8 @@ jobs:
       - run: npm test
       - name: Bundle is up to date
         run: git diff --exit-code extension/vendor/agent-loop-mini.mjs
+      - name: Release bundle & static security gate
+        run: npm run verify:release
       - name: Native host tests
         run: node native/test_host.mjs
       - name: Native gateway (socket broker + MCP shim) tests

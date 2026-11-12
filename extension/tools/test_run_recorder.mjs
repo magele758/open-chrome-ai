@@ -762,7 +762,12 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
   state.sessionId = "sess_sidepanel_test";
   state.settings = {
     ...state.settings,
-    diagnostics: { autoExportRunBundle: true },
+    debug: {
+      ...(state.settings?.debug || {}),
+      enabled: true,
+      traceLevel: "full",
+      autoExportRunBundle: true,
+    },
   };
   state.tab = { id: 11, windowId: 1, url: "https://agentseller.temu.com/mmsos/goods.html#/box", title: "采集箱" };
   state.pack = { url: state.tab.url, title: state.tab.title, hasVideo: false };
