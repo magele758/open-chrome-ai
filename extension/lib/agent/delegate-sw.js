@@ -8,7 +8,7 @@ import { debugLog } from "../debug-log.js";
 import { loadTabPack } from "../page-pack.js";
 import { streamTurn } from "../openai.js";
 import { systemPrompt } from "../prompts.js";
-import { persistRunBundle } from "../run-recorder.js";
+import { onAgentRunCompleted } from "../debug/hooks.js";
 import { isModelReady, loadSettings, resolveModel } from "../storage.js";
 import { createAgentTools, resolveActiveTools } from "./tools.js";
 import { describeCapsule } from "./trust/capsule.js";
@@ -92,7 +92,7 @@ export async function recordDelegateTaskFinish(
           ? "error"
           : "stop");
 
-  return persistRunBundle(
+  return onAgentRunCompleted(
     {
       runId: task.id,
       source: "sw-delegate",

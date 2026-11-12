@@ -7,7 +7,6 @@ import {
   fillBotBody,
   fillToolTrace,
   finishTraceTool,
-  maybeUploadTraceToLangfuse,
   pushTraceItem,
   renderMessages,
   renderSkills,
@@ -47,12 +46,12 @@ import { splitThinking } from "../lib/markdown.js";
 import { multimodalUserContent, streamTurn } from "../lib/openai.js";
 import { loadTabPack } from "../lib/page-pack.js";
 import { packToContext, systemPrompt } from "../lib/prompts.js";
+import { onAgentRunCompleted } from "../lib/debug/hooks.js";
 import {
   createRunId,
   formatTimestampForFilename,
-  persistRunBundle,
   stripAttachedPageContext,
-} from "../lib/run-recorder.js";
+} from "../lib/debug/trace-utils.js";
 import { ensureSkillBody } from "../lib/skill-folder.js";
 import { composeSkillPrompt, userInvokedSkill } from "../lib/slash.js";
 import { isModelReady, resolveModel } from "../lib/storage.js";
@@ -319,8 +318,10 @@ async function executeLoop({
         capture: captureTab,
         setImage: (url) => {
           lastCapturedImageUrl = url;
-          state.image = url;
-          renderAttach();
+          if (!isWorkflowRun) {
+            state.image = url;
+            renderAttach();
+          }
         },
         onTabsMutated: async () => {
           await refreshTab();
@@ -837,7 +838,7 @@ async function executeLoop({
         rawUserText !== undefined
           ? String(rawUserText)
           : (cleanLoopUserText || lastUserMsg?.text || "");
-      const persisted = await persistRunBundle({
+      const completed = await onAgentRunCompleted({
         runId,
         source: "sidepanel",
         settings: state.settings,
@@ -868,9 +869,8 @@ async function executeLoop({
         systemPrompt: systemPromptText,
         messagesSummary,
       });
-      if (persisted?.traceRecord) {
-        botMsg.traceLog = persisted.traceRecord;
-        maybeUploadTraceToLangfuse(botMsg.traceLog);
+      if (completed?.traceLog) {
+        botMsg.traceLog = completed.traceLog;
       }
     } catch (err) {
       const reason = String(err?.message || err);

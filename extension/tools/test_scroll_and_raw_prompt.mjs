@@ -354,19 +354,28 @@ const { JSDOM } = require("jsdom");
     state.settings = {
       ...state.settings,
       skillsEnabled: false,
-      diagnostics: { autoExportRunBundle: false },
+      debug: {
+        ...(state.settings?.debug || {}),
+        enabled: false,
+        autoExportRunBundle: false,
+      },
       providers: [{ id: "p1", name: "UnitModel", baseUrl: "https://llm.example/v1", apiKey: "sk-unit-fake-key", models: [{ id: "m1" }] }],
       textRef: { providerId: "p1", modelId: "m1" },
       text: { baseUrl: "https://llm.example/v1", apiKey: "sk-unit-fake-key", model: "m1" },
     };
 
     await sendPrompt(rawPrompt);
-    assert.equal(downloads.length, 0, "persistRunBundle does not auto-download when autoExportRunBundle is false");
+    assert.equal(downloads.length, 0, "persistRunBundle does not auto-download when debug.autoExportRunBundle is false");
     assert.equal(state.messages.at(-1)?.traceLog?.userPrompt, rawPrompt, "in-memory traceLog still populated");
 
     state.settings = {
       ...state.settings,
-      diagnostics: { autoExportRunBundle: true },
+      debug: {
+        ...(state.settings?.debug || {}),
+        enabled: true,
+        traceLevel: "full",
+        autoExportRunBundle: true,
+      },
     };
     await sendPrompt(rawPrompt);
 

@@ -1,23 +1,33 @@
 /**
  * 开发态自动热重载（零端口、零守护进程、纯 MV3 chrome.alarms + 静态 stamp 文件对比）。
  *
- * 关键不变量：
- * 1. 利用 chrome.storage.session["pl.devReloadSession"] 跨 MV3 SW 休眠唤醒保留基线，
- *    绝不在 alarm 唤醒时覆盖 baselineRaw；扩展 reload() 后 session 自动清空，新实例重新建立基线。
- * 2. 发现 stamp 变化时先检查 SW 委托任务、侧栏 pl.agent.busy、Inbox agent_prompt 是否忙碌；
- *    忙碌则延后到下一轮 alarm，空闲才调用 chrome.runtime.reload()。
- * 3. 所有预期容错分支仅使用 console.info + debugLog，严禁 console.warn / console.error。
+ * 硬门禁与不变量：
+ * 1. 生产构建（__PL_PROD_BUILD__）或非解包安装态（installType !== "development"）一律硬性禁用，
+ *    绝不注册闹钟、绝不探测 .dev-reload-stamp / local-settings.json、绝不触发 runtime.reload()。
+ * 2. 仅当 settings.debug.enabled && settings.debug.devAutoReload（或解包态兼容入口）开启时激活。
+ * 3. 写入 sw-startup-latest.json 前校验 downloads 权限，同时写入 storage.local["pl.debug.lastStartupReceipt"]。
+ * 4. 跨 MV3 SW 休眠唤醒保留 baselineRaw，忙碌时延后到下一轮 alarm，零 console.warn / console.error。
  */
 
-import { getDelegateManager } from "./agent/delegate.js";
-import { isInboxPromptActive } from "./agent/inbox-agent.js";
-import { debugLog } from "./debug-log.js";
+import { getDelegateManager } from "../agent/delegate.js";
+import { isInboxPromptActive } from "../agent/inbox-agent.js";
+import { debugLog } from "./ring-log.js";
+import {
+  DEBUG_SCHEMA_VERSION,
+  hasDownloadsPermission,
+  isDevelopmentInstall,
+  isProdBuild,
+  normalizeDebugSettings,
+} from "./policy.js";
+
+const __PL_PROD_BUILD__ = false;
 
 export const DEV_AUTO_RELOAD_DEFAULT = false;
 export const DEV_AUTO_RELOAD_STORAGE_KEY = "devAutoReloadEnabled";
 export const DEV_RELOAD_ALARM_NAME = "pagelens-dev-reload";
 export const DEV_RELOAD_PERIOD_MINUTES = 0.25;
 export const DEV_RELOAD_SESSION_KEY = "pl.devReloadSession";
+export const LAST_STARTUP_RECEIPT_STORAGE_KEY = "pl.debug.lastStartupReceipt";
 export const AGENT_BUSY_SESSION_KEY = "pl.agent.busy";
 export const AGENT_BUSY_TTL_MS = 30 * 60 * 1000;
 export const ABSENT_STAMP_RAW = "__absent__";
@@ -87,6 +97,8 @@ export async function readDevReloadStamp({
   chromeRef = globalThis.chrome,
   fetchImpl = globalThis.fetch,
 } = {}) {
+  if (__PL_PROD_BUILD__ || isProdBuild()) return null;
+  if (!(await isDevelopmentInstall({ chromeRef }))) return null;
   try {
     const getUrl = chromeRef?.runtime?.getURL;
     if (typeof getUrl !== "function" || typeof fetchImpl !== "function") return null;
@@ -104,7 +116,7 @@ export async function readDevReloadStamp({
 export function getBuildInfo({ chromeRef = globalThis.chrome } = {}) {
   return {
     extensionVersion: cachedBuildInfo.extensionVersion || readManifestVersion(chromeRef),
-    gitCommit: cachedBuildInfo.gitCommit || "dev-local",
+    gitCommit: cachedBuildInfo.gitCommit || (__PL_PROD_BUILD__ || isProdBuild() ? "release" : "dev-local"),
     stampTimestamp: cachedBuildInfo.stampTimestamp || "",
   };
 }
@@ -114,6 +126,13 @@ export async function resolveBuildInfo({
   fetchImpl = globalThis.fetch,
 } = {}) {
   const extensionVersion = readManifestVersion(chromeRef);
+  if (__PL_PROD_BUILD__ || isProdBuild() || !(await isDevelopmentInstall({ chromeRef }))) {
+    return {
+      extensionVersion,
+      gitCommit: "release",
+      stampTimestamp: "",
+    };
+  }
   try {
     const sessionData = await chromeRef?.storage?.session?.get?.(DEV_RELOAD_SESSION_KEY);
     const saved = sessionData?.[DEV_RELOAD_SESSION_KEY];
@@ -141,6 +160,8 @@ async function readLocalSettingsDevReloadFlag({
   chromeRef = globalThis.chrome,
   fetchImpl = globalThis.fetch,
 } = {}) {
+  if (__PL_PROD_BUILD__ || isProdBuild()) return null;
+  if (!(await isDevelopmentInstall({ chromeRef }))) return null;
   try {
     const getUrl = chromeRef?.runtime?.getURL;
     if (typeof getUrl !== "function" || typeof fetchImpl !== "function") return null;
@@ -150,6 +171,9 @@ async function readLocalSettingsDevReloadFlag({
     if (!res || !res.ok) return null;
     const text = typeof res.text === "function" ? await res.text() : JSON.stringify(await res.json());
     const parsed = JSON.parse(String(text || ""));
+    if (parsed?.debug && typeof parsed.debug === "object") {
+      return Boolean(parsed.debug.enabled === true && parsed.debug.devAutoReload === true);
+    }
     if (typeof parsed?.dev?.autoReload === "boolean") return parsed.dev.autoReload;
     if (typeof parsed?.devAutoReloadEnabled === "boolean") return parsed.devAutoReloadEnabled;
     return null;
@@ -163,13 +187,21 @@ export async function isDevAutoReloadEnabled({
   fetchImpl = globalThis.fetch,
   defaultEnabled = DEV_AUTO_RELOAD_DEFAULT,
 } = {}) {
+  if (__PL_PROD_BUILD__ || isProdBuild()) return false;
+  if (!(await isDevelopmentInstall({ chromeRef }))) return false;
+
   try {
     const data = await chromeRef?.storage?.local?.get?.([DEV_AUTO_RELOAD_STORAGE_KEY, "settings"]);
+    const rawSettings = data?.settings;
+    if (rawSettings?.debug && typeof rawSettings.debug === "object") {
+      const debug = normalizeDebugSettings(rawSettings);
+      return Boolean(debug.enabled && debug.devAutoReload);
+    }
     if (data && typeof data[DEV_AUTO_RELOAD_STORAGE_KEY] === "boolean") {
       return data[DEV_AUTO_RELOAD_STORAGE_KEY];
     }
-    if (data && typeof data?.settings?.dev?.autoReload === "boolean") {
-      return data.settings.dev.autoReload;
+    if (rawSettings && typeof rawSettings?.dev?.autoReload === "boolean") {
+      return rawSettings.dev.autoReload;
     }
   } catch {
     /* ignore local storage errors */
@@ -227,7 +259,32 @@ export async function setDevAutoReloadEnabled(
 ) {
   const flag = Boolean(enabled);
   try {
-    await chromeRef?.storage?.local?.set?.({ [DEV_AUTO_RELOAD_STORAGE_KEY]: flag });
+    const local = chromeRef?.storage?.local;
+    if (local?.get && local?.set) {
+      const got = (await local.get("settings")) || {};
+      const prevSettings = got.settings && typeof got.settings === "object" ? got.settings : {};
+      const prevDebug = normalizeDebugSettings(prevSettings);
+      const nextDebug = flag
+        ? {
+            ...prevDebug,
+            enabled: true,
+            traceLevel: prevDebug.traceLevel === "minimal" ? "full" : prevDebug.traceLevel,
+            devAutoReload: true,
+            writeStartupReceipt: true,
+          }
+        : {
+            ...prevDebug,
+            devAutoReload: false,
+          };
+      await local.set({
+        [DEV_AUTO_RELOAD_STORAGE_KEY]: flag,
+        settings: {
+          ...prevSettings,
+          debug: nextDebug,
+          debugSchemaVersion: DEBUG_SCHEMA_VERSION,
+        },
+      });
+    }
   } catch {
     /* ignore storage write error */
   }
@@ -237,16 +294,40 @@ export async function setDevAutoReloadEnabled(
   return { enabled: flag, effective: alarmState.enabled };
 }
 
-async function writeStartupReceipt(chromeRef, { extensionVersion, gitCommit, stampTimestamp, bootedAt }) {
+async function shouldWriteDiskStartupReceipt(chromeRef) {
+  if (!(await hasDownloadsPermission({ chromeRef }))) return false;
   if (typeof chromeRef?.downloads?.download !== "function") return false;
   try {
-    const payload = {
-      event: "sw.startup",
-      version: extensionVersion,
-      gitCommit,
-      stampTimestamp,
-      bootedAt,
-    };
+    const got = await chromeRef?.storage?.local?.get?.("settings");
+    const debug = got?.settings?.debug;
+    if (debug && typeof debug === "object" && debug.writeStartupReceipt === false) {
+      return false;
+    }
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+async function writeStartupReceipt(chromeRef, { extensionVersion, gitCommit, stampTimestamp, bootedAt }) {
+  const payload = {
+    event: "sw.startup",
+    version: extensionVersion,
+    gitCommit,
+    stampTimestamp,
+    bootedAt,
+  };
+  try {
+    await chromeRef?.storage?.local?.set?.({ [LAST_STARTUP_RECEIPT_STORAGE_KEY]: payload });
+  } catch {
+    /* ignore local receipt write error */
+  }
+
+  if (!(await shouldWriteDiskStartupReceipt(chromeRef))) {
+    return false;
+  }
+
+  try {
     await Promise.resolve(
       chromeRef.downloads.download({
         url: jsonToDataUrl(payload),
@@ -344,6 +425,11 @@ export function createDevReloadController({
     if (!initPromise) {
       initPromise = (async () => {
         const extensionVersion = readManifestVersion(chromeRef);
+        if (__PL_PROD_BUILD__ || isProdBuild() || !(await isDevelopmentInstall({ chromeRef }))) {
+          await clearDevReloadAlarm({ chromeRef });
+          return { initialized: true, enabled: false, blockedByInstallType: true, wokeFromHibernation: false, session: null };
+        }
+
         const enabled = await isDevAutoReloadEnabled({ chromeRef, fetchImpl, defaultEnabled });
         const existing = await readSession();
         if (existing && typeof existing === "object" && !existing.reloading) {
@@ -363,6 +449,7 @@ export function createDevReloadController({
             stampTimestamp: cachedBuildInfo.stampTimestamp || "",
           };
           await clearDevReloadAlarm({ chromeRef });
+          initPromise = null;
           return { initialized: true, enabled: false, wokeFromHibernation: false, session: null };
         }
 
@@ -406,6 +493,10 @@ export function createDevReloadController({
   }
 
   async function checkOnce() {
+    if (__PL_PROD_BUILD__ || isProdBuild() || !(await isDevelopmentInstall({ chromeRef }))) {
+      await clearDevReloadAlarm({ chromeRef });
+      return { action: "disabled", reason: "non_development_install" };
+    }
     if (reloading) return { action: "reloading" };
     if (checking) return { action: "checking" };
     checking = true;

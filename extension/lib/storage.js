@@ -3,10 +3,21 @@ import { hydrateTextCatalog } from "./text-providers.js";
 import { normalizeJevSettings } from "./jev.js";
 import { normalizeBridgeSettings } from "./bridge/policy.js";
 import { defaultIrreversibleActions, normalizeIrreversibleActions } from "./agent/trust/irreversible.js";
+import {
+  DEBUG_SCHEMA_VERSION,
+  DEFAULT_DEBUG_SETTINGS,
+  isDevelopmentInstall,
+  isProdBuild,
+  normalizeDebugSettings,
+} from "./debug/policy.js";
+
+const __PL_PROD_BUILD__ = false;
 
 export const PRESETS = [
   { id: "custom", name: "自定义", baseUrl: "" },
-  { id: "local-mock", name: "本地 Mock（开发）", baseUrl: "http://127.0.0.1:18787/v1" },
+  ...(__PL_PROD_BUILD__
+    ? []
+    : [{ id: "local-mock", name: "本地 Mock（开发）", baseUrl: "http://127.0.0.1:18787/v1", devOnly: true }]),
   { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1" },
   { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
   { id: "siliconflow", name: "SiliconFlow", baseUrl: "https://api.siliconflow.cn/v1" },
@@ -111,12 +122,8 @@ export function defaultSettings() {
     loopEngine: "kernel",
     hitlTimeoutSeconds: 30,
     skillsEnabled: false,
-    dev: {
-      autoReload: false,
-    },
-    diagnostics: {
-      autoExportRunBundle: false,
-    },
+    debug: { ...DEFAULT_DEBUG_SETTINGS },
+    debugSchemaVersion: DEBUG_SCHEMA_VERSION,
     dailyNotesFolder: "Daily",
     shortcuts: [],
     textProviders: [],
@@ -174,13 +181,12 @@ export function normalizeSettings(raw) {
   const timeout = Number(raw?.hitlTimeoutSeconds);
   merged.hitlTimeoutSeconds = Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.max(timeout, 5), 300) : 30;
   merged.skillsEnabled = raw?.skillsEnabled === true;
-  merged.dev = {
-    autoReload: raw?.dev?.autoReload === true || raw?.devAutoReload === true,
-  };
-  merged.diagnostics = {
-    autoExportRunBundle:
-      raw?.diagnostics?.autoExportRunBundle === true || raw?.autoExportRunBundle === true,
-  };
+  merged.debug = normalizeDebugSettings(raw);
+  merged.debugSchemaVersion = DEBUG_SCHEMA_VERSION;
+  delete merged.dev;
+  delete merged.diagnostics;
+  delete merged.devAutoReload;
+  delete merged.autoExportRunBundle;
   merged.langfuse = {
     enabled: raw?.langfuse?.enabled === true,
     baseUrl: String(raw?.langfuse?.baseUrl || "http://localhost:3000").trim().replace(/\/+$/, ""),
@@ -206,36 +212,47 @@ export async function loadSettings() {
 }
 
 /** Optional unpacked-only overlay (extension/local-settings.json, gitignored). */
-export async function applyOptionalLocalSettings() {
+export async function applyOptionalLocalSettings({
+  chromeRef = globalThis.chrome,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (__PL_PROD_BUILD__ || isProdBuild()) return null;
+  if (!(await isDevelopmentInstall({ chromeRef }))) return null;
   try {
-    const res = await fetch(chrome.runtime.getURL("local-settings.json"));
+    const res = await fetchImpl(chromeRef.runtime.getURL("local-settings.json"));
     if (!res.ok) return null;
     const extra = await res.json();
     if (!extra || extra.rev == null) return null;
-    const { plLocalApplied } = await chrome.storage.local.get("plLocalApplied");
+    const { plLocalApplied } = await chromeRef.storage.local.get("plLocalApplied");
     if (plLocalApplied === extra.rev) return null;
     const cur = await loadSettings();
     const next = { ...cur };
     if (extra.asr && typeof extra.asr === "object") next.asr = { ...cur.asr, ...extra.asr };
     if (extra.tts && typeof extra.tts === "object") next.tts = { ...cur.tts, ...extra.tts };
     if (extra.langfuse && typeof extra.langfuse === "object") next.langfuse = { ...cur.langfuse, ...extra.langfuse };
-    if (extra.dev && typeof extra.dev === "object") next.dev = { ...cur.dev, ...extra.dev };
-    if (extra.diagnostics && typeof extra.diagnostics === "object") {
-      next.diagnostics = { ...cur.diagnostics, ...extra.diagnostics };
+    if (extra.debug && typeof extra.debug === "object") {
+      next.debug = normalizeDebugSettings({ debug: { ...cur.debug, ...extra.debug } });
+    } else if (extra.dev || extra.diagnostics || "devAutoReloadEnabled" in extra || "autoExportRunBundle" in extra) {
+      const legacyAutoReload = extra?.dev?.autoReload === true || extra?.devAutoReloadEnabled === true;
+      const legacyAutoExport =
+        extra?.diagnostics?.autoExportRunBundle === true || extra?.autoExportRunBundle === true;
+      if (legacyAutoReload || legacyAutoExport) {
+        next.debug = normalizeDebugSettings({
+          debug: {
+            ...cur.debug,
+            enabled: true,
+            traceLevel: "full",
+            devAutoReload: legacyAutoReload || cur.debug?.devAutoReload === true,
+            writeStartupReceipt: legacyAutoReload || cur.debug?.writeStartupReceipt === true,
+            autoExportRunBundle: legacyAutoExport || cur.debug?.autoExportRunBundle === true,
+            captureFailureScreenshot: true,
+            showLocalMockPreset: true,
+          },
+        });
+      }
     }
     const saved = await saveSettings(next);
-    const localPatch = { plLocalApplied: extra.rev };
-    if (typeof extra?.dev?.autoReload === "boolean") {
-      localPatch.devAutoReloadEnabled = extra.dev.autoReload;
-    } else if (typeof extra?.devAutoReloadEnabled === "boolean") {
-      localPatch.devAutoReloadEnabled = extra.devAutoReloadEnabled;
-    }
-    if (typeof extra?.diagnostics?.autoExportRunBundle === "boolean") {
-      localPatch.autoExportRunBundle = extra.diagnostics.autoExportRunBundle;
-    } else if (typeof extra?.autoExportRunBundle === "boolean") {
-      localPatch.autoExportRunBundle = extra.autoExportRunBundle;
-    }
-    await chrome.storage.local.set(localPatch);
+    await chromeRef.storage.local.set({ plLocalApplied: extra.rev });
     return saved;
   } catch {
     return null;
@@ -286,8 +303,10 @@ export function isSkillsEnabled(settings) {
   return settings?.skillsEnabled === true;
 }
 
-export function presetsFor(group) {
+export function presetsFor(group, settings = null) {
   if (group === "asr") return ASR_PRESETS;
   if (group === "tts") return TTS_PRESETS;
-  return PRESETS;
+  if (__PL_PROD_BUILD__ || isProdBuild()) return PRESETS;
+  const showLocalMock = Boolean(settings?.debug?.enabled && settings?.debug?.showLocalMockPreset);
+  return showLocalMock ? PRESETS : PRESETS.filter((p) => !p.devOnly);
 }

@@ -762,7 +762,12 @@ assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "autoExportRunBundle must de
   state.sessionId = "sess_sidepanel_unit";
   state.settings = {
     ...state.settings,
-    diagnostics: { autoExportRunBundle: true },
+    debug: {
+      ...(state.settings?.debug || {}),
+      enabled: true,
+      traceLevel: "full",
+      autoExportRunBundle: true,
+    },
   };
   state.tab = { id: 11, windowId: 1, url: "https://portal.example.test/console/tasks.html#/inbox", title: "待办箱" };
   state.pack = { url: state.tab.url, title: state.tab.title, hasVideo: false };

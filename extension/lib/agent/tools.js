@@ -67,7 +67,7 @@ import { requireHostUrl, requireOptionalFeature } from "../optional-permissions.
 import { aliasAgentPath, isAllowedAgentReadName, isBlockedAgentRoot } from "./fs-policy.js";
 import { isShellCommandWhitelisted, shellPolicyBlock } from "./shell-policy.js";
 import { debugLog } from "../debug-log.js";
-import { stripAttachedPageContext } from "../run-recorder.js";
+import { stripAttachedPageContext } from "../debug/trace-utils.js";
 import { stripProhibitedClauses } from "./trust/capsule.js";
 import { decideToolCall } from "./trust/decide.js";
 import {

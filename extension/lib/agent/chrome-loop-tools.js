@@ -19,7 +19,7 @@ import {
   shellPolicyBlock,
 } from "./shell-policy.js";
 import { debugLog } from "../debug-log.js";
-import { classifyToolOutcome } from "../run-recorder.js";
+import { classifyToolOutcome } from "../debug/trace-utils.js";
 import { foldedToChromeHistory } from "./chrome-loop-codec.js";
 
 const TOOL_RESULT_CHARS = 12000;

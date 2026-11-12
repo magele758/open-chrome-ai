@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEV_AUTO_RELOAD_DEFAULT } from "../lib/dev-reload.js";
+import { DEV_AUTO_RELOAD_DEFAULT } from "../lib/debug/reload-dev.js";
 import { isAllowedPermissionQuery } from "../lib/optional-permissions.js";
 import { AUTO_EXPORT_RUN_BUNDLE_DEFAULT } from "../lib/run-recorder.js";
 import { defaultSettings } from "../lib/storage.js";
@@ -138,11 +138,17 @@ assert.ok(allFiles.length >= 40, "expected extension source files to be scanned"
   assert.equal(AUTO_EXPORT_RUN_BUNDLE_DEFAULT, false, "AUTO_EXPORT_RUN_BUNDLE_DEFAULT must be false");
 
   const defaults = defaultSettings();
-  assert.equal(defaults.dev?.autoReload, false, "defaultSettings().dev.autoReload must be false");
+  assert.equal(defaults.debug?.enabled, false, "defaultSettings().debug.enabled must be false");
+  assert.equal(defaults.debug?.devAutoReload, false, "defaultSettings().debug.devAutoReload must be false");
   assert.equal(
-    defaults.diagnostics?.autoExportRunBundle,
+    defaults.debug?.autoExportRunBundle,
     false,
-    "defaultSettings().diagnostics.autoExportRunBundle must be false",
+    "defaultSettings().debug.autoExportRunBundle must be false",
+  );
+  assert.ok(defaults.dev?.autoReload !== true, "legacy defaultSettings().dev.autoReload must not be true");
+  assert.ok(
+    defaults.diagnostics?.autoExportRunBundle !== true,
+    "legacy defaultSettings().diagnostics.autoExportRunBundle must not be true",
   );
 }
 

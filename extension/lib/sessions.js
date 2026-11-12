@@ -176,6 +176,67 @@ function normalizeTraceItem(raw) {
   return item;
 }
 
+function scrubInlineDataImage(val, maxChars = 4000) {
+  if (typeof val !== "string") return val;
+  const scrubbed = val.replace(
+    /data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/gi,
+    (m) => `[IMAGE_DATA_URL len=${m.length}]`,
+  );
+  return scrubbed.length > maxChars ? `${scrubbed.slice(0, maxChars)}…` : scrubbed;
+}
+
+function compactStoredTraceStep(rawStep) {
+  if (!rawStep || typeof rawStep !== "object") return null;
+  const {
+    messages: _dropMessages,
+    messagesDelta: _dropMessagesDelta,
+    tools: _dropTools,
+    archivedContent: _dropArchived,
+    screenshotDataUrl: _dropScreenshot,
+    ...rest
+  } = rawStep;
+  const out = {};
+  for (const [k, v] of Object.entries(rest)) {
+    if (v === undefined || typeof v === "function") continue;
+    out[k] = typeof v === "string" ? scrubInlineDataImage(v, 2000) : v;
+  }
+  return out;
+}
+
+export function compactStoredTraceLog(raw) {
+  if (!raw || typeof raw !== "object") return undefined;
+  const {
+    conversationMessages: _dropConvMsgs,
+    conversationContext: _dropConvCtx,
+    systemPrompt: _dropSysPrompt,
+    archivedContent: _dropArchived,
+    ...rest
+  } = raw;
+  const out = {};
+  for (const [k, v] of Object.entries(rest)) {
+    if (v === undefined || typeof v === "function") continue;
+    if (k === "steps" && Array.isArray(v)) {
+      out.steps = v.map(compactStoredTraceStep).filter(Boolean).slice(0, 120);
+      continue;
+    }
+    if (k === "toolSteps" && Array.isArray(v)) {
+      out.toolSteps = v.slice(0, 120).map((ts) => {
+        if (!ts || typeof ts !== "object") return ts;
+        const { screenshotArtifact, ...tsRest } = ts;
+        return {
+          ...tsRest,
+          ...(typeof screenshotArtifact === "string" && !screenshotArtifact.startsWith("data:image/")
+            ? { screenshotArtifact }
+            : {}),
+        };
+      });
+      continue;
+    }
+    out[k] = typeof v === "string" ? scrubInlineDataImage(v, 4000) : v;
+  }
+  return out;
+}
+
 export function normalizeMessage(raw) {
   const trace = Array.isArray(raw?.trace)
     ? raw.trace.map(normalizeTraceItem).filter(Boolean).slice(0, 40)
@@ -187,7 +248,7 @@ export function normalizeMessage(raw) {
     totalTokens: Math.max(0, Number(raw.metrics.totalTokens) || 0),
     finishReason: String(raw.metrics.finishReason || ""),
   } : undefined;
-  const traceLog = raw?.traceLog && typeof raw.traceLog === "object" ? raw.traceLog : undefined;
+  const traceLog = compactStoredTraceLog(raw?.traceLog);
   return {
     role: raw?.role === "user" ? "user" : "bot",
     text: String(raw?.text || "").slice(0, MAX_TEXT),
@@ -346,6 +407,7 @@ export function sessionsToJSON(sessions) {
       sessions: (sessions || []).map((s) => {
         const n = normalizeSession(s);
         delete n.run;
+        n.messages = (n.messages || []).map(({ traceLog: _dropTraceLog, ...m }) => m);
         return n;
       }),
     },

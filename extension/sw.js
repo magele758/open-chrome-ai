@@ -13,17 +13,9 @@ import { installInboxConfirm } from "./lib/agent/inbox-confirm.js";
 import { AGENT_TASK_EVENTS, onAgentTaskEvent } from "./lib/agent/delegate.js";
 import { installDelegate } from "./lib/agent/delegate-sw.js";
 import { installAgentGateway } from "./lib/bridge/gateway.js";
-import { installDevAutoReload, syncDevReloadAlarm } from "./lib/dev-reload.js";
+import { initSwDebugRuntime } from "./lib/debug/sw-entry.js";
 
-const devReloadCtrl = installDevAutoReload();
-applyOptionalLocalSettings()
-  .then((applied) => {
-    if (applied) {
-      syncDevReloadAlarm().catch(() => {});
-      devReloadCtrl.init().catch(() => {});
-    }
-  })
-  .catch(() => {});
+initSwDebugRuntime({ applyLocalSettingsFn: applyOptionalLocalSettings }).catch(() => {});
 installDelegate();
 onAgentTaskEvent((ev) => {
   if (ev.type === AGENT_TASK_EVENTS.FINISHED) completeHeadlessAgentPrompt().catch(() => {});
@@ -39,8 +31,7 @@ setTimeout(() => {
 }, 1500);
 
 chrome.runtime.onInstalled.addListener(() => {
-  applyOptionalLocalSettings().catch(() => {});
-  syncDevReloadAlarm().catch(() => {});
+  initSwDebugRuntime({ applyLocalSettingsFn: applyOptionalLocalSettings }).catch(() => {});
   syncAgentInboxAlarm().catch(() => {});
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   chrome.contextMenus.removeAll(() => {
@@ -58,8 +49,7 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  applyOptionalLocalSettings().catch(() => {});
-  syncDevReloadAlarm().catch(() => {});
+  initSwDebugRuntime({ applyLocalSettingsFn: applyOptionalLocalSettings }).catch(() => {});
   syncAgentInboxAlarm().catch(() => {});
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
