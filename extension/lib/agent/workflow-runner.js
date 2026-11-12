@@ -1507,7 +1507,18 @@ export async function runDeterministicWorkflow({
           const subSel = String(params.selectSelector || ".ant-select");
           const groupVals = params.groupValues.map((v) => String(v));
           const groupCount = await evalJs(
-            `return document.querySelectorAll(${JSON.stringify(groupSel)}).length;`,
+            `const isLive = (n) => {
+              for (let p = n; p && p.nodeType === 1; p = p.parentElement) {
+                const cl = typeof p.className === "string" ? p.className : "";
+                if (p.hidden || /\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cl)) return false;
+                if (typeof getComputedStyle === "function") {
+                  const st = getComputedStyle(p);
+                  if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+                }
+              }
+              return true;
+            };
+            return [...document.querySelectorAll(${JSON.stringify(groupSel)})].filter(isLive).length;`,
             stepCtx,
           );
           if (!groupCount) {
@@ -1530,8 +1541,19 @@ export async function runDeterministicWorkflow({
               let tagged = false;
               while (true) {
                 tagged = await evalJs(
-                  `const grp = document.querySelectorAll(${JSON.stringify(groupSel)})[${g}];
-                  const el = grp ? grp.querySelectorAll(${JSON.stringify(subSel)})[${k}] : null;
+                  `const isLive = (n) => {
+                    for (let p = n; p && p.nodeType === 1; p = p.parentElement) {
+                      const cl = typeof p.className === "string" ? p.className : "";
+                      if (p.hidden || /\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cl)) return false;
+                      if (typeof getComputedStyle === "function") {
+                        const st = getComputedStyle(p);
+                        if (st && (st.display === "none" || st.visibility === "hidden")) return false;
+                      }
+                    }
+                    return true;
+                  };
+                  const grp = [...document.querySelectorAll(${JSON.stringify(groupSel)})].filter(isLive)[${g}];
+                  const el = grp ? [...grp.querySelectorAll(${JSON.stringify(subSel)})].filter(isLive)[${k}] : null;
                   if (!el) return false;
                   el.setAttribute("data-pl-wf-act", ${JSON.stringify(gNonce)});
                   return true;`,
@@ -1751,8 +1773,23 @@ export async function runDeterministicWorkflow({
             ...(params.optionSelector ? { selector: String(params.optionSelector) } : {}),
             text: expectedText,
           };
-          const { parsed: clickRes, text: clickTxt } = await invokeRawTool("click", clickArgs, stepCtx);
+          let { parsed: clickRes, text: clickTxt } = await invokeRawTool("click", clickArgs, stepCtx);
+          if ((!clickRes || clickRes.ok !== true) && params.dropdownSelector) {
+            const optSettleDeadline = Date.now() + Math.min(timeoutMs, 2200);
+            while ((!clickRes || clickRes.ok !== true) && Date.now() < optSettleDeadline) {
+              await sleepWithAbort(150, signal);
+              ({ parsed: clickRes, text: clickTxt } = await invokeRawTool("click", clickArgs, stepCtx));
+            }
+          }
           if (!clickRes || clickRes.ok !== true) {
+            const optProbeSel = String(params.optionSelector || "li.ant-cascader-menu-item, .ant-select-item-option");
+            const availableOptions = await evalJs(
+              `return [...document.querySelectorAll(${JSON.stringify(optProbeSel)})]
+                .map((el) => (el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim())
+                .filter(Boolean)
+                .slice(0, 20);`,
+              stepCtx,
+            ).catch(() => []);
             throw new WorkflowError({
               code: "WORKFLOW_CASCADER_OPTION_CLICK_FAILED",
               blame: "工具",
@@ -1760,7 +1797,10 @@ export async function runDeterministicWorkflow({
               stepId: stepCtx.stepId,
               op: stepCtx.op,
               expected: `点击级联目标路径 "${expectedText}"`,
-              actual: clickTxt.slice(0, 300),
+              actual: JSON.stringify({
+                clickError: clickTxt.slice(0, 240),
+                availableOptions: Array.isArray(availableOptions) ? availableOptions : [],
+              }),
               message: `点击级联路径失败`,
             });
           }
@@ -2462,6 +2502,7 @@ export async function runDeterministicWorkflow({
             `const root = document.querySelector(${JSON.stringify(containerSelector)}) || document;
             const fields = [...root.querySelectorAll(${JSON.stringify(fieldSelector)})];
             const missing = [];
+            const missingDetails = [];
             let starredCount = 0;
             for (const f of fields) {
               const lblEl = f.querySelector(${JSON.stringify(labelSelector)});
@@ -2477,13 +2518,26 @@ export async function runDeterministicWorkflow({
                 .map((i) => String(i.value || "").trim())
                 .filter(Boolean);
               if (!items.length && !inputs.length) {
-                missing.push(label || "(未命名必填属性)");
+                const name = label || "(未命名必填属性)";
+                missing.push(name);
+                const hasTable = Boolean(f.querySelector("table, tbody"));
+                const hasSelect = Boolean(f.querySelector(".ant-select, .el-select, select"));
+                const nonSearchInputs = [...f.querySelectorAll("input")].filter(
+                  (i) => i.type !== "search" && i.type !== "checkbox" && i.type !== "radio",
+                );
+                missingDetails.push({
+                  label: name,
+                  kind: hasTable ? "table" : hasSelect && nonSearchInputs.length ? "select+input" : hasSelect ? "select" : "input",
+                });
               }
             }
-            return { starredCount, missing };`,
+            return { starredCount, missing, missingDetails };`,
             stepCtx,
           );
           if (Array.isArray(audit?.missing) && audit.missing.length > 0) {
+            const detailStr = Array.isArray(audit?.missingDetails)
+              ? audit.missingDetails.map((d) => `${d.label}[${d.kind}]`).join("、")
+              : audit.missing.join("、");
             throw new WorkflowError({
               code: "WORKFLOW_STARRED_ATTR_MISSING",
               blame: "workflow",
@@ -2491,7 +2545,7 @@ export async function runDeterministicWorkflow({
               stepId: stepCtx.stepId,
               op: stepCtx.op,
               expected: "所有带 * 必填类目属性均非空",
-              actual: `存在未填必填属性 (${audit.missing.length} 项): ${audit.missing.join("、")}`,
+              actual: `存在未填必填属性 (${audit.missing.length} 项): ${detailStr}`,
               message: `存在未配置的必填属性: ${audit.missing.join("、")}`,
             });
           }
@@ -2505,10 +2559,11 @@ export async function runDeterministicWorkflow({
         const alreadyBoundTexts = Array.isArray(params.alreadyBoundTexts)
           ? params.alreadyBoundTexts.map(String)
           : [];
+        const alreadyBoundRegex = params.alreadyBoundRegex ? new RegExp(String(params.alreadyBoundRegex)) : null;
         const openButtonText = String(params.openButtonText || "");
         const rowMustInclude = Array.isArray(params.rowMustInclude) ? params.rowMustInclude.map(String) : [];
         const rowActionText = String(params.rowActionText || "");
-        const optionClicks = Array.isArray(params.optionClicks) ? params.optionClicks.map(String) : [];
+        const rawOptionClicks = Array.isArray(params.optionClicks) ? params.optionClicks : [];
         const confirmText = String(params.confirmText || "确认");
         const timeoutMs = Math.max(1000, Number(params.timeoutMs) || 12000);
 
@@ -2527,8 +2582,9 @@ export async function runDeterministicWorkflow({
         };
         if (
           existing &&
-          alreadyBoundTexts.length > 0 &&
-          alreadyBoundTexts.every((sub) => String(existing).includes(sub))
+          (alreadyBoundTexts.length > 0 || alreadyBoundRegex) &&
+          alreadyBoundTexts.every((sub) => String(existing).includes(sub)) &&
+          (!alreadyBoundRegex || alreadyBoundRegex.test(String(existing)))
         ) {
           return { ok: true, skipped: true, boundText: clipBound(existing) };
         }
@@ -2580,6 +2636,8 @@ export async function runDeterministicWorkflow({
         const rowNonce = `ent_${++nonceCounter}`;
         const rowProbe = await evalJs(
           `const modals = [...document.querySelectorAll(".ant-modal")].filter((m) => {
+            const cls = (m.className || "") + " " + ((m.parentElement && m.parentElement.className) || "");
+            if (/\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cls)) return false;
             const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
             const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
             const r = m.getBoundingClientRect();
@@ -2622,7 +2680,87 @@ export async function runDeterministicWorkflow({
           targetUrl: currentUrl,
         });
 
-        for (const optText of optionClicks) {
+        const selectedOptions = [];
+        const dynamicVerifySubstrings = [];
+        for (const optSpec of rawOptionClicks) {
+          if (optSpec && typeof optSpec === "object" && !Array.isArray(optSpec)) {
+            const groupIdx = Math.max(0, Number(optSpec.radioGroupIndex) || 0);
+            const preferList = Array.isArray(optSpec.prefer)
+              ? optSpec.prefer.map((x) => String(x).trim()).filter(Boolean)
+              : [];
+            const radioNonce = `entopt_${++nonceCounter}`;
+            const optDeadline = Date.now() + 5000;
+            let radioProbe = null;
+            while (true) {
+              radioProbe = await evalJs(
+                `const modals = [...document.querySelectorAll(".ant-modal")].filter((m) => {
+                  const cls = \`\${m.className || ""} \${(m.parentElement && m.parentElement.className) || ""}\`;
+                  if (/\\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\\b/.test(cls)) return false;
+                  const wrap = m.closest(".ant-modal-wrap") || m.parentElement;
+                  const ws = wrap ? getComputedStyle(wrap) : getComputedStyle(m);
+                  const r = m.getBoundingClientRect();
+                  return ws.display !== "none" && ws.visibility !== "hidden" && r.width > 0 && r.height > 0;
+                });
+                const top = modals[modals.length - 1] || document;
+                const groups = [...top.querySelectorAll(".ant-radio-group, [role='radiogroup']")];
+                const grp = groups[${groupIdx}] || null;
+                if (!grp) return { found: false, groupCount: groups.length };
+                const norm = (s) => String(s || "").replace(/\\s+/g, " ").trim();
+                const items = [
+                  ...grp.querySelectorAll(
+                    "label.ant-radio-wrapper:not(.ant-radio-wrapper-disabled), label.ant-radio-button-wrapper:not(.ant-radio-button-wrapper-disabled), [role='radio']:not([aria-disabled='true'])",
+                  ),
+                ];
+                if (!items.length) return { found: false, groupCount: groups.length, available: [] };
+                const entries = items
+                  .map((el) => ({ el, text: norm(el.innerText || el.textContent) }))
+                  .filter((e) => Boolean(e.text));
+                if (!entries.length) return { found: false, groupCount: groups.length, available: [] };
+                const prefer = ${JSON.stringify(preferList)};
+                let hit = null;
+                for (const p of prefer) {
+                  hit = entries.find((e) => e.text === p) || null;
+                  if (hit) break;
+                }
+                if (!hit && ${optSpec.allowFirstFallback !== false ? "true" : "false"}) {
+                  hit = entries[0];
+                }
+                if (!hit) {
+                  return { found: false, available: entries.map((e) => e.text) };
+                }
+                hit.el.setAttribute("data-pl-wf-act", ${JSON.stringify(radioNonce)});
+                return { found: true, chosenText: hit.text, available: entries.map((e) => e.text) };`,
+                stepCtx,
+              );
+              if (radioProbe?.found || Date.now() >= optDeadline) break;
+              await sleepWithAbort(100, signal);
+            }
+            if (!radioProbe?.found) {
+              throw new WorkflowError({
+                code: "WORKFLOW_ENTITY_OPTION_CLICK_FAILED",
+                blame: "workflow",
+                stepIndex: stepCtx.stepIndex,
+                stepId: stepCtx.stepId,
+                op: stepCtx.op,
+                expected: `单选组[${groupIdx}] 命中候选 ${JSON.stringify(preferList)}`,
+                actual: JSON.stringify(radioProbe),
+                message: `弹窗内单选组[${groupIdx}] 未找到可用选项`,
+              });
+            }
+            await clickMarkedElement({
+              markNonce: radioNonce,
+              buttonText: radioProbe.chosenText,
+              stepCtx,
+              targetUrl: currentUrl,
+            });
+            selectedOptions.push(radioProbe.chosenText);
+            if (optSpec.verifyPrefix) {
+              dynamicVerifySubstrings.push(`${String(optSpec.verifyPrefix)}${radioProbe.chosenText}`);
+            }
+            continue;
+          }
+
+          const optText = String(optSpec);
           await invokeRawTool("wait_for", { text: optText, timeoutMs: 5000 }, stepCtx);
           assertClickTargetSafe({
             labelText: optText,
@@ -2645,6 +2783,7 @@ export async function runDeterministicWorkflow({
               message: `点击选项失败: ${optText}`,
             });
           }
+          selectedOptions.push(optText);
         }
 
         assertClickTargetSafe({
@@ -2669,6 +2808,7 @@ export async function runDeterministicWorkflow({
           });
         }
 
+        const mustIncludeAfter = [...alreadyBoundTexts, ...dynamicVerifySubstrings];
         const bindDeadline = Date.now() + 5000;
         let boundAfter = "";
         while (true) {
@@ -2678,7 +2818,11 @@ export async function runDeterministicWorkflow({
               .join(" | ");`,
             stepCtx,
           );
-          if (boundAfter && alreadyBoundTexts.every((sub) => String(boundAfter).includes(sub))) {
+          if (
+            boundAfter &&
+            mustIncludeAfter.every((sub) => String(boundAfter).includes(sub)) &&
+            (!alreadyBoundRegex || alreadyBoundRegex.test(String(boundAfter)))
+          ) {
             break;
           }
           if (Date.now() >= bindDeadline) {
@@ -2688,14 +2832,14 @@ export async function runDeterministicWorkflow({
               stepIndex: stepCtx.stepIndex,
               stepId: stepCtx.stepId,
               op: stepCtx.op,
-              expected: `已绑定区域包含 ${JSON.stringify(alreadyBoundTexts)}`,
-              actual: boundAfter || "(空)",
+              expected: `已绑定区域包含 ${JSON.stringify(mustIncludeAfter)}${alreadyBoundRegex ? ` 且匹配 ${alreadyBoundRegex}` : ""}`,
+              actual: clipBound(boundAfter) || "(空)",
               message: `绑定实体回读校验失败`,
             });
           }
           await sleepWithAbort(150, signal);
         }
-        return { ok: true, skipped: false, boundText: boundAfter };
+        return { ok: true, skipped: false, selectedOptions, boundText: clipBound(boundAfter) };
       }
 
       case "click_and_wait": {

@@ -1224,28 +1224,56 @@ export async function completeSelectOption(spec) {
     return out;
   };
   const matchesVal = (s) => s === val || Boolean(cVal && compactCjk(s) === cVal);
-  const findVisiblePopup = () => {
+  const findVisiblePopup = (allowUnownedFallback = false) => {
     const boxVisible = (el) => {
       if (!el) return false;
       if (el.classList?.contains("ant-select-dropdown-hidden")) return false;
-      const st = window.getComputedStyle(el);
-      if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+      for (let cur = el; cur && cur.nodeType === 1; cur = cur.parentElement) {
+        const cls = typeof cur.className === "string" ? cur.className : "";
+        if (cur.hidden || (cls && /\b(?:ant|el|rc)-[a-z0-9-]*-leave(?:-active|-to)?\b/.test(cls))) {
+          return false;
+        }
+        const st = window.getComputedStyle(cur);
+        if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) return false;
+      }
       const r = el.getBoundingClientRect();
       return r.width > 0 && r.height > 0;
     };
-    const inp = comboRoot.querySelector?.("input[aria-controls], input[aria-owns]") || comboRoot;
-    const ctrlId = inp?.getAttribute?.("aria-controls") || inp?.getAttribute?.("aria-owns") || "";
+    const inp =
+      comboRoot.querySelector?.("input[aria-controls], input[aria-owns], [aria-controls], [aria-owns]") || comboRoot;
+    const rawCtrl = clean(inp?.getAttribute?.("aria-controls") || inp?.getAttribute?.("aria-owns") || "");
+    const ctrlId = rawCtrl ? rawCtrl.split(/\s+/)[0] : "";
     if (ctrlId) {
-      const listEl = document.getElementById(ctrlId);
+      const listEl = document.getElementById?.(ctrlId) || null;
       const wrap =
         listEl?.closest?.(".ant-select-dropdown, .el-select-dropdown, [data-radix-popper-content-wrapper]") || listEl;
       if (wrap && boxVisible(wrap)) return wrap;
+      if (!allowUnownedFallback) return null;
     }
+    const foreignCtrlIds = new Set();
+    for (const owner of document.querySelectorAll?.("[aria-controls], [aria-owns]") || []) {
+      if (owner === comboRoot || comboRoot.contains?.(owner)) continue;
+      const ids = `${owner.getAttribute?.("aria-controls") || ""} ${owner.getAttribute?.("aria-owns") || ""}`
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      for (const id of ids) {
+        if (id && id !== ctrlId) foreignCtrlIds.add(id);
+      }
+    }
+    const isForeignPopup = (p) => {
+      if (!p || !foreignCtrlIds.size) return false;
+      if (p.id && foreignCtrlIds.has(p.id)) return true;
+      for (const n of p.querySelectorAll?.("[id]") || []) {
+        if (n?.id && foreignCtrlIds.has(n.id)) return true;
+      }
+      return false;
+    };
     const all = [
-      ...document.querySelectorAll(
+      ...(document.querySelectorAll?.(
         ".ant-select-dropdown:not(.ant-select-dropdown-hidden), .el-select-dropdown, [role='listbox']",
-      ),
-    ].filter(boxVisible);
+      ) || []),
+    ].filter((p) => boxVisible(p) && !isForeignPopup(p));
     return all.length ? all[all.length - 1] : null;
   };
   const listVisibleOptions = (popup) => {
@@ -1436,13 +1464,41 @@ export async function completeSelectOption(spec) {
     }
 
     const t0 = Date.now();
-    let popup = findVisiblePopup();
+    let retriggeredOpen = false;
+    let popup = findVisiblePopup(false);
     while (!popup && Date.now() - t0 < 1200) {
       await sleep(50);
-      popup = findVisiblePopup();
+      const elapsed = Date.now() - t0;
+      if (!retriggeredOpen && elapsed >= 220 && !isComboOpen(comboRoot)) {
+        retriggeredOpen = true;
+        const trig = comboRoot.querySelector?.(".ant-select-selector, .el-select__wrapper") || comboRoot;
+        if (trig && !isFileUploadTrigger(trig)) {
+          const tr = trig.getBoundingClientRect?.();
+          if (tr && tr.width > 0 && tr.height > 0) {
+            const tx = Math.round(tr.x + tr.width / 2);
+            const ty = Math.round(tr.y + tr.height / 2);
+            trig.dispatchEvent?.(
+              new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: tx, clientY: ty }),
+            );
+            trig.dispatchEvent?.(
+              new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: tx, clientY: ty }),
+            );
+            trig.click?.();
+          }
+        }
+      }
+      popup = findVisiblePopup(elapsed >= 900);
     }
 
     let opt = findOption(popup);
+    if (!opt && popup) {
+      const tHydrate = Date.now();
+      while (!opt && Date.now() - tHydrate < 400) {
+        await sleep(45);
+        popup = findVisiblePopup(Date.now() - t0 >= 900) || popup;
+        opt = findOption(popup);
+      }
+    }
     const searchInput = comboRoot.querySelector?.(
       "input[type='search'], input.ant-select-selection-search-input, input.el-select__input, input[role='combobox']",
     );
@@ -1460,14 +1516,14 @@ export async function completeSelectOption(spec) {
       const tSearch = Date.now();
       while (Date.now() - tSearch < 1200) {
         await sleep(65);
-        popup = findVisiblePopup();
+        popup = findVisiblePopup(true) || popup;
         opt = findOption(popup);
         if (opt) break;
       }
     }
 
     if (!opt) {
-      popup = findVisiblePopup();
+      popup = findVisiblePopup(true) || popup;
       if (popup) {
         const holder =
           popup.querySelector?.(".rc-virtual-list-holder, .el-scrollbar__wrap") ||
@@ -1483,7 +1539,7 @@ export async function completeSelectOption(spec) {
             if (typeof holder.scrollTo === "function") holder.scrollTo({ top: nextTop, behavior: "instant" });
             holder.scrollTop = nextTop;
             await sleep(45);
-            popup = findVisiblePopup() || popup;
+            popup = findVisiblePopup(true) || popup;
             opt = findOption(popup);
             if (nextTop >= holder.scrollHeight - holder.clientHeight) break;
           }
@@ -1492,7 +1548,7 @@ export async function completeSelectOption(spec) {
     }
 
     if (!opt) {
-      const availableOptions = listVisibleOptions(findVisiblePopup() || popup)
+      const availableOptions = listVisibleOptions(findVisiblePopup(true) || popup)
         .map(optionLabel)
         .filter(Boolean)
         .slice(0, 20);

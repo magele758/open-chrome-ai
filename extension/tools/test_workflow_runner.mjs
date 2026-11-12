@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 import { extractCapsule } from "../lib/agent/trust/capsule.js";
-import { pageAct, runJs } from "../lib/agent/page-fns.js";
+import { completeSelectOption, pageAct, runJs } from "../lib/agent/page-fns.js";
 import {
   WORKFLOW_MODEL_ID,
   buildAssertStateBatches,
@@ -1043,4 +1043,235 @@ const LARGE_FAKE_PNG_DATA_URL =
     globalThis.getComputedStyle = prevStyle;
   }
   console.log("PASS 8. ADR-023 modal leave-transition teardown settle, active scope & delayed input hydration");
+}
+
+// ── 9. ADR-024 连续下拉选择浮层归属隔离（aria-controls + *-leave 过滤）与弹窗实体动态单选组匹配 ──
+{
+  // 9a. completeSelectOption: 前序下拉框浮层仍处于 ant-slide-up-leave 关闭动画且归属前序控件 aria-controls 时，
+  //     后序下拉框不得误抓前序浮层，必须轮询等待自身 aria-controls 浮层挂载并选中目标项。
+  const prevDoc = globalThis.document;
+  const prevWin = globalThis.window;
+  const prevStyle = globalThis.getComputedStyle;
+  const prevMouse = globalThis.MouseEvent;
+  try {
+    if (typeof globalThis.MouseEvent !== "function") {
+      globalThis.MouseEvent = class FakeMouseEvent extends Event {
+        constructor(type, init = {}) {
+          super(type, init);
+          this.clientX = init.clientX || 0;
+          this.clientY = init.clientY || 0;
+        }
+      };
+    }
+    const fakeStyle = () => ({ display: "block", visibility: "visible", opacity: "0.75", zIndex: "1050" });
+    globalThis.getComputedStyle = fakeStyle;
+    globalThis.window = { getComputedStyle: fakeStyle, innerWidth: 1440, innerHeight: 900 };
+
+    let selectedValue = "";
+    let ownPopupMounted = false;
+
+    const makeOption = (label, onPick) => ({
+      nodeType: 1,
+      tagName: "DIV",
+      id: "",
+      className: "ant-select-item ant-select-item-option",
+      textContent: label,
+      getAttribute: (k) => (k === "title" ? label : null),
+      querySelector: (sel) => (sel === ".ant-select-item-option-content" ? { textContent: label } : null),
+      getBoundingClientRect: () => ({ x: 100, y: 120, left: 100, top: 120, width: 80, height: 28 }),
+      scrollIntoView: () => {},
+      dispatchEvent: () => true,
+      click: () => onPick?.(label),
+    });
+
+    const foreignList = { id: "rc_select_0_list", nodeType: 1 };
+    const foreignPopup = {
+      nodeType: 1,
+      id: "",
+      hidden: false,
+      parentElement: null,
+      className: "ant-select-dropdown ant-slide-up-leave ant-slide-up-leave-active",
+      classList: { contains: (c) => c === "ant-slide-up-leave" },
+      getBoundingClientRect: () => ({ x: 40, y: 100, left: 40, top: 100, width: 120, height: 96 }),
+      querySelectorAll: (sel) => {
+        if (sel === "[id]") return [foreignList];
+        return [makeOption("模式A"), makeOption("模式B"), makeOption("模式C")];
+      },
+      querySelector: () => null,
+    };
+    foreignList.closest = () => foreignPopup;
+
+    const ownList = { id: "rc_select_1_list", nodeType: 1 };
+    const ownPopup = {
+      nodeType: 1,
+      id: "",
+      hidden: false,
+      parentElement: null,
+      className: "ant-select-dropdown",
+      classList: { contains: () => false },
+      getBoundingClientRect: () => ({ x: 180, y: 100, left: 180, top: 100, width: 90, height: 88 }),
+      querySelectorAll: (sel) => {
+        if (sel === "[id]") return [ownList];
+        return [
+          makeOption("单位甲", (v) => {
+            selectedValue = v;
+          }),
+          makeOption("单位乙", (v) => {
+            selectedValue = v;
+          }),
+        ];
+      },
+      querySelector: () => null,
+    };
+    ownList.closest = () => ownPopup;
+
+    const foreignInput = {
+      nodeType: 1,
+      getAttribute: (k) => (k === "aria-controls" || k === "aria-owns" ? "rc_select_0_list" : null),
+    };
+    const ownInput = {
+      nodeType: 1,
+      disabled: false,
+      readOnly: true,
+      value: "",
+      getAttribute: (k) => {
+        if (k === "aria-controls" || k === "aria-owns") return "rc_select_1_list";
+        if (k === "aria-expanded") return ownPopupMounted ? "true" : "false";
+        return null;
+      },
+      blur: () => {},
+    };
+    const combo1 = {
+      nodeType: 1,
+      isConnected: true,
+      className: "ant-select ant-select-open",
+      classList: {
+        contains: (c) => c === "ant-select" || (c === "ant-select-open" && !selectedValue),
+      },
+      getAttribute: (k) => (k === "data-pl-select-dialog" ? "0" : null),
+      removeAttribute: () => {},
+      contains: (n) => n === ownInput,
+      closest: () => null,
+      querySelector: (sel) => {
+        if (sel.includes("aria-controls") || sel.includes("search") || sel === "input") return ownInput;
+        return null;
+      },
+      querySelectorAll: (sel) => {
+        if (sel.includes("ant-select-selection-item") && selectedValue) {
+          return [
+            {
+              getAttribute: (k) => (k === "title" ? selectedValue : null),
+              cloneNode: () => ({ querySelectorAll: () => [], textContent: selectedValue }),
+            },
+          ];
+        }
+        return [];
+      },
+    };
+
+    globalThis.document = {
+      body: { getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }), dispatchEvent: () => true },
+      documentElement: { clientWidth: 1440, clientHeight: 900 },
+      getElementById: (id) => {
+        if (id === "rc_select_0_list") return foreignList;
+        if (id === "rc_select_1_list") return ownPopupMounted ? ownList : null;
+        return null;
+      },
+      querySelector: (sel) => (sel.includes("uid_unit_1") ? combo1 : null),
+      querySelectorAll: (sel) => {
+        if (sel.includes("aria-controls")) return [foreignInput, ownInput];
+        if (sel.includes("ant-select-dropdown")) return ownPopupMounted ? [foreignPopup, ownPopup] : [foreignPopup];
+        return [];
+      },
+    };
+
+    setTimeout(() => {
+      ownPopupMounted = true;
+    }, 110);
+
+    const selRes = await completeSelectOption({
+      uid: "uid_unit_1",
+      value: "单位甲",
+      stage: "select",
+      allowCdpFallback: false,
+    });
+    assert.equal(selRes.ok, true, `9a 应忽略前序离场/异主浮层并等待当前下拉浮层挂载: ${JSON.stringify(selRes)}`);
+    assert.deepEqual(selRes.selected, ["单位甲"]);
+  } finally {
+    globalThis.document = prevDoc;
+    globalThis.window = prevWin;
+    globalThis.getComputedStyle = prevStyle;
+    globalThis.MouseEvent = prevMouse;
+  }
+
+  // 9b. ensure_modal_entity: 支持动态单选组候选优先匹配（prefer + verifyPrefix + alreadyBoundRegex）
+  let boundState = "";
+  const clickedTexts = [];
+  const trace9b = [];
+  const res9b = await runDeterministicWorkflow({
+    rawText:
+      `/workflow\n` +
+      JSON.stringify({
+        schemaVersion: "1.0",
+        id: "entity-dynamic-radio-9b",
+        binds: {},
+        steps: [
+          {
+            id: "E_BIND",
+            op: "ensure_modal_entity",
+            params: {
+              selectedSelector: ".entity-summary",
+              alreadyBoundTexts: ["实体记录", "示例档案", "感受:适中"],
+              alreadyBoundRegex: "规格:\\S+",
+              openButtonText: "添加档案",
+              rowMustInclude: ["示例档案"],
+              rowActionText: "使用",
+              optionClicks: [
+                {
+                  radioGroupIndex: 0,
+                  prefer: ["标准S", "通码One-size"],
+                  verifyPrefix: "规格:",
+                },
+                "适中",
+              ],
+              confirmText: "确认",
+            },
+          },
+        ],
+      }),
+    rawTools: {
+      run_js: async ({ code }) => {
+        if (code.includes(".entity-summary")) {
+          return JSON.stringify({ ok: true, result: boundState });
+        }
+        if (code.includes("tbody tr")) {
+          return JSON.stringify({ ok: true, result: { found: true, rowText: "示例档案 使用" } });
+        }
+        if (code.includes("radiogroup")) {
+          return JSON.stringify({
+            ok: true,
+            result: { found: true, chosenText: "通码One-size", available: ["通码One-size"] },
+          });
+        }
+        if (code.includes("removeAttribute")) {
+          return JSON.stringify({ ok: true, result: true });
+        }
+        return JSON.stringify({ ok: true, result: true });
+      },
+      wait_for: async () => JSON.stringify({ ok: true }),
+      click: async ({ text, selector }) => {
+        clickedTexts.push(text || selector);
+        if (text === "确认") {
+          boundState = "实体记录 示例档案 规格:通码One-size 感受:适中";
+        }
+        return JSON.stringify({ ok: true });
+      },
+    },
+    resolvePageSnapshot: async () => ({ tabId: 16, url: "https://portal.example.org/list", title: "List" }),
+    traceSteps: trace9b,
+  });
+  assert.equal(res9b.ok, true, `9b 动态单选组匹配应成功: ${JSON.stringify(res9b.failure)}`);
+  const out9b = JSON.parse(trace9b[0].resultSummary);
+  assert.deepEqual(out9b.selectedOptions, ["通码One-size", "适中"]);
+  console.log("PASS 9. ADR-024 select popup ownership isolation (*-leave + aria-controls) & modal dynamic radio matching");
 }
