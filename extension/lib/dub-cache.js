@@ -1,4 +1,5 @@
 import { idbGet, idbSet, idbDel, idbListKeys } from './idb-kv.js';
+import { notifySyncChange } from './interpret-sync.js';
 const PREFIX = 'dub-v2:';
 const TTL = 7 * 86400000;
 export async function dubKey(value) {
@@ -86,16 +87,15 @@ export async function readDubCache(key) {
 }
 
 export async function writeDubCache(key, value) {
+  let ok = false;
   try {
     if (!value) {
-      return idbSet(key, { expires: Date.now() + TTL, value });
-    }
-    // If value is an array (e.g. translated lines, cues, transcript segments), save as-is!
-    if (Array.isArray(value)) {
-      return idbSet(key, { expires: Date.now() + TTL, value });
-    }
-    // Only serialize blobs if value actually has audio blob properties
-    if (typeof value === 'object' && (value.blob || value.backgroundBlob || value.blobBuffer || value.backgroundBuffer)) {
+      ok = await idbSet(key, { expires: Date.now() + TTL, value });
+    } else if (Array.isArray(value)) {
+      // If value is an array (e.g. translated lines, cues, transcript segments), save as-is!
+      ok = await idbSet(key, { expires: Date.now() + TTL, value });
+    } else if (typeof value === 'object' && (value.blob || value.backgroundBlob || value.blobBuffer || value.backgroundBuffer)) {
+      // Only serialize blobs if value actually has audio blob properties
       let blobBuffer = value.blobBuffer;
       if (!blobBuffer && value.blob) {
         blobBuffer = await value.blob.arrayBuffer();
@@ -112,13 +112,16 @@ export async function writeDubCache(key, value) {
         backgroundBuffer,
         mime: value.blob?.type || value.mime || 'audio/wav',
       };
-      return idbSet(key, { expires: Date.now() + TTL, value: toStore });
+      ok = await idbSet(key, { expires: Date.now() + TTL, value: toStore });
+    } else {
+      // Non-audio objects (plans, metadata, user edits)
+      ok = await idbSet(key, { expires: Date.now() + TTL, value });
     }
-    // Non-audio objects (plans, metadata, user edits)
-    return idbSet(key, { expires: Date.now() + TTL, value });
   } catch {
-    return idbSet(key, { expires: Date.now() + TTL, value });
+    ok = await idbSet(key, { expires: Date.now() + TTL, value });
   }
+  if (ok) notifySyncChange({ kind: 'idb', key });
+  return ok;
 }
 
 export async function pruneDubCache() {
@@ -159,4 +162,5 @@ export async function clearVideoDubCache(videoId) {
   const keys = (await idbListKeys()).filter(key => String(key).startsWith(prefix));
   await idbDel(keys);
   await idbSet(prefix + 'cleared', true);
+  notifySyncChange({ kind: 'clearVideoDubCache', videoId, keys, deletedAt: Date.now() });
 }

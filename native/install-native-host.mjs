@@ -129,12 +129,17 @@ exec ${JSON.stringify(nodePath)} ${JSON.stringify(hostMjs)}
 function writeHostManifest(dir, runner, ids) {
   fs.mkdirSync(dir, { recursive: true });
   const dest = path.join(dir, `${HOST_NAME}.json`);
+  const existing = tryParseJson(dest);
+  const origins = new Set(Array.isArray(existing?.allowed_origins) ? existing.allowed_origins : []);
+  for (const id of ids) {
+    origins.add(`chrome-extension://${id}/`);
+  }
   const manifest = {
     name: HOST_NAME,
     description: "PageLens native host for local shell",
     path: runner,
     type: "stdio",
-    allowed_origins: ids.map((id) => `chrome-extension://${id}/`),
+    allowed_origins: [...origins],
   };
   fs.writeFileSync(dest, `${JSON.stringify(manifest, null, 2)}\n`);
   return dest;

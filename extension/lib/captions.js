@@ -5,6 +5,7 @@ import { acquireFullTranscript } from "./full-transcript.js";
 import { readVideoDocFromLibrary, syncPackToLibrary, videoIdentity } from "./library.js";
 import { interpretSourceUrls } from "./media-url.js";
 import { idbDel, idbGet, idbSet } from "./idb-kv.js";
+import { notifySyncChange } from "./interpret-sync.js";
 
 export { videoIdentity };
 
@@ -87,6 +88,7 @@ export async function setCachedTranscript(url, payload) {
   await chrome.storage.local.set({ [INDEX_KEY]: next });
   await writeCachedItem(key, item);
   await dropCachedItems(drop.map((x) => ITEM_PREFIX + x.id));
+  notifySyncChange({ kind: "idb", key });
 }
 
 export async function loadPageCaptions(tabId, pageUrl) {

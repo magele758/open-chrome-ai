@@ -206,8 +206,9 @@ export async function applyOptionalLocalSettings() {
     if (extra.asr && typeof extra.asr === "object") next.asr = { ...cur.asr, ...extra.asr };
     if (extra.tts && typeof extra.tts === "object") next.tts = { ...cur.tts, ...extra.tts };
     if (extra.langfuse && typeof extra.langfuse === "object") next.langfuse = { ...cur.langfuse, ...extra.langfuse };
-    const saved = await saveSettings(next);
-    await chrome.storage.local.set({ plLocalApplied: extra.rev });
+    const saved = normalizeSettings(next);
+    saved.shortcuts = saved.shortcuts.filter((s) => s.label && s.prompt);
+    await chrome.storage.local.set({ settings: saved, plLocalApplied: extra.rev });
     return saved;
   } catch {
     return null;

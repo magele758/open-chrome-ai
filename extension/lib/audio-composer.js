@@ -7,6 +7,7 @@
 
 import { encodeMonoWav } from "./tts.js";
 import { idbGet, idbSet, idbSetAll, idbDel, idbListKeys, idbValuesWithPrefix } from "./idb-kv.js";
+import { notifySyncChange } from "./interpret-sync.js";
 
 export const ARCHIVE_TTL_DAYS = 7;
 export const ARCHIVE_TTL_MS = ARCHIVE_TTL_DAYS * 24 * 60 * 60 * 1000;
@@ -387,6 +388,7 @@ export async function saveFullMediaArchive({
 
   const key = ARCHIVE_PREFIX + videoId;
   if (!await idbSetAll({ [key]: archiveRecord, [infoPrefix + videoId]: archiveInfo(archiveRecord) })) throw new Error("音频保存失败，请检查浏览器存储空间后重试");
+  notifySyncChange({ kind: "idb", key });
   return {
     ...archiveRecord,
     audioBlob: audioBuffer ? new Blob([audioBuffer], { type: 'audio/wav' }) : null,
@@ -507,5 +509,7 @@ export async function cleanExpiredMediaArchives() {
  */
 export async function deleteMediaArchive(videoId) {
   if (!videoId) return;
-  await idbDel(archiveKeys(videoId));
+  const keys = archiveKeys(videoId);
+  await idbDel(keys);
+  notifySyncChange({ kind: "idbDelete", keys, deletedAt: Date.now() });
 }

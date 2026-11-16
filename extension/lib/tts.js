@@ -3,6 +3,7 @@
  */
 
 import { recordTabAudio } from "./tab-audio.js";
+import { notifySyncChange } from "./interpret-sync.js";
 
 const DB_NAME = "pagelens-fs";
 const STORE = "kv";
@@ -177,6 +178,7 @@ export async function setTtsRef({ blob, name, type } = {}) {
     type: type || blob.type || "audio/wav",
     bytes: buf.byteLength,
     buffer: buf,
+    updatedAt: Date.now(),
   };
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
@@ -184,6 +186,7 @@ export async function setTtsRef({ blob, name, type } = {}) {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+  notifySyncChange({ kind: "ttsRef", updatedAt: rec.updatedAt });
   return { name: rec.name, bytes: rec.bytes };
 }
 
@@ -197,6 +200,7 @@ export async function clearTtsRef() {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
+    notifySyncChange({ kind: "ttsRef", deletedAt: Date.now() });
   } catch {
     /* ignore */
   }
