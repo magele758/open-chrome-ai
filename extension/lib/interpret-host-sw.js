@@ -5,7 +5,7 @@
  *   host   --pl.interpret.native-> SW (native messaging, e.g. media helper start)
  *   host   --pl.interpret.event--> panel (and SW, which closes an idle document)
  */
-import { loadSettings } from "./storage.js";
+import { isTtsReady, loadSettings } from "./storage.js";
 import { listDubArchives } from "./audio-composer.js";
 import { loadDubJobs, unfinished, unifiedDubList } from "./dub-queue.js";
 import { videoIdentity } from "./library.js";
@@ -15,6 +15,22 @@ import { AUDIO_PAGE, offscreenDoc } from "./offscreen-doc.js";
 import { INTERPRET_CMD, INTERPRET_EVENT, INTERPRET_HOST, INTERPRET_NATIVE, INTERPRET_VIDEO, isActiveState } from "./interpret-messages.js";
 
 const errorText = err => err?.message || String(err || "未知错误");
+
+export const LEGACY_DUB_RETRY_ALARM = "pl.dub.save-retry";
+export const LEGACY_DUB_FILE_PREFIX = "dub-file:";
+
+/** Clears leftover background dub auto-download alarms and tracking keys from older builds. */
+export async function clearLegacyDubDownloads(chromeApi = globalThis.chrome) {
+  try {
+    await chromeApi?.alarms?.clear?.(LEGACY_DUB_RETRY_ALARM);
+  } catch { /* ignore */ }
+  try {
+    if (typeof chromeApi?.storage?.local?.getKeys !== "function") return;
+    const keys = await chromeApi.storage.local.getKeys();
+    const stale = (keys || []).filter(k => String(k).startsWith(LEGACY_DUB_FILE_PREFIX));
+    if (stale.length) await chromeApi.storage.local.remove(stale);
+  } catch { /* ignore */ }
+}
 
 export function createInterpretRouter({
   chromeApi = globalThis.chrome,
@@ -28,18 +44,20 @@ export function createInterpretRouter({
   const forward = msg => doc.send({ ...msg, type: INTERPRET_HOST });
 
   async function command(msg) {
-    if (msg.op === "queueAdd") {
+    const queueLiveAudio = msg.op === "start" && isTtsReady(msg.settings?.tts) && /^https?:\/\//i.test(msg.tab?.url);
+    if (msg.op === "queueAdd" || msg.op === "compactClaim" || queueLiveAudio) {
       const { url, title, id: tabId } = msg.tab;
       if (!/^https?:\/\//i.test(url)) throw Error("请选择视频网页");
-      let media;
+      let media, poster;
       if (tabId && (await chromeApi.tabs.get(tabId).catch(() => null))?.url === url) {
-        const found = await video(tabId, "media").catch(() => null);
+        const found = await video(tabId, "media", { capturePoster: true }).catch(() => null);
         if (found && (await chromeApi.tabs.get(tabId).catch(() => null))?.url === url) {
+          poster = found.poster;
           media = { src: found.src, audioSrc: found.audioSrc, duration: found.duration };
         }
       }
       await chromeApi.alarms.create("pl.queue.watch", { delayInMinutes: 1 });
-      return doc.withDocument(() => forward({ op: msg.op, job: { url, title, id: videoIdentity(url), media } }));
+      return doc.withDocument(() => forward({ ...msg, job: { url, title, id: videoIdentity(url), media, poster } }));
     }
     if (msg.op === "queueList") {
       const archives = await listDubArchives();
@@ -48,10 +66,11 @@ export function createInterpretRouter({
         if (res?.ok) return { ok: true, jobs: unifiedDubList(res.jobs, archives, res.live || []) };
       }
       const jobs = await loadDubJobs();
-      if (jobs.some(unfinished)) await resumePending();
+      const selfId = chromeApi?.runtime?.id || "";
+      if (jobs.some(row => unfinished(row) && (!row.ownerId || !selfId || row.ownerId === selfId))) await resumePending();
       return { ok: true, jobs: unifiedDubList(jobs.map(({ media, ...row }) => row), archives, []) };
     }
-    if (msg.op === "queueDelete") return doc.withDocument(() => forward(msg));
+    if (["queueDelete", "queuePause", "queueContinue", "queueMove"].includes(msg.op)) return doc.withDocument(() => forward(msg));
     if (msg.op === "start") return doc.withDocument(() => forward(msg));
     if (!(await doc.exists())) {
       if (msg.op === "list") return { ok: true, tasks: [] };
@@ -97,14 +116,21 @@ export function createInterpretRouter({
   }
 
   async function resumePending() {
-    if (!(await loadDubJobs()).some(unfinished)) return;
+    const selfId = chromeApi?.runtime?.id || "";
+    if (!(await loadDubJobs()).some(row => unfinished(row) && (!row.ownerId || !selfId || row.ownerId === selfId))) return;
     await chromeApi.alarms.create("pl.queue.watch", { delayInMinutes: 1 });
     await doc.withDocument(() => forward({ op: "queueResume" }));
   }
 
+  function startup() {
+    void clearLegacyDubDownloads(chromeApi);
+    void resumePending();
+  }
+
   function install() {
-    chromeApi.runtime.onStartup?.addListener(() => { void resumePending(); });
-    chromeApi.runtime.onInstalled?.addListener(() => { void resumePending(); });
+    void clearLegacyDubDownloads(chromeApi);
+    chromeApi.runtime.onStartup?.addListener(startup);
+    chromeApi.runtime.onInstalled?.addListener(startup);
     chromeApi.alarms?.onAlarm.addListener(alarm => {
       if (alarm.name === "pl.queue.watch") void resumePending();
     });

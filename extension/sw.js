@@ -1,7 +1,8 @@
 import { handleAudioMessage } from "./lib/tab-audio-sw.js";
-import { applyOptionalLocalSettings } from "./lib/storage.js";
+import { applyOptionalLocalSettings, normalizeSettings } from "./lib/storage.js";
 import { installBridge } from "./lib/bridge/index.js";
 import { createInterpretRouter } from "./lib/interpret-host-sw.js";
+import { installInterpretSync } from "./lib/interpret-sync.js";
 import {
   syncAgentInboxAlarm,
   wireAgentInboxAlarm,
@@ -22,6 +23,10 @@ onAgentTaskEvent((ev) => {
 installAgentGateway(installBridge());
 installInboxConfirm();
 createInterpretRouter().install();
+const interpretSync = installInterpretSync({ role: "pagelens", normalizeSettings });
+setTimeout(() => {
+  interpretSync.syncWithPeer({ reason: "sw-boot" }).catch(() => {});
+}, 1200);
 wireAgentInboxAlarm();
 syncAgentInboxAlarm().catch(() => {});
 // Kick once shortly after SW starts so agents do not wait a full alarm period (no-op when disabled).
@@ -32,6 +37,7 @@ setTimeout(() => {
 chrome.runtime.onInstalled.addListener(() => {
   applyOptionalLocalSettings().catch(() => {});
   syncAgentInboxAlarm().catch(() => {});
+  interpretSync.syncWithPeer({ reason: "installed" }).catch(() => {});
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
@@ -50,6 +56,7 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.runtime.onStartup.addListener(() => {
   applyOptionalLocalSettings().catch(() => {});
   syncAgentInboxAlarm().catch(() => {});
+  interpretSync.syncWithPeer({ reason: "startup" }).catch(() => {});
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
