@@ -176,19 +176,23 @@ function normalizeTraceItem(raw) {
   return item;
 }
 
-export function normalizeMessage(raw) {
+export function normalizeMessage(raw, index) {
   const trace = Array.isArray(raw?.trace)
     ? raw.trace.map(normalizeTraceItem).filter(Boolean).slice(0, 40)
     : undefined;
+  const endedAt = Number(raw?.metrics?.endedAt);
   const metrics = raw?.metrics && typeof raw.metrics === "object" ? {
     durationMs: Math.max(0, Number(raw.metrics.durationMs) || 0),
     inputTokens: Math.max(0, Number(raw.metrics.inputTokens) || 0),
     outputTokens: Math.max(0, Number(raw.metrics.outputTokens) || 0),
     totalTokens: Math.max(0, Number(raw.metrics.totalTokens) || 0),
     finishReason: String(raw.metrics.finishReason || ""),
+    ...(Number.isFinite(endedAt) && endedAt > 0 ? { endedAt: Math.round(endedAt) } : {}),
   } : undefined;
   const traceLog = raw?.traceLog && typeof raw.traceLog === "object" ? raw.traceLog : undefined;
+  const id = raw?.id ? String(raw.id) : (Number.isInteger(index) ? `m-${index}` : undefined);
   return {
+    ...(id ? { id } : {}),
     role: raw?.role === "user" ? "user" : "bot",
     text: String(raw?.text || "").slice(0, MAX_TEXT),
     error: raw?.error ? true : undefined,
@@ -199,17 +203,83 @@ export function normalizeMessage(raw) {
   };
 }
 
+function normalizeSideChatMessage(raw, index = 0) {
+  if (!raw || typeof raw !== "object") return null;
+  const endedAt = Number(raw?.metrics?.endedAt);
+  const metrics = raw?.metrics && typeof raw.metrics === "object" ? {
+    durationMs: Math.max(0, Number(raw.metrics.durationMs) || 0),
+    inputTokens: Math.max(0, Number(raw.metrics.inputTokens) || 0),
+    outputTokens: Math.max(0, Number(raw.metrics.outputTokens) || 0),
+    totalTokens: Math.max(0, Number(raw.metrics.totalTokens) || 0),
+    finishReason: String(raw.metrics.finishReason || ""),
+    ...(Number.isFinite(endedAt) && endedAt > 0 ? { endedAt: Math.round(endedAt) } : {}),
+  } : undefined;
+  return {
+    id: String(raw.id || `scm-${index}`),
+    role: raw.role === "user" ? "user" : "bot",
+    text: String(raw.text || "").slice(0, MAX_TEXT),
+    ...(raw.thinking ? { thinking: String(raw.thinking).slice(0, MAX_TEXT) } : {}),
+    createdAt: Number(raw.createdAt) || Date.now(),
+    ...(raw.error ? { error: true } : {}),
+    ...(metrics ? { metrics } : {}),
+  };
+}
+
+function normalizeSideChatAnchor(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const plainStart = Number.isInteger(src.plainStart) && src.plainStart >= 0 ? src.plainStart : undefined;
+  const plainEnd = Number.isInteger(src.plainEnd) && src.plainEnd >= 0 ? src.plainEnd : undefined;
+  return {
+    quoteText: String(src.quoteText || "").slice(0, 4000),
+    ...(src.contextBefore ? { contextBefore: String(src.contextBefore).slice(0, 80) } : {}),
+    ...(src.contextAfter ? { contextAfter: String(src.contextAfter).slice(0, 80) } : {}),
+    ...(plainStart !== undefined ? { plainStart } : {}),
+    ...(plainEnd !== undefined ? { plainEnd } : {}),
+    status: src.status === "orphaned" ? "orphaned" : "attached",
+  };
+}
+
+export function normalizeSideChatThread(raw, index = 0) {
+  if (!raw || typeof raw !== "object") return null;
+  const now = Date.now();
+  const forkType = ["selection", "message", "session"].includes(raw.forkType) ? raw.forkType : "selection";
+  const messages = Array.isArray(raw.messages)
+    ? raw.messages.map((m, i) => normalizeSideChatMessage(m, i)).filter(Boolean)
+    : [];
+  return {
+    id: String(raw.id || `sc-${index}`),
+    parentMessageId: String(raw.parentMessageId || ""),
+    forkType,
+    anchor: normalizeSideChatAnchor(raw.anchor),
+    title: String(raw.title || "").trim().slice(0, 80) || "旁注分支",
+    status: raw.status === "resolved" ? "resolved" : "active",
+    pinnedNote: String(raw.pinnedNote || "").trim().slice(0, 1000),
+    snapshotMessageCount: Number.isInteger(raw.snapshotMessageCount) && raw.snapshotMessageCount >= 0
+      ? raw.snapshotMessageCount
+      : 0,
+    messages,
+    createdAt: Number(raw.createdAt) || now,
+    updatedAt: Number(raw.updatedAt) || Number(raw.createdAt) || now,
+  };
+}
+
 export function normalizeSession(raw) {
   const now = Date.now();
   let pages = [];
   for (const page of raw?.pages || []) pages = mergePage(pages, page);
-  const messages = Array.isArray(raw?.messages) ? raw.messages.map(normalizeMessage) : [];
+  const messages = Array.isArray(raw?.messages)
+    ? raw.messages.map((m, idx) => normalizeMessage(m, idx))
+    : [];
+  const sideChats = Array.isArray(raw?.sideChats)
+    ? raw.sideChats.map((sc, idx) => normalizeSideChatThread(sc, idx)).filter(Boolean)
+    : [];
   const session = {
     id: String(raw?.id || crypto.randomUUID()),
     createdAt: Number(raw?.createdAt) || now,
     updatedAt: Number(raw?.updatedAt) || now,
     pages,
     messages,
+    sideChats,
   };
   session.title = sessionTitle(session);
   const run = normalizeRun(raw?.run);
@@ -220,12 +290,15 @@ export function normalizeSession(raw) {
 }
 
 export function toSummary(session) {
+  const sideChats = Array.isArray(session.sideChats) ? session.sideChats : [];
   return {
     id: session.id,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     title: session.title,
     messageCount: (session.messages || []).length,
+    sideChatCount: sideChats.length,
+    unresolvedSideChatCount: sideChats.filter((sc) => sc.status !== "resolved").length,
     pages: (session.pages || []).map((p) => ({
       url: p.url,
       title: p.title,
@@ -233,6 +306,23 @@ export function toSummary(session) {
       kind: p.kind,
     })),
   };
+}
+
+export function collectAllSideChats(sessions) {
+  const items = [];
+  for (const raw of sessions || []) {
+    const s = normalizeSession(raw);
+    for (const sc of s.sideChats || []) {
+      items.push({
+        sessionId: s.id,
+        sessionTitle: s.title,
+        sessionUpdatedAt: s.updatedAt,
+        pages: s.pages,
+        sideChat: sc,
+      });
+    }
+  }
+  return items.sort((a, b) => (b.sideChat.updatedAt || 0) - (a.sideChat.updatedAt || 0));
 }
 
 export function nextIndex(index, summary, max = MAX_SESSIONS) {
@@ -280,11 +370,38 @@ export function sessionNoteRelPath(session) {
   return `PageLens/sessions/${day}-${sessionSlug(s)}-${short}.md`;
 }
 
+function sideChatToCallout(sc) {
+  const statusLabel = sc.status === "resolved" ? "已掌握" : "思考中";
+  const lines = [
+    `> [!note] 旁注 · ${sc.title}（${statusLabel} · ${formatWhen(sc.updatedAt)}）`,
+  ];
+  if (sc.anchor?.quoteText) {
+    lines.push(`> **原句**：${String(sc.anchor.quoteText).replace(/\n+/g, " ")}`);
+  }
+  if (sc.pinnedNote) {
+    lines.push(`> **凝练批注**：${String(sc.pinnedNote).replace(/\n+/g, " ")}`);
+  }
+  for (const m of sc.messages || []) {
+    if (!m.text) continue;
+    const prefix = m.role === "user" ? "**问**" : "**答**";
+    const body = String(m.text).split("\n").join("\n> ");
+    lines.push(`> - ${prefix}：${body}`);
+  }
+  return lines.join("\n");
+}
+
 export function sessionToMarkdown(session) {
   const s = normalizeSession(session);
   const pages = s.pages.length
     ? s.pages.map((p) => `- ${p.title || p.hostname || "无标题"}\n  ${p.url}`).join("\n")
     : "- （未分享页面）";
+  const byParent = new Map();
+  const attachedIds = new Set();
+  for (const sc of s.sideChats || []) {
+    const pid = sc.parentMessageId || "";
+    if (!byParent.has(pid)) byParent.set(pid, []);
+    byParent.get(pid).push(sc);
+  }
   const turns = s.messages.map((m) => {
     const who = m.role === "user" ? "用户" : "PageLens";
     const bits = [`## ${who}`, "", m.text || "（空）"];
@@ -292,20 +409,38 @@ export function sessionToMarkdown(session) {
     if (m.trace?.length) {
       bits.push("", `_工具：${m.trace.map((t) => (t.ok === false ? `${t.name} 失败` : t.name)).join(" → ")}_`);
     }
+    const list = m.id ? byParent.get(m.id) : null;
+    if (list?.length) {
+      for (const sc of list) {
+        attachedIds.add(sc.id);
+        bits.push("", sideChatToCallout(sc));
+      }
+    }
     return bits.join("\n");
   });
-  return [
-    `# ${s.title}`,
-    "",
+  const unattached = (s.sideChats || []).filter((sc) => !attachedIds.has(sc.id));
+  const extraSection = unattached.length
+    ? ["", "## 旁注与扩展思考", "", ...unattached.map((sc) => `${sideChatToCallout(sc)}\n`)]
+    : [];
+  const meta = [
     `- 创建：${formatWhen(s.createdAt)}`,
     `- 更新：${formatWhen(s.updatedAt)}`,
     `- 消息：${s.messages.length} 条`,
+  ];
+  if (s.sideChats?.length) {
+    meta.push(`- 旁注：${s.sideChats.length} 条`);
+  }
+  return [
+    `# ${s.title}`,
+    "",
+    ...meta,
     "",
     "## 页面",
     "",
     pages,
     "",
     ...turns,
+    ...extraSection,
     "",
   ].join("\n");
 }
@@ -470,10 +605,12 @@ export async function saveSession(raw, options = {}) {
 
   const patch = {
     [INDEX_KEY]: next,
-    [ACTIVE_KEY]: session.id,
   };
-  const storeKey = activeWindowStorageKey(options.windowId);
-  if (storeKey) patch[storeKey] = session.id;
+  if (!options.keepActive) {
+    patch[ACTIVE_KEY] = session.id;
+    const storeKey = activeWindowStorageKey(options.windowId);
+    if (storeKey) patch[storeKey] = session.id;
+  }
   await localSet(patch);
   await writeSessionItem(session.id, session);
   await dropSessionItems(drop);

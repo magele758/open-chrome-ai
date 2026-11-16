@@ -3,7 +3,7 @@ import { $ } from "./dom.js";
 import { paintLibraryStatus } from "./library-ui.js";
 import { renderMessages } from "./messages.js";
 import { renderModelLine, setModelLineMeta } from "./model-line.js";
-import { applySession, downloadText, persistSession, resolveWindowId, setView, settleBusy } from "./session.js";
+import { abortAllSideChats, applySession, downloadText, notifySideChatSync, persistSession, resolveWindowId, setView, settleBusy } from "./session.js";
 import { state } from "./state.js";
 import { deleteSessionArtifacts } from "../lib/agent/artifact-store.js";
 import { libraryStatus, pickLibraryFolder, writeSessionNote, writeSessionNotes } from "../lib/library.js";
@@ -157,6 +157,12 @@ function historyRow(item) {
   const title = document.createElement("div");
   title.className = "t";
   title.textContent = item.title || "未命名对话";
+  if (item.sideChatCount > 0) {
+    const scBadge = document.createElement("span");
+    scBadge.className = "hist-sidechat-badge";
+    scBadge.textContent = `💬 ${item.sideChatCount} 旁注`;
+    title.appendChild(scBadge);
+  }
   const meta = document.createElement("div");
   meta.className = "s";
   meta.textContent = [hostLabel, formatWhen(item.updatedAt), `${item.messageCount || 0} 条`].filter(Boolean).join(" · ");
@@ -433,16 +439,23 @@ async function removeHistoryItem(id) {
   await deleteSession(id);
   await deleteSessionArtifacts(id);
   if (state.sessionId === id) {
+    abortAllSideChats();
     state.sessionId = null;
     state.sessionCreatedAt = null;
     state.sessionPages = [];
     state.messages = [];
+    state.sideChats = [];
+    if (state.sideChatUi) {
+      state.sideChatUi.activeId = "";
+      state.sideChatUi.open = false;
+    }
     state.image = null;
     state.run = null;
     state.taskGroupId = null;
     state.activeToolDomains = new Set();
     renderAttach();
     renderMessages();
+    notifySideChatSync();
   }
   await renderHistory();
   histStatus("已删除", true);

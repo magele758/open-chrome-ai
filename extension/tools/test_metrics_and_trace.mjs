@@ -64,6 +64,7 @@ assert.equal(runResult.metrics.inputTokens, 200, "total inputTokens should be 80
 assert.equal(runResult.metrics.outputTokens, 40, "total outputTokens should be 15 + 25 = 40");
 assert.equal(runResult.metrics.totalTokens, 240, "totalTokens should be 240");
 assert.equal(runResult.metrics.finishReason, "stop", "finishReason should be stop");
+assert.ok(Math.abs(runResult.metrics.endedAt - Date.now()) < 5000, "endedAt is the wall-clock end");
 
 assert.ok(Array.isArray(runResult.traceSteps), "traceSteps should be an array");
 const toolSteps = runResult.traceSteps.filter((s) => s.type === "tool_exec");
@@ -113,6 +114,7 @@ assert.equal(normalized.metrics.durationMs, runResult.metrics.durationMs);
 assert.equal(normalized.metrics.inputTokens, 200);
 assert.equal(normalized.metrics.outputTokens, 40);
 assert.equal(normalized.metrics.finishReason, "stop");
+assert.equal(normalized.metrics.endedAt, runResult.metrics.endedAt);
 assert.ok(normalized.traceLog, "normalizeMessage keeps traceLog");
 assert.equal(normalized.traceLog.steps.length, runResult.traceSteps.length);
 
@@ -131,6 +133,7 @@ assert.ok(loadedBot.metrics, "loaded session preserves bot metrics");
 assert.equal(loadedBot.metrics.inputTokens, 200);
 assert.equal(loadedBot.metrics.outputTokens, 40);
 assert.equal(loadedBot.metrics.finishReason, "stop");
+assert.equal(loadedBot.metrics.endedAt, runResult.metrics.endedAt);
 assert.ok(loadedBot.traceLog, "loaded session preserves bot traceLog");
 assert.equal(loadedBot.traceLog.steps[0].type, runResult.traceSteps[0].type);
 

@@ -98,19 +98,44 @@ async function persistSessionNow() {
     createdAt: state.sessionCreatedAt || Date.now(),
     pages: state.sessionPages,
     messages: state.messages,
+    sideChats: state.sideChats,
     run: state.run,
     taskGroupId: state.taskGroupId,
   }, { windowId: await resolveWindowId() });
   state.sessionPages = saved.pages;
+  for (let i = 0; i < state.messages.length; i += 1) {
+    if (!state.messages[i].id && saved.messages[i]?.id) {
+      state.messages[i].id = saved.messages[i].id;
+    }
+  }
+}
+
+function abortAllSideChats() {
+  const aborts = state.sideChatUi?.aborts;
+  if (aborts && typeof aborts.forEach === "function") {
+    aborts.forEach((ctrl) => {
+      try { ctrl.abort(); } catch { /* ignore */ }
+    });
+    aborts.clear();
+  }
+  state.sideChatUi?.runningIds?.clear?.();
+}
+
+function notifySideChatSync() {
+  if (typeof document !== "undefined") {
+    document.dispatchEvent(new CustomEvent("pagelens:sidechat-sync"));
+  }
 }
 
 function applySession(session) {
   if (!session) return;
+  abortAllSideChats();
   messageScroll?.reset();
   state.sessionId = session.id;
   state.sessionCreatedAt = session.createdAt;
   state.sessionPages = session.pages || [];
-  state.messages = (session.messages || []).map((m) => ({
+  state.messages = (session.messages || []).map((m, idx) => ({
+    id: m.id || `m-${idx}`,
     role: m.role,
     text: m.text || "",
     thinking: m.thinking || "",
@@ -120,6 +145,19 @@ function applySession(session) {
     traceLog: m.traceLog,
     image: null,
   }));
+  state.sideChats = Array.isArray(session.sideChats)
+    ? session.sideChats.map((sc) => ({
+        ...sc,
+        anchor: sc.anchor ? { ...sc.anchor } : { quoteText: "", status: "attached" },
+        messages: Array.isArray(sc.messages) ? sc.messages.map((m) => ({ ...m })) : [],
+      }))
+    : [];
+  if (state.sideChatUi) {
+    state.sideChatUi.activeId = state.sideChats[0]?.id || "";
+    state.sideChatUi.view = state.sideChats.length ? "thread" : "list";
+    state.sideChatUi.open = Boolean(state.sideChatUi.wide && state.sideChats.length);
+    state.sideChatUi.pendingSelection = null;
+  }
   state.image = null;
   state.run = session.run || null;
   state.taskGroupId = Number.isInteger(session.taskGroupId) ? session.taskGroupId : null;
@@ -130,15 +168,24 @@ function applySession(session) {
   renderAttach();
   renderMessages();
   trustPanel.render();
+  notifySideChatSync();
 }
 
 async function startNewSession() {
   await settleBusy();
   await persistSession();
+  abortAllSideChats();
   state.sessionId = null;
   state.sessionCreatedAt = null;
   state.sessionPages = [];
   state.messages = [];
+  state.sideChats = [];
+  if (state.sideChatUi) {
+    state.sideChatUi.activeId = "";
+    state.sideChatUi.open = false;
+    state.sideChatUi.view = "list";
+    state.sideChatUi.pendingSelection = null;
+  }
   state.image = null;
   state.run = null;
   state.taskGroupId = null;
@@ -161,6 +208,7 @@ async function startNewSession() {
   renderComposerChip();
   messageScroll?.reset();
   renderMessages();
+  notifySideChatSync();
   setView("chat");
 }
 
@@ -187,6 +235,8 @@ export {
   resolveWindowId,
   settleBusy,
   persistSessionNow,
+  abortAllSideChats,
+  notifySideChatSync,
   applySession,
   startNewSession,
   downloadText,

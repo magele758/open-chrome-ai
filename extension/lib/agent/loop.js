@@ -73,6 +73,7 @@ async function runLoop(host, userText, options) {
     outputTokens: totalOutputTokens,
     totalTokens: totalInputTokens + totalOutputTokens,
     finishReason: String(finishReason || "stop"),
+    endedAt: Date.now(),
   });
 
   const checkpoint = (extra = {}) => {

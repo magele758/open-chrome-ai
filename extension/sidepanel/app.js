@@ -60,9 +60,10 @@ import {
 import { copyText, nativeInstallCommand, paintNativeHostStatus, refreshNativeHost } from "./native-host-ui.js";
 import { bindMessageScroll, bindSettingsPage, messageScroll, settingsPage } from "./panel-refs.js";
 import { initReviewView } from "./review-view.js";
-import { applySession, downloadText, persistSession, resolveWindowId, setView, startNewSession } from "./session.js";
-import { renderSettingsForm } from "./settings-form.js";
+import { abortAllSideChats, applySession, downloadText, persistSession, resolveWindowId, setView, startNewSession } from "./session.js";
+import { renderSettingsForm, refreshTtsRefLabel } from "./settings-form.js";
 import { createSettingsPage } from "./settings-page.js";
+import { initSideChat } from "./sidechat-ui.js";
 import { applyFolderPathsFromInputs, paintSkillFolderStatus } from "./skill-folder-ui.js";
 import {
   clearSkillsCache,
@@ -90,6 +91,7 @@ import { APPROVAL_STORAGE_KEY } from "../lib/agent/trust/approval-queue.js";
 import { cleanExpiredMediaArchives } from "../lib/audio-composer.js";
 import { injectVideo } from "../lib/chrome.js";
 import { debugLog, exportDebugLogFresh } from "../lib/debug-log.js";
+import { SYNC_APPLIED_MSG, SYNC_NOW_MSG, SYNC_STATUS_MSG } from "../lib/interpret-sync.js";
 import { testLangfuseConnection } from "../lib/langfuse.js";
 import { clearSavedHandle, pickLibraryFolder, setLibraryPath, syncPackToLibrary } from "../lib/library.js";
 import { initMarkdown } from "../lib/markdown.js";
@@ -101,6 +103,7 @@ import {
   defaultSettings,
   isModelReady,
   loadSettings,
+  normalizeSettings,
   resolveModel,
   saveSettings,
 } from "../lib/storage.js";
@@ -623,6 +626,20 @@ function wire() {
     if (area === "local" && changes[APPROVAL_STORAGE_KEY]) trustPanel.render();
     if (area === "session" && changes[DELEGATE_STORAGE_KEY]) delegatePanel.render();
     if (area === "local" && changes[ACTIVITY_KEY]) paintInboxActivity();
+    if (area === "local" && changes.settings?.newValue) {
+      state.settings = normalizeSettings(changes.settings.newValue);
+      applyUiFont(state.settings.uiFont);
+      applyUiTheme(state.settings.uiTheme, state.settings.uiThemeColors);
+      renderModelLine();
+      if (state.view === "settings") renderSettingsForm();
+    }
+  });
+  chrome.runtime?.onMessage?.addListener((msg) => {
+    if (msg?.type !== SYNC_APPLIED_MSG) return false;
+    const kinds = Array.isArray(msg.kinds) ? msg.kinds : [];
+    if (kinds.includes("ttsRef")) refreshTtsRefLabel().catch(() => {});
+    if (kinds.includes("archive") || kinds.includes("captions")) refreshTab().catch(() => {});
+    return false;
   });
   trustPanel.render();
   delegatePanel.render();
@@ -696,10 +713,12 @@ function wire() {
   });
   window.addEventListener("pagehide", () => {
     persistSession();
+    abortAllSideChats();
     state.recordAbort?.abort();
     state.workAbort?.abort();
     abortRecording();
   });
+  initSideChat();
   } catch (err) {
     console.error("[pagelens] wire rest", err);
   }
@@ -776,6 +795,11 @@ async function boot() {
   }
   refreshTab().catch((err) => console.warn("[pagelens] tab", err));
   cleanExpiredMediaArchives().catch(() => {});
+  chrome.runtime?.sendMessage?.({ type: SYNC_STATUS_MSG })?.then((res) => {
+    if (!res?.status?.connected || !res?.status?.lastSyncAt) {
+      chrome.runtime?.sendMessage?.({ type: SYNC_NOW_MSG, reason: "panel-boot" })?.catch?.(() => {});
+    }
+  })?.catch?.(() => {});
   consumePending().catch(() => {});
   if (!isModelReady(resolveModel(state.settings, "text"))) {
     console.warn("[pagelens] boot no-model");

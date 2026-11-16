@@ -1,5 +1,5 @@
 import { $ } from "./dom.js";
-import { ensureLibraryForWrite } from "./history.js";
+import { ensureLibraryForWrite, openHistoryItem } from "./history.js";
 import { settingsPage } from "./panel-refs.js";
 import { persistSession, setView } from "./session.js";
 import { renderSettingsForm } from "./settings-form.js";
@@ -7,6 +7,7 @@ import { state } from "./state.js";
 import { escapeAttr } from "./text-providers-ui.js";
 import { listAllClippings } from "../lib/clippings.js";
 import { bindMarkdownLinks, enhanceMermaid, formatAnswer } from "../lib/markdown.js";
+import { collectAllSideChats, formatWhen, loadAllSessions, loadSession, saveSession } from "../lib/sessions.js";
 import {
   appendReviewToDailyNote,
   deleteReviewRecord,
@@ -47,12 +48,25 @@ async function refreshReviewView() {
   const actionsBar = $("review-actions-bar");
   const outputContainer = $("review-output-container");
   const historyContainer = $("review-history-container");
+  const sidechatsContainer = $("review-sidechats-container");
+
+  if (state.review.type === "sidechats") {
+    periodBar?.classList.add("hidden");
+    clipDrawer?.classList.add("hidden");
+    actionsBar?.classList.add("hidden");
+    outputContainer?.classList.add("hidden");
+    historyContainer?.classList.add("hidden");
+    sidechatsContainer?.classList.remove("hidden");
+    await renderReviewSideChats();
+    return;
+  }
 
   if (state.review.type === "history") {
     periodBar?.classList.add("hidden");
     clipDrawer?.classList.add("hidden");
     actionsBar?.classList.add("hidden");
     outputContainer?.classList.add("hidden");
+    sidechatsContainer?.classList.add("hidden");
     historyContainer?.classList.remove("hidden");
     await renderReviewHistory();
     return;
@@ -63,6 +77,7 @@ async function refreshReviewView() {
   actionsBar?.classList.remove("hidden");
   outputContainer?.classList.remove("hidden");
   historyContainer?.classList.add("hidden");
+  sidechatsContainer?.classList.add("hidden");
 
   const period = getReviewPeriod(state.review.type, state.review.date);
   const labelEl = $("review-period-label");
@@ -433,6 +448,175 @@ async function renderReviewHistory() {
   }
 }
 
+let reviewScFilter = "all";
+let reviewScQuery = "";
+let cachedAllSideChats = null;
+
+function paintReviewSideChatsList(list) {
+  const container = $("review-sc-list");
+  if (!container) return;
+
+  document.querySelectorAll("[data-review-sc-filter]").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.reviewScFilter === reviewScFilter);
+  });
+
+  const q = reviewScQuery.trim().toLowerCase();
+  const filtered = (list || []).filter(({ sessionTitle, pages, sideChat }) => {
+    if (reviewScFilter === "active" && sideChat.status === "resolved") return false;
+    if (reviewScFilter === "resolved" && sideChat.status !== "resolved") return false;
+    if (reviewScFilter === "pinned" && !sideChat.pinnedNote) return false;
+    if (!q) return true;
+    const blob = [
+      sessionTitle,
+      ...(pages || []).map((p) => p.title || p.url || ""),
+      sideChat.title,
+      sideChat.anchor?.quoteText,
+      sideChat.pinnedNote,
+      ...(sideChat.messages || []).map((m) => m.text),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return blob.includes(q);
+  });
+
+  container.replaceChildren();
+  if (!list?.length) {
+    container.innerHTML = `<div class="hist-empty">还没有跨会话旁注笔记。在对话回复里划词或点击「⑂ 裂变」即可沉淀到这里。</div>`;
+    return;
+  }
+  if (!filtered.length) {
+    container.innerHTML = `<div class="hist-empty">没有符合当前筛选条件的旁注笔记。</div>`;
+    return;
+  }
+
+  for (const entry of filtered) {
+    const { sessionId, sessionTitle, sideChat } = entry;
+    const card = document.createElement("div");
+    card.className = "review-sc-card";
+
+    const head = document.createElement("div");
+    head.className = "review-sc-head";
+    const title = document.createElement("div");
+    title.className = "sc-card-title";
+    title.textContent = sideChat.title || "旁注分支";
+    const status = document.createElement("span");
+    status.className = "sc-status-tag " + (sideChat.status === "resolved" ? "is-resolved" : "is-active");
+    status.textContent = sideChat.status === "resolved" ? "已掌握 ✓" : "思考中";
+    head.append(title, status);
+    card.appendChild(head);
+
+    const meta = document.createElement("div");
+    meta.className = "review-sc-meta";
+    meta.textContent = `会话：${sessionTitle || "未命名对话"} · ${formatWhen(sideChat.updatedAt)}`;
+    card.appendChild(meta);
+
+    if (sideChat.anchor?.quoteText) {
+      const quote = document.createElement("div");
+      quote.className = "sc-card-quote";
+      quote.textContent = `“${sideChat.anchor.quoteText}”`;
+      card.appendChild(quote);
+    }
+
+    if (sideChat.pinnedNote) {
+      const pinned = document.createElement("div");
+      pinned.className = "sc-card-pinned";
+      pinned.textContent = `📌 ${sideChat.pinnedNote}`;
+      card.appendChild(pinned);
+    } else {
+      const lastBot = [...(sideChat.messages || [])].reverse().find((m) => m.role === "bot" && !m.error && m.text);
+      if (lastBot) {
+        const ans = document.createElement("div");
+        ans.className = "review-sc-answer";
+        ans.textContent = lastBot.text;
+        card.appendChild(ans);
+      }
+    }
+
+    const foot = document.createElement("div");
+    foot.className = "sc-card-foot";
+    const turns = (sideChat.messages || []).filter((m) => m.role === "user").length;
+    const info = document.createElement("span");
+    info.textContent = `${turns} 轮追问`;
+
+    const ops = document.createElement("div");
+    ops.className = "sc-card-ops";
+
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "secondary mini";
+    openBtn.textContent = "打开并定位 ↗";
+    openBtn.addEventListener("click", async () => {
+      await openHistoryItem(sessionId);
+      document.dispatchEvent(new CustomEvent("pagelens:sidechat-open", {
+        detail: { sideChatId: sideChat.id, jump: true },
+      }));
+    });
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "sc-mini-btn is-danger";
+    delBtn.textContent = "删";
+    delBtn.title = "删除此旁注笔记";
+    let armed = false;
+    let armTimer = 0;
+    delBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const hasTurns = (sideChat.messages || []).length > 0;
+      if (hasTurns && !armed) {
+        armed = true;
+        delBtn.textContent = "确认?";
+        delBtn.classList.add("is-armed");
+        armTimer = setTimeout(() => {
+          armed = false;
+          delBtn.textContent = "删";
+          delBtn.classList.remove("is-armed");
+        }, 2600);
+        return;
+      }
+      clearTimeout(armTimer);
+      await deleteSideChatFromReview(sessionId, sideChat.id);
+    });
+
+    ops.append(openBtn, delBtn);
+    foot.append(info, ops);
+    card.appendChild(foot);
+    container.appendChild(card);
+  }
+}
+
+async function deleteSideChatFromReview(sessionId, sideChatId) {
+  if (sessionId === state.sessionId) {
+    document.dispatchEvent(new CustomEvent("pagelens:sidechat-delete", {
+      detail: { sideChatId, force: true },
+    }));
+  } else {
+    const sess = await loadSession(sessionId);
+    if (sess) {
+      sess.sideChats = (sess.sideChats || []).filter((sc) => sc.id !== sideChatId);
+      await saveSession(sess, { keepActive: true });
+    }
+  }
+  if (Array.isArray(cachedAllSideChats)) {
+    cachedAllSideChats = cachedAllSideChats.filter(
+      (entry) => !(entry.sessionId === sessionId && entry.sideChat.id === sideChatId),
+    );
+    paintReviewSideChatsList(cachedAllSideChats);
+  }
+}
+
+async function renderReviewSideChats() {
+  const container = $("review-sc-list");
+  if (!container) return;
+  container.innerHTML = `<div class="hist-empty">正在聚合全部会话的旁注笔记…</div>`;
+  try {
+    const sessions = await loadAllSessions();
+    cachedAllSideChats = collectAllSideChats(sessions);
+  } catch {
+    cachedAllSideChats = [];
+  }
+  paintReviewSideChatsList(cachedAllSideChats);
+}
+
 function initReviewView() {
   // Review tab switching
   const tabs = document.querySelectorAll(".review-tab");
@@ -504,6 +688,17 @@ function initReviewView() {
   $("btn-review-delete")?.addEventListener("click", () => handleDeleteActiveReview());
   $("btn-review-back")?.addEventListener("click", () => setView("chat"));
   $("btn-review")?.addEventListener("click", () => openReviewView());
+
+  $("review-sc-search")?.addEventListener("input", (e) => {
+    reviewScQuery = e.target.value || "";
+    if (cachedAllSideChats) paintReviewSideChatsList(cachedAllSideChats);
+  });
+  document.querySelectorAll("[data-review-sc-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      reviewScFilter = btn.dataset.reviewScFilter || "all";
+      if (cachedAllSideChats) paintReviewSideChatsList(cachedAllSideChats);
+    });
+  });
 }
 
 

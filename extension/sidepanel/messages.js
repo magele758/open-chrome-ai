@@ -15,6 +15,8 @@ import { isLangfuseConfigured, sendTraceToLangfuse } from "../lib/langfuse.js";
 import { bindMarkdownLinks, decorateInlines, enhanceMermaid, formatAnswer, splitThinking } from "../lib/markdown.js";
 import { visibleSkills } from "../lib/prompts.js";
 import { isModelReady, resolveModel } from "../lib/storage.js";
+import { applyAnchorsToBody } from "../lib/sidechat-anchor.js";
+import { messageEndedAtMs, replyEndText } from "../lib/reply-end.js";
 import { messageShowsActionRow } from "../lib/turn-end-actions.js";
 import { charsPerSecond, liveLines, noteLiveSample, runningToolName } from "./live-status.js";
 
@@ -229,7 +231,7 @@ function finishReasonLabel(reason) {
   return map[reason] || reason || "结束";
 }
 
-function createMessageFooter(msg) {
+function createMessageFooter(msg, { sessionEnded = false } = {}) {
   const footer = document.createElement("div");
   footer.className = "msg-footer";
 
@@ -260,6 +262,17 @@ function createMessageFooter(msg) {
     reason.title = `结束原因：${msg.metrics.finishReason || "未知"}`;
     reason.textContent = finishReasonLabel(msg.metrics.finishReason);
     stats.appendChild(reason);
+
+    const endedMs = messageEndedAtMs(msg);
+    const endedText = replyEndText(endedMs, sessionEnded);
+    if (endedText) {
+      const ended = document.createElement("time");
+      ended.className = "stat-item stat-ended";
+      ended.dateTime = new Date(endedMs).toISOString();
+      ended.title = endedText;
+      ended.textContent = endedText;
+      stats.appendChild(ended);
+    }
   }
   footer.appendChild(stats);
 
@@ -320,6 +333,27 @@ function createMessageFooter(msg) {
       importCurrentToLibrary();
     });
     actions.appendChild(obsidianBtn);
+
+    const forkCount = msg.id
+      ? (state.sideChats || []).filter((sc) => sc.parentMessageId === msg.id).length
+      : 0;
+    const forkBtn = document.createElement("button");
+    forkBtn.type = "button";
+    forkBtn.className = "btn-fork-sidechat" + (forkCount ? " has-forks" : "");
+    forkBtn.title = "从此处裂变一条 SideChat 旁注分支（不影响主线上下文）";
+    forkBtn.setAttribute("aria-label", forkBtn.title);
+    forkBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 9v6"/><path d="M18 9a9 9 0 0 1-9 9"/></svg><span>${forkCount ? `裂变 (${forkCount})` : "裂变"}</span>`;
+    forkBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      document.dispatchEvent(new CustomEvent("pagelens:sidechat-fork", {
+        detail: {
+          forkType: "message",
+          messageId: msg.id,
+          quoteText: String(msg.text || "").trim().slice(0, 400),
+        },
+      }));
+    });
+    actions.appendChild(forkBtn);
   }
 
   if (msg.traceLog || msg.metrics) {
@@ -438,10 +472,22 @@ function renderMessages() {
     return;
   }
   let streaming = false;
+  let sessionEndIndex = -1;
+  if (!state.busy) {
+    for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+      if (messageShowsActionRow(state.messages, i, false)) {
+        sessionEndIndex = i;
+        break;
+      }
+    }
+  }
   for (const [index, msg] of state.messages.entries()) {
+    if (!msg.id) msg.id = `m-${index}`;
     const wrap = document.createElement("div");
     const continued = continuesAssistant(msg, state.messages[index - 1]);
     wrap.className = `msg ${msg.role}${msg.error ? " error" : ""}${continued ? " continued" : ""}`;
+    wrap.dataset.msgId = msg.id;
+    wrap.dataset.msgIndex = String(index);
     if (msg.role === "user") {
       if (msg.image) {
         const img = document.createElement("img");
@@ -483,13 +529,96 @@ function renderMessages() {
       }
       if (streamingThis) syncLiveStatus(wrap, msg, { streaming: true });
       if (messageShowsActionRow(state.messages, index, state.busy)) {
-        wrap.appendChild(createMessageFooter(msg));
+        wrap.appendChild(createMessageFooter(msg, { sessionEnded: index === sessionEndIndex }));
+      }
+      if (!streamingThis && !msg.error) {
+        applyMessageSideChats(wrap, msg);
       }
     }
     root.appendChild(wrap);
   }
   ensureLiveTick(streaming);
   messageScroll?.afterRender(scrollTop);
+}
+
+function buildSideChatIndexMap() {
+  const map = new Map();
+  (state.sideChats || []).forEach((sc, idx) => {
+    if (sc?.id) map.set(sc.id, idx + 1);
+  });
+  return map;
+}
+
+function applyMessageSideChats(wrap, msg, indexMap = buildSideChatIndexMap()) {
+  if (!wrap || !msg?.id) return;
+  const body = wrap.querySelector(":scope > .body");
+  const activeId = state.sideChatUi?.activeId || "";
+  const attached = (state.sideChats || []).filter((sc) => sc.parentMessageId === msg.id);
+
+  let orphanedIds = [];
+  if (body) {
+    const res = applyAnchorsToBody(body, attached, { activeId, indexMap });
+    orphanedIds = res.orphanedIds || [];
+  }
+
+  wrap.querySelector(":scope > .sc-msg-forks")?.remove();
+  const nonInline = attached.filter(
+    (sc) => sc.forkType !== "selection" || orphanedIds.includes(sc.id) || !body,
+  );
+  if (nonInline.length) {
+    const bar = document.createElement("div");
+    bar.className = "sc-msg-forks";
+    for (const sc of nonInline) {
+      const num = indexMap.get(sc.id) || "";
+      const item = document.createElement("span");
+      item.className = "sc-msg-fork-item" + (sc.id === activeId ? " is-active" : "") + (sc.status === "resolved" ? " is-resolved" : "");
+
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "sc-msg-fork-chip" + (sc.id === activeId ? " is-active" : "") + (sc.status === "resolved" ? " is-resolved" : "");
+      chip.dataset.scId = sc.id;
+      const icon = sc.status === "resolved" ? "✓" : sc.pinnedNote ? "📌" : "⑂";
+      const prefix = orphanedIds.includes(sc.id) ? "原句快照 · " : "";
+      chip.textContent = `${icon} ${num ? `#${num} ` : ""}${prefix}${sc.title || "旁注分支"}`;
+      chip.title = sc.pinnedNote ? `📌 ${sc.pinnedNote}` : "点击打开该 SideChat 分支";
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "sc-msg-fork-del";
+      del.dataset.scId = sc.id;
+      del.textContent = "×";
+      del.title = `删除旁注：${sc.title || "SideChat"}`;
+      del.setAttribute("aria-label", del.title);
+
+      item.append(chip, del);
+      bar.appendChild(item);
+    }
+    const footer = wrap.querySelector(":scope > .msg-footer");
+    if (footer) wrap.insertBefore(bar, footer);
+    else wrap.appendChild(bar);
+  }
+
+  const forkLabel = wrap.querySelector(".btn-fork-sidechat span");
+  const forkBtn = wrap.querySelector(".btn-fork-sidechat");
+  if (forkLabel && forkBtn) {
+    forkBtn.classList.toggle("has-forks", attached.length > 0);
+    forkLabel.textContent = attached.length ? `裂变 (${attached.length})` : "裂变";
+  }
+}
+
+function syncMessageAnchors() {
+  const root = $("msgs");
+  if (!root) return;
+  const indexMap = buildSideChatIndexMap();
+  const wraps = root.querySelectorAll(".msg.bot[data-msg-id]");
+  wraps.forEach((wrap) => {
+    const idx = Number(wrap.dataset.msgIndex);
+    const msg = Number.isInteger(idx) ? state.messages[idx] : state.messages.find((m) => m.id === wrap.dataset.msgId);
+    if (!msg || msg.error) return;
+    const isLast = msg === state.messages[state.messages.length - 1];
+    if (state.busy && isLast && !msg.metrics) return;
+    applyMessageSideChats(wrap, msg, indexMap);
+  });
 }
 
 function continuesAssistant(msg, prev) {
@@ -702,7 +831,7 @@ function bindAnswerActions(root) {
 
 function pushError(text) {
   messageScroll?.reset();
-  state.messages.push({ role: "bot", text, error: true });
+  state.messages.push({ id: crypto.randomUUID(), role: "bot", text, error: true });
   renderMessages();
 }
 
@@ -733,6 +862,7 @@ export {
   downloadMessageTrace,
   maybeUploadTraceToLangfuse,
   renderMessages,
+  syncMessageAnchors,
   syncLiveStatus,
   createThinkingBox,
   updateThinkingBox,

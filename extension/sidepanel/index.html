@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="dub-queue.css" />
   <link rel="stylesheet" href="themes.css" />
+  <link rel="stylesheet" href="sidechat.css" />
   <link rel="stylesheet" href="settings.css" />
   <link rel="stylesheet" href="../vendor/katex/katex.min.css" />
 </head>
@@ -50,6 +51,10 @@
         <span class="mark"></span> PageLens
         <span class="hitl-badge hidden" id="hitl-badge" title="当前处于全自动模式">⚡️全自动</span>
       </div>
+      <button type="button" id="btn-sidechat-header" class="sc-header-btn" aria-expanded="false" aria-label="SideChat 旁注分支" data-tooltip="SideChat 旁注分支">
+        <span aria-hidden="true">⑂</span><span class="sc-header-label">旁注</span>
+        <span id="sc-header-count" class="sc-header-count hidden"></span>
+      </button>
       <nav class="icon-btns" aria-label="全局功能">
         <button type="button" id="btn-new" class="icon-btn" aria-label="新对话" data-tooltip="新对话">
           <svg class="ico"><use href="#i-pen"/></svg>
@@ -74,7 +79,10 @@
 
     <details id="dub-queue">
       <summary>同传预处理队列</summary>
-      <button type="button" class="secondary mini" id="queue-add">将当前视频加入队列</button>
+      <div class="queue-toolbar">
+        <button type="button" class="secondary mini" id="queue-add">将当前视频加入队列</button>
+        <button type="button" class="secondary mini" id="queue-folder" title="打开音频目录" aria-label="打开音频目录"></button>
+      </div>
       <div id="queue-status" role="status"></div>
       <ol id="queue-items"></ol>
       <audio id="queue-player" controls hidden></audio>
@@ -305,8 +313,17 @@
           </div>
         </div>
 
+        <div class="chat-main-col">
         <div class="messages-area">
           <div class="msgs" id="msgs" tabindex="0" aria-label="会话消息"></div>
+          <div id="sc-margin-rail" class="sc-margin-rail hidden" aria-label="旁注定位轨"></div>
+          <div id="sc-selection-bar" class="sc-selection-bar hidden" role="toolbar" aria-label="划词旁注操作">
+            <button type="button" id="btn-sc-sel-ask" class="sc-sel-btn primary">💬 旁注追问</button>
+            <button type="button" id="btn-sc-sel-explain" class="sc-sel-btn soft">✨ 通俗解释</button>
+            <button type="button" id="btn-sc-sel-existing" class="sc-sel-btn teal hidden">↗ 已有旁注</button>
+            <button type="button" id="btn-sc-sel-delete" class="sc-sel-btn danger hidden">🗑 删除</button>
+            <button type="button" id="btn-sc-sel-copy" class="sc-sel-btn">复制</button>
+          </div>
           <button type="button" class="messages-bottom hidden" id="btn-messages-bottom" aria-controls="msgs" title="回到底部" aria-label="回到底部">
             <svg class="messages-bottom-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M8 2.5v10M3.5 8.5L8 13l4.5-4.5"/>
@@ -385,6 +402,81 @@
             <span id="model-line-meta">未配置模型 · 先到设置添加服务商</span>
           </div>
         </div>
+        </div>
+
+        <div id="sc-drawer-backdrop" class="sc-drawer-backdrop hidden"></div>
+        <aside id="sidechat-pane" class="sc-pane hidden" aria-label="SideChat 旁注分支">
+          <div id="sc-resizer" class="sc-resizer" role="separator" aria-orientation="vertical" aria-label="拖拽调整主对话框与旁注面板宽度" tabindex="0" title="左右拖拽调整面板宽度（双击恢复默认）"></div>
+          <div class="sc-pane-header">
+            <div class="sc-pane-left">
+              <button type="button" id="btn-sc-list" class="sc-nav-btn" title="切换旁注管理列表">
+                ☰ 全部 (<span id="sc-total-count">0</span>)
+              </button>
+              <button type="button" id="sc-thread-title" class="sc-thread-title hidden" title="点击重命名旁注标题"></button>
+            </div>
+            <div class="sc-pane-right">
+              <button type="button" id="btn-sc-new" class="sc-new-btn" title="基于当前最新回复裂变新分支">+ 新建</button>
+              <button type="button" id="btn-sc-close" class="sc-close-btn" title="收起 SideChat" aria-label="收起 SideChat">×</button>
+            </div>
+          </div>
+
+          <div id="sc-quick-strip" class="sc-quick-strip hidden" aria-label="旁注快速切换"></div>
+
+          <div id="sc-list-view" class="sc-list-view">
+            <div class="sc-list-toolbar">
+              <input id="sc-search" class="sc-search" type="search" placeholder="搜索批注原句、标题或笔记…" />
+              <div class="sc-filter-row">
+                <div class="sc-filter-group">
+                  <button type="button" class="sc-filter-btn is-active" data-sc-filter="all">全部</button>
+                  <button type="button" class="sc-filter-btn" data-sc-filter="active">思考中</button>
+                  <button type="button" class="sc-filter-btn" data-sc-filter="resolved">已掌握</button>
+                  <button type="button" class="sc-filter-btn" data-sc-filter="pinned">📌 已凝练</button>
+                </div>
+                <button type="button" id="btn-sc-sort" class="sc-sort-btn" title="切换排序方式">按原文顺序</button>
+              </div>
+            </div>
+            <div id="sc-list-items" class="sc-list-items"></div>
+          </div>
+
+          <div id="sc-thread-view" class="sc-thread-view hidden">
+            <div class="sc-anchor-card">
+              <div class="sc-anchor-top">
+                <div class="sc-anchor-meta-row">
+                  <span id="sc-detail-badge" class="sc-type-badge">划词批注</span>
+                  <span id="sc-detail-meta" class="sc-origin-meta"></span>
+                </div>
+                <div class="sc-anchor-ops">
+                  <button type="button" id="btn-sc-jump" class="sc-op-btn" title="滚动主对话并高亮原句">↗ 定位原文</button>
+                  <button type="button" id="btn-sc-resolve" class="sc-op-btn" title="标记是否已掌握">✓ 标记掌握</button>
+                  <button type="button" id="btn-sc-delete" class="sc-op-btn is-danger" title="删除此旁注及原文高亮">🗑 删除</button>
+                </div>
+              </div>
+              <div id="sc-detail-quote" class="sc-anchor-quote"></div>
+              <div id="sc-pinned-box" class="sc-pinned-box hidden">
+                <div><strong>📌 一句话批注：</strong><span id="sc-pinned-text"></span></div>
+                <div class="sc-pinned-ops">
+                  <button type="button" id="btn-sc-pinned-edit" class="sc-mini-btn" title="编辑">✎</button>
+                  <button type="button" id="btn-sc-pinned-clear" class="sc-mini-btn is-danger" title="清除一句话批注">×</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="sc-messages" class="sc-messages"></div>
+
+            <div class="sc-composer">
+              <div class="sc-micro-row">
+                <button type="button" class="sc-micro-btn" data-sc-micro="analogy">💡 通俗类比</button>
+                <button type="button" class="sc-micro-btn" data-sc-micro="example">🧩 举个例子</button>
+                <button type="button" class="sc-micro-btn" data-sc-micro="deep">🔍 深挖原理</button>
+                <button type="button" id="btn-sc-distill" class="sc-micro-btn is-teal">📌 凝练一句话批注</button>
+              </div>
+              <div class="sc-input-wrap">
+                <textarea id="sc-input" rows="2" placeholder="针对这段内容继续追问（仅保存在此旁注分支）…"></textarea>
+                <button type="button" id="btn-sc-send" class="sc-send-btn">发送</button>
+              </div>
+            </div>
+          </div>
+        </aside>
       </section>
 
       <section id="view-settings" class="settings hidden">
@@ -895,6 +987,7 @@
           <button type="button" class="review-tab" data-type="weekly">📆 每周复盘</button>
           <button type="button" class="review-tab" data-type="monthly">🗓️ 每月复盘</button>
           <button type="button" class="review-tab" data-type="history">📚 历史复盘</button>
+          <button type="button" class="review-tab" data-type="sidechats">💬 旁注笔记</button>
         </div>
 
         <div class="review-period-bar" id="review-period-bar">
@@ -944,6 +1037,19 @@
 
         <div class="review-history-container hidden" id="review-history-container">
           <div id="review-history-list"></div>
+        </div>
+
+        <div class="review-sidechats-container hidden" id="review-sidechats-container">
+          <div class="review-sidechats-toolbar">
+            <input id="review-sc-search" class="sc-search" type="search" placeholder="跨会话搜索旁注原句、标题或一句话批注…" />
+            <div class="sc-filter-group">
+              <button type="button" class="sc-filter-btn is-active" data-review-sc-filter="all">全部</button>
+              <button type="button" class="sc-filter-btn" data-review-sc-filter="active">思考中</button>
+              <button type="button" class="sc-filter-btn" data-review-sc-filter="resolved">已掌握</button>
+              <button type="button" class="sc-filter-btn" data-review-sc-filter="pinned">📌 已凝练</button>
+            </div>
+          </div>
+          <div id="review-sc-list" class="review-sc-list"></div>
         </div>
       </section>
     </div>

@@ -64,6 +64,22 @@ const state = {
   mediaPack: null,
   pageRevision: 0,
   dismissedPage: null,
+  sideChats: [],
+  sideChatUi: {
+    open: false,
+    view: "thread", // "list" | "thread"
+    activeId: "",
+    filter: "all", // "all" | "active" | "resolved" | "pinned"
+    sort: "position", // "position" | "recent"
+    query: "",
+    wide: false,
+    splitWidth: 340,
+    drawerWidth: 0,
+    armedDeleteId: "",
+    runningIds: new Set(),
+    aborts: new Map(),
+    pendingSelection: null,
+  },
 };
 
 

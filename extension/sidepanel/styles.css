@@ -827,9 +827,9 @@ button { cursor: pointer; }
 }
 .msg.bot .body .ref { color: var(--accent); font-weight: 700; cursor: pointer; }
 .msg.bot .msg-footer {
-  margin-top: 8px;
-  padding-top: 0;
-  border-top: 0;
+  margin-top: 10px;
+  padding-top: 7px;
+  border-top: 1px dashed var(--line);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -869,61 +869,10 @@ button { cursor: pointer; }
   color: var(--warning-ink, #d97706);
 }
 .msg.bot .msg-actions {
-  position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 2;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  margin: 0;
-  padding: 2px;
-  border-radius: 8px;
-  background: var(--surface);
-  opacity: 0;
-  pointer-events: none;
-}
-.msg.bot:hover .msg-actions,
-.msg.bot:focus-within .msg-actions {
-  opacity: 1;
-  pointer-events: auto;
-}
-.msg.bot .msg-actions button {
-  width: 26px;
-  height: 26px;
-  justify-content: center;
-  padding: 0;
-  border-radius: 6px;
-}
-.msg.bot .msg-actions button span {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-}
-.msg.bot .msg-actions button.is-done {
-  width: auto;
-  padding: 0 6px;
-  gap: 4px;
-}
-.msg.bot .msg-actions button.is-done span {
-  position: static;
-  width: auto;
-  height: auto;
-  overflow: visible;
-  clip: auto;
-}
-.msg.bot .msg-actions button:hover {
-  background: var(--bg);
-  color: var(--ink);
-}
-.msg.bot .msg-actions :is(.btn-download-trace, .btn-clip-card, .btn-copy-answer, .btn-obsidian-answer) {
-  border: 0;
-  background: transparent;
-  color: var(--muted);
+  gap: 6px;
+  margin-left: auto;
 }
 .msg.bot .btn-download-trace {
   display: inline-flex;

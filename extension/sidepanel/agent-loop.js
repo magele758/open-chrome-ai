@@ -563,6 +563,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       outputTokens: 0,
       totalTokens: 0,
       finishReason: isAbort ? "abort" : "error",
+      endedAt: Date.now(),
     };
     botMsg.traceLog = {
       version: "1.0",
@@ -653,8 +654,8 @@ async function sendPrompt(userText, options = {}) {
     state.capsule = mergeCapsules(state.capsule, extractCapsule(text));
     debugLog("trust.capsule", { actions: state.capsule.actions, origins: state.capsule.origins, commands: state.capsule.commands.length });
   }
-  state.messages.push({ role: "user", text: text || userText, image: image || null });
-  const botMsg = { role: "bot", text: "…", trace: [], thinking: "" };
+  state.messages.push({ id: crypto.randomUUID(), role: "user", text: text || userText, image: image || null });
+  const botMsg = { id: crypto.randomUUID(), role: "bot", text: "…", trace: [], thinking: "" };
   state.messages.push(botMsg);
   try {
     renderMessages();
@@ -747,9 +748,10 @@ async function resumeInterruptedRun() {
 
   let botMsg = state.messages[state.messages.length - 1];
   if (!botMsg || botMsg.role !== "bot") {
-    botMsg = { role: "bot", text: run.lastText || "", trace: [] };
+    botMsg = { id: crypto.randomUUID(), role: "bot", text: run.lastText || "", trace: [] };
     state.messages.push(botMsg);
   } else if (!botMsg.text) {
+    if (!botMsg.id) botMsg.id = crypto.randomUUID();
     botMsg.text = run.lastText || "";
   }
   botMsg.trace = Array.isArray(botMsg.trace) ? botMsg.trace : [];
