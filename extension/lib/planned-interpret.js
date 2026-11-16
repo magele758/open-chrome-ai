@@ -16,7 +16,7 @@ import { videoIdentity } from './library.js';
 import { interpretSourceUrls } from './media-url.js';
 import { prepareSpeakerReference } from './interpret-reference.js';
 import { stripSubtitleDirections } from './subtitle-text.js';
-import { retryInterpretRequest, hedgeInterpretRequest } from './interpret-retry.js';
+import { retryInterpretRequest, hedgeInterpretRequest, isTransientInterpretError } from './interpret-retry.js';
 import { INTERPRET_VERSION, dubArchiveVersion, speechUnits, safeBudgetRewrite, failedTranslation, bufferingTarget, stableAudioIdentity, ttsAudioIdentity } from './interpret-policy.js';
 
 const interpretAsr = asr => ({ ...asr, language: asr?.interpretLanguage || '' });
@@ -648,6 +648,7 @@ export async function runPlannedInterpret(opts) {
   };
   const videoCache = await createVideoDubCache(opts.sourceUrl ? videoIdentity(opts.sourceUrl) : null);
   const cacheGet = opts.cacheGet || videoCache.get, cacheSet = opts.cacheSet || videoCache.set;
+  let saveProgress;
   let reused = 0, generated = 0, fullyPrepared = false;
   const isStreamMode = Boolean(opts.streamPlayback || opts.streamMode);
   const audioOnly = opts.audioOnly === true;
@@ -685,6 +686,52 @@ export async function runPlannedInterpret(opts) {
   })) : null;
   if (streamPlayer) opts.onStreamPlayer?.(streamPlayer);
   let plan, preparing = true, preparationMonitor = Promise.resolve();
+  let archiveJob;
+  async function archiveCompletedAudio() {
+    try {
+      const snapshot = [...plan.lines];
+      const dubbedSegments = [];
+      for (const line of snapshot) {
+        const item = ready.get(line.id);
+        if (item?.blob) {
+          dubbedSegments.push({
+            id: line.id,
+            start: line.start,
+            end: item.slotEnd || line.end,
+            zh: line.zh,
+            src: line.src,
+            speaker: line.speaker,
+            blob: item.blob,
+          });
+        }
+      }
+      const videoId = opts.sourceUrl ? videoIdentity(opts.sourceUrl) : null;
+      if (!opts.signal?.aborted && fullyPrepared && !plan.incompleteRecognition && !plan.incompleteTranslation && !plan.incompleteAudio && videoId && dubbedSegments.length > 0 && dubbedSegments.length === plan.lines.length) {
+        opts.onEvent?.({ type: 'status', message: '整段配音已生成，正在拼接并保存完整音频…' });
+        const compactAudio = await composeCompactDubTrack(dubbedSegments, { sampleRate: 24000, gapMs: 250 });
+        const fullAudio = await composeFullDubTrack(dubbedSegments, { totalDuration: source?.duration || 0 });
+        opts.signal?.throwIfAborted();
+        if (!fullyPrepared || snapshot.some((line, i) => line !== plan.lines[i]) || snapshot.length !== plan.lines.length) return;
+        const archive = await saveFullMediaArchive({
+          videoId,
+          title: opts.title || '视频同传',
+          url: opts.sourceUrl,
+          duration: source?.duration || 0,
+          compactDuration: compactAudio.duration,
+          lines: snapshot,
+          cues: linesToCaptions(snapshot).cues,
+          compactCues: compactAudio.cues,
+          audioBlob: fullAudio,
+          compactAudioBlob: compactAudio.blob,
+          processingVersion: dubArchiveVersion(settings.asr),
+          complete: true,
+        });
+        if (!opts.signal?.aborted) opts.onEvent?.({ type: 'archive_saved', mode: 'audio', archive });
+      }
+    } catch (error) {
+      if (!opts.signal?.aborted) opts.onEvent?.({ type: 'warn', message: '完整音频拼接或保存失败：' + error.message });
+    }
+  }
   let emittedDubComplete = false;
   const ttsOn = isTtsReady(settings.tts);
   const read = async () => { const s = await video('state'); if (!s?.ok) throw new Error('播放器已关闭'); return s; };
@@ -780,17 +827,26 @@ export async function runPlannedInterpret(opts) {
     const realtime = !['full', 'buffered'].includes(settings.tts?.preparationMode);
     const progressive = !savedPlan && realtime;
     if (savedPlan) status('已复用完整翻译，正在读取已生成的配音…');
-    const coverage = [];
+    const progressKey = savedPlanKey + ':progress-v1';
+    const previous = progressive && opts.generateFull ? await cacheGet(progressKey) : null;
+    const coverage = previous?.coverage || [];
     const coveredUntil = time => {
       let end = time;
       for (const range of coverage) if (range.start <= end + .001 && range.end > end) end = range.end;
       return end;
     };
-    plan = savedPlan || (progressive ? { lines: [], cues: [], spans: [], sourceKey: await dubKey({ url: opts.sourceUrl ? videoIdentity(opts.sourceUrl) : 'unknown', duration: Math.round(Number(source.duration) || 0) }), background: false }
+    plan = savedPlan || (progressive ? { lines: previous?.lines || [], cues: [], spans: [], sourceKey: await dubKey({ url: opts.sourceUrl ? videoIdentity(opts.sourceUrl) : 'unknown', duration: Math.round(Number(source.duration) || 0) }), background: false }
       : await prepareDubPlan({ source, settings, signal, status, cacheGet, cacheSet, transcribe: opts.transcribe, chat: opts.chat }));
+    if (progressive && opts.generateFull) {
+      saveProgress = () => {
+        if (plan.incompleteRecognition || plan.incompleteTranslation) return;
+        return cacheSet(progressKey, { lines: [...plan.lines], coverage: [...coverage] });
+      };
+    }
     let analysisRevision = 0;
     let productionLatency = 0;
     const translationContext = createInterpretContext({ maxSentences: 12, maxChars: 3000 });
+    for (const line of plan.lines.slice(-12)) translationContext.commit(line.src, line.zh);
     let refreshSpeakers = () => {};
     if (progressive) {
       // Whole-file diarization/separation improves future windows, never gates first audio.
@@ -893,7 +949,8 @@ export async function runPlannedInterpret(opts) {
         );
         const isAudioActive = isStreamMode || Boolean(opts.isAudioActive?.());
         const continuousEnd = coveredUntil(0);
-        const start = (currentPlayhead > continuousEnd + 15) ? coveredUntil(currentPlayhead) : continuousEnd;
+        const ahead = coveredUntil(currentPlayhead);
+        const start = currentPlayhead > continuousEnd + 15 && ahead < source.duration ? ahead : continuousEnd;
         const bufferLimit = Math.max(120, (Number(settings.tts?.bufferSeconds) || 30) * 4);
         const bufferedAhead = scheduledAudioTime - currentPlayhead;
         const aheadLimit = sentenceMode ? translateAheadSeconds(settings) : bufferLimit;
@@ -943,9 +1000,10 @@ export async function runPlannedInterpret(opts) {
           await publishLines(part.lines, start, fingerprint, gate);
           windowRetries = 0;
           coverage.push({ start, end }); coverage.sort((a, b) => a.start - b.start);
+          await saveProgress?.();
           continue;
         }
-        const jumped = currentPlayhead > continuousEnd + 15;
+        const jumped = start > continuousEnd + 15;
         if (jumped) { carried = []; recognizedUntil = start; translationContext.reset(); }
         const newStart = !hasSubtitles && !jumped && recognizedUntil > start + 0.001 ? recognizedUntil : start;
         let end;
@@ -1019,6 +1077,7 @@ export async function runPlannedInterpret(opts) {
           coverage.push({ start: newStart, end });
         }
         coverage.sort((a, b) => a.start - b.start);
+        await saveProgress?.();
       }
     })().catch(error => { productionError = error; });
     opts.onEditable?.(async (id, text) => {
@@ -1027,9 +1086,13 @@ export async function runPlannedInterpret(opts) {
       if (i < 0 || !zh || zh.length > 500) throw new Error('请输入1–500字的中文口播稿');
       const edited = lines[i] = { ...lines[i], zh };
       fullyPrepared = false;
-      edits[id] = zh;
-      await cacheSet(editsKey, edits);
+      emittedDubComplete = false;
+      const oldArchiveJob = archiveJob;
+      archiveJob = null;
       ready.delete(id); completed.delete(id); pending.add(id);
+      edits[id] = zh;
+      await oldArchiveJob;
+      await cacheSet(editsKey, edits);
       if (active?.dubItem.id === id) clearAudio();
       await hold();
       await video('seek', { seconds: edited.start, paused: true });
@@ -1040,9 +1103,12 @@ export async function runPlannedInterpret(opts) {
     const full = settings.tts?.preparationMode === 'full';
     const target = Math.max(5, Math.min(120, Number(settings.tts?.bufferSeconds) || 30));
     const saveCompletedPlan = async () => {
-      if (fullyPrepared) return;
-      fullyPrepared = true;
-      if (!plan.incompleteRecognition && !plan.incompleteTranslation && !plan.incompleteAudio) await cacheSet(savedPlanKey, plan);
+      if (progressive && coveredUntil(0) < source.duration) return;
+      if (!fullyPrepared) {
+        fullyPrepared = true;
+        if (!plan.incompleteRecognition && !plan.incompleteTranslation && !plan.incompleteAudio) await cacheSet(savedPlanKey, plan);
+      }
+      if (ttsOn && ready.size >= lines.length && lines.length && !archiveJob) archiveJob = archiveCompletedAudio();
     };
     // One worker preserves voice-service capacity, while playback is independent.
     const failedSpeakers = new Set();
@@ -1221,7 +1287,7 @@ export async function runPlannedInterpret(opts) {
           try {
             const output = await retryInterpretRequest(s => (opts.synthesizeTts || synthesizeTts)(settings.tts, line.zh, { signal: s, referenceBlob, emotionBlob, lang: settings.tts.lang || 'ZH' }), {
               signal, stage: 'Index-TTS 配音', trace: { start: line.start, end: line.end }, attempts: realtime ? 2 : 3, timeoutMs: opts.ttsTimeoutMs ?? 90000,
-              onRetry: () => status('正在重试当前句配音，已完成内容保留…'),
+              onRetry: ({ attempt, attempts }) => status(`正在重试当前句配音（第 ${attempt + 1}/${attempts} 次），已完成内容保留…`),
             });
             if (!output?.blob) throw new Error('配音生成失败');
             const seconds = await withInterpretDeadline(() => (opts.audioDuration || audioDuration)(output.blob), signal, 5000, { stage: '配音时长解码' });
@@ -1236,6 +1302,9 @@ export async function runPlannedInterpret(opts) {
           } catch (error) {
             signal.throwIfAborted();
             plan.incompleteAudio = true;
+            if (audioOnly && isTransientInterpretError(error)) {
+              throw new Error(`配音连续请求失败，本次处理已停止。已保留完成的分段，服务恢复后可重新处理。原因：${error.message}`, { cause: error });
+            }
             ready.set(line.id, { ...line, slotEnd: line.end, fallbackOriginal: true });
             const failure = audioOnly || isStreamMode ? '本句配音未能生成。' : '本句配音重试失败，播放到该句时将暂停画面，请重试同传。';
             emit({ type: 'warn', message: `${failure} ${error.message}` });
@@ -1482,6 +1551,7 @@ export async function runPlannedInterpret(opts) {
     streamPlayer?.stop();
     await preparationMonitor;
     await Promise.all([production, planning]);
+    if (!fullyPrepared) await saveProgress?.();
     if (watching) {
       const state = await read().catch(() => null);
       if (muted) await video('restore').catch(() => {});
@@ -1490,47 +1560,7 @@ export async function runPlannedInterpret(opts) {
     }
     await source?.close();
     opts.signal?.removeEventListener('abort', stop);
-    try {
-      const dubbedSegments = [];
-      for (const line of plan?.lines || []) {
-        const item = ready.get(line.id);
-        if (item?.blob) {
-          dubbedSegments.push({
-            id: line.id,
-            start: line.start,
-            end: item.slotEnd || line.end,
-            zh: line.zh,
-            src: line.src,
-            speaker: line.speaker,
-            blob: item.blob,
-          });
-        }
-      }
-      const videoId = opts.sourceUrl ? videoIdentity(opts.sourceUrl) : null;
-      if (!opts.signal?.aborted && fullyPrepared && !plan.incompleteRecognition && !plan.incompleteTranslation && !plan.incompleteAudio && videoId && dubbedSegments.length > 0 && dubbedSegments.length === plan.lines.length) {
-        opts.onEvent?.({ type: 'status', message: '整段配音已生成，正在拼接并保存完整音频…' });
-        const compactAudio = await composeCompactDubTrack(dubbedSegments, { sampleRate: 24000, gapMs: 250 });
-        const fullAudio = await composeFullDubTrack(dubbedSegments, { totalDuration: source?.duration || 0 });
-        opts.signal?.throwIfAborted();
-        const archive = await saveFullMediaArchive({
-          videoId,
-          title: opts.title || '视频同传',
-          url: opts.sourceUrl,
-          duration: source?.duration || 0,
-          compactDuration: compactAudio.duration,
-          lines: plan.lines,
-          cues: linesToCaptions(plan.lines).cues,
-          compactCues: compactAudio.cues,
-          audioBlob: fullAudio,
-          compactAudioBlob: compactAudio.blob,
-          processingVersion: dubArchiveVersion(settings.asr),
-          complete: true,
-        });
-        if (!opts.signal?.aborted) opts.onEvent?.({ type: 'archive_saved', mode: 'audio', archive });
-      }
-    } catch (error) {
-      if (!opts.signal?.aborted) opts.onEvent?.({ type: 'warn', message: '完整音频拼接或保存失败：' + error.message });
-    }
+    await archiveJob;
     void pruneDubCache();
   }
 }

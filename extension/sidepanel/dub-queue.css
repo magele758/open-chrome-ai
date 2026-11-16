@@ -1,8 +1,28 @@
-#dub-queue {padding: 5px 12px; border-bottom: 1px solid var(--line); max-height: 38vh; overflow: auto; flex: none}
+#dub-queue {padding: 6px 12px; border-bottom: 1px solid var(--line); max-height: 44vh; overflow: auto; flex: none}
 #dub-queue summary {cursor: pointer; color: var(--ink); font-weight: 600}
-#dub-queue[open] summary {margin-bottom: 6px}
+#dub-queue[open] summary {margin-bottom: 8px}
 #queue-add {max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis}
-#queue-items {margin: 4px 0; padding-left: 22px}
-#queue-items li {margin: 6px 0; overflow-wrap: anywhere}
-#queue-status {color: var(--muted)}
+#queue-items {list-style: none; margin: 6px 0 0; padding: 0}
+#queue-items li {display: grid; grid-template-columns: clamp(54px, 20%, 94px) minmax(0, 1fr); align-items: start; gap: 10px; padding: 10px 0}
+#queue-items li + li {border-top: 1px solid var(--line)}
+.queue-cover {position: relative; display: grid; place-items: center; aspect-ratio: 16/10; overflow: hidden; border-radius: 6px; background: var(--accent-soft); color: var(--accent)}
+.queue-cover img {position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover}
+#queue-items svg {width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round}
+.queue-body strong, .queue-meta {display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap}
+.queue-body strong {font-size: 1em; color: var(--ink); line-height: 1.4}
+.queue-meta, #queue-status {font-size: .88em; color: var(--muted)}
+.queue-meta {margin: 2px 0 4px}
+[data-status="running"] .queue-meta {color: var(--accent)}
+.queue-actions {display: flex; flex-wrap: wrap; gap: 3px}
+.queue-actions button, .queue-actions a {box-sizing: border-box; display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer}
+.queue-actions :is(button, a):is(:hover, :focus-visible) {background: var(--accent-soft); color: var(--accent)}
+.queue-actions button[data-action="remove"]:hover {color: var(--danger); background: var(--danger-bg)}
+.queue-actions button:disabled {opacity: .32; cursor: default}
+.queue-actions :focus-visible {outline: 2px solid var(--accent)}
 #queue-player {max-width: 100%}
+
+.queue-toolbar {display: flex; align-items: center; gap: 6px}
+.queue-toolbar #queue-add {min-width: 0; flex: 1; text-align: left}
+#queue-folder {flex: none; display: grid; place-items: center; width: 30px; height: 28px}
+#queue-folder svg {width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round}
+.queue-actions button:is([data-action="up"], [data-action="down"]) {display: inline-flex; gap: 2px; width: auto; padding: 0 4px; font-size: 11px}

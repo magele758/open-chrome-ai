@@ -64,10 +64,11 @@ export class InterpretTask {
 }
 
 export class InterpretController {
-  constructor({ audioOnly = false, video = injectVideo, engineOptions = {} } = {}) {
+  constructor({ audioOnly = false, video = injectVideo, engineOptions = {}, run = runInterpret } = {}) {
     this.audioOnly = audioOnly;
     this.video = video;
     this.engineOptions = engineOptions;
+    this.run = run;
     this.tasks = new Map();
     this.currentTabId = null;
     this.listeners = new Set();
@@ -201,7 +202,7 @@ export class InterpretController {
     return next;
   }
 
-  async start({ tab, settings, onCaptionsReady, generateFull = false }) {
+  async start({ tab, settings, onCaptionsReady, generateFull = false, run = this.run }) {
     if (!tab?.id) throw new Error("没有可操作的标签页");
     if (this.isRunning(tab.id)) {
       await this.stop(tab.id);
@@ -263,7 +264,7 @@ export class InterpretController {
     this.notify({ type: "started", tabId: tab.id }, tab.id);
 
     try {
-      const result = await runInterpret({
+      const result = await run({
         ...this.engineOptions,
         tabId: tab.id,
         sourceUrl: tab.url,
@@ -286,7 +287,7 @@ export class InterpretController {
         onEvent: (ev) => {
           if (task.abortController !== abort) return;
           if (ev.type === "line") {
-            task.details.lineId = ev.id;
+            task.details.lineId = ev.editable === false ? null : ev.id;
             task.details.speaker = ev.speaker || '';
             task.details.src = ev.src || "";
             task.details.zh = ev.zh || "";

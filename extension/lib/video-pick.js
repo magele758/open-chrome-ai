@@ -337,9 +337,25 @@ export function plVideo(cmd, arg) {
       /video\.twimg\.com\/.*\/(?:aud|audio)\//i.test(href) ||
       /video\.twimg\.com\/.*\/vid\/mp4a\//i.test(href)
     ) || "";
+    const cover = el.poster || document.querySelector?.('meta[property="og:image"], meta[name="twitter:image"]')?.content;
+    let poster;
+    try {
+      const resolved = cover && new URL(cover, document.baseURI);
+      if (resolved && /^https?:$/.test(resolved.protocol)) poster = resolved.href;
+    } catch { /* ignore malformed artwork */ }
+    if (!poster && o.capturePoster && el.videoWidth && el.videoHeight && el.readyState >= 2) {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = 160;
+        canvas.height = Math.min(160, Math.max(1, Math.round(160 * el.videoHeight / el.videoWidth)));
+        canvas.getContext("2d").drawImage(el, 0, 0, canvas.width, canvas.height);
+        poster = canvas.toDataURL("image/jpeg", 0.75);
+      } catch { /* a cross-origin player may prevent reading frames */ }
+    }
     return {
       src,
       audioSrc,
+      poster,
       duration: Number.isFinite(el.duration) ? el.duration : null,
       live: el.duration === Infinity,
     };

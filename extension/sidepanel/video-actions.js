@@ -1,5 +1,5 @@
 import { needModelMessage, paintBot, requireModel } from "./agent-loop.js";
-import { clearCompactSegments, compactController, interpretController, stopCompactPlayback } from "./compact-player.js";
+import { clearCompactSegments, compactController, interpretController, stopCompactPlayback, stopDubPlayback } from "./compact-player.js";
 import { $ } from "./dom.js";
 import { isTranscribing, paintVideoSummary, renderContext } from "./media-chrome.js";
 import { maybeUploadTraceToLangfuse, pushError, renderMessages } from "./messages.js";
@@ -19,7 +19,8 @@ import { transcribeTab, usableTranscript } from "../lib/captions.js";
 import { captureTab as captureVisible } from "../lib/chrome.js";
 import { syncPackToLibrary } from "../lib/library.js";
 import { estimateTokens } from "../lib/openai.js";
-import { isAsrReady } from "../lib/storage.js";
+import { loadTimelineArchive } from "../lib/timeline-archive.js";
+import { isAsrReady, isModelReady } from "../lib/storage.js";
 import { getSharedAudioContext } from "../lib/streaming-audio-player.js";
 import { summarizeTranscript } from "../lib/summarize-transcript.js";
 
@@ -160,6 +161,7 @@ async function startSummarizeVideo() {
       outputTokens: outTok,
       totalTokens: inTok + outTok,
       finishReason: "stop",
+      endedAt: Date.now(),
     };
     botMsg.traceLog = {
       version: "1.0",
@@ -186,6 +188,7 @@ async function startSummarizeVideo() {
       outputTokens: 0,
       totalTokens: 0,
       finishReason: error?.name === 'AbortError' ? 'abort' : 'error',
+      endedAt: Date.now(),
     };
     botMsg.traceLog = {
       version: "1.0",
@@ -229,9 +232,19 @@ async function toggleOriginalAudio() {
   }
 }
 
+async function canStartInterpret(tab) {
+  const asrReady = isAsrReady(state.settings.asr);
+  if (asrReady && isModelReady(state.settings.text)) return true;
+  if (await loadTimelineArchive(tab.url)) return true;
+  if (!asrReady) needAsrSettings("按声音同传需要先配置语音转写（ASR）");
+  else pushError(needModelMessage("text"));
+  return false;
+}
+
 async function startInterpret() {
   const target = (typeof mediaActionTab === "function" ? mediaActionTab() : null) || state.tab;
   try { if (typeof getSharedAudioContext === 'function') getSharedAudioContext(); } catch {}
+  if (state.dubPlaying) stopDubPlayback();
   stopCompactPlayback();
   await compactController.stop(target?.id);
   if (!target?.id) return;
@@ -241,14 +254,7 @@ async function startInterpret() {
     return;
   }
   clearCompactSegments();
-  if (!isAsrReady(state.settings.asr)) {
-    needAsrSettings("按声音同传需要先配置语音转写（ASR）");
-    return;
-  }
-  if (!requireModel("text")) {
-    pushError(needModelMessage("text"));
-    return;
-  }
+  if (!await canStartInterpret(target)) return;
 
   if (typeof bindMediaSource === "function") {
     bindMediaSource(target, (state.tab?.id === target.id ? state.pack : state.mediaPack) || state.pack);
@@ -293,5 +299,6 @@ export {
   startSummarizeVideo,
   toggleOriginalAudio,
   startInterpret,
+  canStartInterpret,
   captureTab,
 };

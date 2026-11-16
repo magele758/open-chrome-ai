@@ -52,7 +52,7 @@ function harness() {
     document: { createElement: () => ({ classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } }, append() {}, appendChild() {}, setAttribute() {} }) },
     $: id => { if (!elements.has(id)) elements.set(id, { classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } }, appendChild() {}, append() {} }); return elements.get(id); },
     renderContext() {}, syncPackToLibrary: async () => ({}), abortRecording() {}, discardCapture: async () => {},
-    renderSettingsForm() {}, setView() {}, needModelMessage: () => '', requireModel: () => ({}), isAsrReady: () => true,
+    renderSettingsForm() {}, setView() {}, needModelMessage: () => '', requireModel: () => ({}), isAsrReady: () => true, isModelReady: () => true,
     injectVideo: async () => ({ ok: true, paused: true, currentTime: 3 }),
     beginCapture: async () => { captured += 1; return { stream: {} }; },
     transcribeTab: async ({ signal }) => { await extraction.promise; signal.throwIfAborted(); return full; },

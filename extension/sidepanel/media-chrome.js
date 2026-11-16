@@ -1,4 +1,4 @@
-import { needModelMessage, requireModel, sendPrompt } from "./agent-loop.js";
+import { sendPrompt } from "./agent-loop.js";
 import {
   compactPendingAutoplay,
   compactPlayerAudio,
@@ -14,9 +14,8 @@ import { syncComposerHints } from "./model-line.js";
 import { setView } from "./session.js";
 import { state } from "./state.js";
 import { isMediaPlaybackActive, isVideoUrl, packForMedia, refreshTab, snapshotTab } from "./tab-context.js";
-import { applyCaptions, needAsrSettings, startInterpret } from "./video-actions.js";
+import { applyCaptions, canStartInterpret, startInterpret } from "./video-actions.js";
 import { formatTime } from "../lib/prompts.js";
-import { isAsrReady } from "../lib/storage.js";
 import { getSharedAudioContext } from "../lib/streaming-audio-player.js";
 import { wrapUntrusted } from "../lib/untrusted.js";
 
@@ -379,14 +378,7 @@ async function toggleVideoPicker() {
 }
 
 async function startBackgroundInterpret(tab) {
-  if (!isAsrReady(state.settings.asr)) {
-    needAsrSettings("后台准备需要先配置语音转写（ASR）");
-    return;
-  }
-  if (!requireModel("text")) {
-    pushError(needModelMessage("text"));
-    return;
-  }
+  if (!await canStartInterpret(tab)) return;
   try {
     await interpretController.start({
       tab,

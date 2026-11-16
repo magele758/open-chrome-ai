@@ -1,5 +1,6 @@
 import { needModelMessage, requireModel } from "./agent-loop.js";
 import { $ } from "./dom.js";
+import { runCompactGeneration } from "./compact-generation.js";
 import { RemoteInterpretController } from "./interpret-client.js";
 import { mediaShouldShow, renderContext, renderTranscribeAction } from "./media-chrome.js";
 import { pushError } from "./messages.js";
@@ -19,7 +20,7 @@ import { StreamingAudioPlayer, getSharedAudioContext } from "../lib/streaming-au
 // panel. Pure-audio mode plays through the panel's own player, so it stays local.
 
 const interpretController = new RemoteInterpretController();
-const compactController = new InterpretController({ audioOnly: true });
+const compactController = new InterpretController({ audioOnly: true, run: runCompactGeneration });
 
 compactController.setAudioProviders({
   getPlayhead: () => {

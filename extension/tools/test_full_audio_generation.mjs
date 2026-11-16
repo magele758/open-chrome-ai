@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { session, until } from './interpret-test-harness.mjs';
 import { installMemoryIndexedDB } from './idb_mem.mjs';
 import { runPlannedInterpret } from '../lib/planned-interpret.js';
 import { encodeMonoWav } from '../lib/tts.js';
@@ -73,3 +74,61 @@ await assert.rejects(run({ sourceUrl: cancelledUrl, signal: abort.signal,
 }), error => error.name === 'AbortError');
 assert.equal(await loadFullMediaArchive(videoIdentity(cancelledUrl)), null);
 console.log('PASS: cancellation never publishes a partial file as a completed archive');
+
+// The first translated window and its emitted audio survive transfer to a fresh worker.
+const handoffUrl = 'https://www.youtube.com/watch?v=handoff-progress';
+const translated = [], synthesized = [];
+const handoff = {
+  sourceUrl: handoffUrl,
+  chat: async (_, { messages }) => {
+    const { current } = JSON.parse(messages[1].content);
+    translated.push(...current.map(c => c.src));
+    return JSON.stringify({ lines: current.map(c => ({ ids: [c.id], zh: '译文 ' + c.src })) });
+  },
+  synthesizeTts: async (_, text) => { synthesized.push(text); return { blob }; },
+};
+const transfer = new AbortController();
+await assert.rejects(run({ ...handoff, signal: transfer.signal, onEvent: e => {
+  if (e.type === 'dub_segment') transfer.abort();
+} }), { name: 'AbortError' });
+const finished = await run(handoff);
+assert.equal(finished.result.lines.length, 30);
+assert.equal(new Set(synthesized).size, 30);
+assert.equal(synthesized.length, 30, 'completed audio is not synthesized again');
+assert.equal(translated.filter(text => text === 'Sentence 0').length, 1);
+console.log('PASS partial handoff reuses committed translations and audio before finishing the archive');
+
+// An offline provider must not consume another retry budget for every remaining line.
+const outageUrl = 'https://www.youtube.com/watch?v=offline-full-audio';
+const attempted = [];
+await assert.rejects(run({ sourceUrl: outageUrl, synthesizeTts: async (_, line) => {
+  attempted.push(line);
+  if (attempted.length === 1) return { blob };
+  throw new TypeError('Failed to fetch');
+} }), /处理已停止.*Failed to fetch/);
+assert.equal(attempted.length, 3);
+assert.equal(attempted[1], attempted[2]);
+assert.equal(await loadFullMediaArchive(videoIdentity(outageUrl)), null);
+const resumedLines = [];
+await run({ sourceUrl: outageUrl, synthesizeTts: async (_, line) => {
+  resumedLines.push(line);
+  return { blob };
+} });
+assert.equal(resumedLines.length, 29);
+assert(!resumedLines.includes(attempted[0]));
+console.log('PASS offline TTS stops the job and retry preserves completed audio');
+
+// A held playhead must not delay saving a fully generated live dub.
+const liveUrl = 'https://video.test/live-auto-save';
+const live = session({
+  sourceUrl: liveUrl, settings, generateFull: true, openSource: async () => source,
+  voiceRef: async () => blob, synthesizeTts: async () => ({ blob }),
+});
+try {
+  await until(() => live.events.some(e => e.type === 'archive_saved'), 10000);
+  const saved = await loadFullMediaArchive(videoIdentity(liveUrl));
+  assert(saved.complete && saved.compactAudioBlob.size > 100);
+  assert.equal(live.state.currentTime, 0);
+  assert.equal(live.events.filter(e => e.type === 'archive_saved').length, 1);
+} finally { await live.stop(); }
+console.log('PASS completed audio saves once while the live player is still open');

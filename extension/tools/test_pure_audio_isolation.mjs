@@ -70,7 +70,7 @@ class FakeAudio {
   pause() { this.paused = true; }
 }
 const context = vm.createContext({
-  console, Blob, URL, Audio: FakeAudio, setTimeout: fn => { fn(); return 1; }, setInterval: () => 1, clearInterval() {},
+  runCompactGeneration: () => {}, console, Blob, URL, Audio: FakeAudio, setTimeout: fn => { fn(); return 1; }, setInterval: () => 1, clearInterval() {},
   // The real entry point binds mediaTab before accepting audio events. Keep
   // that source identity in this harness, which omits bindMediaSource itself.
   $: el, state: { tab: { id: 1 }, mediaTab: { id: 1 }, settings: { asr: {}, tts: {} }, pack: {} },

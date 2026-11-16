@@ -2,6 +2,11 @@
 // -> InterpretController -> runPlannedInterpret, over a JSON-serializing message
 // bus like chrome.runtime. The engine must keep running after the panel closes.
 import assert from 'node:assert/strict';
+import { saveFullMediaArchive } from '../lib/audio-composer.js';
+import { saveDubJob } from '../lib/dub-queue.js';
+import { videoIdentity } from '../lib/library.js';
+import { encodeMonoWav } from '../lib/tts.js';
+import { installMemoryIndexedDB } from './idb_mem.mjs';
 import { createInterpretHost } from '../lib/interpret-host.js';
 import { createInterpretRouter } from '../lib/interpret-host-sw.js';
 import { INTERPRET_VIDEO, INTERPRET_CMD, toMessage } from '../lib/interpret-messages.js';
@@ -10,6 +15,8 @@ import { RemoteInterpretController } from '../sidepanel/interpret-client.js';
 import { blob, chat, settings, sleep, source, until } from './interpret-test-harness.mjs';
 
 console.warn = console.info = () => {};
+installMemoryIndexedDB();
+globalThis.chrome = { storage: { local: { get: async () => ({ settings }) } } };
 const BASE = 'chrome-extension://ext/';
 const wire = value => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 
@@ -61,12 +68,14 @@ function createPlayer() {
 
 const subtitles = Array.from({ length: 9 }, (_, i) => ({ id: `s${i}`, start: 1 + i * 4, end: 5 + i * 4, src: `Sentence ${i}.` }));
 
-function createExtension({ player, nativeReply = { ok: true, pong: true } }) {
+function createExtension({ player, audioSeconds = 3, openSource = async () => source(subtitles, 38), preprocess = async () => Date.now() + 60000, nativeReply = { ok: true, pong: true } }) {
   const bus = createBus();
   const sw = bus.context('sw.js');
   const audios = [];
   let offscreen = null, host = null, created = 0;
   const chromeApi = {
+    tabs: { get: async () => tab },
+    alarms: { create: async () => {}, onAlarm: { addListener() {} } },
     runtime: {
       ...sw.runtime,
       getContexts: async () => (offscreen ? [{ documentUrl: offscreen.url }] : []),
@@ -78,8 +87,8 @@ function createExtension({ player, nativeReply = { ok: true, pong: true } }) {
         created++;
         offscreen = bus.context(url);
         delete offscreen.runtime.sendNativeMessage;
-        host = createInterpretHost({ runtime: offscreen.runtime, engineOptions: {
-          openSource: async () => source(subtitles, 38),
+        host = createInterpretHost({ runtime: offscreen.runtime, preprocess, engineOptions: {
+          openSource,
           cacheGet: async () => null, cacheSet: async () => {}, getTtsRef: async () => null,
           voiceRef: async () => blob, audioDuration: async () => 3, synthesizeTts: async () => ({ blob }), chat,
           createAudio: () => {
@@ -101,7 +110,7 @@ function createExtension({ player, nativeReply = { ok: true, pong: true } }) {
     if (player.state.currentTime >= player.state.duration) { player.state.currentTime = player.state.duration; player.state.ended = true; }
     for (const audio of audios) if (!audio.paused) {
       audio.currentTime += 0.1;
-      if (audio.currentTime >= 3) { audio.pause(); audio.onended?.(); }
+      if (audio.currentTime >= audioSeconds) { audio.pause(); audio.onended?.(); }
     }
   }, 5);
   return {
@@ -239,4 +248,81 @@ const tab = { id: 7, url: 'https://video.test/watch?v=flow', title: 'Flow' };
   assert.deepEqual(loaded, ['v1']);
   assert.equal(seen[0].archive.compactAudioBlob, blob);
   console.log('PASS events are JSON-safe and archives are rehydrated in the panel');
+}
+
+{
+  const seen = [];
+  const gate = Promise.withResolvers();
+  const ext = createExtension({ player: createPlayer(), preprocess: async (row, progress, signal) => {
+    seen.push(row.id);
+    if (row.title === 'First') await gate.promise;
+    assert.equal(signal.aborted, false);
+    return Date.now() + 60000;
+  } });
+  const view = ext.openPanel();
+  const command = (op, data) => view.panel.runtime.sendMessage({ type: INTERPRET_CMD, op, ...data });
+  try {
+    await view.client.ready;
+    const first = { title: 'First', url: 'https://example.org/first' };
+    await command('queueAdd', { tab: first });
+    await until(() => seen.length === 1);
+    await view.client.start({ tab, settings });
+    await command('queueAdd', { tab });
+    await command('queueAdd', { tab: { title: 'Last', url: 'https://example.org/last' } });
+    await until(() => view.events.some(e => e.event.type === 'line'), 5000);
+    const { jobs } = await command('queueList');
+    const live = jobs.find(row => row.live);
+    assert(live);
+    assert.equal(live.status, 'queued');
+    gate.resolve();
+    await until(() => seen.length === 2);
+    assert.deepEqual(seen, [first.url, 'https://example.org/last'], 'live owns its video while other queued videos still finish');
+    assert(view.client.isRunning(tab.id), 'later jobs run while the live tab is still playing');
+    assert.deepEqual(await command('queueDelete', { id: live.id }), { ok: true });
+    assert(!(await command('queueList')).jobs.some(row => row.id === live.id));
+    assert.equal(view.client.isRunning(tab.id), false);
+  } finally { view.close(); ext.stop(); }
+  console.log('PASS deleting a live queue entry stops its interpretation and removes the row');
+}
+
+{
+  const player = createPlayer();
+  player.state.currentTime = 16;
+  player.state.playbackRate = 1.5;
+  const savedTab = { ...tab, url: 'https://youtu.be/alreadyDubbed' };
+  const id = videoIdentity(savedTab.url);
+  const done = { id, status: 'ready', title: '已完成', added: 123 };
+  const archive = await saveFullMediaArchive({
+    videoId: id, url: 'https://www.youtube.com/watch?v=alreadyDubbed', complete: true, duration: 38,
+    audioBlob: encodeMonoWav(new Float32Array(38 * 8000), 8000),
+    lines: [{ id: 'cached', start: 10, end: 38, src: 'already translated', zh: '队列已有的译文' }],
+  });
+  await saveDubJob(done);
+  let sources = 0, jobs = 0;
+  const ext = createExtension({ player, audioSeconds: 38, openSource: async () => { sources++; throw Error('unexpected source request'); },
+    preprocess: async () => { jobs++; throw Error('unexpected preprocessing'); } });
+  const view = ext.openPanel();
+  try {
+    await view.client.ready;
+    await view.client.start({ tab: savedTab, settings });
+    await until(() => view.events.some(e => e.event.type === 'line' && e.state.zh === '队列已有的译文'));
+    assert.equal(ext.audios.length, 1);
+    assert.equal(ext.audios[0].playbackRate, 1.5);
+    assert(ext.audios[0].currentTime >= 16, 'archived playback follows the current video position');
+    const list = await view.client.command('queueList');
+    const row = list.jobs.find(r => r.id === id);
+    assert.equal(row.status, 'ready');
+    assert.equal(row.live, true);
+    assert.equal(row.expireAt, archive.expireAt);
+    player.state.paused = true;
+    player.state.currentTime = 3;
+    player.state.seekRevision++;
+    await until(() => ext.audios[0].paused && ext.audios[0].currentTime === 3);
+    await view.client.stop(savedTab.id);
+    assert.equal(player.state.silenced, false);
+    assert.equal(sources, 0);
+    assert.equal(jobs, 0);
+    assert.equal((await view.client.command('queueList')).jobs.find(r => r.id === id).status, 'ready');
+  } finally { view.close(); ext.stop(); }
+  console.log('PASS ready timeline audio follows the video playhead without reopening the source or re-enqueuing generation');
 }
