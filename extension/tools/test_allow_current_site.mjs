@@ -17,7 +17,25 @@ globalThis.chrome = {
     set: async (value) => { settings = value.settings; writes++; },
   } },
 };
-if (!navigator.locks) Object.defineProperty(navigator, "locks", { value: { request: (_, f) => f() } });
+if (!navigator.locks?.query) {
+  // Node 22 has no Web Locks. Model the exclusive requests and pending names
+  // observed by the assertions below, including release after a rejected writer.
+  const tails = new Map();
+  const pending = new Set();
+  Object.defineProperty(navigator, "locks", { value: {
+    request(name, action) {
+      const entry = { name };
+      pending.add(entry);
+      const result = (tails.get(name) ?? Promise.resolve()).then(() => {
+        pending.delete(entry);
+        return action();
+      });
+      tails.set(name, result.catch(() => {}));
+      return result;
+    },
+    async query() { return { pending: [...pending] }; },
+  } });
+}
 
 renderAllowCurrentSite(button, tab, settings);
 assert.equal(button.hidden, false);
