@@ -3,6 +3,7 @@
  * Side-panel and tool code share these; no extra process.
  */
 
+import { scopeChromeCall, tabInWindow } from "./window-scope.js";
 import { permissionForChromeMethod, requireHostUrl, requireOptionalFeature } from "./optional-permissions.js";
 import { plPageAudio, plVideo } from "./video-pick.js";
 
@@ -344,22 +345,23 @@ export async function injectMain(tabId, func, args = []) {
 
 const GROUP_COLORS = ["orange", "blue", "cyan", "green", "purple", "pink", "yellow", "red"];
 
-export async function ensureTaskGroup(tabId, { groupId, title, color } = {}) {
+export async function ensureTaskGroup(tabId, { groupId, title, color, windowId } = {}) {
   if (!tabId || typeof chrome.tabs?.group !== "function") return null;
   const denied = await requireOptionalFeature("tabGroups");
   if (denied) return null;
+  const tab = await tabInWindow(tabId, windowId);
   try {
     let id = Number.isInteger(groupId) && groupId >= 0 ? groupId : null;
     if (id != null) {
       try {
-        if (chrome.tabGroups?.get) await chrome.tabGroups.get(id);
+        const group = await chrome.tabGroups.get(id);
+        if (windowId != null && group.windowId !== windowId) throw new Error("标签组已移出任务窗口");
         await chrome.tabs.group({ tabIds: [tabId], groupId: id });
         return id;
       } catch {
         id = null;
       }
     }
-    const tab = await chrome.tabs.get(tabId);
     const created = await chrome.tabs.group({
       tabIds: [tabId],
       createProperties: tab.windowId != null ? { windowId: tab.windowId } : undefined,
@@ -383,8 +385,9 @@ export async function captureTab(tabId, windowId) {
   let targetTab = null;
   if (tabId) {
     try {
-      targetTab = await chrome.tabs.get(tabId);
-    } catch {
+      targetTab = await tabInWindow(tabId, windowId);
+    } catch (err) {
+      if (windowId != null) throw err;
       targetTab = null;
     }
   }
@@ -458,8 +461,8 @@ function withNotificationDefaults(method, params) {
   return [patch(params[0])];
 }
 
-export async function chromeCall(method, args) {
-  const name = String(method || "").trim();
+export async function chromeCall(method, args, windowId, defaultTabId) {
+  let name = String(method || "").trim();
   if (!CHROME_CALL_ALLOW.includes(name)) {
     return {
       ok: false,
@@ -482,6 +485,13 @@ export async function chromeCall(method, args) {
     if (!url) continue;
     const hostDenied = await requireHostUrl(url);
     if (hostDenied) return { ok: false, error: hostDenied };
+  }
+  if (windowId != null) {
+    try {
+      [name, params] = await scopeChromeCall(name, params, windowId, defaultTabId);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
   }
   if (name === "history.search") params[0] = clampHistoryQuery(params[0]);
   params = withNotificationDefaults(name, params);

@@ -116,6 +116,7 @@ export function createDelegateTools(env, { obj, TAB_ID }) {
             prompt: args.prompt,
             capsule: args.capsule,
             tabId: tab?.id ?? null,
+            windowId: tab?.windowId,
             sourceUrl: tab?.url || "",
             maxSteps: args.maxSteps,
             model: args.model,

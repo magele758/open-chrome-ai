@@ -12,6 +12,7 @@ import {
   listSessions,
   loadSession,
   loadActiveSession,
+  openSessionInWindow,
   getActiveId,
   clearActiveId,
   ACTIVE_KEY,
@@ -220,6 +221,20 @@ assert(
   }),
   "stale run dropped",
 );
+const keptNonce = normalizeRun({
+  status: "running",
+  startedAt: Date.now(),
+  nonce: "nonce-kept-1",
+  windowId: 1,
+  history: [{ role: "user", content: "x" }],
+});
+assert(keptNonce?.nonce === "nonce-kept-1", "run nonce kept");
+assert(!normalizeRun({
+  status: "running",
+  startedAt: Date.now(),
+  nonce: "bad nonce",
+  history: [{ role: "user", content: "x" }],
+})?.nonce, "unsafe nonce dropped");
 
 bag[itemKey("legacy")] = {
   id: "legacy",
@@ -288,4 +303,67 @@ assert((await loadActiveSession(44)) === null, "second window starts empty");
 await deleteSession("legacy-s");
 assert((await getActiveId(33)) === "", "delete clears window pointer");
 
+// Concurrent saves retain both index entries. Reopening an active history elsewhere gets its own copy.
+await Promise.all([11, 22].map((windowId) => saveSession({
+  id: `parallel-${windowId}`,
+  messages: [{ role: "user", text: "parallel" }],
+  taskGroupId: 7,
+}, { windowId })));
+const parallel = (await listSessions()).filter((s) => s.id.startsWith("parallel-"));
+assert(parallel.length === 2, "both concurrent histories are indexed");
+chrome.windows = { getAll: async () => [{ id: 11 }, { id: 22 }] };
+const fork = await openSessionInWindow("parallel-11", 22);
+assert(fork.id !== "parallel-11" && fork.taskGroupId == null, "other window receives independent copy");
+assert(await getActiveId(11) === "parallel-11" && await getActiveId(22) === fork.id, "original remains active in its window");
+
+function runningAt(windowId) {
+  return {
+    status: "running",
+    windowId,
+    tabId: 4,
+    nonce: `nonce-win-${windowId}`,
+    history: [{ role: "user", content: "中断技能" }],
+    lastText: "做到一半",
+    turnsUsed: 1,
+    startedAt: Date.now(),
+  };
+}
+
+// The original window is already gone, so no living active key names this session.
+await saveSession({
+  id: "closed-win-run",
+  messages: [{ role: "user", text: "中断技能" }, { role: "bot", text: "做到一半" }],
+  taskGroupId: 9,
+  run: runningAt(11),
+}, { windowId: 11 });
+chrome.windows = { getAll: async () => [{ id: 22 }] };
+const closedFork = await openSessionInWindow("closed-win-run", 22);
+assert(closedFork.id !== "closed-win-run", "closed window run forks");
+assert(closedFork.run == null && closedFork.taskGroupId == null, "fork drops run and task group");
+assert(closedFork.messages.at(-1).text === "做到一半", "fork keeps assistant text");
+assert((await loadSession("closed-win-run"))?.run?.windowId === 11, "original run stays put");
+assert((await loadSession("closed-win-run"))?.run?.nonce === "nonce-win-11", "original run keeps nonce");
+assert(await getActiveId(22) === closedFork.id, "fork is active in the target window");
+
+await saveSession({
+  id: "same-win-run",
+  messages: [{ role: "user", text: "同窗" }, { role: "bot", text: "正文保留" }],
+  taskGroupId: 4,
+  run: runningAt(22),
+}, { windowId: 22 });
+chrome.windows = { getAll: async () => [{ id: 22 }] };
+const same = await openSessionInWindow("same-win-run", 22);
+assert(same.id === "same-win-run" && same.run?.windowId === 22 && same.run?.nonce === "nonce-win-22" && same.taskGroupId === 4, "matching run window stays");
+assert(same.messages.at(-1).text === "正文保留", "same window keeps assistant text");
+
+await saveSession({
+  id: "live-elsewhere",
+  messages: [{ role: "user", text: "别处活着" }, { role: "bot", text: "原文" }],
+  taskGroupId: 6,
+  run: runningAt(22),
+}, { windowId: 11 });
+chrome.windows = { getAll: async () => [{ id: 11 }, { id: 22 }] };
+const liveFork = await openSessionInWindow("live-elsewhere", 22);
+assert(liveFork.id !== "live-elsewhere" && liveFork.run == null && liveFork.taskGroupId == null, "live active binding still forks");
+assert(await getActiveId(11) === "live-elsewhere", "source window keeps original");
 console.log("PASS sessions");

@@ -509,7 +509,7 @@ await __pl.call({ v: 1, id: "t2", tool: "agent_task_status", args: { taskId, sin
 await __pl.call({ v: 1, id: "t3", tool: "agent_task_cancel", args: { taskId } });
 ```
 
-`status`：`running` → `done` | `needs_approval` | `failed` | `cancelled`。`steps[].kind`：`tool`（工具执行，`ok`）、`blocked`（被信任判定拦下，`code` / `pendingId`）、`answer`（模型输出）、`note`（使用了已批准的待办、检测到注入等）。用 `sinceStep` = 上次拿到的最大 `n` 做增量轮询。`run_agent_task` 本身立即返回，不需要 `async:true`。同时最多 3 个任务在跑，超出返回 `TOOL_FAILED`（`retryable:true`，`details.reason:"BUSY"`）；未知任务 `JOB_NOT_FOUND`；未配置文本模型时任务 `failed`，`error.code:"MODEL_NOT_READY"`。
+`status`：`running` → `done` | `needs_approval` | `failed` | `cancelled`。`steps[].kind`：`tool`（工具执行，`ok`）、`blocked`（被信任判定拦下，`code` / `pendingId`）、`answer`（模型输出）、`note`（使用了已批准的待办、检测到注入等）。用 `sinceStep` = 上次拿到的最大 `n` 做增量轮询。`run_agent_task` 本身立即返回，不需要 `async:true`。同时最多 7 个任务在跑。调用方传入了 `windowId`，或传入的 `tabId` 能解析到所在窗口时，任务在返回 `taskId` 之前占用该窗口的锁（与侧栏同一把 `pagelens-agent-window-<windowId>`）。同一窗口已有委托任务或侧栏任务时，入口直接失败、不返回 `taskId`。名额已满和窗口被占用都返回 `TOOL_FAILED`（`retryable:true`，`details.reason:"BUSY"`）。没有 `windowId`、也没有可解析 `tabId` 的任务不加窗口锁，也不会改写到当前焦点窗口。未知任务 `JOB_NOT_FOUND`；未配置文本模型时任务 `failed`，`error.code:"MODEL_NOT_READY"`。
 
 ### 15.3 授权：意图胶囊 + 无人值守判定
 

@@ -156,6 +156,9 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
   const prepare = async (args) => {
     const tabId = await resolveTabId(args);
     await attachTabToTask(tabId);
+    // 多窗口并行时目标窗口通常不在前台；模拟焦点让页面照常接收输入，不必抢系统焦点。
+    // 附加失败由后续的输入命令报出。
+    await cdp.send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
     return tabId;
   };
 

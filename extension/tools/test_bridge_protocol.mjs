@@ -141,6 +141,31 @@ assert.equal(res.result.tabId, 101);
 res = await req("open_tab", { url: "http://localhost:8080/" });
 assert.equal(res.ok, true);
 
+// Local workflows group actual work pages. An untrusted anchor must not create a tab.
+{
+  const grouped = [];
+  env.tabGroups = {
+    group: async (ids, groupId = 17) => (grouped.push(ids), groupId),
+    update: async (id, props) => assert.deepEqual([id, props.title], [17, "MX draft"]),
+  };
+  const before = created;
+  const first = await req("open_tab", { url: "http://localhost:8080/product", groupTitle: "MX draft" });
+  assert.equal(first.result.groupId, 17);
+  TABS.set(first.result.tabId, { id: first.result.tabId, url: first.result.url, groupId: 17, windowId: 1 });
+  const next = await req("open_tab", { url: "http://localhost:8080/edit", groupWithTab: first.result.tabId });
+  assert.equal(next.result.groupId, 17);
+  assert.deepEqual(grouped, [[first.result.tabId], [next.result.tabId]]);
+  assert.equal((await req("open_tab", { url: "http://localhost:8080/", groupWithTab: 3 })).error.code, ERROR_CODES.ORIGIN_NOT_ALLOWED);
+  assert.equal(created - before, 2);
+  const removed = [];
+  env.tabs.remove = async id => removed.push(id);
+  env.tabGroups.update = async () => { throw Error("Group unavailable"); };
+  assert.equal((await req("open_tab", { url: "http://localhost:8080/", groupTitle: "MX draft" })).ok, false);
+  assert.deepEqual(removed, [100 + created]);
+  TABS.delete(first.result.tabId);
+  delete env.tabGroups;
+}
+
 // a freshly opened tab has no url yet (only pendingUrl) → wait for commit instead of failing as "restricted"
 {
   let polls = 0;

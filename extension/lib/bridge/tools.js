@@ -193,7 +193,7 @@ export function createBridgeTools(env) {
       return tabs
         .filter((t) => t.url && !restrictedUrl(t.url) && isUrlAllowed(t.url, ctx.settings.agentBridgeOrigins))
         .filter((t) => !needle || `${t.title || ""} ${t.url}`.toLowerCase().includes(needle))
-        .map((t) => ({ id: t.id, windowId: t.windowId, active: Boolean(t.active), title: t.title || "", url: t.url }));
+        .map((t) => ({ id: t.id, windowId: t.windowId, groupId: t.groupId, active: Boolean(t.active), title: t.title || "", url: t.url }));
     },
   });
 
@@ -202,7 +202,12 @@ export function createBridgeTools(env) {
     scope: "tabs:manage",
     description: "新开标签（默认后台，不抢焦点）。URL 必须在 origin 白名单内。",
     parameters: obj(
-      { url: { type: "string" }, active: { type: "boolean", description: "true 会切到前台（抢焦点），默认 false" } },
+      {
+        url: { type: "string" },
+        active: { type: "boolean", description: "true 会切到前台（抢焦点），默认 false" },
+        groupTitle: { type: "string", description: "本机调用：用新标签创建任务分组。" },
+        groupWithTab: { type: "integer", description: "本机调用：将新标签加入指定标签所在分组。" },
+      },
       ["url"],
     ),
     focus: "none",
@@ -211,7 +216,27 @@ export function createBridgeTools(env) {
       if (!isUrlAllowed(url, ctx.settings.agentBridgeOrigins)) {
         throw new BridgeError(ERROR_CODES.ORIGIN_NOT_ALLOWED, `URL 不在白名单：${url}`);
       }
-      const tab = await env.tabs.create({ url, active: args.active === true });
+      const grouped = args.groupTitle != null || args.groupWithTab != null;
+      if (grouped && (ctx.session || !env.tabGroups || (args.groupTitle != null && args.groupWithTab != null)))
+        throw new BridgeError(ERROR_CODES.BAD_ARGS, "网关会话自动分组。本机分组需开启分组权限，并指定组名或组内标签之一。");
+      let anchor;
+      if (args.groupWithTab != null) {
+        anchor = await ctx.authorizeTab(args.groupWithTab);
+        ctx.checkTabLease(anchor.id);
+        if (!(anchor.groupId >= 0)) throw new BridgeError(ERROR_CODES.BAD_ARGS, "目标标签当前没有分组。");
+      }
+      const tab = await env.tabs.create({ url, active: args.active === true, ...(anchor && { windowId: anchor.windowId }) });
+      if (grouped) {
+        try {
+          const groupId = await env.tabGroups.group([tab.id], anchor?.groupId);
+          if (anchor && groupId !== anchor.groupId) throw Error("目标分组已关闭");
+          if (!anchor) await env.tabGroups.update(groupId, { title: args.groupTitle.trim().slice(0, 64), color: "green" });
+          return { tabId: tab.id, groupId, url };
+        } catch (error) {
+          await env.tabs.remove(tab.id);
+          throw error;
+        }
+      }
       return { tabId: tab.id, url: tab.pendingUrl || tab.url || url };
     },
   });

@@ -22,6 +22,9 @@ export const PAGE_CONTENT_TOOLS = new Set([
   "clipboard_read",
   "get_cookies",
   "list_tabs",
+  "read_window_inbox",
+  "delegate_window_task",
+  "run_parallel_tasks",
   "search_history",
   "search_bookmarks",
 ]);
@@ -64,7 +67,7 @@ const INJECTION_PATTERNS = [
   /<\|\s*(?:im_start|im_end|endoftext|system)\s*\|>/i,
   /\[\/?(?:SYSTEM|INST)\]/,
   new RegExp(`<\\s*/\\s*(?:${UNTRUSTED_TAG}|tool_call|user_intent)\\b`, "i"),
-  /\b(?:run_shell|run_js|trusted_type|trusted_click|paste_into_page|navigate_tab|open_tab|download_file|upload_file|cose_publish|clipboard_write)\s*\(/,
+  /\b(?:run_shell|run_js|trusted_type|trusted_click|paste_into_page|navigate_tab|open_tab|create_window|download_file|upload_file|cose_publish|clipboard_write)\s*\(/,
 ];
 
 /** 返回第一个命中的注入特征片段，未命中返回 null */

@@ -22,6 +22,7 @@ export function itemKey(id) {
 }
 
 export function windowKey(windowId) {
+  if (windowId == null || windowId === "") return "";
   const n = Number(windowId);
   return Number.isInteger(n) && n >= 0 ? String(n) : "";
 }
@@ -137,8 +138,13 @@ export function normalizeRun(raw, now = Date.now()) {
   if (startedAt && now - startedAt > RUN_STALE_MS) return undefined;
   const history = raw.history.map(normalizeLoopMessage).filter(Boolean).slice(-MAX_RUN_MESSAGES);
   if (!history.some((m) => m.role === "user")) return undefined;
+  const nonce = typeof raw.nonce === "string" ? raw.nonce.trim() : "";
   return {
     status: "running",
+    ...(Number.isInteger(raw.tabId) ? { tabId: raw.tabId } : {}),
+    ...(Number.isInteger(raw.windowId) ? { windowId: raw.windowId } : {}),
+    // Browser-process token. Session storage drops it on quit; the run record must still carry it.
+    ...(nonce.length >= 8 && nonce.length <= 80 && !/[\s\u0000-\u001f]/.test(nonce) ? { nonce } : {}),
     history,
     lastText: String(raw.lastText || "").slice(0, MAX_TEXT),
     turnsUsed: Math.max(0, Number(raw.turnsUsed) || 0),
@@ -285,7 +291,7 @@ export function normalizeSession(raw) {
   const run = normalizeRun(raw?.run);
   if (run) session.run = run;
   const gid = Number(raw?.taskGroupId);
-  if (Number.isInteger(gid) && gid >= 0) session.taskGroupId = gid;
+  if (raw?.taskGroupId != null && Number.isInteger(gid) && gid >= 0) session.taskGroupId = gid;
   return session;
 }
 
@@ -553,12 +559,45 @@ export async function getActiveId(windowId) {
   return typeof data[ACTIVE_KEY] === "string" ? data[ACTIVE_KEY] : "";
 }
 
-export async function loadActiveSession(windowId) {
+// Web Locks are shared by all extension documents, unlike a per-panel promise chain.
+let pendingIndexWrite = Promise.resolve();
+function withSessionIndexLock(action) {
+  if (globalThis.navigator?.locks) return navigator.locks.request(INDEX_KEY, action);
+  const result = pendingIndexWrite.then(action);
+  pendingIndexWrite = result.catch(() => {});
+  return result;
+}
+
+export function loadActiveSession(windowId) {
+  return withSessionIndexLock(() => readActiveSession(windowId));
+}
+
+// A conversation already open elsewhere, or whose interrupted run still names another window, is copied.
+export function openSessionInWindow(id, windowId) {
+  return withSessionIndexLock(async () => {
+    const session = await loadSession(id);
+    if (!session) return null;
+    const windows = await chrome.windows.getAll();
+    const keys = windows.filter((win) => win.id !== windowId).map((win) => activeWindowStorageKey(win.id));
+    const bindings = await localGet(keys);
+    const runWindowId = session.run?.windowId;
+    const runBelongsElsewhere = runWindowId != null && runWindowId !== windowId;
+    if (Object.values(bindings).includes(id) || runBelongsElsewhere) {
+      session.id = crypto.randomUUID();
+      session.createdAt = Date.now();
+      delete session.run;
+      delete session.taskGroupId;
+    }
+    return storeSession(session, { windowId });
+  });
+}
+
+async function readActiveSession(windowId) {
   const storeKey = activeWindowStorageKey(windowId);
   if (storeKey) {
     const data = await localGet([storeKey, ACTIVE_KEY]);
     const own = data[storeKey];
-    if (typeof own === "string" && own) return loadSession(own);
+    if (typeof own === "string") return own ? loadSession(own) : null;
     const legacy = typeof data[ACTIVE_KEY] === "string" ? data[ACTIVE_KEY] : "";
     if (legacy && !(await hasWindowActiveBinding())) {
       await localSet({ [storeKey]: legacy });
@@ -592,7 +631,11 @@ export async function loadAllSessions() {
     .map(normalizeSession);
 }
 
-export async function saveSession(raw, options = {}) {
+export function saveSession(raw, options = {}) {
+  return withSessionIndexLock(() => storeSession(raw, options));
+}
+
+async function storeSession(raw, options) {
   const session = normalizeSession(raw);
   session.updatedAt = Date.now();
   session.title = sessionTitle(session);
@@ -611,13 +654,17 @@ export async function saveSession(raw, options = {}) {
     const storeKey = activeWindowStorageKey(options.windowId);
     if (storeKey) patch[storeKey] = session.id;
   }
-  await localSet(patch);
   await writeSessionItem(session.id, session);
+  await localSet(patch);
   await dropSessionItems(drop);
   return session;
 }
 
-export async function deleteSession(id) {
+export function deleteSession(id) {
+  return withSessionIndexLock(() => removeSession(id));
+}
+
+async function removeSession(id) {
   const index = (await listSessions()).filter((s) => s.id !== id);
   const all = await localGet(null);
   const patch = { [INDEX_KEY]: index };
@@ -633,7 +680,7 @@ export async function deleteSession(id) {
 export async function clearActiveId(windowId) {
   const storeKey = activeWindowStorageKey(windowId);
   if (storeKey) {
-    await localRemove(storeKey);
+    await withSessionIndexLock(() => localSet({ [storeKey]: "" }));
     return;
   }
   await localSet({ [ACTIVE_KEY]: "" });

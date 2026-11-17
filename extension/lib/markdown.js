@@ -138,14 +138,18 @@ export function resolveLinkHref(href, baseUrl) {
   }
 }
 
-function openExternal(href) {
+let panelWindowId;
+
+async function openExternal(href) {
   try {
     if (globalThis.chrome?.tabs?.create) {
-      chrome.tabs.create({ url: href, active: true });
+      const windowId = panelWindowId ?? (await chrome.windows.getCurrent()).id;
+      await chrome.tabs.create({ windowId, url: href, active: true });
       return;
     }
   } catch {
-    /* fall through */
+    console.warn("[pagelens] 无法在侧栏窗口打开链接");
+    return;
   }
   window.open(href, "_blank", "noopener,noreferrer");
 }
@@ -187,7 +191,8 @@ function makeRenderer() {
 
 let inited = false;
 
-export function initMarkdown() {
+export function initMarkdown(windowId) {
+  if (Number.isInteger(windowId)) panelWindowId = windowId;
   if (inited) return;
   inited = true;
   const mermaid = globalThis.mermaid;

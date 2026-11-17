@@ -8,8 +8,8 @@ import { createAgentTools } from '../lib/agent/tools.js';
 const require = createRequire(import.meta.url);
 const { JSDOM } = require('jsdom');
 const url = 'https://x.com/marfinxx/status/2094016175617241109';
-async function extract(html, setup = () => {}) {
-  const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
+async function extract(html, setup = () => {}, pageUrl = url) {
+  const dom = new JSDOM(html, { url: pageUrl, runScripts: 'outside-only' });
   Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', { get() { return this.textContent; } });
   setup(dom.window);
   try { return await dom.window.eval(`(${extractPage.toString()})()`); }
@@ -42,6 +42,15 @@ assert.equal(refreshes, 2, 'explicit extraction must refresh on every request');
 const genericArticle = await extract(`<main><article><h2 class="longform-header-two">A longform heading</h2><div>${'Body prose '.repeat(30)}TAIL</div></article></main>`);
 assert.equal(genericArticle.article, true, 'recognize observed longform markup without relying only on test IDs');
 assert.match(genericArticle.text, /TAIL/);
+const record = await extract(
+  `<title>试点记录</title><meta name="description" content="本次验收的完整记录见附件">
+   <main><nav><h2>其他记录</h2></nav><h1>青玉独立试点</h1></main>`,
+  undefined, 'https://example.org/records/17',
+);
+assert.equal(record.title, '试点记录');
+assert.match(record.text, /青玉独立试点/);
+assert.match(record.text, /完整记录见附件/);
+assert.doesNotMatch(record.text, /其他记录/);
 const tweet = await extract(`<article data-testid="tweet"><div data-testid="User-Name">Alice @alice</div><a href="/alice/status/2094016175617241109"><time>Today</time></a><div data-testid="tweetText">ORDINARY_TWEET remains available.</div></article>`);
 assert.equal(tweet.article, false);
 assert.match(tweet.text, /ORDINARY_TWEET/);

@@ -11,6 +11,7 @@ import { inject, injectMain, restrictedUrl } from "../chrome.js";
 import { pasteIntoPage } from "./page-fns.js";
 import { cosePublish } from "./companions.js";
 import { loadSettings } from "../storage.js";
+import { runMxDraftJob } from "../../skills/tiktok-mx-draft/tiktok-mx-editor.mjs";
 import { getBridge } from "../bridge/index.js";
 import { isUrlAllowed } from "../bridge/policy.js";
 import {
@@ -681,11 +682,20 @@ export async function executeJob(
     if (output) await writeAgentPromptOutput(output);
     return result;
   }
-  if (action === "bridge_call") {
+  if (action === "bridge_call" || action === "fill_mx_draft") {
     const bridge = getBridge();
     if (!bridge) return { ok: false, error: "bridge 未安装" };
     const session =
       job?.token != null ? { token: String(job.token), sessionId: `inbox:${String(job.id || "")}`, agentName: "inbox" } : undefined;
+    if (action === "fill_mx_draft") {
+      const start = Date.now();
+      let step = 0;
+      const dispatch = (tool, args) => bridge.call({
+        id: job.id + "." + ++step, tool, args,
+      }, { session });
+      const result = await runMxDraftJob(job, dispatch, async id => (await chrome.tabs.get(id)).url);
+      return { ok: true, result, meta: { tool: action, ms: Date.now() - start } };
+    }
     const res = await bridge.call({ id: String(job.id || `inbox-${Date.now()}`), ...(job.request || {}) }, { session });
     return { ...res, ok: res.ok === true };
   }

@@ -1,3 +1,4 @@
+import { tabInWindow } from "../window-scope.js";
 /**
  * 委托任务在 Service Worker 里的运行环境：内部工具（createAgentTools）、文本模型（streamTurn）、
  * chrome.storage.session 持久化、侧栏消息（列表 / 取消）与 SW 保活。
@@ -12,6 +13,15 @@ import { createAgentTools, resolveActiveTools } from "./tools.js";
 import { describeCapsule } from "./trust/capsule.js";
 import { chromeStorageAdapter, createApprovalQueue } from "./trust/approval-queue.js";
 import { DelegateError, createDelegateManager, sessionTaskStorage, setDelegateManager } from "./delegate.js";
+
+// Window-to-window jobs receive browser tools that resolve their targets inside the recipient window.
+const WINDOW_TASK_TOOLS = new Set([
+  "extract_page", "extract_pages", "get_page_info", "get_selection", "get_links", "get_captions",
+  "find_in_page", "query_dom", "list_controls", "snapshot_controls", "scroll_page", "act_element",
+  "click", "fill", "select_option", "press_key", "wait_for", "wait_for_navigation",
+  "list_tabs", "open_tab", "switch_tab", "navigate_tab", "reload_tab", "close_tab", "web_search",
+  "read_tool_page", "search_tool_artifact", "request_toolsets",
+]);
 
 const KEEPALIVE_MS = 20_000;
 
@@ -30,31 +40,33 @@ export function delegateSystemPrompt(settings, task) {
   ].join("\n\n");
 }
 
-async function createSwRun({ task, settings, signal }) {
+export async function createSwRun({ task, settings, signal }) {
   const base = resolveModel(settings, "text");
   const model = task.model ? { ...base, model: task.model } : base;
   if (!isModelReady(model)) throw new DelegateError("MODEL_NOT_READY", "PageLens 未配置可用的文本模型（设置 → 模型）。");
 
-  let windowId = null;
+  let windowId = task.windowId;
+  let currentTabId = task.tabId;
   let hasVideo = false;
   if (task.tabId) {
-    const tab = await chrome.tabs.get(task.tabId).catch(() => null);
-    windowId = tab?.windowId ?? null;
+    const tab = await tabInWindow(task.tabId, windowId);
+    windowId = Number.isInteger(tab?.windowId) && tab.windowId >= 0 ? tab.windowId : null;
     if (tab?.url && !restrictedUrl(tab.url)) {
       const pack = await loadTabPack(task.tabId).catch(() => null);
       hasVideo = Boolean(pack?.hasVideo);
     }
   }
+  // 没有调用方 windowId、也没有 tab 所在窗口时，不改写到焦点窗口，也不占侧栏那把锁。
   let refLabel = null;
   let taskGroupId = null;
   const requestedDomains = new Set();
   const tools = createAgentTools({
-    getTabId: () => task.tabId,
+    getTabId: () => currentTabId,
     getWindowId: () => windowId,
     refreshPack: (tabId) => loadTabPack(tabId),
     capture: (tabId) => captureTab(tabId || task.tabId, windowId),
     setImage: () => {},
-    onTabsMutated: async () => {},
+    onTabsMutated: async (id) => { if (id != null) currentTabId = id; },
     getTaskGroupId: () => taskGroupId,
     setTaskGroupId: (id) => {
       taskGroupId = id;
@@ -78,11 +90,13 @@ async function createSwRun({ task, settings, signal }) {
   });
 
   return {
-    tools,
+    windowId,
+    getTabId: () => currentTabId,
+    tools: task.requesterWindowId != null ? tools.filter(t => WINDOW_TASK_TOOLS.has(t.name)) : tools,
     activeTools: (wrapped) =>
       resolveActiveTools({ userText: task.prompt, tools: wrapped, hasVideo, requestedDomains: [...requestedDomains] }),
     systemPrompt: delegateSystemPrompt(settings, task),
-    getTabUrl: async (tabId) => (await chrome.tabs.get(tabId))?.url,
+    getTabUrl: async (tabId) => (await tabInWindow(tabId, windowId)).url,
     refLabel: (tabId, index) => (refLabel ? refLabel(tabId, index) : ""),
     model: {
       runTurn: ({ messages, tools: turnTools, signal: turnSignal, onTextDelta, onReasoningDelta }) =>
@@ -113,6 +127,14 @@ export function installDelegate() {
     loadSettings,
     createRun: createSwRun,
     onActivityChange: keepAlive,
+    resolveTabWindow: async (tabId) => {
+      try {
+        const tab = await tabInWindow(tabId, null);
+        return Number.isInteger(tab?.windowId) && tab.windowId >= 0 ? tab.windowId : null;
+      } catch {
+        return null;
+      }
+    },
   });
   setDelegateManager(installed);
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

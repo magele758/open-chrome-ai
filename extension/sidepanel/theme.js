@@ -1,4 +1,5 @@
 import { normalizeUiTheme, normalizeThemeColors, THEME_COLOR_KEYS, BASE_COLOR_KEYS, ERROR_COLOR_KEYS, paletteTokens, luminance, contrastRatio } from '../lib/ui-theme.js';
+import { modifySettings } from '../lib/storage.js';
 
 let appliedTokens = [];
 export function applyUiTheme(value, customColors = {}) {
@@ -38,13 +39,20 @@ export function applyUiTheme(value, customColors = {}) {
   ].filter(Boolean).join(' ');
 }
 
-/** Save only appearance: don't commit unrelated edits in the settings form. */
+/** Save only appearance. Other settings stay on the copy read inside the settings lock. */
 export async function saveUiTheme(value, customColors) {
   const theme = normalizeUiTheme(value);
-  const { settings = {} } = await chrome.storage.local.get('settings');
-  const appearance = { uiTheme: theme };
-  if (customColors !== undefined) appearance.uiThemeColors = normalizeThemeColors(customColors);
-  await chrome.storage.local.set({ settings: { ...settings, ...appearance } });
+  await modifySettings((latest) => {
+    const next = { ...latest, uiTheme: theme };
+    if (customColors !== undefined) next.uiThemeColors = normalizeThemeColors(customColors);
+    return next;
+  }, {
+    load: async () => (await chrome.storage.local.get('settings')).settings || {},
+    save: async (next) => {
+      await chrome.storage.local.set({ settings: next });
+      return next;
+    },
+  });
   return theme;
 }
 

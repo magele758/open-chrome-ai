@@ -24,7 +24,7 @@ for (const toolName of ["run_js", "fill", "trusted_type", "trusted_click", "past
   assert.equal(isToolPrivileged(toolName, args, {}), true, `${toolName} unknown target is privileged`);
   assert.equal(isToolPrivileged(toolName, args, { targetUrl: "chrome://settings", userUrl: HOME }), true, `${toolName} non-http target`);
 }
-for (const toolName of ["open_tab", "navigate_tab"]) {
+for (const toolName of ["create_window", "open_tab", "navigate_tab"]) {
   assert.equal(isToolPrivileged(toolName, { url: OTHER }, { targetUrl: OTHER, userUrl: HOME }), true, `${toolName} cross-origin`);
   assert.equal(isToolPrivileged(toolName, { url: HOME }, { targetUrl: "https://docs.example.com/other", userUrl: HOME }), false);
 }

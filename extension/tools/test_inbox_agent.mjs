@@ -1,3 +1,4 @@
+import "./fixtures/web-locks.mjs";
 import assert from "node:assert/strict";
 
 const store = {};

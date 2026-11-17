@@ -1,5 +1,7 @@
+import "./fixtures/web-locks.mjs";
 import { createAgentLoop } from "../lib/agent/loop.js";
-import { createAgentTools, createPageTools } from "../lib/agent/tools.js";
+import { checkHitlRequirement, createAgentTools, createPageTools, resolveHitlTargetUrl } from "../lib/agent/tools.js";
+import { resetPermissionPrompter, setPermissionPrompter } from "../lib/optional-permissions.js";
 import {
   CHROME_CALL_ALLOW,
   chromeCall,
@@ -49,15 +51,19 @@ globalThis.chrome = {
       if (!tab) throw new Error("No tab " + id);
       return tab;
     },
-    create: async (opts) => ({
-      id: 3,
-      windowId: 10,
-      title: "New",
-      url: opts.url,
-      active: Boolean(opts.active),
-      pinned: false,
-      groupId: -1,
-    }),
+    create: async (opts) => {
+      const tab = {
+        id: 3,
+        windowId: 10,
+        title: "New",
+        url: opts.url,
+        active: Boolean(opts.active),
+        pinned: false,
+        groupId: -1,
+      };
+      tabs.push(tab);
+      return tab;
+    },
     update: async (id, opts) => {
       const tab = tabs.find((t) => t.id === id) || tabs[0];
       return { ...tab, ...opts, id };
@@ -72,7 +78,7 @@ globalThis.chrome = {
     group: async ({ groupId }) => (groupId == null ? 42 : groupId),
   },
   tabGroups: {
-    get: async (id) => ({ id, title: "PL", color: "orange" }),
+    get: async (id) => ({ id, windowId: 10, title: "PL", color: "orange" }),
     update: async () => ({}),
   },
   windows: { update: async () => ({}) },
@@ -322,12 +328,16 @@ assert(batched.bookmarks.every((b) => b.url.startsWith("https://")), "only http(
 const opened = JSON.parse(await byName.open_tab.execute({ url: "https://c.example/" }));
 assert(opened.opened.id === 3, "open_tab");
 assert(opened.groupId === 42, "open_tab grouped");
+tabs.splice(tabs.findIndex((t) => t.id === opened.opened.id), 1);
 
 const blockedOpen = await byName.open_tab.execute({ url: "chrome://settings" });
 assert(/http/.test(blockedOpen), "open_tab block");
 
 await byName.remember.execute({ key: "k1", value: "v1" });
 assert((await byName.recall.execute({ key: "k1" })) === "v1", "remember/recall");
+await Promise.all(["handoff-a", "handoff-b"].map(key => byName.remember.execute({ key, value: key })));
+assert((await byName.recall.execute({ key: "handoff-a" })) === "handoff-a", "first simultaneous note retained");
+assert((await byName.recall.execute({ key: "handoff-b" })) === "handoff-b", "second simultaneous note retained");
 const keys = JSON.parse(await byName.recall.execute({}));
 assert(keys.keys.includes("k1"), "recall keys");
 
@@ -438,5 +448,126 @@ const loop = createAgentLoop({
 });
 const out = await loop.run("有哪些标签");
 assert(out.reason === "stop" && /FINAL:\{"count":1/.test(out.text), "loop json tool result");
+
+chrome.sessions = {
+  getRecentlyClosed: async () => [
+    { tab: { sessionId: "s-pay", windowId: 10, url: "https://shop.example/checkout?cart=1" } },
+    { tab: { sessionId: "s-home", windowId: 10, url: "https://a.example/old" } },
+    { tab: { sessionId: "s-other", windowId: 10, url: "https://other.example/page" } },
+  ],
+  restore: async () => {
+    throw new Error("window task must not call sessions.restore");
+  },
+};
+const payArgs = { sessionId: "s-pay" };
+assert((await resolveHitlTargetUrl("restore_closed_tab", payArgs, {})) === "https://shop.example/checkout?cart=1", "resolve closed checkout url");
+assert(payArgs.url === "https://shop.example/checkout?cart=1", "closed url is visible to trust");
+const checkout = checkHitlRequirement({
+  toolName: "restore_closed_tab",
+  args: payArgs,
+  userUrl: "https://a.example/post",
+  hitlMode: "autonomous",
+});
+assert(checkout.needsConfirmation === true, "checkout restore still confirms in autonomous mode");
+assert(checkout.irreversible?.id === "checkout_pay", "checkout restore hits the pay list");
+const homeArgs = { sessionId: "s-home" };
+assert((await resolveHitlTargetUrl("restore_closed_tab", homeArgs, {})) === "https://a.example/old", "resolve same-origin closed url");
+assert(
+  checkHitlRequirement({
+    toolName: "restore_closed_tab",
+    args: homeArgs,
+    userUrl: "https://a.example/post",
+    hitlMode: "balanced",
+  }).needsConfirmation === false,
+  "same-origin restore does not ask again",
+);
+const cross = checkHitlRequirement({
+  toolName: "restore_closed_tab",
+  args: { url: "https://other.example/page" },
+  userUrl: "https://a.example/post",
+  hitlMode: "balanced",
+});
+assert(cross.needsConfirmation === true, "cross-origin restore confirms like open_tab: " + cross.reason);
+assert(/跨源/.test(cross.reason), "cross-origin reason");
+
+const tabCreates = [];
+const savedCreate = chrome.tabs.create;
+chrome.tabs.create = async (opts) => {
+  tabCreates.push(opts);
+  return savedCreate(opts);
+};
+chrome.permissions = {
+  contains: async (query) => !query?.origins?.some((origin) => String(origin).includes("shop.example")),
+  request: async () => false,
+};
+const blockedArgs = { sessionId: "s-pay" };
+assert(
+  (await resolveHitlTargetUrl("restore_closed_tab", blockedArgs, {})) === "https://shop.example/checkout?cart=1",
+  "trust sees the closed checkout url before execute",
+);
+const blocked = await byName.restore_closed_tab.execute(blockedArgs);
+assert(/未授予权限/.test(blocked), "host permission blocks restore: " + blocked);
+assert(blockedArgs.url === "https://shop.example/checkout?cart=1", "execute exposes the closed url");
+assert(tabCreates.length === 0, "denied host permission does not open a tab");
+chrome.permissions.contains = async () => true;
+const reopenArgs = { sessionId: "s-home" };
+assert(
+  (await resolveHitlTargetUrl("restore_closed_tab", reopenArgs, {})) === "https://a.example/old",
+  "trust sees the same-origin closed url before reopen",
+);
+const reopened = JSON.parse(await byName.restore_closed_tab.execute(reopenArgs));
+assert(reopened.mode === "reopened_url" && reopened.tab.url === "https://a.example/old", "window restore reopens the url");
+assert(tabCreates.at(-1).windowId === 10 && tabCreates.at(-1).url === "https://a.example/old" && tabCreates.at(-1).active === false, "reopen stays in the task window");
+chrome.sessions.restore = async (id) => ({ tab: { id: 77, title: "T", url: "https://a.example/old" }, id });
+const legacyTools = createAgentTools({ getTabId: () => 1, settings: { cdpInput: false } });
+const legacyArgs = { sessionId: "s-home" };
+assert(
+  (await resolveHitlTargetUrl("restore_closed_tab", legacyArgs, {})) === "https://a.example/old",
+  "trust confirms the url before sessions.restore",
+);
+const legacy = JSON.parse(await legacyTools.find((tool) => tool.name === "restore_closed_tab").execute(legacyArgs));
+assert(legacy.tab.id === 77, "no-window path still uses sessions.restore");
+assert(tabCreates.length === 1, "sessions.restore does not call tabs.create");
+
+// 第一次 sessions 查询抛错，参数里夹着同源假网址；授权后第二次才返回结账页。
+resetPermissionPrompter();
+let sessionsGranted = false;
+let closedReads = 0;
+const checkoutUrl = "https://shop.example/checkout?cart=1";
+const fakeUrl = "https://a.example/old";
+chrome.sessions.getRecentlyClosed = async () => {
+  closedReads += 1;
+  if (closedReads === 1) throw new Error("The 'sessions' permission has not been granted.");
+  return [{ tab: { sessionId: "s-pay", windowId: 10, url: checkoutUrl } }];
+};
+chrome.permissions.contains = async (query) => {
+  if (query?.permissions?.includes("sessions")) return sessionsGranted;
+  return true;
+};
+chrome.permissions.request = async (query) => {
+  if (query?.permissions?.includes("sessions")) {
+    sessionsGranted = true;
+    return true;
+  }
+  return true;
+};
+setPermissionPrompter(async (info) => info.confirm());
+const sneakArgs = { sessionId: "s-pay", url: fakeUrl };
+const resolved = await resolveHitlTargetUrl("restore_closed_tab", sneakArgs, {});
+assert(resolved !== fakeUrl, "resolve must not return the caller url");
+assert(resolved === checkoutUrl, "retry before trust returns the closed checkout url");
+assert(sneakArgs.url === checkoutUrl, "trust writes the closed url, not the caller url");
+assert(closedReads === 2, "sessions is queried again after the permission grant");
+const unseenArgs = { sessionId: "s-pay", url: fakeUrl };
+const createdBefore = tabCreates.length;
+const unseen = await byName.restore_closed_tab.execute(unseenArgs);
+assert(typeof unseen === "string", "untrusted restore does not open a tab");
+assert(
+  !tabCreates.slice(createdBefore).some((tab) => tab.url === checkoutUrl),
+  "execute does not open a checkout url the trust phase did not see",
+);
+assert(unseenArgs.url === fakeUrl, "execute does not adopt a checkout url trust did not write");
+resetPermissionPrompter();
+chrome.tabs.create = savedCreate;
 
 console.log("PASS", names.length, "tools:", names.join(", "));

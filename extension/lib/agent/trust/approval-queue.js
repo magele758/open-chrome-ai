@@ -36,6 +36,9 @@ function randomId() {
 /** chrome.storage 适配器 */
 export function chromeStorageAdapter(area = globalThis.chrome?.storage?.local, key = APPROVAL_STORAGE_KEY) {
   return {
+    withLock(action) {
+      return globalThis.navigator?.locks ? navigator.locks.request(key, action) : action();
+    },
     async load() {
       const got = await area.get(key);
       return Array.isArray(got?.[key]) ? got[key] : [];
@@ -78,7 +81,7 @@ export function createApprovalQueue({ storage = memoryAdapter(), now = () => Dat
     await storage.save(list.slice(-max));
     return entry;
   }
-  return {
+  const queue = {
     /** 入队；同一委托人的同一调用已在等待时复用原条目 */
     async enqueue({ toolName, args = {}, reason = "", item = null, principal = "", sessionId = "" }) {
       const list = await read();
@@ -127,4 +130,11 @@ export function createApprovalQueue({ storage = memoryAdapter(), now = () => Dat
       return take("rejected", toolName, args, principal);
     },
   };
+  if (storage.withLock) {
+    for (const name of ["enqueue", "resolve", "consumeApproved", "consumeRejected"]) {
+      const mutate = queue[name];
+      queue[name] = (...args) => storage.withLock(() => mutate(...args));
+    }
+  }
+  return queue;
 }

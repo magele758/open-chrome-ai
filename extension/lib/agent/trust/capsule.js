@@ -40,6 +40,7 @@ const ACTION_KEYWORDS = {
   close: /关闭|关掉|关了|\bclose\b/i,
   delete: /删除|删掉|清除|清空|移除|\b(?:delete|remove|clear|erase)\b/i,
   settings: /设置|配置|设定|偏好|主题|字体|深色|暗色|浅色|回答语言|切换模型|换个模型|\b(?:settings?|config|preference|theme|font)\b/i,
+  parallel: /并行|并发|分工|拆分任务|拆任务|多窗口协作|\b(?:parallel|concurrently|swarm|fan[- ]out)\b/i,
   automation: /automa|工作流|\bworkflow\b/i,
   purchase: /购买|下单|付款|支付|结账|\b(?:buy|order|checkout|pay|purchase)\b/i,
 };
@@ -216,6 +217,7 @@ export const ACTION_LABELS = {
   close: "关闭标签",
   delete: "删除",
   settings: "改设置",
+  parallel: "并行分工",
   automation: "自动化工作流",
   purchase: "购买/支付",
 };
@@ -327,6 +329,8 @@ export function capsuleCovers(capsule, { toolName, args = {}, targetUrl = "", so
       return has("delete") ? { covered: true, why: "授权删除" } : { covered: false, why: "未授权删除" };
     case "settings":
       return has("settings") ? { covered: true, why: "授权改设置" } : { covered: false, why: "未授权改设置" };
+    case "parallel":
+      return { covered: has("parallel") || capsule.urls.length > 1, why: "并行处理用户指定的任务或多个来源" };
     case "automation":
       return has("automation") ? { covered: true, why: "授权工作流" } : { covered: false, why: "未授权工作流" };
     default:

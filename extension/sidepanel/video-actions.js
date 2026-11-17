@@ -283,7 +283,7 @@ async function captureTab(tabId) {
     return null;
   }
   try {
-    return await captureVisible(id, state.tab?.windowId);
+    return await captureVisible(id, state.windowId);
   } catch (err) {
     pushError("截图失败：" + err.message);
     return null;

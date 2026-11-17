@@ -148,7 +148,7 @@ export async function executeChromeToolCalls({
           content = `已拦截：连续 ${gate.archivedSearch} 次搜索结果已归档且未翻页。请先 read_tool_page 或 search_tool_artifact，不要再开新的 rg。`;
           gate.forceAnswer = true;
         } else {
-          content = await tool.execute(args, { signal });
+          content = await tool.execute(args, { signal, callId: call.toolCallId });
         }
         if (gate && call.name === "run_shell") {
           if (!ok || (typeof content === "string" && content.startsWith("已拦截"))) {

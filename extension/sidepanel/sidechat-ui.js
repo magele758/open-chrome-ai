@@ -7,7 +7,7 @@
 import { $ } from "./dom.js";
 import { flashStatus } from "./history.js";
 import { formatDuration, formatTokenCount, syncMessageAnchors } from "./messages.js";
-import { persistSession, setView } from "./session.js";
+import { ensureSessionId, persistSession, setView } from "./session.js";
 import { distillSideChatNote, isSideChatRunning, sendSideChatTurn, stopSideChatTurn } from "./sidechat-runner.js";
 import { state } from "./state.js";
 import { writeClipboardRich } from "../lib/clipboard.js";
@@ -28,6 +28,11 @@ let streamPaintTimer = 0;
 let distillingId = "";
 let resizeObserver = null;
 let armedDeleteTimer = 0;
+const composerDrafts = new Map();
+
+function draftKey(threadId) {
+  return JSON.stringify([ensureSessionId(), threadId]);
+}
 
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
@@ -608,6 +613,7 @@ export function requestDeleteSideChat(sideChatId, { force = false } = {}) {
 }
 
 function deleteSideChat(sideChatId) {
+  composerDrafts.delete(draftKey(sideChatId));
   stopSideChatTurn(sideChatId);
   state.sideChats = (state.sideChats || []).filter((sc) => sc.id !== sideChatId);
   if (state.sideChatUi.activeId === sideChatId) {
@@ -794,6 +800,14 @@ function renderThreadMessages({ preserveScroll = false } = {}) {
 
 function renderComposerState() {
   const sc = byId(state.sideChatUi.activeId);
+  const input = $("sc-input");
+  if (input && sc) {
+    const key = draftKey(sc.id);
+    if (input.dataset.draftOwner !== key) {
+      input.dataset.draftOwner = key;
+      input.value = composerDrafts.get(key) || "";
+    }
+  }
   const sendBtn = $("btn-sc-send");
   const distillBtn = $("btn-sc-distill");
   const running = sc ? isSideChatRunning(sc.id) : false;
@@ -892,6 +906,7 @@ function submitSideChatInput() {
   }
   const text = input.value.trim();
   if (!text) return;
+  composerDrafts.delete(input.dataset.draftOwner);
   input.value = "";
   triggerSideChatSend(sc.id, text);
 }
@@ -1103,6 +1118,12 @@ function bindEvents() {
   });
 
   $("btn-sc-send")?.addEventListener("click", submitSideChatInput);
+  $("sc-input")?.addEventListener("input", ({ target }) => {
+    const key = target.dataset.draftOwner;
+    if (!key) return;
+    if (target.value) composerDrafts.set(key, target.value);
+    else composerDrafts.delete(key);
+  });
   $("sc-input")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();

@@ -2607,3 +2607,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .msg.bot .tool-card.fail .tool-card-body{border-color:var(--danger-line)}
 .msg.bot .tool-card.fail .tool-card-pre{background:var(--danger-bg);color:var(--danger);border-color:var(--danger-line)}
 .msg.error>.body{background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger-line);border-radius:8px;padding:10px 12px}
+
+#window-mail { flex: none; padding: 5px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+#window-mail summary { cursor: pointer; }
+.window-mail-compose { display: grid; gap: 6px; margin-top: 8px; }
+.window-mail-compose textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+#window-mail-log { max-height: 22vh; overflow: auto; padding: 0; margin: 0; list-style: none; }
+#window-mail-log li { white-space: pre-wrap; overflow-wrap: anywhere; padding: 6px 0; border-top: 1px solid var(--line); }
+#window-mail-log p { margin: 4px 0 0; }

@@ -3,10 +3,11 @@ import { renderModelLine } from "./model-line.js";
 import { settingsPage } from "./panel-refs.js";
 import { state } from "./state.js";
 import { listRemoteModels } from "../lib/openai.js";
-import { presetsFor, saveSettings } from "../lib/storage.js";
+import { modifySettings, presetsFor } from "../lib/storage.js";
 import {
   addProviderModel,
   hydrateTextCatalog,
+  textSlotFromRef,
   invertProviderModelsEnabled,
   mergeScannedModels,
   newProviderId,
@@ -59,10 +60,67 @@ function syncTextCatalog() {
   state.settings.text = { ...catalog.text, summaryInputTokens: tokens };
 }
 
-function persistTextCatalog() {
+function sameTextRef(a, b) {
+  return (a?.providerId || "") === (b?.providerId || "") && (a?.modelId || "") === (b?.modelId || "");
+}
+
+function refEnabled(providers, ref) {
+  const provider = (providers || []).find((p) => p.id === ref?.providerId);
+  return Boolean(provider && (provider.models || []).some((m) => m.id === ref.modelId && m.enabled !== false));
+}
+
+function withEnabledModel(provider, modelId, source) {
+  const models = (provider.models || []).map((m) => ({ ...m }));
+  const idx = models.findIndex((m) => m.id === modelId);
+  if (idx >= 0) models[idx] = { ...models[idx], enabled: true };
+  else {
+    const carried = (source?.models || []).find((m) => m.id === modelId);
+    models.push(carried ? { ...carried, enabled: true } : { id: modelId, enabled: true });
+  }
+  return { ...provider, models };
+}
+
+// Keep this edit's providers. If the preserved ref points outside them, splice in
+// that one provider from latest so normalize cannot snap the ref back to the first model.
+function providersKeepingRef(edited, latestProviders, ref) {
+  if (!ref?.providerId || !ref.modelId || refEnabled(edited, ref)) return edited;
+  const source = (latestProviders || []).find((p) => p.id === ref.providerId);
+  if (!source) return edited;
+  const idx = edited.findIndex((p) => p.id === ref.providerId);
+  if (idx < 0) return [...edited, withEnabledModel(source, ref.modelId, source)];
+  const next = edited.slice();
+  next[idx] = withEnabledModel(edited[idx], ref.modelId, source);
+  return next;
+}
+
+function persistTextCatalog(baseRef = state.settings.textRef ? { ...state.settings.textRef } : null) {
   syncTextCatalog();
-  return saveSettings(state.settings).then((saved) => {
-    state.settings = saved;
+  const textProviders = state.settings.textProviders;
+  const nextRef = state.settings.textRef ? { ...state.settings.textRef } : null;
+  return modifySettings((latest) => {
+    const textRef = sameTextRef(latest.textRef, baseRef) ? nextRef : latest.textRef;
+    const providers = sameTextRef(textRef, nextRef)
+      ? textProviders
+      : providersKeepingRef(textProviders, latest.textProviders, textRef);
+    const slot = textSlotFromRef(providers, textRef, latest.text);
+    return {
+      ...latest,
+      textProviders: providers,
+      textRef,
+      text: {
+        ...latest.text,
+        preset: slot.preset,
+        baseUrl: slot.baseUrl,
+        apiKey: slot.apiKey,
+        model: slot.model,
+        summaryInputTokens: latest.text?.summaryInputTokens,
+      },
+    };
+  }).then((saved) => {
+    state.settings.textProviders = saved.textProviders;
+    state.settings.textRef = saved.textRef;
+    state.settings.text = saved.text;
+    state.settings.agentBridgeOrigins = saved.agentBridgeOrigins;
     renderTextProviders();
     renderModelLine();
     return saved;
@@ -226,6 +284,7 @@ async function scanTextProvider(id) {
 }
 
 async function handleTextProviderAction(action, id, modelId, enabled) {
+  const baseRef = state.settings.textRef ? { ...state.settings.textRef } : null;
   const ui = state.textProviderUi;
   const root = $("text-providers");
   if (action === "toggle-add") {
@@ -263,7 +322,7 @@ async function handleTextProviderAction(action, id, modelId, enabled) {
         ui.err = err.message || String(err);
       }
     }
-    await persistTextCatalog();
+    await persistTextCatalog(baseRef);
     return;
   }
   if (action === "edit") {
@@ -290,7 +349,7 @@ async function handleTextProviderAction(action, id, modelId, enabled) {
       if (cur) replaceProvider({ ...cur, scanError: err.message || String(err) });
       ui.err = err.message || String(err);
     }
-    await persistTextCatalog();
+    await persistTextCatalog(baseRef);
     return;
   }
   if (action === "delete") {
@@ -298,7 +357,7 @@ async function handleTextProviderAction(action, id, modelId, enabled) {
     if (state.settings.textRef?.providerId === id) state.settings.textRef = null;
     ui.msg = "已删除";
     ui.err = "";
-    await persistTextCatalog();
+    await persistTextCatalog(baseRef);
     return;
   }
   if (action === "scan") {
@@ -310,14 +369,14 @@ async function handleTextProviderAction(action, id, modelId, enabled) {
       if (cur) replaceProvider({ ...cur, scanError: err.message || String(err) });
       throw err;
     }
-    await persistTextCatalog();
+    await persistTextCatalog(baseRef);
     return;
   }
   if (action === "toggle") {
     const provider = providerById(id);
     if (!provider) return;
     replaceProvider(setProviderModelEnabled(provider, modelId, enabled));
-    await persistTextCatalog();
+    await persistTextCatalog(baseRef);
     return;
   }
   if (action === "select-all" || action === "invert") {
@@ -328,13 +387,13 @@ async function handleTextProviderAction(action, id, modelId, enabled) {
       ? setAllProviderModelsEnabled(provider, true, visibleIds)
       : invertProviderModelsEnabled(provider, visibleIds));
     ui.msg = action === "select-all" ? "已全选当前列表" : "已反选当前列表";
-    await persistTextCatalog();
+    await persistTextCatalog(baseRef);
     return;
   }
   if (action === "current") {
     state.settings.textRef = { providerId: id, modelId };
     ui.msg = `已设为当前：${modelId}`;
-    await persistTextCatalog();
+    await persistTextCatalog(baseRef);
     return;
   }
   if (action === "add-model") {
@@ -346,7 +405,7 @@ async function handleTextProviderAction(action, id, modelId, enabled) {
     ui.addModel[id] = "";
     ui.msg = `已加入 ${raw}`;
     if (!state.settings.textRef) state.settings.textRef = { providerId: id, modelId: raw };
-    await persistTextCatalog();
+    await persistTextCatalog(baseRef);
   }
 }
 

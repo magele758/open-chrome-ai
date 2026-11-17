@@ -14,7 +14,7 @@ import {
   listSessions,
   loadAllSessions,
   loadSession,
-  saveSession,
+  openSessionInWindow,
   sessionFilename,
   sessionToMarkdown,
   sessionsToJSON,
@@ -326,13 +326,12 @@ async function renderHistory() {
 async function openHistoryItem(id) {
   await settleBusy();
   await persistSession();
-  const session = await loadSession(id);
+  const session = await openSessionInWindow(id, await resolveWindowId());
   if (!session) {
     histStatus("找不到这条对话", false);
     return;
   }
   applySession(session);
-  await saveSession(session, { windowId: await resolveWindowId() });
   setView("chat");
 }
 

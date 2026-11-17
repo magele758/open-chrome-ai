@@ -1,3 +1,5 @@
+import { tabInWindow } from "../lib/window-scope.js";
+import { renderAllowCurrentSite } from "./allow-current-site.js";
 import { sendPrompt } from "./agent-loop.js";
 import {
   compactPendingAutoplay,
@@ -330,7 +332,7 @@ async function backToVideoTab() {
   const running = interpretController.getRunningTasks?.() || [];
   const id = state.mediaTab?.id || (state.pack?.video || state.pack?.videoIsPrimary ? state.tab?.id : null) || running[0]?.tabId || state.tab?.id;
   if (!id || typeof chrome === "undefined" || !chrome.tabs?.update) return;
-  try { await chrome.tabs.update(id, { active: true }); } catch { /* ignore */ }
+  await activateMediaTab(id);
 }
 
 function toggleMiniPlayback() {
@@ -347,6 +349,13 @@ function toggleMiniPlayback() {
   startInterpret();
 }
 
+async function activateMediaTab(tabId) {
+  try {
+    await tabInWindow(tabId, state.windowId);
+    await chrome.tabs.update(tabId, { active: true });
+  } catch { /* Tab closed or moved to another window. */ }
+}
+
 async function toggleVideoPicker() {
   const box = $("media-task-picker");
   const list = $("media-task-picker-list");
@@ -359,7 +368,7 @@ async function toggleVideoPicker() {
     list.textContent = "当前环境无法读取标签页。";
     return;
   }
-  const tabs = await chrome.tabs.query({ currentWindow: true });
+  const tabs = await chrome.tabs.query({ windowId: state.windowId });
   const videos = (tabs || []).filter((tab) => tab.url && /youtube\.com|youtu\.be|bilibili\.com|vimeo\.com/.test(tab.url));
   list.innerHTML = "";
   if (!videos.length) {
@@ -411,6 +420,7 @@ function formatStatusError(err) {
 }
 
 function renderContext() {
+  renderAllowCurrentSite($("btn-allow-current-site"), state.tab, state.settings);
   renderTranscribeAction();
   renderComposerChip();
   renderMediaProgress();
@@ -562,7 +572,7 @@ function renderTranscribeAction() {
       switchBtn.textContent = "切到该页";
       switchBtn.onclick = () => {
         if (typeof chrome !== "undefined" && chrome.tabs?.update) {
-          chrome.tabs.update(t.tabId, { active: true }).catch(() => {});
+          void activateMediaTab(t.tabId);
         }
       };
       const stopBtn = document.createElement("button");

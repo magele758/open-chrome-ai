@@ -8,7 +8,7 @@ import { DEFAULT_ALLOWED_ORIGINS } from "../lib/bridge/policy.js";
 import { TOKENS_KEY, addAgentToken, listAgentTokens, loadAgentTokens, removeAgentToken, revokeAgentToken } from "../lib/bridge/token-store.js";
 import { GATEWAY_STATUS_KEY } from "../lib/bridge/gateway.js";
 import { ensureOptionalAccess } from "../lib/optional-permissions.js";
-import { loadSettings, saveSettings } from "../lib/storage.js";
+import { loadSettings, modifySettings } from "../lib/storage.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -141,7 +141,7 @@ export function createAgentGatewayPanel({ root, copyText, onGatewayChanged = () 
         return;
       }
     }
-    const saved = await saveSettings({ ...(await loadSettings()), agentGatewayEnabled: next });
+    const saved = await modifySettings((latest) => ({ ...latest, agentGatewayEnabled: next }));
     enabled = saved.agentGatewayEnabled === true;
     onGatewayChanged(enabled);
     paintGateway();

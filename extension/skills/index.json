@@ -4,6 +4,11 @@
       "id": "pagelens",
       "name": "PageLens",
       "when": "其他 agent 要操作用户的 Chrome：开标签、读页面、可信点击或粘贴、或把任务交给扩展内的 chrome-agent"
+    },
+    {
+      "id": "tiktok-mx-draft",
+      "name": "TikTok 墨西哥商品草稿",
+      "when": "用户给一个 TikTok Shop 商品链接，生成这一件墨西哥草稿；补齐品牌、变体、库存、售价和包裹资料，标记估算并刷新核对"
     }
   ]
 }

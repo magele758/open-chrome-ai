@@ -3,6 +3,8 @@
  * 无人值守时返回 CONFIRMATION_REQUIRED 进入待批准队列。清单本身是安全设置，Agent 不能修改。
  */
 
+import { ORIGIN_SCOPED_NAV_TOOLS } from "./tool-classes.js";
+
 export const IRREVERSIBLE_ITEMS = Object.freeze([
   { id: "publish_send", label: "发布 / 发送 / 提交订单（COSE 发布、「发表」「发送」「提交订单」类按钮）" },
   { id: "delete", label: "删除（批量关闭标签、chrome_call 删除类方法、「删除」类按钮）" },
@@ -110,7 +112,7 @@ export function matchIrreversible(toolName, args = {}, settings = {}, ctx = {}) 
   if (toolName === "run_shell" && isShellWrite(args?.command)) hits.push(item("shell_write", "命令会删除、移动或覆盖本机内容"));
   if (toolName === "update_settings") hits.push(item("settings_change", "修改 PageLens 设置"));
 
-  const navUrl = toolName === "open_tab" || toolName === "navigate_tab" ? String(args?.url || "") : "";
+  const navUrl = ORIGIN_SCOPED_NAV_TOOLS.has(toolName) ? String(args?.url || ctx.targetUrl || "") : "";
   if (navUrl && isCheckoutUrl(navUrl)) hits.push(item("checkout_pay", "打开付款/结账页面"));
   if (PAGE_ACT_TOOLS.has(toolName) && ctx.targetUrl && isCheckoutUrl(ctx.targetUrl)) {
     hits.push(item("checkout_pay", "在付款/结账页面上操作"));

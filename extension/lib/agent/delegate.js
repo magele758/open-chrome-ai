@@ -11,6 +11,7 @@
  * 环境相关部分（工具、模型、标签 URL）由 createRun 注入；SW 里的实现见 delegate-sw.js。
  */
 
+import { withWindowTask } from "../window-scope.js";
 import { createKernelAgentLoop } from "./loop-kernel.js";
 import { resolveHitlTargetUrl } from "./tools.js";
 import { describeCapsule, extractCapsule, normalizeCapsule } from "./trust/capsule.js";
@@ -18,6 +19,46 @@ import { CONFIRMATION_REQUIRED, NEEDS_WIDER_AUTHORIZATION, decideToolCall, forma
 import { createTaintState, ingestData, markHighTaint, taintLevel } from "./trust/taint.js";
 import { READ_ONLY_TOOLS } from "./trust/tool-classes.js";
 import { withUntrustedOutput } from "../untrusted.js";
+
+const WINDOW_BUSY_MESSAGE = "此窗口已有任务运行。请在独立窗口开始另一项任务，或等当前任务结束。";
+
+function usableWindowId(id) {
+  return Number.isInteger(id) && id >= 0 ? id : null;
+}
+
+/** 在返回 taskId 之前占住与侧栏相同的窗口锁；拿不到则拒绝，不把锁留到 execute。 */
+function acquireWindow(windowId) {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let settled = false;
+  const granted = new Promise((resolve, reject) => {
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+    let request;
+    try {
+      request = withWindowTask(windowId, () => {
+        finish(() => resolve(release));
+        return gate;
+      });
+    } catch (err) {
+      finish(() => reject(err));
+      return;
+    }
+    request.catch((err) => finish(() => reject(err)));
+  });
+  return granted.then(
+    (unlock) => unlock,
+    (err) => {
+      if (err?.code === "WINDOW_BUSY") throw new DelegateError("BUSY", err.message || WINDOW_BUSY_MESSAGE, { retryable: true });
+      throw err;
+    },
+  );
+}
 
 export const DELEGATE_STORAGE_KEY = "agentDelegateTasks";
 
@@ -39,6 +80,7 @@ export const AGENT_TASK_EVENTS = Object.freeze({
 export const DEFAULT_MAX_STEPS = 12;
 export const MAX_MAX_STEPS = 40;
 const MAX_STEPS_KEPT = 200;
+export const MAX_CONCURRENT_TASKS = 7;
 const MAX_TASKS_KEPT = 30;
 const MAX_PROMPT_CHARS = 8000;
 const SUMMARY_CHARS = 300;
@@ -163,11 +205,14 @@ export function createDelegateManager({
   createLoop = createKernelAgentLoop,
   now = () => Date.now(),
   newId = randomTaskId,
-  maxConcurrent = 3,
+  maxConcurrent = MAX_CONCURRENT_TASKS,
   onActivityChange = () => {},
+  resolveTabWindow = null,
 } = {}) {
   const tasks = new Map();
   const controllers = new Map();
+  const windowHeld = new Set();
+  const windowLocks = new Map();
   let loaded = null;
   let writeTail = Promise.resolve();
 
@@ -233,8 +278,17 @@ export function createDelegateManager({
     return entry;
   }
 
+  function releaseWindow(taskId) {
+    const slot = windowLocks.get(taskId);
+    if (!slot) return;
+    windowLocks.delete(taskId);
+    windowHeld.delete(slot.windowId);
+    slot.release?.();
+  }
+
   function finish(task, status, { answer, error, endReason } = {}) {
     if (task.status !== TASK_STATUS.RUNNING) return Promise.resolve();
+    releaseWindow(task.id);
     Object.assign(task, {
       status,
       answer: answer != null ? String(answer) : task.answer,
@@ -264,7 +318,7 @@ export function createDelegateManager({
     return async ({ tool, args }) => {
       const toolName = tool.name;
       const targetUrl = await resolveHitlTargetUrl(toolName, args, {
-        getTabId: () => task.tabId,
+        getTabId: run.getTabId || (() => task.tabId),
         getTabUrl: run.getTabUrl,
       });
       if (/^https?:/i.test(targetUrl) && typeof session?.allowUrl === "function" && !session.allowUrl(targetUrl)) {
@@ -274,7 +328,7 @@ export function createDelegateManager({
         addStep(task, { kind: "blocked", name: toolName, code: denial.code, summary: clip(denial.reason) });
         return { allow: false, reason: formatTrustDenial(denial) };
       }
-      const refTab = args?.tabId != null && args?.tabId !== "" ? Number(args.tabId) : task.tabId;
+      const refTab = args?.tabId != null && args?.tabId !== "" ? Number(args.tabId) : (run.getTabId?.() ?? task.tabId);
       if (typeof session?.tabLease === "function" && !READ_ONLY_TOOLS.has(toolName)) {
         const leased = session.tabLease(refTab);
         if (leased) {
@@ -338,6 +392,10 @@ export function createDelegateManager({
   async function execute(task, controller, session) {
     const signal = controller.signal;
     let taint = createTaintState();
+    if (session?.modelPlanned) {
+      taint = ingestData(taint, { source: "delegate", tool: "run_parallel_tasks" });
+      task.taint = taint.level;
+    }
     try {
       const settings = await loadSettings();
       const run = await createRun({ task, settings, signal });
@@ -360,7 +418,7 @@ export function createDelegateManager({
         interceptToolCall: interceptorFor(task, run, settings, session, () => taint),
         model: run.model,
       });
-      const result = await loop.run(task.prompt, {
+      const runLoop = () => loop.run(task.prompt, {
         sessionId: task.id,
         signal,
         onEvent: (ev) => {
@@ -373,6 +431,7 @@ export function createDelegateManager({
           }
         },
       });
+      const result = await runLoop();
       if (signal.aborted || result?.reason === "abort") {
         await finish(task, TASK_STATUS.CANCELLED, { answer: result?.text || task.answer, endReason: "abort" });
         return;
@@ -396,6 +455,9 @@ export function createDelegateManager({
   return {
     /**
      * 启动委托任务；立即返回（不等任务结束）。
+     * 调用方传入的 windowId，或 tabId 实际所在窗口，会在返回 taskId 之前加锁。
+     * 该窗口已有任务时抛 DelegateError BUSY（retryable），不返回 taskId。
+     * 两者都没有的任务不加窗口锁，也不改写到焦点窗口。
      * @param {object} p
      * @param {string} p.prompt
      * @param {object} [p.capsule] 显式意图胶囊
@@ -406,14 +468,32 @@ export function createDelegateManager({
      * @param {{ agentName?: string, sessionId?: string, tokenId?: string, egress?: string[], skipIrreversible?: boolean }} [p.session]
      * @param {(capsule: object) => object} [p.restrictCapsule] 按调用方 origin 范围收窄胶囊
      */
-    async start({ prompt, capsule, tabId = null, sourceUrl = "", maxSteps, model = "", session = null, restrictCapsule } = {}) {
+    async start({ prompt, capsule, tabId = null, windowId = null, requesterWindowId = null, peerRequestKey = "", sourceUrl = "", maxSteps, model = "", session = null, restrictCapsule } = {}) {
       await ensureLoaded();
       const text = String(prompt || "").trim();
       if (!text) throw new DelegateError("BAD_ARGS", "prompt 不能为空。");
       if (text.length > MAX_PROMPT_CHARS) throw new DelegateError("BAD_ARGS", `prompt 过长（上限 ${MAX_PROMPT_CHARS} 字）。`);
       if (typeof createRun !== "function") throw new DelegateError("UNAVAILABLE", "委托任务运行环境未就绪。");
+      if (requesterWindowId != null && peerRequestKey) {
+        const existing = [...tasks.values()].find(t => t.requesterWindowId === requesterWindowId &&
+          t.windowId === windowId && t.peerRequestKey === peerRequestKey && t.prompt === text);
+        if (existing) {
+          await existing.recorded;
+          return publicTask(existing, { withSteps: false });
+        }
+      }
       if (runningCount() >= maxConcurrent) {
         throw new DelegateError("BUSY", `已有 ${runningCount()} 个委托任务在运行（上限 ${maxConcurrent}），稍后再试或先取消。`, { retryable: true });
+      }
+      let lockWindow = usableWindowId(windowId);
+      if (lockWindow == null && Number.isInteger(tabId) && typeof resolveTabWindow === "function") {
+        lockWindow = usableWindowId(await resolveTabWindow(tabId));
+        if (runningCount() >= maxConcurrent) {
+          throw new DelegateError("BUSY", `已有 ${runningCount()} 个委托任务在运行（上限 ${maxConcurrent}），稍后再试或先取消。`, { retryable: true });
+        }
+      }
+      if (lockWindow != null && windowHeld.has(lockWindow)) {
+        throw new DelegateError("BUSY", WINDOW_BUSY_MESSAGE, { retryable: true });
       }
       const resolved = resolveDelegateCapsule({ prompt: text, capsule });
       const restricted = typeof restrictCapsule === "function" ? restrictCapsule(resolved.capsule) : { capsule: resolved.capsule, dropped: [] };
@@ -429,6 +509,8 @@ export function createDelegateManager({
         sessionId: String(session?.sessionId || ""),
         owner,
         tabId: Number.isInteger(tabId) ? tabId : null,
+        ...(Number.isInteger(requesterWindowId) ? { requesterWindowId, peerRequestKey } : {}),
+        windowId: lockWindow,
         sourceUrl: String(sourceUrl || ""),
         maxSteps: clampMaxSteps(maxSteps),
         model: String(model || "").slice(0, 120),
@@ -446,8 +528,24 @@ export function createDelegateManager({
       tasks.set(task.id, task);
       const controller = new AbortController();
       controllers.set(task.id, controller);
+      if (lockWindow != null) windowLocks.set(task.id, { windowId: lockWindow, release: null });
+      if (lockWindow != null) windowHeld.add(lockWindow);
       onActivityChange(runningCount());
-      await persist();
+      Object.defineProperty(task, "recorded", { value: persist(), enumerable: false });
+      try {
+        if (lockWindow != null) {
+          const release = await acquireWindow(lockWindow);
+          const slot = windowLocks.get(task.id);
+          if (slot) slot.release = release;
+        }
+        await task.recorded;
+      } catch (err) {
+        releaseWindow(task.id);
+        tasks.delete(task.id);
+        controllers.delete(task.id);
+        onActivityChange(runningCount());
+        throw err;
+      }
       emit({ type: AGENT_TASK_EVENTS.STARTED, taskId: task.id, at: now(), task: publicTask(task, { withSteps: false }) });
       const done = execute(task, controller, session);
       Object.defineProperty(task, "done", { value: done, enumerable: false, configurable: true });

@@ -13,10 +13,20 @@ const trustPanel = createTrustPanel({
     debugLog("trust.capsule.widen", { actions: capsule.actions, origins: capsule.origins, commands: capsule.commands.length });
   },
   getTaint: () => state.taint,
-  approvals: approvalQueue,
+  approvals: {
+    async list(options) {
+      const entries = await approvalQueue.list(options);
+      return entries.filter((entry) => !entry.principal?.startsWith("panel:") ||
+        entry.principal === `panel:${state.windowId}:${state.sessionId}`);
+    },
+    resolve: approvalQueue.resolve,
+  },
 });
 const delegatePanel = createDelegatePanel({
-  load: async () => (await chrome.storage.session.get(DELEGATE_STORAGE_KEY))?.[DELEGATE_STORAGE_KEY] || [],
+  load: async () => {
+    const tasks = (await chrome.storage.session.get(DELEGATE_STORAGE_KEY))[DELEGATE_STORAGE_KEY] || [];
+    return tasks.filter(t => t.requesterWindowId == null || t.requesterWindowId === state.windowId || t.windowId === state.windowId);
+  },
   cancel: (taskId) => chrome.runtime.sendMessage({ type: "pl.delegate.cancel", taskId }),
 });
 

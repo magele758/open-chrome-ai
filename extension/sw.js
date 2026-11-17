@@ -12,11 +12,12 @@ import {
 } from "./lib/agent/inbox.js";
 import { installInboxConfirm } from "./lib/agent/inbox-confirm.js";
 import { AGENT_TASK_EVENTS, onAgentTaskEvent } from "./lib/agent/delegate.js";
+import { installWindowMail } from "./lib/window-mail.js";
 import { installDelegate } from "./lib/agent/delegate-sw.js";
 import { installAgentGateway } from "./lib/bridge/gateway.js";
 
 applyOptionalLocalSettings().catch(() => {});
-installDelegate();
+installWindowMail(installDelegate());
 onAgentTaskEvent((ev) => {
   if (ev.type === AGENT_TASK_EVENTS.FINISHED) completeHeadlessAgentPrompt().catch(() => {});
 });
@@ -83,34 +84,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
+  const text = (info.selectionText || "").trim();
+  let pending;
   if (info.menuItemId === "pagelens-clip") {
-    const text = (info.selectionText || "").trim();
-    await chrome.storage.session.set({
-      pendingClip: {
-        text,
-        title: tab.title || "",
-        url: tab.url || "",
-      },
-      pendingTabId: tab.id,
-    });
-  } else if (info.menuItemId === "pagelens-ask-selection") {
-    const text = (info.selectionText || "").trim();
-    if (!text) return;
-    await chrome.storage.session.set({
-      pendingSelection: text,
-      pendingTabId: tab.id,
-    });
+    pending = { clip: { text, title: tab.title || "", url: tab.url || "" } };
+  } else if (info.menuItemId === "pagelens-ask-selection" && text) {
+    pending = { selection: text };
   } else {
     return;
   }
-
-  try {
-    await chrome.sidePanel.open({ tabId: tab.id });
-  } catch {
-    try {
-      await chrome.sidePanel.open({ windowId: tab.windowId });
-    } catch {
-      /* side panel API 需要用户手势；右键菜单算手势，失败就只写入 pending */
-    }
-  }
+  // Open during the menu click's user gesture. An already-open panel watches its own storage key.
+  const opened = chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+  await chrome.storage.session.set({ [`pl.contextMenu.${tab.windowId}`]: pending });
+  await opened;
 });

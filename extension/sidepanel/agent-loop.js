@@ -1,3 +1,5 @@
+import { windowMailTools } from "./window-mail.js";
+import { tabInWindow, withWindowTask } from "../lib/window-scope.js";
 import { renderAttach } from "./composer.js";
 import { $ } from "./dom.js";
 import { flagInjection, ingestTaint, showHitlModal, updateHitlBadge } from "./hitl-ui.js";
@@ -16,7 +18,7 @@ import {
 } from "./messages.js";
 import { applyUiFont, renderModelLine, setSendButton, skillsOn } from "./model-line.js";
 import { messageScroll, settingsPage } from "./panel-refs.js";
-import { ensureSessionId, persistSession, setView, settleBusy } from "./session.js";
+import { ensureSessionId, persistSession, resolveWindowId, setView } from "./session.js";
 import { renderSettingsForm } from "./settings-form.js";
 import { ensureSkillsMeta } from "./slash-menu.js";
 import { state } from "./state.js";
@@ -184,17 +186,29 @@ function createPageLensLoop(host) {
   return createKernelAgentLoop(host);
 }
 
-async function executeLoop({ userText, history, resume, turnsUsed, lastText, botMsg, model, clearImage }) {
+async function executeLoop({ userText, history, resume, turnsUsed, lastText, botMsg, model, clearImage, signal }) {
   const useSkills = skillsOn() && lastUserAskedForSkill();
   const hitlUserUrl = state.tab?.url || state.pack?.url || "";
   const skills = useSkills ? [...(state.skills || []), ...shortcutsAsSkills(state.settings)] : [];
+  let taskTabId = resume && state.run?.tabId != null ? state.run.tabId : state.tab?.id;
   let tools;
   let loop;
   try {
     const requestedDomains = new Set(state.activeToolDomains || []);
+    const windowId = await resolveWindowId();
+    if (resume && state.run?.windowId != null && state.run.windowId !== windowId) {
+      state.run = null;
+      try {
+        await persistSession();
+      } catch (persistErr) {
+        console.error("[pagelens] executeLoop clear foreign run", persistErr);
+      }
+      return;
+    }
     tools = createAgentTools({
-      getTabId: () => state.tab?.id,
-      getWindowId: () => state.tab?.windowId,
+      windowMailTools: windowMailTools(windowId, () => state.capsule, state.messages.findLast(m => m.role === "user")?.id),
+      getTabId: () => taskTabId,
+      getWindowId: () => windowId,
       refreshPack: async (tabId) => {
         // Always re-extract the task's page. refreshTab can return a stale
         // pack during transcription, or switch targets when the user browses.
@@ -207,7 +221,8 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         state.image = url;
         renderAttach();
       },
-      onTabsMutated: async () => {
+      onTabsMutated: async (activeTabId) => {
+        if (activeTabId != null) taskTabId = activeTabId;
         await refreshTab();
       },
       getTaskGroupId: () => state.taskGroupId,
@@ -239,7 +254,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       getEgressPolicy: () =>
         buildEgressPolicy({
           capsule: state.capsule,
-          sourceUrl: state.tab?.url || state.pack?.url || "",
+          sourceUrl: hitlUserUrl,
           approvedOrigins: state.hitlApprovedOrigins,
           taint: state.taint,
         }),
@@ -270,7 +285,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     loop = createKernelAgentLoop({
       maxTurns: 0,
       allTools: tools,
-      systemPrompt: [systemPrompt(state.settings, { useSkills }), useSkills ? skillCatalogText(skills) : ""].filter(Boolean).join("\n\n"),
+      systemPrompt: [systemPrompt(state.settings, { useSkills, windowMail: true }), useSkills ? skillCatalogText(skills) : ""].filter(Boolean).join("\n\n"),
       get tools() {
         const lastUser = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
         return resolveActiveTools({
@@ -284,11 +299,18 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       async interceptToolCall({ tool, args, call, signal }) {
         const hitlMode = state.settings.hitlMode || "balanced";
         const sessionOverride = Boolean(state.sessionHitlOverride);
+        const refTab = args?.tabId != null && args.tabId !== "" ? Number(args.tabId) : taskTabId;
+        if (refTab != null && (args?.tabId != null || tool.parameters?.properties?.tabId)) {
+          try {
+            await tabInWindow(refTab, windowId);
+          } catch (err) {
+            return { allow: false, reason: err.message };
+          }
+        }
         const targetUrl = await resolveHitlTargetUrl(tool.name, args, {
-          getTabId: () => state.tab?.id,
-          getTabUrl: async (tabId) => (await chrome.tabs.get(tabId))?.url,
+          getTabId: () => taskTabId,
+          getTabUrl: async (tabId) => (await tabInWindow(tabId, windowId)).url,
         });
-        const refTab = args?.tabId != null && args?.tabId !== "" ? Number(args.tabId) : state.tab?.id;
         const elementText = await resolveClickElementText({
           toolName: tool.name,
           args,
@@ -333,7 +355,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
 
         // 用户已在侧栏批准过同一调用（之前确认超时进了待批准队列）
         if (req.irreversible) {
-          const approved = await approvalQueue.consumeApproved(tool.name, args, { principal: "user" }).catch(() => null);
+          const approved = await approvalQueue.consumeApproved(tool.name, args, { principal: `panel:${windowId}:${state.sessionId}` }).catch(() => null);
           if (approved) {
             debugLog("hitl.queue.consume", { tool: tool.name, pendingId: approved.id });
             return { allow: true };
@@ -371,7 +393,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
               if (decision?.allow && req.approveOrigin) state.hitlApprovedOrigins.add(req.approveOrigin);
               if (!decision?.allow && decision?.timedOut && req.irreversible) {
                 const entry = await approvalQueue
-                  .enqueue({ toolName: tool.name, args, reason: req.reason, item: req.irreversible, principal: "user", sessionId: state.sessionId || "" })
+                  .enqueue({ toolName: tool.name, args, reason: req.reason, item: req.irreversible, principal: `panel:${windowId}:${state.sessionId}`, sessionId: state.sessionId || "" })
                   .catch(() => null);
                 trustPanel.render();
                 if (entry) {
@@ -409,6 +431,12 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     botMsg.text = "请求失败：" + (err.message || String(err));
     botMsg.error = true;
     renderMessages();
+    state.run = null;
+    try {
+      await persistSession();
+    } catch (persistErr) {
+      console.error("[pagelens] executeLoop setup persist", persistErr);
+    }
     return;
   }
   console.info("[pagelens] executeLoop", {
@@ -417,14 +445,37 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     loopEngine: LOOP_ENGINE_ID,
   });
 
+  signal?.throwIfAborted();
   state.busy = true;
-  state.abort = new AbortController();
+  const controller = new AbortController();
+  state.abort = controller;
+  const cancel = () => {
+    if (state.abort === controller) state.stopIntent = "user";
+    controller.abort();
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+  let nonce;
+  let startedAt;
+  try {
+    nonce = await pinRunNonce(
+      resume && typeof state.run?.nonce === "string" && state.run.nonce ? state.run.nonce : crypto.randomUUID(),
+    );
+    startedAt = resume && state.run?.startedAt ? state.run.startedAt : Date.now();
+  } catch (err) {
+    state.busy = false;
+    state.abort = null;
+    signal?.removeEventListener("abort", cancel);
+    throw err;
+  }
   state.run = {
     status: "running",
+    tabId: taskTabId,
+    windowId: state.windowId,
+    nonce,
     history: history || [],
     lastText: lastText || "",
     turnsUsed: turnsUsed || 0,
-    startedAt: resume && state.run?.startedAt ? state.run.startedAt : Date.now(),
+    startedAt,
   };
   setSendButton(true);
 
@@ -469,10 +520,13 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           if (ev.type === "checkpoint" && !ev.done) {
             state.run = {
               status: "running",
+              tabId: taskTabId,
+              windowId: state.windowId,
+              nonce,
               history: ev.history,
               lastText: ev.lastText,
               turnsUsed: ev.turnsUsed,
-              startedAt: state.run?.startedAt || Date.now(),
+              startedAt: state.run?.startedAt || startedAt,
             };
             persistSession();
           }
@@ -581,6 +635,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     maybeUploadTraceToLangfuse(botMsg.traceLog);
     renderMessages();
   } finally {
+    signal?.removeEventListener("abort", cancel);
     const userStop = state.stopIntent === "user";
     const finished = ["stop", "max_turns", "empty_assistant"].includes(result?.reason);
     if (userStop || finished || failed) state.run = null;
@@ -635,18 +690,13 @@ async function sendPrompt(userText, options = {}) {
   }
   if (state.view !== "chat") setView("chat");
   if (state.busy) {
-    console.warn("[pagelens] sendPrompt busy, abort previous then send");
-    state.stopIntent = "user";
-    state.abort?.abort();
-    await settleBusy();
-    if (state.busy) {
-      console.warn("[pagelens] sendPrompt force-clear busy");
-      state.busy = false;
-      state.abort = null;
-      state.stopIntent = null;
-    }
+    throw Object.assign(new Error("此窗口已有任务运行，请在独立窗口开始另一项任务。"), { code: "WINDOW_BUSY" });
   }
+  return withWindowTask(await resolveWindowId(), () => sendWindowPrompt(text, userText, options));
+}
 
+async function sendWindowPrompt(text, userText, options) {
+  options.signal?.throwIfAborted();
   const image = options.image || state.image;
   messageScroll?.reset();
   // 胶囊只从用户本人写的文字抽取，必须在页面内容拼进上下文之前
@@ -728,6 +778,7 @@ async function sendPrompt(userText, options = {}) {
       botMsg,
       model,
       clearImage: options.clearImage,
+      signal: options.signal,
     });
     console.info("[pagelens] sendPrompt ok");
   } catch (err) {
@@ -739,11 +790,40 @@ async function sendPrompt(userText, options = {}) {
   }
 }
 
+const RUN_NONCE_PREFIX = "pl.runNonce.";
+
+function runNonceKey(nonce) {
+  return `${RUN_NONCE_PREFIX}${nonce}`;
+}
+
+async function pinRunNonce(nonce) {
+  await chrome.storage.session.set({ [runNonceKey(nonce)]: true });
+  return nonce;
+}
+
+async function runNonceAlive(nonce) {
+  if (typeof nonce !== "string" || nonce.length < 8) return false;
+  const key = runNonceKey(nonce);
+  const got = await chrome.storage.session.get(key);
+  return got?.[key] != null;
+}
+
 async function resumeInterruptedRun() {
   const run = state.run;
   if (!isResumableRun(run)) return;
   const model = requireModel("text");
   if (!model) return;
+  if (Number.isInteger(state.windowId) && state.windowId >= 0 && run.windowId != null && run.windowId !== state.windowId) {
+    state.run = null;
+    await persistSession();
+    return;
+  }
+  // Session storage dies with the browser process. A reused window id is not the same run.
+  if (!(await runNonceAlive(run.nonce))) {
+    state.run = null;
+    await persistSession();
+    return;
+  }
   if (state.share && state.tab) await refreshTab();
 
   let botMsg = state.messages[state.messages.length - 1];
@@ -759,7 +839,7 @@ async function resumeInterruptedRun() {
     botMsg.trace.unshift({ kind: "meta", name: "从中断处继续", ok: true });
   }
 
-  await executeLoop({
+  await withWindowTask(await resolveWindowId(), () => executeLoop({
     userText: "",
     history: run.history,
     resume: true,
@@ -767,7 +847,7 @@ async function resumeInterruptedRun() {
     lastText: run.lastText,
     botMsg,
     model,
-  });
+  }));
 }
 
 async function runSkill(skill) {

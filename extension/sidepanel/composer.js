@@ -7,7 +7,8 @@ import { setView } from "./session.js";
 import { handleSlashKey, hideSlashMenu, updateSlashMenu } from "./slash-menu.js";
 import { state } from "./state.js";
 import { syncTextCatalog } from "./text-providers-ui.js";
-import { saveSettings } from "../lib/storage.js";
+import { hydrateTextCatalog } from "../lib/text-providers.js";
+import { modifySettings } from "../lib/storage.js";
 
 let composerBound = false;
 
@@ -19,20 +20,16 @@ function renderAttach() {
 }
 
 async function consumePending() {
-  const data = await chrome.storage.session.get(["pendingSelection", "pendingClip", "pendingReview"]);
-  if (data.pendingClip) {
-    await chrome.storage.session.remove("pendingClip");
-    openClipModal(data.pendingClip);
+  const key = `pl.contextMenu.${state.windowId}`;
+  const { [key]: pending } = await chrome.storage.session.get(key);
+  if (!pending) return;
+  await chrome.storage.session.remove(key);
+  if (pending.clip) {
+    openClipModal(pending.clip);
     return;
   }
-  if (data.pendingReview) {
-    await chrome.storage.session.remove("pendingReview");
-    setView("review");
-    return;
-  }
-  const pendingSelection = data.pendingSelection;
+  const pendingSelection = pending.selection;
   if (!pendingSelection) return;
-  await chrome.storage.session.remove("pendingSelection");
   if ($("input")) {
     $("input").value = `关于这段选区：\n${pendingSelection}\n\n请解释它在本页里的含义。`;
     $("input").focus();
@@ -44,22 +41,28 @@ function bindComposer() {
   composerBound = true;
   on("btn-send", "click", () => {
     try {
+      if (state.busy) {
+        console.info("[pagelens] sendPrompt busy-stop");
+        state.stopIntent = "user";
+        state.abort?.abort();
+        setModelLineMeta("已请求停止上一轮");
+        return;
+      }
       const text = $("input")?.value?.trim();
       if (!text) {
-        if (state.busy) {
-          console.info("[pagelens] sendPrompt busy-stop");
-          state.stopIntent = "user";
-          state.abort?.abort();
-          setModelLineMeta("已请求停止上一轮");
-        } else {
-          console.info("[pagelens] sendPrompt empty");
-        }
+        console.info("[pagelens] sendPrompt empty");
         return;
       }
       if ($("input")) $("input").value = "";
       hideSlashMenu();
       fitInput();
       sendPrompt(text, { clearImage: true }).catch((err) => {
+        if (err?.code === "WINDOW_BUSY") {
+          if (!$("input").value) $("input").value = text;
+          fitInput();
+          setModelLineMeta(err.message);
+          return;
+        }
         console.error("[pagelens] send", err);
         pushError("发送失败：" + (err.message || err));
       });
@@ -89,10 +92,23 @@ function bindComposer() {
     const value = String(e.target.value || "");
     const sep = value.indexOf("::");
     if (sep < 0) return;
-    state.settings.textRef = { providerId: value.slice(0, sep), modelId: value.slice(sep + 2) };
+    const picked = { providerId: value.slice(0, sep), modelId: value.slice(sep + 2) };
+    state.settings.textRef = picked;
     syncTextCatalog();
     try {
-      state.settings = await saveSettings(state.settings);
+      const saved = await modifySettings((latest) => {
+        const catalog = hydrateTextCatalog({ ...latest, textRef: picked }, latest.text);
+        return {
+          ...latest,
+          textProviders: catalog.textProviders,
+          textRef: catalog.textRef,
+          text: { ...catalog.text, summaryInputTokens: latest.text?.summaryInputTokens },
+        };
+      });
+      state.settings.textProviders = saved.textProviders;
+      state.settings.textRef = saved.textRef;
+      state.settings.text = saved.text;
+      state.settings.agentBridgeOrigins = saved.agentBridgeOrigins;
     } catch {
       /* keep local selection */
     }

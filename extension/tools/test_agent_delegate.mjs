@@ -1,3 +1,4 @@
+import "./fixtures/web-locks.mjs";
 import assert from "node:assert/strict";
 import {
   AGENT_TASK_EVENTS,
@@ -17,6 +18,7 @@ import { createBridge } from "../lib/bridge/index.js";
 import { ERROR_CODES } from "../lib/bridge/protocol.js";
 import { restrictCapsuleToCaller } from "../lib/bridge/tools-delegate.js";
 import { normalizeSettings } from "../lib/storage.js";
+import { withWindowTask } from "../lib/window-scope.js";
 
 const TAB_URL = "https://news.example/post/1";
 
@@ -77,6 +79,19 @@ function makeManager({ script = [], storage = memoryTaskStorage(), approvals = c
 
 const ran = (log, name) => log.some(([n]) => n === name);
 const toolMessages = (seen) => seen.flatMap((s) => s.messages.filter((m) => m.role === "tool").map((m) => String(m.content)));
+
+// Retry a panel tool call (e.g. a restored checkpoint) without starting another worker.
+{
+  const { manager, seen } = makeManager();
+  const args = { prompt: "read", requesterWindowId: 1, windowId: 2, peerRequestKey: "turn/call" };
+  const [first, retry] = await Promise.all([manager.start(args), manager.start(args)]);
+  assert.equal(first.id, retry.id);
+  await manager.wait(first.id);
+  assert.equal(seen.length, 1);
+  const other = await manager.start({ ...args, windowId: 3 });
+  assert.notEqual(other.id, first.id);
+  await manager.wait(other.id);
+}
 
 // 1. 胶囊校验
 {
@@ -531,6 +546,140 @@ const toolMessages = (seen) => seen.flatMap((s) => s.messages.filter((m) => m.ro
   assert.equal(second.done.status, TASK_STATUS.DONE);
   assert.ok(ran(second.log, "cose_publish"), "after side-panel approval the re-run executes once");
   console.log("PASS token skipIrreversible + token:<id> approvals for delegated runs");
+}
+
+// 14. 无窗口的委托不占焦点窗口；同一窗口已有任务时 start 在返回前失败
+{
+  const focusCalls = [];
+  const previousChrome = globalThis.chrome;
+  globalThis.chrome = {
+    windows: {
+      getLastFocused: async () => {
+        focusCalls.push("getLastFocused");
+        return { id: 99 };
+      },
+    },
+  };
+  const lockNames = [];
+  const originalRequest = navigator.locks.request.bind(navigator.locks);
+  navigator.locks.request = (name, options, callback) => {
+    lockNames.push(name);
+    return originalRequest(name, options, callback);
+  };
+  try {
+    const { manager } = makeManager();
+    const started = await manager.start({ prompt: "无窗口的后台任务" });
+    assert.equal(started.status, TASK_STATUS.RUNNING);
+    assert.equal(started.windowId, null);
+    assert.ok(started.id);
+    await manager.wait(started.id);
+    assert.deepEqual(focusCalls, [], "start without windowId must not call getLastFocused");
+    assert.equal(lockNames.some((name) => String(name).startsWith("pagelens-agent-window-")), false);
+  } finally {
+    navigator.locks.request = originalRequest;
+    globalThis.chrome = previousChrome;
+  }
+
+  const hang = {
+    runTurn: ({ signal }) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("abort")), { once: true });
+    }),
+  };
+  const manager = createDelegateManager({
+    storage: memoryTaskStorage(),
+    approvals: createApprovalQueue({ storage: memoryAdapter() }),
+    createRun: async () => ({ tools: [], systemPrompt: "", model: hang }),
+    resolveTabWindow: async (tabId) => (tabId === 7 ? 4 : null),
+  });
+  const tabTask = await manager.start({ prompt: "只给标签", tabId: 7 });
+  assert.equal(tabTask.windowId, 4, "tabId locks the tab's real window");
+  let returnedId = null;
+  await assert.rejects(
+    manager.start({ prompt: "同一窗口", windowId: 4 }).then((task) => {
+      returnedId = task?.id || null;
+      return task;
+    }),
+    (err) => err instanceof DelegateError && err.code === "BUSY" && err.retryable === true,
+  );
+  assert.equal(returnedId, null, "busy start must not return a taskId");
+  assert.equal((await manager.list()).filter((task) => task.status === TASK_STATUS.RUNNING).length, 1);
+
+  const other = await manager.start({ prompt: "另一窗口", windowId: 5 });
+  assert.equal(other.status, TASK_STATUS.RUNNING);
+  assert.notEqual(other.id, tabTask.id);
+
+  const settings = normalizeSettings({ agentBridgeEnabled: true, agentBridgeOrigins: ["http://localhost:*"] });
+  const bridge = createBridge({
+    getSettings: async () => settings,
+    tabs: { get: async (id) => ({ id, windowId: 4, active: true, url: "http://localhost:8080/post" }), query: async () => [] },
+    sleep: async () => {},
+    now: () => Date.now(),
+    delegate: manager,
+  });
+  const busy = await bridge.call({ v: 1, id: "win-busy", tool: "run_agent_task", args: { prompt: "再来一次", tabId: 7 } });
+  assert.equal(busy.ok, false);
+  assert.equal(busy.error.code, ERROR_CODES.TOOL_FAILED);
+  assert.equal(busy.error.retryable, true);
+  assert.equal(busy.error.details.reason, "BUSY");
+  assert.equal(busy.result ?? null, null);
+
+  const sideReady = Promise.withResolvers();
+  const sideRelease = Promise.withResolvers();
+  const sideHeld = withWindowTask(8, async () => {
+    sideReady.resolve();
+    await sideRelease.promise;
+  });
+  await sideReady.promise;
+  await assert.rejects(
+    manager.start({ prompt: "侧栏已占用", windowId: 8 }),
+    (err) => err instanceof DelegateError && err.code === "BUSY" && err.retryable === true,
+  );
+  sideRelease.resolve();
+  await sideHeld;
+
+  await manager.cancel(tabTask.id);
+  await manager.cancel(other.id);
+  const again = await manager.start({ prompt: "窗口已空", windowId: 4 });
+  assert.equal(again.status, TASK_STATUS.RUNNING);
+  await manager.cancel(again.id);
+  console.log("PASS window lock: no focused-window grab; busy before taskId");
+}
+
+{
+  const focusCalls = [];
+  const previousChrome = globalThis.chrome;
+  globalThis.chrome = {
+    windows: {
+      getLastFocused: async () => {
+        focusCalls.push("getLastFocused");
+        return { id: 99 };
+      },
+    },
+    tabs: {
+      get: async (id) => ({ id, windowId: 4, url: "https://news.example/a" }),
+    },
+  };
+  try {
+    const { createSwRun } = await import("../lib/agent/delegate-sw.js");
+    const settings = { text: { baseUrl: "http://127.0.0.1:11434/v1", model: "m", apiKey: "" }, nativeShell: false };
+    const capsule = resolveDelegateCapsule({ prompt: "hi" }).capsule;
+    const headless = await createSwRun({
+      task: { id: "sw-headless", prompt: "hi", windowId: null, tabId: null, capsule, agentName: "" },
+      settings,
+      signal: new AbortController().signal,
+    });
+    assert.equal(headless.windowId, null);
+    const fromTab = await createSwRun({
+      task: { id: "sw-tab", prompt: "hi", windowId: null, tabId: 7, capsule, agentName: "" },
+      settings,
+      signal: new AbortController().signal,
+    });
+    assert.equal(fromTab.windowId, 4);
+    assert.deepEqual(focusCalls, []);
+  } finally {
+    globalThis.chrome = previousChrome;
+  }
+  console.log("PASS createSwRun does not assign the focused window");
 }
 
 console.log("ALL PASS test_agent_delegate");

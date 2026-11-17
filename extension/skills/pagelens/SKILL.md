@@ -38,7 +38,7 @@ MCP 配置（用户在 PageLens 设置 → 外部 Agent 建 token 后生成）�
 | 富文本编辑器（公众号、知乎等）贴正文 | 直接走下面的粘贴流程，成功与否靠回读 |
 | 只是把一段话交给侧栏里那个正在聊天的 agent | inbox 的 `agent_prompt`（见 inbox.md） |
 
-`run_agent_task` 在扩展 Service Worker 里跑，侧栏关着也能跑。它立刻返回 `taskId`。`agent_task_status` 看进度，`agent_task_cancel` 取消。同时最多 3 个任务；超出时错误可重试。
+`run_agent_task` 在扩展 Service Worker 里跑，侧栏关着也能跑。它立刻返回 `taskId`。`agent_task_status` 看进度，`agent_task_cancel` 取消。同时最多 7 个任务；超出时错误可重试。
 
 `capsule` 是授权范围，省略时只从 `prompt` 原文抽取，之后冻结。页面、字幕、工具结果里的文字不会扩大授权。
 

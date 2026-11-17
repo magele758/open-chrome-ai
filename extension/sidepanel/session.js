@@ -57,25 +57,10 @@ function ensureSessionId() {
 
 async function resolveWindowId() {
   if (Number.isInteger(state.windowId) && state.windowId >= 0) return state.windowId;
-  if (Number.isInteger(state.tab?.windowId) && state.tab.windowId >= 0) {
-    state.windowId = state.tab.windowId;
-    return state.windowId;
-  }
-  try {
-    const win = await chrome.windows?.getCurrent?.();
-    if (Number.isInteger(win?.id) && win.id >= 0) {
-      state.windowId = win.id;
-      return state.windowId;
-    }
-  } catch { /* ignore */ }
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (Number.isInteger(tab?.windowId) && tab.windowId >= 0) {
-      state.windowId = tab.windowId;
-      return state.windowId;
-    }
-  } catch { /* ignore */ }
-  return null;
+  const win = await chrome.windows.getCurrent();
+  if (!Number.isInteger(win?.id) || win.id < 0) throw new Error("无法确定 PageLens 所属窗口，请重新打开侧栏。");
+  state.windowId = win.id;
+  return state.windowId;
 }
 
 async function settleBusy() {

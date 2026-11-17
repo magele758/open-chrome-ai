@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createAgentTools, checkHitlRequirement } from "../lib/agent/tools.js";
+import { createAgentTools, checkHitlRequirement, resolveHitlTargetUrl } from "../lib/agent/tools.js";
 import { createCdp } from "../lib/cdp.js";
 import { dragMoveEvents, keyEvents, mouseClickEvents, parseCombo } from "../lib/cdp-input.js";
 import { safeRelativeFilename, waitForDownload } from "../lib/agent/browser-api-tools.js";
@@ -126,6 +126,7 @@ const clicked = JSON.parse(await by.trusted_click.execute({ selector: "#go" }));
 assert.equal(clicked.ok, true);
 assert.deepEqual(mouseTypes().map((e) => e.type), ["mouseMoved", "mousePressed", "mouseReleased"]);
 assert.deepEqual([mouseTypes()[1].x, mouseTypes()[1].y], [120, 80]);
+assert.deepEqual(calls.find((c) => c.method === "Emulation.setFocusEmulationEnabled")?.params, { enabled: true }, "input works without OS focus");
 
 calls.length = 0;
 await by.trusted_click.execute({ selector: "#go", button: "right" });
@@ -267,6 +268,34 @@ scriptHandler = (opts) => [{ result: opts.func.name === "locateElement" ? locate
 calls.length = 0;
 await by.screenshot.execute({ selector: "#chart" });
 assert.deepEqual(calls.find((c) => c.method === "Page.captureScreenshot").params.clip, { x: 10, y: 900, width: 300, height: 120, scale: 1 });
+
+// 非当前标签：走调试器后台截图，不切标签
+const activated = [];
+chrome.tabs.update = async (id, props) => activated.push({ id, props });
+chrome.tabs.captureVisibleTab = async () => "data:image/jpeg;base64,VISIBLE";
+tabsInfo[5].active = false;
+calls.length = 0;
+assert.match(await by.screenshot.execute({}), /已截取当前画面/);
+assert.equal(calls.find((c) => c.method === "Page.captureScreenshot").params.captureBeyondViewport, false);
+assert.equal(images.at(-1), "data:image/jpeg;base64,QUJD");
+assert.deepEqual(activated, [], "background tab is not switched to the foreground");
+// 当前标签仍用 captureVisibleTab
+tabsInfo[5].active = true;
+tabsInfo[5].windowId = 10;
+calls.length = 0;
+await by.screenshot.execute({});
+assert.equal(images.at(-1), "data:image/jpeg;base64,VISIBLE");
+assert.ok(!calls.some((c) => c.method === "Page.captureScreenshot"), "active tab does not attach the debugger");
+// 调试器截图失败时退回切标签
+tabsInfo[5].active = false;
+handler = (method) => {
+  if (method === "Page.captureScreenshot") throw new Error("boom");
+  return {};
+};
+await by.screenshot.execute({});
+assert.equal(images.at(-1), "data:image/jpeg;base64,VISIBLE");
+assert.deepEqual(activated, [{ id: 5, props: { active: true } }], "falls back to activating the tab");
+delete tabsInfo[5].active;
 handler = () => ({});
 
 // ---- 下载 / 会话 / 搜索 ----
@@ -307,7 +336,9 @@ assert.match(await tools2.download_file.execute({ url: "file:///etc/passwd" }), 
 assert.equal(JSON.parse(await tools2.list_downloads.execute({})).at(0).filename, "/x/b.zip");
 const closed = JSON.parse(await tools2.recently_closed_tabs.execute({}));
 assert.deepEqual(closed.map((c) => c.kind), ["tab", "window"]);
-assert.equal(JSON.parse(await tools2.restore_closed_tab.execute({ sessionId: "s1" })).tab.id, 42);
+const restoreArgs = { sessionId: "s1" };
+assert.equal(await resolveHitlTargetUrl("restore_closed_tab", restoreArgs, {}), "https://t.example/");
+assert.equal(JSON.parse(await tools2.restore_closed_tab.execute(restoreArgs)).tab.id, 42);
 await tools2.web_search.execute({ text: "chrome debugger" });
 assert.deepEqual(globalThis.chrome.search.last, { text: "chrome debugger", disposition: "NEW_TAB" });
 assert.match(await tools2.web_search.execute({ text: " " }), /不能为空/);

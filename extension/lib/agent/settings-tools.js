@@ -1,4 +1,4 @@
-import { loadSettings, normalizeSettings, saveSettings } from "../storage.js";
+import { loadSettings, modifySettings, normalizeSettings, saveSettings } from "../storage.js";
 import { UI_THEMES } from "../ui-theme.js";
 import { enabledModelOptions } from "../text-providers.js";
 import { normalizeOriginPatterns } from "../bridge/policy.js";
@@ -327,22 +327,37 @@ export function createSettingsTools(ctx = {}) {
         }
         const diff = plan.diff.map(({ value, ...rest }) => rest);
         const sensitive = diff.some((d) => d.sensitive);
+        const requested = plan.diff.map((d) => ({ key: d.key, value: d.value }));
+        async function commitChanges(changes) {
+          let outcome = null;
+          let previous = [];
+          const saved = await modifySettings(async (latest) => {
+            outcome = planSettingsChange(latest, changes);
+            if (outcome.errors.length || !outcome.diff.length) return null;
+            previous = outcome.diff.map((d) => ({
+              key: d.key,
+              value: currentValue(normalizeSettings(latest), SCHEMA_BY_KEY.get(d.key)),
+            }));
+            return outcome.next;
+          }, { load, save });
+          return { outcome, previous, saved };
+        }
         if (!sensitive && typeof ctx.autoApplySettings === "function" && ctx.autoApplySettings({ diff }) === true) {
-          const before = await load();
-          const saved = await save(plan.next);
+          const { outcome, previous, saved } = await commitChanges(requested);
+          if (!outcome || outcome.errors.length) {
+            return `设置已在别处变化，未修改：\n${(outcome?.errors || ["没有要修改的设置项。"]).join("\n")}`;
+          }
+          if (!outcome.diff.length) return "这些设置已经是目标值，无需修改。";
           await ctx.onSettingsChanged?.(saved);
+          const appliedDiff = outcome.diff.map(({ value, ...rest }) => rest);
           const undo = async () => {
-            const restored = planSettingsChange(
-              await load(),
-              plan.diff.map((d) => ({ key: d.key, value: currentValue(normalizeSettings(before), SCHEMA_BY_KEY.get(d.key)) })),
-            );
-            if (restored.errors.length || !restored.diff.length) return false;
-            const undone = await save(restored.next);
-            await ctx.onSettingsChanged?.(undone);
+            const undone = await commitChanges(previous);
+            if (!undone.outcome || undone.outcome.errors.length || !undone.outcome.diff.length) return false;
+            await ctx.onSettingsChanged?.(undone.saved);
             return true;
           };
-          await ctx.onSettingsAutoApplied?.({ diff, text: formatSettingsDiff(diff), undo });
-          return `已按你的要求直接生效（非安全项，侧栏可一键撤销）：\n${formatSettingsDiff(diff)}`;
+          await ctx.onSettingsAutoApplied?.({ diff: appliedDiff, text: formatSettingsDiff(appliedDiff), undo });
+          return `已按你的要求直接生效（非安全项，侧栏可一键撤销）：\n${formatSettingsDiff(appliedDiff)}`;
         }
         if (typeof ctx.confirmSettingsChange !== "function") {
           return "当前环境无法弹出确认窗口，不能修改设置。请用户到设置页手动修改。";
@@ -355,13 +370,10 @@ export function createSettingsTools(ctx = {}) {
           signal: ctx.getAbortSignal?.(),
         });
         if (!decision?.allow) return `用户未确认，设置没有修改。${decision?.reason || ""}`.trim();
-        // Re-plan on fresh settings so concurrent edits made while the dialog was open are kept.
-        const fresh = planSettingsChange(
-          await load(),
-          plan.diff.map((d) => ({ key: d.key, value: d.value })),
-        );
-        if (fresh.errors.length) return `设置已在别处变化，未修改：\n${fresh.errors.join("\n")}`;
-        const saved = await save(fresh.next);
+        // Re-plan inside the settings lock so edits made while the dialog was open are kept.
+        const { outcome: fresh, saved } = await commitChanges(requested);
+        if (!fresh || fresh.errors.length) return `设置已在别处变化，未修改：\n${(fresh?.errors || ["没有要修改的设置项。"]).join("\n")}`;
+        if (!fresh.diff.length) return "这些设置已经是目标值，无需修改。";
         await ctx.onSettingsChanged?.(saved);
         const applied = plan.diff.map((d) => {
           const field = SCHEMA_BY_KEY.get(d.key);

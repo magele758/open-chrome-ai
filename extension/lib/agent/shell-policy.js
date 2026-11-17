@@ -331,6 +331,7 @@ const MUTATING_TOOLS = new Set([
   "reload_tab",
   "switch_tab",
   "open_tab",
+  "create_window",
   "handle_dialog",
 ]);
 

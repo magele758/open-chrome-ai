@@ -257,6 +257,7 @@ import { installMemoryIndexedDB } from "./idb_mem.mjs";
 // 4. SidePanel UI wiring & session-isolation in JSDOM
 // ---------------------------------------------------------------------------
 {
+  globalThis.chrome.windows = { getCurrent: async () => ({ id: 11 }) };
   globalThis.chrome.permissions = {
     contains: async () => true,
     request: async () => true,

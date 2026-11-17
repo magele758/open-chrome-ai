@@ -13,6 +13,7 @@ import { buildEgressPolicy } from "../agent/egress.js";
 import { findInPage, getLinks, pageAct, scrollPage } from "../agent/page-fns.js";
 import { actOnRef, scrollContainerOf, scrollViewport, snapshotControls } from "../agent/page-snapshot.js";
 import { isSensitiveSetting, planSettingsChange, settingsSnapshot } from "../agent/settings-tools.js";
+import { modifySettings } from "../storage.js";
 import { isSensitivePath } from "../agent/shell-policy.js";
 import { BridgeError, ERROR_CODES, makeArtifact } from "./protocol.js";
 import { isUrlAllowed } from "./policy.js";
@@ -598,11 +599,17 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
           hint: "请用户在 PageLens 设置页手动修改。",
         });
       }
-      const plan = planSettingsChange(await env.getSettings(), changes);
-      if (plan.errors.length) throw new BridgeError(ERROR_CODES.BAD_ARGS, plan.errors.join("\n"), { details: { errors: plan.errors } });
-      if (!plan.diff.length) return { changed: [] };
-      await env.saveSettings(plan.next);
-      return { changed: plan.diff.map(({ key, before, after }) => ({ key, before, after })) };
+      let plan;
+      await modifySettings(async (latest) => {
+        plan = planSettingsChange(latest, changes);
+        if (plan.errors.length) throw new BridgeError(ERROR_CODES.BAD_ARGS, plan.errors.join("\n"), { details: { errors: plan.errors } });
+        if (!plan.diff.length) return null;
+        return plan.next;
+      }, {
+        load: () => env.getSettings(),
+        save: (next) => env.saveSettings(next),
+      });
+      return { changed: (plan?.diff || []).map(({ key, before, after }) => ({ key, before, after })) };
     },
   });
 

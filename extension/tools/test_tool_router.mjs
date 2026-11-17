@@ -50,6 +50,7 @@ const tabTools = resolveActiveTools({
   hasVideo: false,
 });
 const tabNames = tabTools.map((t) => t.name);
+assert(tabNames.includes("create_window"), "has create_window");
 assert(tabNames.includes("close_tab"), "has close_tab");
 assert(tabNames.includes("list_tabs"), "has list_tabs");
 assert(!domNames.includes("run_shell"), "does not have run_shell");

@@ -16,6 +16,8 @@ export const READ_ONLY_TOOLS = new Set([
   "wait_for_navigation",
   "scroll_page",
   "list_tabs",
+  "list_task_windows",
+  "read_window_inbox",
   "get_captions",
   "seek_video",
   "highlight_quote",
@@ -42,7 +44,7 @@ export const ORIGIN_SCOPED_TAB_TOOLS = new Set([
 ]);
 
 /** 以 URL 发起请求的工具：URL 本身就能把数据带出去 */
-export const ORIGIN_SCOPED_NAV_TOOLS = new Set(["open_tab", "navigate_tab"]);
+export const ORIGIN_SCOPED_NAV_TOOLS = new Set(["create_window", "open_tab", "navigate_tab", "restore_closed_tab"]);
 
 /** 需要知道目标标签 URL 才能判断胶囊 / 出站 / 付款页的工具 */
 export const TAB_TARGET_TOOLS = new Set([
@@ -80,10 +82,13 @@ export const ACTION_CATEGORIES = Object.freeze([
   "delete",
   "settings",
   "automation",
+  "parallel",
   "purchase",
 ]);
 
 const TOOL_CATEGORY = {
+  run_parallel_tasks: "parallel",
+  create_window: "navigate",
   open_tab: "navigate",
   navigate_tab: "navigate",
   switch_tab: "navigate",
@@ -164,10 +169,12 @@ export function crossOriginTarget({ targetUrl, userUrl, approvedOrigins, isAllow
 
 /** 判断工具是否属于高危特权类；origin 类工具需传 { targetUrl, userUrl, approvedOrigins } */
 export function isToolPrivileged(toolName, args = {}, origin = {}) {
+  if (toolName === "create_window" && !args?.url) return false;
   if (toolName === "run_js" && RUN_JS_SENSITIVE_RE.test(String(args?.code || ""))) return true;
   if (ORIGIN_SCOPED_TAB_TOOLS.has(toolName) || ORIGIN_SCOPED_NAV_TOOLS.has(toolName)) {
     return crossOriginTarget(origin) !== null;
   }
+  if (toolName === "run_parallel_tasks" || toolName === "delegate_window_task" || toolName === "send_window_message") return true;
   if (toolName === "run_shell") return true;
   if (toolName === "cose_publish") return true;
   if (toolName === "close_tab" || toolName === "close_task_group") return true;

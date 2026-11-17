@@ -1,3 +1,4 @@
+import { tabInWindow, tabQuery } from "../window-scope.js";
 import { highlightQuote } from "../extract.js";
 import { loadTabPack } from "../page-pack.js";
 import { PDF_MAX_CHARS } from "../pdf-text.js";
@@ -46,7 +47,7 @@ import {
 import { actOnRef, scrollContainerOf, scrollViewport, snapshotControls } from "./page-snapshot.js";
 import { cdpAvailable, getCdp } from "../cdp.js";
 import { cdpScreenshot, createCdpTools, withDialogGuard } from "./cdp-tools.js";
-import { createBrowserApiTools } from "./browser-api-tools.js";
+import { closedTabHttpUrl, createBrowserApiTools } from "./browser-api-tools.js";
 import { createCookieTools } from "./cookie-tools.js";
 import { createSettingsTools } from "./settings-tools.js";
 import { askJev, isJevActive } from "../jev.js";
@@ -55,7 +56,7 @@ import { buildJevRequest, formatSnapshot, interpretJevAnswers, mergeFrameSnapsho
 import { findSkill } from "./skills.js";
 import { ensureSkillBody } from "../skill-folder.js";
 import { execNativeShell, formatExecResult, nativeFs } from "../native-host.js";
-import { requireHostUrl, requireOptionalFeature } from "../optional-permissions.js";
+import { ensureToolPermissions, requireHostUrl, requireOptionalFeature } from "../optional-permissions.js";
 import { aliasAgentPath, isAllowedAgentReadName, isBlockedAgentRoot } from "./fs-policy.js";
 import { isShellCommandWhitelisted, shellPolicyBlock } from "./shell-policy.js";
 import { debugLog } from "../debug-log.js";
@@ -112,7 +113,7 @@ function formatPack(pack) {
 async function extractOneTab(ctx, tabId, textLimit = 9000) {
   if (!tabId) return { tabId: tabId || 0, error: "没有可操作的标签。" };
   try {
-    const tab = await chrome.tabs.get(tabId);
+    const tab = await tabInWindow(tabId, ctx.getWindowId?.());
     if (restrictedUrl(tab.url)) {
       return { tabId, title: tab.title || "", url: tab.url || "", error: `受限页：${tab.url}` };
     }
@@ -154,7 +155,28 @@ async function resolveTabId(ctx, args) {
   const raw = args?.tabId;
   const id = raw != null && raw !== "" ? Number(raw) : ctx.getTabId?.();
   if (!id) throw new Error("没有可操作的标签。");
+  if (ctx.getWindowId?.() != null) await tabInWindow(id, ctx.getWindowId());
   return id;
+}
+
+const BACKGROUND_SHOT_TIMEOUT_MS = 4000;
+
+// 非当前标签走调试器截图，不把它切到前台，并行窗口里用户正在看的标签不会被换掉。
+// 返回 null 表示改走 captureTab（当前标签、受限页、未授权站点，或调试器截图失败/超时）。
+async function backgroundShot(cdp, tabId) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab || tab.active || restrictedUrl(tab.url)) return null;
+  if (await requireHostUrl(tab.url || "")) return null;
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), BACKGROUND_SHOT_TIMEOUT_MS);
+  });
+  const shot = cdpScreenshot(cdp, tabId).then((r) => r.dataUrl, () => null);
+  try {
+    return await Promise.race([shot, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function defaultBookmarkParentId(parentId) {
@@ -176,9 +198,11 @@ async function defaultBookmarkParentId(parentId) {
 async function attachTabToTask(ctx, tabId) {
   if (!tabId) return null;
   const groupId = await ensureTaskGroup(tabId, {
+    windowId: ctx.getWindowId?.(),
     groupId: ctx.getTaskGroupId?.(),
     title: ctx.getTaskGroupTitle?.() || "PageLens",
   });
+  if (ctx.getWindowId?.() != null) await tabInWindow(tabId, ctx.getWindowId());
   if (groupId != null) ctx.setTaskGroupId?.(groupId);
   return groupId;
 }
@@ -242,20 +266,21 @@ export function createAgentTools(ctx) {
     });
   };
   const tools = [
+    ...(ctx.windowMailTools || []),
     {
       name: "extract_page",
       description:
         "抽取标签页干净正文（去导航/侧栏）。PDF、arXiv、alphaXiv 等论文页会拉取 PDF 文字层。阅读或总结页面前应先调用。可传 tabId 读其他已打开的标签。",
       parameters: obj({ tabId: tabIdProp() }),
       async execute(args) {
-        const tabId = args?.tabId != null ? Number(args.tabId) : ctx.getTabId?.();
+        const tabId = await resolveTabId(ctx, args);
         if (!tabId) return "没有可操作的标签。";
         const current = ctx.getTabId?.();
         if (!args?.tabId || tabId === current) {
           const pack = await ctx.refreshPack(tabId);
           return formatPack(pack);
         }
-        const tab = await chrome.tabs.get(tabId);
+        const tab = await tabInWindow(tabId, ctx.getWindowId?.());
         if (restrictedUrl(tab.url)) return `受限页，无法抽取：${tab.url}`;
         const pack = await loadTabPack(tabId);
         return formatPack(pack || { title: tab.title, url: tab.url, text: "" });
@@ -272,7 +297,7 @@ export function createAgentTools(ctx) {
           description: "来自 list_tabs 的 id 列表；省略则按窗口挑选",
         },
         query: { type: "string", description: "按标题或 URL 子串过滤" },
-        currentWindow: { type: "boolean", description: "默认 true，只看当前窗口" },
+        currentWindow: { type: "boolean", description: "窗口任务只查看所属窗口" },
         limit: { type: "integer", description: "最多几页，默认 4，最大 8" },
       }),
       async execute(args) {
@@ -283,7 +308,7 @@ export function createAgentTools(ctx) {
         let tabIds = rawIds;
         if (!tabIds.length) {
           const currentWindow = args?.currentWindow !== false;
-          const tabs = await chrome.tabs.query(currentWindow ? { currentWindow: true } : {});
+          const tabs = await chrome.tabs.query(tabQuery(ctx.getWindowId?.(), currentWindow));
           const needle = String(args?.query || "").trim().toLowerCase();
           tabIds = [];
           for (const tab of tabs) {
@@ -309,21 +334,24 @@ export function createAgentTools(ctx) {
     {
       name: "screenshot",
       description:
-        "截取标签页画面并附加到本轮对话。默认截可见区域（非当前可见标签会先切过去）。fullPage=true 截整页长图，selector 只截某个元素（二者走调试器，不用切标签）。适合图、报错、视频画面。",
+        "截取标签页画面并附加到本轮对话。默认截可见区域（非当前标签走调试器后台截图，不可用时才切过去）。fullPage=true 截整页长图，selector 只截某个元素（二者走调试器，不用切标签）。适合图、报错、视频画面。",
       parameters: obj({
         tabId: tabIdProp(),
         fullPage: { type: "boolean", description: "截整页长图（最高 16000px）" },
         selector: { type: "string", description: "只截这个元素" },
       }),
       async execute(args) {
-        const tabId = args?.tabId != null ? Number(args.tabId) : ctx.getTabId?.();
+        const tabId = await resolveTabId(ctx, args);
         try {
           if ((args?.fullPage || args?.selector) && cdpEnabled) {
             const { dataUrl, clip } = await cdpScreenshot(cdp, tabId, { fullPage: args.fullPage, selector: args.selector });
             ctx.setImage?.(dataUrl);
             return `已截取${args.selector ? "元素" : "整页"}画面（${clip?.width}×${clip?.height}），已附加到本轮对话。请描述关键信息，或继续回答用户。`;
           }
-          const dataUrl = ctx.capture
+          const background = cdpEnabled ? await backgroundShot(cdp, tabId) : null;
+          const dataUrl = background
+            ? background
+            : ctx.capture
             ? await ctx.capture(tabId)
             : await captureTab(tabId, ctx.getWindowId?.());
           if (!dataUrl) return "截图失败：未获取到页面画面。";
@@ -595,7 +623,7 @@ export function createAgentTools(ctx) {
       parameters: obj({ tabId: tabIdProp() }),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
-        const tab = await chrome.tabs.get(tabId);
+        const tab = await tabInWindow(tabId, ctx.getWindowId?.());
         const caps = await loadPageCaptions(tabId, tab.url);
         if (caps.status === "ready" && caps.text) {
           ctx.setCaptions?.(caps);
@@ -695,14 +723,14 @@ export function createAgentTools(ctx) {
       name: "list_tabs",
       description: "列出已打开的标签（id / 标题 / URL / groupId）。对比多页前先调这个。",
       parameters: obj({
-        currentWindow: { type: "boolean", description: "默认 true，只看当前窗口" },
+        currentWindow: { type: "boolean", description: "窗口任务只查看所属窗口" },
         query: { type: "string", description: "按标题或 URL 子串过滤" },
       }),
       async execute(args) {
         const denied = await requireOptionalFeature("tabs");
         if (denied) return denied;
         const currentWindow = args?.currentWindow !== false;
-        const tabs = await chrome.tabs.query(currentWindow ? { currentWindow: true } : {});
+        const tabs = await chrome.tabs.query(tabQuery(ctx.getWindowId?.(), currentWindow));
         const needle = String(args?.query || "").trim().toLowerCase();
         const rows = tabs
           .filter((tab) => !restrictedUrl(tab.url) || tab.active)
@@ -712,6 +740,42 @@ export function createAgentTools(ctx) {
           })
           .map(compactTab);
         return toToolText({ count: rows.length, tabs: rows });
+      },
+    },
+    {
+      name: "create_window",
+      description: "新开独立的普通 Chrome 窗口。可指定网页，省略网址时打开新标签页。当前任务继续使用原窗口。可在新窗口打开 PageLens 侧栏开始另一项任务。",
+      parameters: obj({
+        url: { type: "string", description: "可选的 http(s) URL" },
+        focused: { type: "boolean", description: "是否切换到新窗口，默认 false" },
+      }),
+      async execute(args = {}) {
+        const url = String(args.url ?? "").trim();
+        if (url) {
+          if (!isHttpUrl(url)) return `只能打开 http(s) URL，收到：${url}`;
+          const denied = await requireHostUrl(url);
+          if (denied) return denied;
+        }
+        let parent;
+        try {
+          const windowId = ctx.getWindowId?.();
+          parent = windowId != null ? await chrome.windows.get(windowId) : await chrome.windows.getCurrent();
+        } catch (err) {
+          return `无法读取当前窗口：${err?.message || err}`;
+        }
+        if (!parent || typeof parent !== "object") return "无法读取当前窗口。";
+        try {
+          const win = await chrome.windows.create({
+            type: "normal",
+            focused: args.focused === true,
+            incognito: parent.incognito,
+            ...(url ? { url } : {}),
+          });
+          if (win?.id == null) return "无法创建窗口。";
+          return toToolText({ windowId: win.id });
+        } catch (err) {
+          return `无法创建窗口：${err?.message || err}`;
+        }
       },
     },
     {
@@ -729,9 +793,9 @@ export function createAgentTools(ctx) {
         if (!isHttpUrl(url)) return `只能打开 http(s) URL，收到：${url}`;
         const hostDenied = await requireHostUrl(url);
         if (hostDenied) return hostDenied;
-        const tab = await chrome.tabs.create({ url, active: Boolean(args.active) });
+        const tab = await chrome.tabs.create({ ...tabQuery(ctx.getWindowId?.(), false), url, active: Boolean(args.active) });
         const groupId = await attachTabToTask(ctx, tab.id);
-        await ctx.onTabsMutated?.();
+        await ctx.onTabsMutated?.(args.active ? tab.id : undefined);
         return toToolText({ opened: compactTab(tab), groupId });
       },
     },
@@ -740,16 +804,9 @@ export function createAgentTools(ctx) {
       description: "切到指定标签，并让侧栏绑定它。",
       parameters: obj({ tabId: { type: "integer", description: "目标标签 id" } }, ["tabId"]),
       async execute(args) {
-        const tabId = Number(args.tabId);
+        const tabId = await resolveTabId(ctx, args);
         const tab = await chrome.tabs.update(tabId, { active: true });
-        if (tab?.windowId != null) {
-          try {
-            await chrome.windows.update(tab.windowId, { focused: true });
-          } catch {
-            /* 无窗口权限时忽略 */
-          }
-        }
-        await ctx.onTabsMutated?.();
+        await ctx.onTabsMutated?.(tabId);
         return toToolText({ active: compactTab(tab) });
       },
     },
@@ -758,7 +815,7 @@ export function createAgentTools(ctx) {
       description: "关闭指定标签。只在用户明确要求时调用。",
       parameters: obj({ tabId: { type: "integer", description: "要关闭的标签 id" } }, ["tabId"]),
       async execute(args) {
-        const tabId = Number(args.tabId);
+        const tabId = await resolveTabId(ctx, args);
         await chrome.tabs.remove(tabId);
         await ctx.onTabsMutated?.();
         return `已关闭标签 ${tabId}。`;
@@ -771,7 +828,7 @@ export function createAgentTools(ctx) {
       async execute() {
         const groupId = ctx.getTaskGroupId?.();
         if (groupId == null || groupId < 0) return "当前任务还没有标签分组。";
-        const tabs = await chrome.tabs.query({ groupId });
+        const tabs = await chrome.tabs.query({ ...tabQuery(ctx.getWindowId?.(), false), groupId });
         const ids = tabs.map((t) => t.id).filter((id) => id != null);
         if (ids.length) await chrome.tabs.remove(ids);
         ctx.setTaskGroupId?.(null);
@@ -866,7 +923,7 @@ export function createAgentTools(ctx) {
           if (tabsDenied) return tabsDenied;
           const tabId = ctx.getTabId?.();
           if (!tabId) return "没有当前标签可收藏。";
-          const tab = await chrome.tabs.get(tabId);
+          const tab = await tabInWindow(tabId, ctx.getWindowId?.());
           url = tab.url || "";
           title = title || tab.title || url;
         }
@@ -883,7 +940,7 @@ export function createAgentTools(ctx) {
       parameters: obj(
         {
           title: { type: "string", description: "文件夹名称，例如 今天研究" },
-          currentWindow: { type: "boolean", description: "默认 true，只收当前窗口" },
+          currentWindow: { type: "boolean", description: "窗口任务只收集所属窗口" },
           parentId: { type: "string", description: "父文件夹 id，默认书签栏" },
         },
         ["title"],
@@ -898,7 +955,7 @@ export function createAgentTools(ctx) {
         if (!title) return "需要文件夹名称。";
         const parentId = await defaultBookmarkParentId(args.parentId);
         const folder = await chrome.bookmarks.create({ parentId, title });
-        const query = args.currentWindow === false ? {} : { currentWindow: true };
+        const query = tabQuery(ctx.getWindowId?.(), args.currentWindow !== false);
         const tabs = await chrome.tabs.query(query);
         const added = [];
         const skipped = [];
@@ -954,7 +1011,7 @@ export function createAgentTools(ctx) {
     },
     {
       name: "remember",
-      description: "把短笔记存到本机扩展存储，之后可用 recall 读回。不要存密钥。",
+      description: "保存短笔记，同一 Chrome 配置中的其他 PageLens 任务可用 recall 按键读取。不要存密钥。",
       parameters: obj(
         {
           key: { type: "string", description: "笔记键" },
@@ -965,9 +1022,10 @@ export function createAgentTools(ctx) {
       async execute(args) {
         const key = String(args.key || "").trim().slice(0, 80);
         if (!key) return "key 不能为空。";
-        const notes = await loadNotes();
-        notes[key] = String(args.value || "").slice(0, 4000);
-        await chrome.storage.local.set({ [NOTES_KEY]: notes });
+        await navigator.locks.request(NOTES_KEY, async () => {
+          const notes = { ...await loadNotes(), [key]: String(args.value || "").slice(0, 4000) };
+          await chrome.storage.local.set({ [NOTES_KEY]: notes });
+        });
         return `已记住 ${key}。`;
       },
     },
@@ -979,7 +1037,7 @@ export function createAgentTools(ctx) {
         const notes = await loadNotes();
         const key = String(args.key || "").trim();
         if (!key) return toToolText({ keys: Object.keys(notes) });
-        if (!(key in notes)) return `没有叫 ${key} 的笔记。`;
+        if (!Object.hasOwn(notes, key)) return `没有叫 ${key} 的笔记。`;
         return String(notes[key]);
       },
     },
@@ -1287,7 +1345,7 @@ export function createAgentTools(ctx) {
       parameters: obj({ tabId: tabIdProp() }),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
-        const tab = await chrome.tabs.get(tabId);
+        const tab = await tabInWindow(tabId, ctx.getWindowId?.());
         const caps = await loadPageCaptions(tabId, tab.url);
         if (caps.status !== "ready" || !caps.text) {
           return "当前视频没有音频文稿可保存。先 get_captions 或 transcribe_video。";
@@ -1469,7 +1527,7 @@ export function createAgentTools(ctx) {
         ["method"],
       ),
       async execute(args) {
-        const result = await chromeCall(args.method, args.args || []);
+        const result = await chromeCall(args.method, args.args || [], ctx.getWindowId?.(), ctx.getTabId?.());
         return toToolText(result);
       },
     },
@@ -1541,6 +1599,7 @@ export function createAgentTools(ctx) {
       return { item };
     };
     const perform = async (tabId, item, action, value, submit) => {
+      if (ctx.getWindowId?.() != null) await tabInWindow(tabId, ctx.getWindowId());
       const res = await runRefAction(tabId, item, action, value, submit);
       if (res?.stale) snapshots.delete(tabId);
       noteAction(tabId, { action, text: item?.label || "", ok: res?.ok !== false });
@@ -1679,6 +1738,7 @@ export function createAgentTools(ctx) {
 /** 50+ 工具领域分类表 */
 export const TOOL_DOMAINS = {
   core_reader: [
+    "run_parallel_tasks",
     "extract_page",
     "extract_pages",
     "get_page_info",
@@ -1717,8 +1777,10 @@ export const TOOL_DOMAINS = {
     "run_js",
   ],
   browser_mgmt: [
+    "list_task_windows", "read_window_inbox", "send_window_message", "delegate_window_task",
     "list_tabs",
     "open_tab",
+    "create_window",
     "switch_tab",
     "close_tab",
     "close_task_group",
@@ -1776,8 +1838,45 @@ export { isShellCommandWhitelisted };
 export const INJECTION_SAFE_TOOLS = READ_ONLY_TOOLS;
 export { ORIGIN_SCOPED_NAV_TOOLS, ORIGIN_SCOPED_TAB_TOOLS, isToolPrivileged, urlOrigin };
 
+async function sessionsAccessMissing() {
+  const api = globalThis.chrome?.permissions;
+  if (typeof api?.contains !== "function") return false;
+  try {
+    return !(await api.contains({ permissions: ["sessions"] }));
+  } catch {
+    return true;
+  }
+}
+
+/** 信任网址只来自该 sessionId 的 tab.url。调用方自带的 url 已经丢掉，这里不再回退。 */
+async function closedSessionHttpUrl(sessionId, windowId) {
+  const id = String(sessionId || "");
+  if (!id) return "";
+  const read = () => closedTabHttpUrl(id, { windowId });
+  try {
+    return await read();
+  } catch {
+    // 尚未授予 sessions 时，先授权再查，避免信任判定看不到真实网址。
+    if (!(await sessionsAccessMissing())) return "";
+    const denied = await ensureToolPermissions(["sessions"]);
+    if (denied) return "";
+    try {
+      return await read();
+    } catch {
+      return "";
+    }
+  }
+}
+
 /** 拿到 HITL 判断所需的目标 URL；解析不出时返回空串（按跨源处理） */
-export async function resolveHitlTargetUrl(toolName, args = {}, { getTabId, getTabUrl } = {}) {
+export async function resolveHitlTargetUrl(toolName, args = {}, { getTabId, getTabUrl, getWindowId } = {}) {
+  if (toolName === "restore_closed_tab") {
+    if (args && typeof args === "object") delete args.url;
+    const windowId = typeof getWindowId === "function" ? await getWindowId() : undefined;
+    const url = await closedSessionHttpUrl(args?.sessionId, windowId);
+    if (url && args && typeof args === "object") args.url = url;
+    return url;
+  }
   if (ORIGIN_SCOPED_NAV_TOOLS.has(toolName)) return String(args?.url || "").trim();
   if (toolName === "download_file") return String(args?.url || "").trim();
   if (!TAB_TARGET_TOOLS.has(toolName)) return "";
@@ -1834,7 +1933,7 @@ export function resolveActiveTools({
 
   // 标签管理意图
   if (
-    /标签|窗口|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|tab|bookmark|history|window|download|restore|search/i.test(
+    /标签|窗口|收件箱|委派|协作|派发|swarm|inbox|delegate|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|tab|bookmark|history|window|download|restore|search/i.test(
       text,
     )
   ) {
@@ -1843,7 +1942,7 @@ export function resolveActiveTools({
 
   // 系统/Shell/Skill/文件/文稿/Obsidian/授权意图
   if (
-    /shell|命令|终端|运行|执行|脚本|skill|obsidian|文稿|入库|保存|note|library|exec|bash|zsh|授权|权限|未授权|重新授权|文件|文件夹|目录|路径|知识库|笔记|读写/i.test(
+    /shell|命令|终端|运行|执行|脚本|skill|obsidian|文稿|入库|保存|note|library|exec|bash|zsh|授权|权限|未授权|重新授权|文件|文件夹|目录|路径|知识库|笔记|交接|remember|recall|读写/i.test(
       text,
     )
   ) {

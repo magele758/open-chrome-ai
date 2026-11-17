@@ -1,4 +1,6 @@
 import "./panel-log.js";
+import { bindWindowMail } from "./window-mail.js";
+import { allowCurrentSite, renderAllowCurrentSite } from "./allow-current-site.js";
 import { bindDubQueue } from "./dub-queue-ui.js";
 import { createAgentGatewayPanel } from "./agent-gateway-panel.js";
 import { lastUserAskedForSkill, resumeInterruptedRun, sendPrompt } from "./agent-loop.js";
@@ -103,20 +105,21 @@ import {
   defaultSettings,
   isModelReady,
   loadSettings,
+  modifySettings,
   normalizeSettings,
   resolveModel,
-  saveSettings,
 } from "../lib/storage.js";
 import { getSharedAudioContext } from "../lib/streaming-audio-player.js";
 import { abortRecording } from "../lib/tab-audio.js";
 
-async function runExternalPrompt(id, prompt) {
+async function runExternalPrompt(id, prompt, signal) {
   const t0 = Date.now();
   let payload;
   try {
     await refreshTab().catch(() => {});
     const before = state.messages.length;
-    await sendPrompt(prompt);
+    signal.throwIfAborted();
+    await sendPrompt(prompt, { signal });
     const bot = state.messages.slice(before).reverse().find((m) => m.role === "bot");
     const aborted = bot?.metrics?.finishReason === "abort";
     const steps = (bot?.trace || [])
@@ -138,24 +141,25 @@ async function runExternalPrompt(id, prompt) {
 }
 
 function bindExternalPromptBridge() {
+  let externalRun = null;
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (sender?.id !== chrome.runtime.id) return false;
+    if (sender?.id !== chrome.runtime.id || state.windowId == null || msg?.windowId !== state.windowId) return false;
     if (msg?.type === "pl.agentPrompt.ping") {
-      resolveWindowId().then((windowId) => sendResponse({ ok: true, busy: state.busy, windowId }));
-      return true;
+      sendResponse({ ok: true, busy: state.busy || externalRun != null, windowId: state.windowId });
+      return false;
     }
     if (msg?.type === "pl.agentPrompt.run") {
-      if (state.busy) {
+      if (state.busy || externalRun != null) {
         sendResponse({ ok: false, code: "AGENT_BUSY", error: "侧栏 Agent 正在执行其他任务" });
         return false;
       }
       sendResponse({ ok: true });
-      runExternalPrompt(String(msg.id), String(msg.prompt || ""));
+      externalRun = { id: String(msg.id), controller: new AbortController() };
+      runExternalPrompt(externalRun.id, String(msg.prompt || ""), externalRun.controller.signal).finally(() => { externalRun = null; });
       return false;
     }
-    if (msg?.type === "pl.agentPrompt.cancel") {
-      state.stopIntent = "user";
-      state.abort?.abort();
+    if (msg?.type === "pl.agentPrompt.cancel" && externalRun && externalRun.id === msg.id) {
+      externalRun.controller.abort();
       sendResponse({ ok: true });
       return false;
     }
@@ -261,6 +265,20 @@ function wire() {
       return;
     }
     openHistoryView();
+  });
+  on("btn-new-window", "click", async () => {
+    const status = $("hist-status");
+    try {
+      const win = await chrome.windows.create({ type: "normal", focused: true });
+      try {
+        await chrome.sidePanel.open({ windowId: win.id });
+        status.textContent = "已打开新任务窗口。";
+      } catch {
+        status.textContent = "新窗口已打开。点击新窗口的 PageLens 图标即可开始任务。";
+      }
+    } catch (err) {
+      status.textContent = `新建窗口失败：${err.message || err}`;
+    }
   });
   on("btn-hist-back", "click", () => {
     setView("chat");
@@ -540,7 +558,52 @@ function wire() {
         if ($("langfuse-env")) state.settings.langfuse.environment = $("langfuse-env").value.trim();
       }
       const pathErrors = await applyFolderPathsFromInputs();
-      state.settings = await saveSettings(state.settings);
+      const form = {
+        skillsEnabled: state.settings.skillsEnabled,
+        dailyNotesFolder: state.settings.dailyNotesFolder,
+        langfuse: state.settings.langfuse,
+        shortcuts: state.settings.shortcuts,
+        answerLanguage: state.settings.answerLanguage,
+        uiFont: state.settings.uiFont,
+        multimodalSameAsText: state.settings.multimodalSameAsText,
+        multimodal: state.settings.multimodal,
+        asr: state.settings.asr,
+        tts: state.settings.tts,
+        jev: state.settings.jev,
+        nativeShell: state.settings.nativeShell,
+        cdpInput: state.settings.cdpInput,
+        agentBridgeEnabled: state.settings.agentBridgeEnabled,
+        agentInboxEnabled: state.settings.agentInboxEnabled,
+        hitlMode: state.settings.hitlMode,
+        irreversibleActions: state.settings.irreversibleActions,
+      };
+      state.settings = await modifySettings((latest) => ({
+        ...latest,
+        skillsEnabled: form.skillsEnabled,
+        dailyNotesFolder: form.dailyNotesFolder,
+        langfuse: {
+          ...latest.langfuse,
+          enabled: form.langfuse?.enabled,
+          baseUrl: form.langfuse?.baseUrl,
+          publicKey: form.langfuse?.publicKey,
+          secretKey: form.langfuse?.secretKey,
+          environment: form.langfuse?.environment,
+        },
+        shortcuts: form.shortcuts,
+        answerLanguage: form.answerLanguage,
+        uiFont: form.uiFont,
+        multimodalSameAsText: form.multimodalSameAsText,
+        multimodal: form.multimodal,
+        asr: form.asr,
+        tts: form.tts,
+        jev: form.jev,
+        nativeShell: form.nativeShell,
+        cdpInput: form.cdpInput,
+        agentBridgeEnabled: form.agentBridgeEnabled,
+        agentInboxEnabled: form.agentInboxEnabled,
+        hitlMode: form.hitlMode,
+        irreversibleActions: form.irreversibleActions,
+      }));
       applyUiFont(state.settings.uiFont);
       renderModelLine();
       renderShortcutList();
@@ -611,6 +674,19 @@ function wire() {
   $("cdp-input")?.addEventListener("change", (e) => {
     state.settings.cdpInput = e.target.checked;
   });
+  on("btn-allow-current-site", "click", async (event) => {
+    const button = event.currentTarget;
+    const origin = button.dataset.origin;
+    button.disabled = true;
+    try {
+      await allowCurrentSite(origin, state.windowId);
+      flashStatus(`${origin} 已加入白名单`, true);
+    } catch (error) {
+      flashStatus(error.message, false);
+    } finally {
+      button.disabled = false;
+    }
+  });
   $("agent-bridge")?.addEventListener("change", (e) => {
     state.settings.agentBridgeEnabled = e.target.checked;
   });
@@ -624,10 +700,12 @@ function wire() {
   trustPanel.bind();
   chrome.storage?.onChanged?.addListener((changes, area) => {
     if (area === "local" && changes[APPROVAL_STORAGE_KEY]) trustPanel.render();
+    if (area === "session" && changes[`pl.contextMenu.${state.windowId}`]?.newValue) consumePending().catch(() => {});
     if (area === "session" && changes[DELEGATE_STORAGE_KEY]) delegatePanel.render();
     if (area === "local" && changes[ACTIVITY_KEY]) paintInboxActivity();
     if (area === "local" && changes.settings?.newValue) {
       state.settings = normalizeSettings(changes.settings.newValue);
+      renderAllowCurrentSite($("btn-allow-current-site"), state.tab, state.settings);
       applyUiFont(state.settings.uiFont);
       applyUiTheme(state.settings.uiTheme, state.settings.uiThemeColors);
       renderModelLine();
@@ -646,7 +724,11 @@ function wire() {
   $("hitl-badge")?.addEventListener("click", () => {
     state.sessionHitlOverride = false;
     state.settings.hitlMode = "balanced";
-    saveSettings(state.settings).catch(() => {});
+    modifySettings((latest) => ({ ...latest, hitlMode: "balanced" }))
+      .then((saved) => {
+        state.settings.hitlMode = saved.hitlMode;
+      })
+      .catch(() => {});
     updateHitlBadge();
     if ($("hitl-mode")) $("hitl-mode").value = "balanced";
   });
@@ -703,11 +785,11 @@ function wire() {
     state.image = null;
     renderAttach();
   });
-  chrome.tabs?.onActivated?.addListener(() => {
-    refreshTab();
+  chrome.tabs?.onActivated?.addListener(({ windowId }) => {
+    if (windowId === state.windowId) refreshTab();
   });
   chrome.tabs?.onUpdated?.addListener((tabId, info, tab) => {
-    if (tab.active && (info.status === "complete" || info.title || info.url)) {
+    if (tab.windowId === state.windowId && tab.active && (info.status === "complete" || info.title || info.url)) {
       refreshTab();
     }
   });
@@ -741,7 +823,9 @@ async function boot() {
   console.info("[pagelens] boot");
   try {
     try {
-      initMarkdown();
+      const windowId = await resolveWindowId();
+      initMarkdown(windowId);
+      bindWindowMail(windowId);
     } catch (err) {
       console.warn("[pagelens] initMarkdown", err);
     }
@@ -779,8 +863,7 @@ async function boot() {
   refreshLibraryStatus().catch((err) => console.warn("[pagelens] library", err));
   refreshNativeHost({ silent: true }).catch(() => {});
   try {
-    await resolveWindowId();
-    const active = await loadActiveSession(state.windowId);
+    const active = await loadActiveSession(await resolveWindowId());
     debugLog("session.boot", {
       windowId: state.windowId,
       sessionId: active?.id || null,

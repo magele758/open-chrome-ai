@@ -13,6 +13,7 @@
  * finish or time out the job.
  */
 
+import { tabInWindow, withWindowTask } from "../window-scope.js";
 import { isUrlAllowed } from "../bridge/policy.js";
 import { loadSettings } from "../storage.js";
 import { TASK_STATUS, getDelegateManager } from "./delegate.js";
@@ -51,25 +52,24 @@ async function sendToPanel(message) {
   }
 }
 
-async function pingPanel() {
-  const res = await sendToPanel({ type: "pl.agentPrompt.ping" });
+async function pingPanel(windowId) {
+  const res = await sendToPanel({ type: "pl.agentPrompt.ping", windowId });
   return res?.ok ? res : null;
 }
 
-async function ensurePanel() {
-  let pong = await pingPanel();
+async function ensurePanel(windowId) {
+  let pong = await pingPanel(windowId);
   if (pong) return pong;
   // sidePanel.open normally needs a user gesture; best effort only.
   try {
-    const win = await chrome.windows.getLastFocused();
-    await chrome.sidePanel.open({ windowId: win.id });
+    await chrome.sidePanel.open({ windowId });
   } catch {
     /* expected without a user gesture */
   }
   const deadline = Date.now() + PANEL_WAIT_MS;
   while (Date.now() < deadline) {
     await sleep(500);
-    pong = await pingPanel();
+    pong = await pingPanel(windowId);
     if (pong) return pong;
   }
   return null;
@@ -100,12 +100,9 @@ async function focusTarget(job, windowId) {
     const needle = String(job.tabUrlIncludes);
     const tabs = await chrome.tabs.query(scoped ? { windowId } : {});
     tab = tabs.find((t) => String(t.url || "").includes(needle)) || null;
-    if (!tab && job.url) {
-      tab = await chrome.tabs.create({ ...(scoped ? { windowId } : {}), url: String(job.url), active: true });
-      await waitTabComplete(tab.id);
-    }
   }
-  if (!tab) {
+  const createTab = !tab && !Number.isInteger(job.tabId) && job.tabUrlIncludes && job.url;
+  if (!tab && !createTab) {
     return {
       error: failure(
         "TAB_NOT_FOUND",
@@ -113,11 +110,24 @@ async function focusTarget(job, windowId) {
       ),
     };
   }
-  if (scoped && tab.windowId !== windowId) {
+  if (tab && scoped && tab.windowId !== windowId) {
     return { error: failure("WRONG_WINDOW", "目标标签页与已打开的侧栏不在同一窗口") };
   }
-  await chrome.tabs.update(tab.id, { active: true });
-  return { tab };
+  const targetWindow = windowId ?? tab?.windowId ?? (await chrome.windows.getLastFocused()).id;
+  try {
+    return await withWindowTask(targetWindow, async () => {
+      if (createTab) {
+        tab = await chrome.tabs.create({ windowId: targetWindow, url: String(job.url), active: true });
+        await waitTabComplete(tab.id);
+      } else {
+        await tabInWindow(tab.id, targetWindow);
+        await chrome.tabs.update(tab.id, { active: true });
+      }
+      return { tab };
+    });
+  } catch (err) {
+    return { error: failure(err.code || "TAB_NOT_FOUND", err.message) };
+  }
 }
 
 function clampTimeout(job) {
@@ -158,6 +168,7 @@ async function startHeadless(job, jobId, prompt, settings, auth) {
       prompt,
       capsule: job.capsule,
       tabId: focus.tab?.id ?? null,
+      windowId: focus.tab?.windowId,
       sourceUrl: focus.tab?.url || "",
       maxSteps: job.maxSteps,
       model: job.model,
@@ -208,7 +219,9 @@ export async function startAgentPrompt(job, jobId, { auth = null } = {}) {
 
   // Only an explicit `panel` run waits for a panel to appear; sidePanel.open() cannot succeed
   // without a user gesture, so `auto` just pings once and falls back.
-  const pong = runtime === "panel" ? await ensurePanel() : await pingPanel();
+  const target = Number.isInteger(job.tabId) ? await chrome.tabs.get(job.tabId).catch(() => null) : null;
+  const windowId = target?.windowId ?? (await chrome.windows.getLastFocused()).id;
+  const pong = runtime === "panel" ? await ensurePanel(windowId) : await pingPanel(windowId);
   if (!pong) {
     if (runtime === "auto") return startHeadless(job, jobId, prompt, settings, auth);
     return {
@@ -228,20 +241,22 @@ export async function startAgentPrompt(job, jobId, { auth = null } = {}) {
 
   const timeoutMs = clampTimeout(job);
   const startedAt = Date.now();
-  const accepted = await sendToPanel({ type: "pl.agentPrompt.run", id: jobId, prompt });
-  if (!accepted?.ok) {
-    return {
-      done: failure(accepted?.code || "RUN_REJECTED", accepted?.error || "侧栏没有接受该任务"),
-    };
-  }
   await setActive({
     id: jobId,
     action: "agent_prompt",
     runtime: "panel",
+    windowId: pong.windowId,
     startedAt,
     deadline: startedAt + timeoutMs,
     metadata: job.metadata ?? null,
   });
+  const accepted = await sendToPanel({ type: "pl.agentPrompt.run", windowId: pong.windowId, id: jobId, prompt });
+  if (!accepted?.ok) {
+    await setActive(null);
+    return {
+      done: failure(accepted?.code || "RUN_REJECTED", accepted?.error || "侧栏没有接受该任务"),
+    };
+  }
   return { started: true, runtime: "panel" };
 }
 
@@ -356,14 +371,14 @@ async function stopRun(active) {
   if (active.runtime === "headless") {
     await getDelegateManager()?.cancel(active.taskId).catch(() => {});
   } else {
-    await sendToPanel({ type: "pl.agentPrompt.cancel", id: active.id });
+    await sendToPanel({ type: "pl.agentPrompt.cancel", windowId: active.windowId, id: active.id });
   }
 }
 
-async function waitPanelIdle(maxMs = 3000) {
+async function waitPanelIdle(windowId, maxMs = 3000) {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const pong = await pingPanel();
+    const pong = await pingPanel(windowId);
     if (!pong || !pong.busy) return;
     await sleep(200);
   }
@@ -392,7 +407,7 @@ export async function cancelAgentPrompt(targetId) {
   }
   await setActive(null);
   await stopRun(active);
-  if (active.runtime !== "headless") await waitPanelIdle();
+  if (active.runtime !== "headless") await waitPanelIdle(active.windowId);
   return {
     result: { ok: true, cancelled: true, id: active.id },
     output: buildOutput(active, {

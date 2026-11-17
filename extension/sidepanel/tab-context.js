@@ -1,3 +1,4 @@
+import { resolveWindowId } from "./session.js";
 import { checkSmartRecall } from "./clippings-ui.js";
 import {
   clearCompactSegments,
@@ -20,9 +21,10 @@ import { syncPackToLibrary, videoIdentity } from "../lib/library.js";
 import { loadTabPack } from "../lib/page-pack.js";
 
 async function pickTargetTab() {
-  const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const windowId = await resolveWindowId();
+  const [active] = await chrome.tabs.query({ active: true, windowId });
   if (active && !restrictedUrl(active.url)) return active;
-  const tabs = await chrome.tabs.query({ currentWindow: true });
+  const tabs = await chrome.tabs.query({ windowId });
   return tabs.find((t) => t.url && !restrictedUrl(t.url)) || active || null;
 }
 
@@ -70,7 +72,6 @@ async function refreshTab() {
 
   const revision = ++state.pageRevision;
   state.tab = tab || null;
-  if (Number.isInteger(tab?.windowId) && tab.windowId >= 0) state.windowId = tab.windowId;
   if (keepMedia) {
     state.interpret = interpretController.getState(state.mediaTab.id);
     state.originalAudioOn = interpretController.getTask?.(state.mediaTab.id)?.originalAudioOn ?? state.originalAudioOn;

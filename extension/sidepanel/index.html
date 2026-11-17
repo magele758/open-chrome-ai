@@ -77,6 +77,22 @@
       </nav>
     </header>
 
+    <details id="window-mail">
+      <summary aria-live="polite">窗口协作</summary>
+      <div class="window-mail-compose">
+        <select id="window-peer" aria-label="接收窗口"></select>
+        <textarea id="window-mail-text" aria-label="消息或任务内容" placeholder="给对方发消息，或描述要委派的任务" rows="2" maxlength="8000"></textarea>
+        <div class="row-btns">
+          <button type="button" class="secondary mini" data-kind="message">发消息</button>
+          <button type="button" class="secondary mini" data-kind="task">委派任务</button>
+          <span id="window-mail-status" role="status"></span>
+        </div>
+        <ol id="window-mail-log" aria-label="窗口通信记录"></ol>
+      </div>
+    </details>
+
+    <button type="button" class="secondary mini" id="btn-allow-current-site" hidden></button>
+
     <details id="dub-queue">
       <summary>同传预处理队列</summary>
       <div class="queue-toolbar">
@@ -966,6 +982,7 @@
           <input id="hist-q" placeholder="标题、网站或网址" />
         </label>
         <div class="row-btns hist-actions">
+          <button class="secondary" type="button" id="btn-new-window">新建任务窗口</button>
           <button class="secondary" type="button" id="btn-export-all-md">全部导出 Markdown</button>
           <button class="secondary" type="button" id="btn-export-all-json">全部导出 JSON</button>
           <button class="secondary" type="button" id="btn-import-all-obsidian">全部入库</button>

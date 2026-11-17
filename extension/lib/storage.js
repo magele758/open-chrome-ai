@@ -192,6 +192,33 @@ export async function loadSettings() {
   return normalizeSettings(settings);
 }
 
+// Shared by the side panel and the service worker. Not reentrant: a mutator must not call modifySettings.
+const SETTINGS_LOCK = "pagelens-settings";
+let pendingSettingsWrite = Promise.resolve();
+
+function withSettingsLock(action) {
+  if (globalThis.navigator?.locks?.request) return navigator.locks.request(SETTINGS_LOCK, action);
+  const result = pendingSettingsWrite.then(action);
+  pendingSettingsWrite = result.catch(() => {});
+  return result;
+}
+
+/**
+ * Read the latest settings, let mutator return the next object, then write.
+ * Return null from mutator to leave storage unchanged.
+ * `io` lets callers that already inject load/save (agent tools, bridge) join the same lock.
+ */
+export function modifySettings(mutator, io) {
+  const load = io?.load || loadSettings;
+  const save = io?.save || saveSettings;
+  return withSettingsLock(async () => {
+    const current = await load();
+    const next = await mutator(current);
+    if (next == null) return current;
+    return save(next);
+  });
+}
+
 /** Optional unpacked-only overlay (extension/local-settings.json, gitignored). */
 export async function applyOptionalLocalSettings() {
   try {
@@ -201,14 +228,14 @@ export async function applyOptionalLocalSettings() {
     if (!extra || extra.rev == null) return null;
     const { plLocalApplied } = await chrome.storage.local.get("plLocalApplied");
     if (plLocalApplied === extra.rev) return null;
-    const cur = await loadSettings();
-    const next = { ...cur };
-    if (extra.asr && typeof extra.asr === "object") next.asr = { ...cur.asr, ...extra.asr };
-    if (extra.tts && typeof extra.tts === "object") next.tts = { ...cur.tts, ...extra.tts };
-    if (extra.langfuse && typeof extra.langfuse === "object") next.langfuse = { ...cur.langfuse, ...extra.langfuse };
-    const saved = normalizeSettings(next);
-    saved.shortcuts = saved.shortcuts.filter((s) => s.label && s.prompt);
-    await chrome.storage.local.set({ settings: saved, plLocalApplied: extra.rev });
+    const saved = await modifySettings((cur) => {
+      const next = { ...cur };
+      if (extra.asr && typeof extra.asr === "object") next.asr = { ...cur.asr, ...extra.asr };
+      if (extra.tts && typeof extra.tts === "object") next.tts = { ...cur.tts, ...extra.tts };
+      if (extra.langfuse && typeof extra.langfuse === "object") next.langfuse = { ...cur.langfuse, ...extra.langfuse };
+      return next;
+    });
+    await chrome.storage.local.set({ plLocalApplied: extra.rev });
     return saved;
   } catch {
     return null;

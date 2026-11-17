@@ -217,7 +217,7 @@ export async function extractPage() {
       }
       if (!visible(el)) continue;
       const t = clean(el.innerText);
-      if (t.length < 12) continue;
+      if (!t || (t.length < 12 && !el.matches("h1, h2, h3, h4"))) continue;
       if (looksLikeChrome(t)) continue;
       const key = t.slice(0, 96);
       if (seen.has(key)) continue;
@@ -229,7 +229,7 @@ export async function extractPage() {
     let text = parts.join("\n");
     if (text.length < 60) {
       const fallback = metaFallback();
-      if (fallback.length > text.length) text = fallback;
+      if (fallback.length > text.length) text = fallback.includes(text) ? fallback : [text, fallback].join("\n");
     }
 
     const quotes = [];
