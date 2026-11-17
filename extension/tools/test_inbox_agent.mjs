@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 const store = {};
 const sent = [];
 let panel = { ok: true, busy: false, windowId: 1 };
+let scopePings = false;
 let runReply = { ok: true };
 let tabs = [{ id: 7, windowId: 1, url: "http://localhost:8080/", status: "complete" }];
 const updated = [];
@@ -21,7 +22,7 @@ globalThis.chrome = {
     sendMessage: async (msg) => {
       sent.push(msg.type);
       if (msg.type === "pl.agentPrompt.ping") {
-        if (!panel) throw new Error("Could not establish connection. Receiving end does not exist.");
+        if (!panel || (scopePings && msg.windowId !== panel.windowId)) throw new Error("Could not establish connection. Receiving end does not exist.");
         return panel;
       }
       if (msg.type === "pl.agentPrompt.run") return runReply;
@@ -76,6 +77,22 @@ const { setDelegateManager, TASK_STATUS } = await import("../lib/agent/delegate.
   assert.equal(out.result.summary, "标题是 X");
   assert.deepEqual(out.metadata, { run: 1 });
   assert.equal(store.agentPromptActive, undefined);
+}
+
+// With a link-only job, find the open panel even when another window has focus.
+{
+  scopePings = true;
+  panel.windowId = 9;
+  chrome.runtime.getContexts = async () => [{ windowId: 9 }];
+  sent.length = 0;
+  const result = await startAgentPrompt({ prompt: "make a draft", runtime: "panel" }, "other-panel");
+  assert.equal(result.started, true);
+  assert.equal(store.agentPromptActive.windowId, 9);
+  assert.equal(sent.filter(type => type === "pl.agentPrompt.run").length, 1);
+  await takeCompletion({ id: "other-panel", ok: true });
+  panel.windowId = 1;
+  scopePings = false;
+  delete chrome.runtime.getContexts;
 }
 
 // expiry: cancels in panel and reports TIMEOUT

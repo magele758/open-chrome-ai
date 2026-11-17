@@ -143,9 +143,9 @@ function paintBot(botMsg) {
   messageScroll?.onContentGrow();
 }
 
-function lastUserAskedForSkill() {
+function lastUserAskedForSkill(skills) {
   const lastUser = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
-  return userInvokedSkill(lastUser?.text || "");
+  return userInvokedSkill(lastUser?.text || "", skills);
 }
 
 function confirmAgentSettingsChange({ text, sensitive, reason, signal }) {
@@ -187,9 +187,9 @@ function createPageLensLoop(host) {
 }
 
 async function executeLoop({ userText, history, resume, turnsUsed, lastText, botMsg, model, clearImage, signal }) {
-  const useSkills = skillsOn() && lastUserAskedForSkill();
+  const skills = skillsOn() ? [...(state.skills || []), ...shortcutsAsSkills(state.settings)] : [];
+  const useSkills = skillsOn() && lastUserAskedForSkill(skills);
   const hitlUserUrl = state.tab?.url || state.pack?.url || "";
-  const skills = useSkills ? [...(state.skills || []), ...shortcutsAsSkills(state.settings)] : [];
   let taskTabId = resume && state.run?.tabId != null ? state.run.tabId : state.tab?.id;
   let tools;
   let loop;
@@ -247,7 +247,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
           state.activeToolDomains?.add?.(d);
         }
       },
-      skills,
+      skills: useSkills ? skills : [],
       get settings() {
         return state.settings;
       },

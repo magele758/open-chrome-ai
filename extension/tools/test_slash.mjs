@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { systemPrompt, visibleSkills } from "../lib/prompts.js";
 import { defaultSettings, isSkillsEnabled } from "../lib/storage.js";
 import {
@@ -77,5 +78,22 @@ assert(composed.includes("使用 browse skill") && composed.includes("打开浏�
 const long = await composeSkillPrompt("使用 long-one skill", skills);
 assert(long.includes("load_skill") && !long.includes("x".repeat(100)), "long defers");
 assert((await composeSkillPrompt("普通问题", skills)) === "普通问题", "passthrough");
+
+const original = "使用「TikTok 墨西哥商品草稿」处理 https://shop.tiktok.com/jp/pdp/1000000000000000001，保存后刷新核对图片和库存。";
+const bundled = JSON.parse(await readFile(new URL("../skills/index.json", import.meta.url))).skills;
+const draft = bundled.find(s => s.id === "tiktok-mx-draft");
+assert(userInvokedSkill(original), "quoted display name triggers catalog lookup");
+assert(userInvokedSkill(original, bundled), "quoted catalog entry enables skill tools");
+assert(mentionedSkills(original, bundled)[0] === draft, "original prompt resolves bundled skill");
+const body = await readFile(new URL("../skills/tiktok-mx-draft/SKILL.md", import.meta.url), "utf8");
+const loads = [];
+const prepared = await composeSkillPrompt(original, bundled, {
+  loadBody: async skill => { loads.push(skill.id); return { ...skill, body }; },
+});
+assert(loads.join(",") === draft.id && prepared.startsWith(original) && prepared.includes(body), "inject real draft instructions once");
+assert(mentionedSkills(skillCommandText(draft), bundled)[0] === draft, "slash menu round-trips multiword names");
+assert(mentionedSkills("先使用 “TikTok 墨西哥商品草稿”，再使用 tiktok-mx-draft skill", bundled).length === 1, "deduplicate quoted name and ID");
+assert(!userInvokedSkill("使用「深色主题」", bundled), "unknown quoted name leaves skills disabled");
+assert(!userInvokedSkill("关于「TikTok 墨西哥商品草稿」的问题", bundled), "mention alone does not invoke");
 
 console.log("PASS slash");

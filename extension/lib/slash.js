@@ -5,7 +5,7 @@ const SLASH_LIMIT = 20;
 
 export function skillCommandText(skill) {
   const name = String(skill?.name || skill?.id || "").trim() || "skill";
-  return `使用 ${name} skill`;
+  return /\s/.test(name) ? `使用「${name}」` : `使用 ${name} skill`;
 }
 
 export function slashItemsFromSkills(skills) {
@@ -64,19 +64,28 @@ export function applySlashItem(text, token, item) {
   return { text: next, cursor: start + insert.length + 1 };
 }
 
-export function userInvokedSkill(text) {
-  const s = String(text || "");
-  if (/使用\s+\S+\s+skill/i.test(s)) return true;
-  return /^\s*\/[A-Za-z0-9_\-\u4e00-\u9fff]/.test(s);
+function skillMentions(text) {
+  return String(text || "").matchAll(/使用(?:[^\S\r\n]*「(?<corner>[^「」\r\n]+)」|[^\S\r\n]*“(?<curly>[^“”\r\n]+)”|\s+(?<explicit>\S+?)\s+skill)/gi);
+}
+
+function mentionName({ corner, curly, explicit }) {
+  return (corner ?? curly ?? explicit).trim();
+}
+
+export function userInvokedSkill(text, skills) {
+  if (/^\s*\/[A-Za-z0-9_\-\u4e00-\u9fff]/.test(text)) return true;
+  for (const { groups } of skillMentions(text)) {
+    // Before the catalog loads, quoted names are candidates. Once loaded, ordinary quoted text must not enable skill tools.
+    if (groups.explicit || skills == null || findSkill(skills, mentionName(groups))) return true;
+  }
+  return false;
 }
 
 export function mentionedSkills(text, skills) {
   const found = [];
   const seen = new Set();
-  const re = /使用\s+(\S+?)\s+skill/gi;
-  let m;
-  while ((m = re.exec(String(text || "")))) {
-    const hit = findSkill(skills, m[1]);
+  for (const { groups } of skillMentions(text)) {
+    const hit = findSkill(skills, mentionName(groups));
     if (!hit) continue;
     const key = hit.id.toLowerCase();
     if (seen.has(key)) continue;

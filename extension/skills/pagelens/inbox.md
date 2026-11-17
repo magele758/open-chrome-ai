@@ -124,3 +124,8 @@ node tools/pl-bridge.mjs call --tool list_tabs --args '{}'
 ```
 
 该入口看的是「允许外部 Agent 控制本扩展」开关和 `agentBridgeOrigins`，不看 MCP token。不要在日常 profile 里打开这个开关。
+
+无目标标签的 `runtime:"panel"` 请求优先当前窗口，否则查找唯一已打开的侧栏。多个候选窗口时返回 AMBIGUOUS_PANEL，可用 tabId 指定目标。显式目标标签始终按窗口隔离。
+
+
+墨西哥草稿可通过本机 inbox 单次启动。运行 `node tools/agent-inbox.mjs enqueue --action ptc_create_mx_draft --source-url PRODUCT_URL --rate JPY_TO_MXN`，以返回的 id 等待 outbox。复核已有草稿使用 `ptc_inspect_mx_draft --source-id SOURCE_ID --draft-id DRAFT_ID`。这两个 action 由扩展后台与自带 Native Host 执行。外部请求只携带商品标识及业务参数。

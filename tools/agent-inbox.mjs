@@ -16,6 +16,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { japaneseSourceId } from "../extension/skills/tiktok-mx-draft/tiktok-mx-native.mjs";
 
 const HOME = os.homedir();
 const INBOX = path.join(HOME, ".pagelens", "agent-inbox");
@@ -61,6 +62,19 @@ function enqueue(opts) {
     action,
   };
 
+  if (action === "ptc_create_mx_draft") {
+    if (typeof opts["source-url"] !== "string" || typeof opts.rate !== "string" ||
+        !Number.isFinite(Number(opts.rate)) || Number(opts.rate) <= 0)
+      throw Error("ptc_create_mx_draft requires --source-url and a positive --rate");
+    job.sourceId = japaneseSourceId(opts["source-url"]);
+    job.rate = Number(opts.rate);
+  }
+  if (action === "ptc_inspect_mx_draft") {
+    for (const [flag, key] of [["source-id", "sourceId"], ["draft-id", "draftId"]]) {
+      if (!/^\d{12,22}$/.test(opts[flag] || "")) throw Error("Expected --" + flag);
+      job[key] = String(opts[flag]);
+    }
+  }
   if (opts["tab-url-includes"] || opts.tabUrlIncludes) {
     job.tabUrlIncludes = String(opts["tab-url-includes"] || opts.tabUrlIncludes);
   }

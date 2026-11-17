@@ -207,6 +207,7 @@ export function createBridgeTools(env) {
         active: { type: "boolean", description: "true 会切到前台（抢焦点），默认 false" },
         groupTitle: { type: "string", description: "本机调用：用新标签创建任务分组。" },
         groupWithTab: { type: "integer", description: "本机调用：将新标签加入指定标签所在分组。" },
+        backgroundUrls: { type: "array", items: { type: "string" }, description: "本机新建任务分组时一起加载的后台页面，最多两个。" },
       },
       ["url"],
     ),
@@ -219,6 +220,11 @@ export function createBridgeTools(env) {
       const grouped = args.groupTitle != null || args.groupWithTab != null;
       if (grouped && (ctx.session || !env.tabGroups || (args.groupTitle != null && args.groupWithTab != null)))
         throw new BridgeError(ERROR_CODES.BAD_ARGS, "网关会话自动分组。本机分组需开启分组权限，并指定组名或组内标签之一。");
+      const background = args.backgroundUrls || [];
+      if (background.length && (background.length > 2 || !args.groupTitle || ctx.session))
+        throw new BridgeError(ERROR_CODES.BAD_ARGS, "后台页面需要本机新建分组，最多两个。");
+      if (background.some(page => !isUrlAllowed(page, ctx.settings.agentBridgeOrigins)))
+        throw new BridgeError(ERROR_CODES.ORIGIN_NOT_ALLOWED, "后台页面 URL 不在白名单");
       let anchor;
       if (args.groupWithTab != null) {
         anchor = await ctx.authorizeTab(args.groupWithTab);
@@ -227,13 +233,18 @@ export function createBridgeTools(env) {
       }
       const tab = await env.tabs.create({ url, active: args.active === true, ...(anchor && { windowId: anchor.windowId }) });
       if (grouped) {
+        const ids = [tab.id];
         try {
-          const groupId = await env.tabGroups.group([tab.id], anchor?.groupId);
+          const opened = await Promise.allSettled(background.map(url => env.tabs.create({ url, active: false, windowId: tab.windowId })));
+          for (const result of opened) if (result.status === "fulfilled") ids.push(result.value.id);
+          const failed = opened.find(result => result.status === "rejected");
+          if (failed) throw failed.reason;
+          const groupId = await env.tabGroups.group(ids, anchor?.groupId);
           if (anchor && groupId !== anchor.groupId) throw Error("目标分组已关闭");
           if (!anchor) await env.tabGroups.update(groupId, { title: args.groupTitle.trim().slice(0, 64), color: "green" });
-          return { tabId: tab.id, groupId, url };
+          return { tabId: tab.id, groupId, url, ...(background.length && { backgroundTabIds: ids.slice(1) }) };
         } catch (error) {
-          await env.tabs.remove(tab.id);
+          await Promise.allSettled(ids.map(id => env.tabs.remove(id)));
           throw error;
         }
       }

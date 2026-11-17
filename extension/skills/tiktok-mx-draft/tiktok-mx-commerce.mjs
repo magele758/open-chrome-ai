@@ -392,17 +392,13 @@ export async function sellerVariants(ui, plan) {
         "new option",
       );
     }
-    if (plan.trustedCommit) {
-      const slot = options().find(e => e.contains(input));
-      const id = slot?.dataset.id;
-      if (!/^product\.publish\.sale_property\.value\.name\.[\w-]+$/.test(id))
-        throw Error("Unexpected variant input for " + sku.option);
-      return '[data-id="' + id + '"] input:not([readonly])';
-    }
     input.focus();
     input.select();
     document.execCommand("insertText", false, sku.option);
-    await sleep(200);
+    await sleep(350);
+    if (matches()) continue;
+    if (!input.isConnected || input.value !== sku.option)
+      throw Error("Variant input changed before commit: " + sku.option);
     input.dispatchEvent(
       new KeyboardEvent("keydown", {
         key: "Enter",

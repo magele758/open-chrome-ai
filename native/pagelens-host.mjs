@@ -4,6 +4,7 @@
  * Protocol: 4-byte native-endian length + UTF-8 JSON. Logs go to stderr only.
  */
 
+import { draftPort } from "./mx-draft-port.mjs";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -906,6 +907,9 @@ function writeReply(obj) {
 export function createHostMessageHandler({ write, socketPath = defaultSocketPath(), makeBroker = createBroker, log = () => {} }) {
   let broker = null;
   let starting = null;
+  const draft = draftPort(write);
+  let pendingRead;
+  let inspecting = false;
 
   async function startBroker() {
     if (broker) return broker;
@@ -922,6 +926,34 @@ export function createHostMessageHandler({ write, socketPath = defaultSocketPath
 
   return {
     async onMessage(msg) {
+      if (msg?.type === "mx.create") {
+        try { write({ type: "mx.done", ok: true, result: await draft.start(msg) }); }
+        catch (e) { write({ type: "mx.done", ok: false, error: e.message }); }
+        return;
+      }
+      if (msg?.type === "mx.tool_result") { draft.reply(msg); return; }
+      if (msg?.type === "ptc.inspect_mx") {
+        if (inspecting) return;
+        inspecting = true;
+        try {
+          const { inspectWithPtc } = await import("./mx-ptc-inspect.mjs");
+          const result = await inspectWithPtc(msg, () => new Promise((resolve, reject) => {
+            pendingRead = { resolve, reject };
+            write({ type: "ptc.read_saved" });
+          }));
+          write({ type: "ptc.done", ok: true, result });
+        } catch (error) {
+          write({ type: "ptc.done", ok: false, error: error.message });
+        } finally { pendingRead = null; inspecting = false; }
+        return;
+      }
+      if (msg?.type === "ptc.read_result") {
+        const pending = pendingRead;
+        pendingRead = null;
+        if (msg.ok) pending?.resolve(msg.result);
+        else pending?.reject(Error(msg.error || "Browser read failed"));
+        return;
+      }
       if (msg?.type === "broker.start") {
         try {
           const b = await startBroker();
@@ -942,6 +974,8 @@ export function createHostMessageHandler({ write, socketPath = defaultSocketPath
       }
     },
     async close() {
+      draft.close();
+      pendingRead?.reject(Error("Native port closed"));
       await starting?.catch(() => {});
       await broker?.close();
       broker = null;

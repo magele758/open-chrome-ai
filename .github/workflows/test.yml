@@ -18,6 +18,10 @@ jobs:
       - run: npm test
       - name: Bundle is up to date
         run: git diff --exit-code extension/vendor/agent-loop-mini.mjs
+      - name: TikTok MX draft and PTC tests
+        run: |
+          node tools/test-tiktok-mx-commerce.mjs
+          node tools/test-tiktok-mx-ptc.mjs
       - name: Native host tests
         run: node native/test_host.mjs
       - name: Native gateway (socket broker + MCP shim) tests

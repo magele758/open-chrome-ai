@@ -24,10 +24,6 @@ async function seed(file, body) {
 }
 
 export async function loadFlow(name, workers) {
-  const root = flowRoot();
-  const revisions = path.join(root, "revisions");
-  await fs.mkdir(revisions, { recursive: true, mode: 0o700 });
-  const file = path.join(root, name + ".ptc.js");
   const defaults = [
     "// Local PTC cell. Edit worker instructions and scheduling here.",
     "const workers = " + JSON.stringify(workers, null, 2) + ";",
@@ -37,6 +33,20 @@ export async function loadFlow(name, workers) {
     "return results.map(result => result.content);",
     ""
   ].join("\n");
+  return loadProgram(name, defaults);
+}
+
+export async function loadListingProgram(mode = "listing") {
+  const name = mode === "listing" ? "./listing.ptc.js" : "./listing-workers.ptc.js";
+  const template = await fs.readFile(new URL(name, import.meta.url), "utf8");
+  return loadProgram(mode, template);
+}
+
+async function loadProgram(name, defaults) {
+  const root = flowRoot();
+  const revisions = path.join(root, "revisions");
+  await fs.mkdir(revisions, { recursive: true, mode: 0o700 });
+  const file = path.join(root, name + ".ptc.js");
   let code;
   try {
     code = await fs.readFile(file, "utf8");
@@ -69,7 +79,12 @@ function planFile(source) {
   return path.join(flowRoot(), "verified", source.id + ".json");
 }
 
-export async function rememberPlan(source, copy, receipt) {
+export async function listingVersions() {
+  const [workers, planner] = await Promise.all([loadListingProgram("create"), loadListingProgram()]);
+  return { workers: workers.hash, planner: planner.hash };
+}
+
+export async function rememberPlan(source, copy, receipt, versions = null) {
   const page = new URL(receipt.link);
   if (!receipt.verified || page.origin !== "https://seller.tiktokshopglobalselling.com" ||
       page.searchParams.get("shop_region") !== "MX" || !/^\d+$/.test(receipt.id) ||
@@ -79,9 +94,12 @@ export async function rememberPlan(source, copy, receipt) {
   const file = planFile(source);
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = file + "." + randomUUID() + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify({ key: planKey(source), copy }, null, 2), { mode: 0o600 });
+  await fs.writeFile(tmp, JSON.stringify({ key: planKey(source), copy, versions }, null, 2), { mode: 0o600 });
   await fs.rename(tmp, file);
 }
+
+// Preserve the revision that produced a reused plan if a cell is edited mid-run.
+export const verifiedPlanVersions = new WeakMap();
 
 export async function matchingPlan(source) {
   let record;
@@ -92,6 +110,9 @@ export async function matchingPlan(source) {
     throw error;
   }
   if (record.key !== planKey(source) || !Array.isArray(record.copy.salesAndShipping?.skus)) return null;
+  if (!record.versions) return null;
+  const versions = await listingVersions();
+  if (record.versions.workers !== versions.workers || record.versions.planner !== versions.planner) return null;
   // Seller-entered prices/inventory belong to the original listing. Only
   // reuse plans whose numeric fields can be derived from today's source.
   for (const row of record.copy.salesAndShipping.skus) {
@@ -103,5 +124,6 @@ export async function matchingPlan(source) {
     row.stock = sku.stock;
     origins[row.option + ".stock"] = { kind: "estimated", basis: "沿用当前来源库存 " + sku.stock + "，墨西哥库存待核。" };
   }
+  verifiedPlanVersions.set(record.copy, record.versions);
   return record.copy;
 }

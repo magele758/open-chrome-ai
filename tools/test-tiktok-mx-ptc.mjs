@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { rmSync } from "node:fs";
 const flowDir = await fs.mkdtemp(path.join(os.tmpdir(), "pagelens-flow-test-"));
 process.env.PAGELENS_MX_FLOW_DIR = flowDir;
 process.on("exit", () => rmSync(flowDir, { recursive: true, force: true }));
 import { commercialPlan, sourceVariants } from "./tiktok-mx-commerce.mjs";
+import { DraftTabs } from "./tiktok-mx-tabs.mjs";
 import { generateListing, matchingPlan, rememberPlan, chooseCategory, validateTranslatedTitle, selectDetails } from "./tiktok-mx-ptc.mjs";
 const row = { sourceSkuId: "111", option: "M", stock: 5, priceMXN: 100 };
 const origins = Object.fromEntries(
@@ -216,6 +220,16 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "pagelens-mx-draft-"));
   process.env.PAGELENS_HOME = home;
   const draft = await import("./tiktok-mx-draft.mjs?draft-test");
+  const navigationUrl = "https://shop.tiktok.com/jp/pdp/1722345678901234567";
+  let navigationReads = 0;
+  await draft.waitForSourceTab(55, navigationUrl, async () => (
+    ++navigationReads === 1 ? [{ id: 56, url: navigationUrl }] : [{ id: 55, url: navigationUrl }]
+  ));
+  assert.equal(navigationReads, 2);
+  await assert.rejects(draft.waitForSourceTab(55, navigationUrl, async () => [
+    { id: 55, url: "https://shop.tiktok.com/jp/pdp/1722345678901234568" },
+  ]), /another product/);
+
   const sameTitle = "Vaso de vidrio\n商品ID：111\n草稿ID：222\nMX$ 10";
   const longer = "Vaso de vidrio templado\n商品ID：333\n草稿ID：444";
   assert.deepEqual(draft.selectDraftRows([{ text: longer }, { text: sameTitle }], "Vaso de vidrio"), [
@@ -296,6 +310,30 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
       origins: Object.fromEntries(["brand", "packagedWeightGrams", "packageCm.length", "packageCm.width", "packageCm.height", "M.option", "M.stock", "M.priceMXN"].map((key) => [key, { kind: "estimated", basis: "fixture" }])),
     },
   };
+  {
+    const { inspectWithPtc } = await import("../native/mx-ptc-inspect.mjs");
+    const { createDraftTransport, japaneseSourceId } = await import("../extension/skills/tiktok-mx-draft/tiktok-mx-native.mjs");
+    assert.equal(japaneseSourceId("https://shop.tiktok.com/jp/pdp/test/" + product + "?feed=1"), product);
+    assert.throws(() => japaneseSourceId("https://example.com/jp/pdp/" + product));
+    const draftId = "1234567890123456789";
+    const url = "https://seller.tiktokshopglobalselling.com/product/edit-draft/" + draftId + "?shop_region=MX";
+    const state = { url, title: listing.title, enTitle: listing.enTitle, description: listing.description,
+      enDescription: listing.enDescription, gallery: 1, detailImages: 0, category: "Cocina",
+      salesAndShipping: { brand: "无品牌", axes: ["Modelo"], options: [["M"]], skus: [{ label: "M", stock: 5, priceMXN: 100 }],
+        packagedWeightGrams: 500, dimensionsInCm: true, packageCm: listing.salesAndShipping.packageCm } };
+    const inspect = () => inspectWithPtc({ sourceId: product, draftId }, async () => state, async () => ({ source: sourceFile, copy: listing }));
+    assert.equal((await inspect()).verified, true);
+    state.salesAndShipping.skus[0].stock = 2;
+    await assert.rejects(inspect(), /M stock/);
+    let calls = 0;
+    const execute = createDraftTransport(product, async () => { calls++; return { ok: true, result: { tabId: 51 } }; }, async () => url);
+    const bridge = (tool, args) => execute({ action: "bridge_call", request: { tool, args } });
+    await assert.rejects(bridge("run_js", { tabId: 51 }), /outside draft task/);
+    await assert.rejects(bridge("open_tab", { url: "https://example.com" }), /destination/);
+    await bridge("open_tab", { url });
+    await assert.rejects(bridge("run_shell", { tabId: 51 }), /Unexpected draft tool/);
+    assert.equal(calls, 1);
+  }
   await fs.writeFile(path.join(dir, "source.json"), JSON.stringify(sourceFile));
   await fs.writeFile(path.join(dir, "listing.json"), JSON.stringify(listing));
   const receipt = { id: "555", verified: true, title: "Molde" };
@@ -389,7 +427,9 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
       opened.push(args.url);
       return { tabId: 7, groupId: 1 };
     }
-    if (tool === "run_js") return { ok: true, result: { matches: [], ids: [] } };
+    if (tool === "run_js") return { ok: true, result: args.tabId === 4
+      ? { url: "https://seller.tiktokshopglobalselling.com/product/create?shop_region=MX", gallery: 0 }
+      : { matches: [], ids: [] } };
     if (tool === "list_tabs") return [];
     if (tool === "close_tab") return { ok: true };
     return { ok: true };
@@ -419,7 +459,123 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
   await assert.rejects(draft.save(reuseDir), /agent-inbox|ENOENT/);
   assert.equal(opened.some((url) => url.includes("/product/create")), false);
   assert.equal(JSON.parse(await fs.readFile(path.join(reuseDir, "receipt.json"), "utf8")).startedTab, 4);
+
+  // Same retained form, partial content present: do not upload its files a second time.
+  const createUrl = "https://seller.tiktokshopglobalselling.com/product/create?shop_region=MX";
+  let clicks = 0, showSaved = false;
+  draft.setDraftBridgeForTests(async (tool, args) => {
+    if (tool === "open_tab") {
+      assert.ok(args.url.includes("/product/manage") || args.url.includes("/edit-draft/556"));
+      return { tabId: args.url.includes("/edit-draft/") ? 8 : 7, groupId: 1 };
+    }
+    if (tool === "run_js") {
+      if (args.tabId === 8) throw Error("stop at persisted draft");
+      if (args.code.includes("readDraftList")) return { ok: true, result: showSaved
+        ? { ids: ["556"], matches: [{ id: "556", text: "Molde" }] } : { ids: [], matches: [] } };
+      if (args.code.includes("另存为草稿")) { clicks++; return { ok: true, result: "" }; }
+      assert.equal(args.tabId, 4);
+      return { ok: true, result: { url: createUrl, ...listing, gallery: 1, detailImages: 0, category: "" } };
+    }
+    return { ok: true };
+  });
+  await assert.rejects(draft.save(reuseDir), /draft ID not yet confirmed/);
+  const staged = JSON.parse(await fs.readFile(path.join(reuseDir, "receipt.json"), "utf8"));
+  assert.deepEqual([staged.startedTab, staged.partial, staged.verified, clicks], [4, true, false, 1]);
+  showSaved = true;
+  await assert.rejects(draft.save(reuseDir), /stop at persisted draft/);
+  assert.equal(clicks, 1);
+  assert.equal(JSON.parse(await fs.readFile(path.join(recordDir, reuseProduct + ".json"), "utf8")).id, "556");
+
+  // A failed variant commit with no verifiable category must leave the editor open without submitting.
+  const firstProduct = "1729600000000000004";
+  const firstDir = await fs.mkdtemp(path.join(os.tmpdir(), "pagelens-mx-checkpoint-"));
+  await fs.writeFile(path.join(firstDir, "source.json"), JSON.stringify({
+    ...sourceFile, id: firstProduct, url: "https://shop.tiktok.com/jp/pdp/" + firstProduct,
+  }));
+  await fs.writeFile(path.join(firstDir, "listing.json"), JSON.stringify(listing));
+  await fs.copyFile(path.join(reuseDir, "image-01.jpg"), path.join(firstDir, "image-01.jpg"));
+  const inboxDir = path.join(home, "agent-inbox"), outboxDir = path.join(home, "agent-outbox");
+  await fs.mkdir(inboxDir, { recursive: true });
+  await fs.mkdir(outboxDir, { recursive: true });
+  showSaved = false;
+  const filling = assert.rejects(draft.save(firstDir, false, false, null, null, null, 4), /committed option M/);
+  let message;
+  for (let i = 0; i < 100 && !message; i++) {
+    const file = (await fs.readdir(inboxDir)).find(name => name.endsWith(".json"));
+    if (file) message = JSON.parse(await fs.readFile(path.join(inboxDir, file), "utf8"));
+    else await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(message?.action, "fill_mx_draft");
+  await fs.writeFile(path.join(outboxDir, message.id + ".json"), JSON.stringify({
+    ok: false, error: "Seller control not ready: committed option M",
+  }));
+  await filling;
+  const firstReceipt = JSON.parse(await fs.readFile(path.join(firstDir, "receipt.json"), "utf8"));
+  assert.deepEqual([firstReceipt.partial, firstReceipt.verified, firstReceipt.startedTab, clicks], [undefined, false, 4, 1]);
+
+  // Only an explicitly rejected save with its original editor gone can be replaced.
+  const rejected = { ...firstReceipt, saving: true, saveMessage: "提交失败", startedGroup: 1,
+    draftIdsBefore: ["500"] };
+  await fs.writeFile(path.join(firstDir, "receipt.json"), JSON.stringify(rejected));
+  let tabs = [{ id: 4, groupId: 2, url: createUrl }], ids = ["500"], replacements = 0;
+  draft.setDraftBridgeForTests(async (tool, args) => {
+    if (tool === "open_tab" && args.url === createUrl) {
+      replacements++;
+      throw Error("replacement opened");
+    }
+    if (tool === "list_tabs") return tabs;
+    if (tool === "run_js") return { ok: true, result: { ids, matches: [] } };
+    return { ok: true, tabId: 7, groupId: 1 };
+  });
+  const retryClosed = () => draft.save(firstDir, false, false, null, null, null, null, true);
+  await assert.rejects(retryClosed(), /reconcile the draft list/);
+  tabs = [];
+  await assert.rejects(draft.save(firstDir), /reconcile the draft list/);
+  ids = ["500", "501"];
+  await assert.rejects(retryClosed(), /reconcile the draft list/);
+  ids = ["500"];
+  await assert.rejects(retryClosed(), /replacement opened/);
+  assert.equal(replacements, 1);
+
+  const closed = [];
+  const workTabs = new DraftTabs(reuseProduct, async (tool, args) => {
+    if (tool === "close_tab") closed.push(args.tabId);
+    if (tool === "list_tabs") return [{ id: 4 }];
+  });
+  workTabs.owned = new Set([4, 7]);
+  workTabs.pendingForm = 4;
+  await workTabs.close();
+  assert.deepEqual(closed, [7]);
+  assert.ok(workTabs.owned.has(4));
   draft.setDraftBridgeForTests(null);
+}
+
+// An editable cell can chain a parameter worker into two copy workers and choose media.
+{
+  const program = generated.ptc.planner.file;
+  const original = await fs.readFile(program, "utf8");
+  const custom = `const spec = await fieldAgent("parameters.units", "Read package units", { product: input.source.id });
+const [es, en] = await Promise.all(["es", "en"].map(name => fieldAgent(name, "Write " + name, spec)));
+return { ...input.previous, title: es.title, enTitle: en.title, description: es.description, enDescription: en.description,
+  gallery: input.gallery.slice(-1), details: [] };`;
+  const product = { ...source, gallery: ["a", "b"], assets: [{url:"a",name:"a.jpg"},{url:"b",name:"b.jpg"}] };
+  try {
+    await fs.writeFile(program, custom);
+    const run = await generateListing(product, previous, .1161, async prompt => {
+      const data = JSON.parse(prompt.split("\n").at(-1));
+      if (prompt.startsWith("Read package")) {
+        assert.equal(data.params.product, source.id);
+        return '{"unit":"pair"}';
+      }
+      assert.equal(data.params.unit, "pair");
+      return JSON.stringify({ title: "Pair", description: "x".repeat(4999) });
+    });
+    assert.deepEqual(run.copy.gallery, ["b.jpg"]);
+    assert.equal(run.copy.enDescription.length, 4999); // Large PTC return is spilled.
+    assert.ok(run.ptc.workers["parameters.units"].end <= run.ptc.workers.en.start);
+    await fs.writeFile(program, custom.replace("input.gallery.slice(-1)", '["unrelated.jpg"]'));
+    await assert.rejects(generateListing(product, previous, .1161, async () => '{"title":"T","description":"D"}'), /Invalid listing plan images/);
+  } finally { await fs.writeFile(program, original); }
 }
 
 const file = generated.ptc.file;
@@ -437,12 +593,16 @@ const category = await chooseCategory(source, ["Cookware / Racks", "Electronics 
 assert.equal(category.choice.label, "Cookware / Racks");
 await assert.rejects(chooseCategory(source, ["Ovens"], async () => '{"index":2}'), /No suitable/);
 await assert.rejects(validateTranslatedTitle(updated.copy, "Something else", async () => '{"valid":false}'), /translation differs/);
-const sample = { ...source, id: "1733781903228241493", gallery: [], detail: [], skus: [{...source.skus[0],stock:4}] };
+const sample = { ...source, id: "1729600000000000005", gallery: [], detail: [], skus: [{...source.skus[0],stock:4}] };
 const link = "https://seller.tiktokshopglobalselling.com/product/edit-draft/123?shop_region=MX";
 const receipt = { verified:true, id:"123", link, readback:{url:link, title:updated.copy.title, enTitle:updated.copy.enTitle} };
-await rememberPlan(sample, updated.copy, receipt);
+await rememberPlan(sample, updated.copy, receipt, updated.ptc.versions);
 assert.equal((await matchingPlan(sample)).salesAndShipping.skus[0].stock, 4);
 assert.equal(await matchingPlan({...sample, title:"Changed product"}), null);
+const plannerBefore = await fs.readFile(updated.ptc.planner.file, "utf8");
+await fs.appendFile(updated.ptc.planner.file, "\n// revision");
+assert.equal(await matchingPlan(sample), null);
+await fs.writeFile(updated.ptc.planner.file, plannerBefore);
 await assert.rejects(rememberPlan(sample, updated.copy, {...receipt,verified:false}), /verified/);
 console.log("PTC local revision replay, missing workers, confirmed category, title checks and cache invalidation passed");
 
@@ -462,3 +622,35 @@ assert.equal(highest, 3);
 assert.equal(cold.copy.salesAndShipping.skus[0].stock, 4);
 assert.equal(cold.copy.salesAndShipping.origins["packageCm.width"].basis, evidence.basis);
 assert.equal(cold.copy.salesAndShipping.skus[0].priceMXN, 220);
+
+// Exercise the public create entry with an isolated inbox and a persisted native receipt.
+{
+  const home = path.join(flowDir, "cli-home");
+  for (const sub of ["agent-inbox", "agent-outbox", "mx-draft-sources"])
+    await fs.mkdir(path.join(home, sub), { recursive: true });
+  const url = "https://shop.tiktok.com/jp/pdp/" + sample.id;
+  const saved = { ...receipt, origins: {}, estimates: {}, skuWrites: [], firstPersisted: { matched: true },
+    readback: { ...receipt.readback, salesAndShipping: { skus: [], options: [] } } };
+  await fs.writeFile(path.join(home, "receipt.json"), JSON.stringify(saved));
+  await fs.writeFile(path.join(home, "mx-draft-sources", sample.id + ".json"), JSON.stringify({dir:home,id:saved.id}));
+  const cli = promisify(execFile)(process.execPath, [fileURLToPath(new URL("./tiktok-mx-draft.mjs", import.meta.url)),
+    "create", url + "?tracking=fixture#campaign", "0.1161", "--summary"], { env:{...process.env,PAGELENS_HOME:home}, timeout:8000 });
+  cli.catch(() => {});
+  const queue = path.join(home, "agent-inbox");
+  let request;
+  for (const deadline = Date.now() + 5000; Date.now() < deadline && !request;) {
+    const file = (await fs.readdir(queue)).find(name => name.endsWith(".json"));
+    if (file) request = JSON.parse(await fs.readFile(path.join(queue, file)));
+    else await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(request?.action, "ptc_create_mx_draft");
+  assert.equal(request.sourceId, sample.id);
+  assert.ok(!JSON.stringify(request).includes("tracking"));
+  assert.equal(request.rate, 0.1161);
+  await fs.writeFile(path.join(home, "agent-outbox", request.id + ".json"),
+    JSON.stringify({ ok:true, result:{ verified:true, draftId:saved.id } }));
+  const summary = JSON.parse((await cli).stdout);
+  assert.equal(summary.id, saved.id);
+  assert.equal(summary.firstRefreshMatched, true);
+  assert.deepEqual(await fs.readdir(queue), [request.id + ".json"]);
+}

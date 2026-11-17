@@ -1,6 +1,7 @@
 import {
   NATIVE_HOST_NAME,
   describeNativeError,
+  execNativeShell,
   formatExecResult,
   installHint,
   nativeFs,
@@ -49,6 +50,22 @@ assert(stat.ok && stat.kind === "directory", "native fs");
 
 const bad = await nativeSend({ op: "exec" });
 assert(bad.ok === false, "exec mocked fail");
+
+const originalTimer = globalThis.setTimeout;
+const deadlines = [];
+try {
+  globalThis.setTimeout = (fn, ms) => {
+    deadlines.push(ms);
+    return originalTimer(fn, ms);
+  };
+  chrome.runtime.sendNativeMessage = async (_, msg) => ({ ok: true, commandMs: msg.timeoutMs });
+  for (const [requested, expected] of [[undefined, 60000], [180000, 180000], [400000, 300000]]) {
+    const result = await execNativeShell({ command: "true", timeoutMs: requested });
+    assert(result.commandMs === expected && deadlines.at(-1) > expected, "wait for the host exit status");
+  }
+} finally {
+  globalThis.setTimeout = originalTimer;
+}
 
 chrome.runtime.sendNativeMessage = async () => {
   throw new Error("Specified native messaging host not found.");

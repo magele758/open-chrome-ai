@@ -1,3 +1,5 @@
+import { draftListCode, sellerVerification } from "./tiktok-mx-list.mjs";
+export * from "./tiktok-mx-list.mjs";
 import { commercialDifferences, commerceScript, locateSkuInput, sellerRead, sellerVariants, sellerNumbers } from "./tiktok-mx-commerce.mjs";
 
 export const titleSelector = '[data-id="product.publish.product_name"]';
@@ -38,7 +40,7 @@ export function formState() {
     detailImages: editor
       ? new Set(
           [...editor.querySelectorAll("img")]
-            .filter(realImage)
+            .filter(i => realImage(i) && /^https?:/.test(i.src))
             .map((i) => i.src.split("?")[0]),
         ).size
       : 0,
@@ -68,22 +70,25 @@ export function formState() {
   };
 }
 // Kept within the run_js size limit; the caller checks all values against its plan.
-export function snapshotCode(withCommerce, allowEmptyDescription, settle = false) {
+export function snapshotCode(withCommerce, allowEmptyDescription, settle = false, expectedDetails = 0) {
   const numbers = withCommerce ? commerceScript(sellerRead).replace(/^return await /, "") : "null";
   return `let seen=0;for(let i=0;i<100;i++){
     if(document.querySelector('${titleSelector}')?.value && (document.querySelector('${localDesc} .ProseMirror')?.textContent.trim() || (${allowEmptyDescription} && i>=12 && document.querySelector('${localDesc} .ProseMirror')))){
       const state=(${formState.toString()})();state.salesAndShipping=await ${numbers};
-      if(!${settle} || state.captcha || (state.category && state.gallery && state.enTitle && state.salesAndShipping?.skus.length) || ++seen>=16)return state;
+      if(!${settle} || state.captcha || (state.category && state.gallery && state.enTitle && state.salesAndShipping?.skus.length && state.detailImages>=${expectedDetails}) || ++seen>=16)return state;
     }
     await new Promise(r=>setTimeout(r,150));
   }throw Error("Draft editor did not load")`.split("\n").map(line => line.trimStart()).join("\n");
 }
 
 // One inbox round trip. Each step still passes through the configured PageLens bridge.
-export async function runMxDraftRead({ tabId, url }, dispatch, tabUrl) {
+export async function runMxDraftRead({ action, tabId, url, title, expectedDetails = 0 }, dispatch, tabUrl) {
   const page = new URL(url);
+  const list = action === "refresh_mx_draft_list";
+  const validPage = list ? page.pathname === "/product/manage" && page.searchParams.get("tab") === "draft" &&
+    typeof title === "string" && title.length > 0 && title.length <= 255 : /^\/product\/edit-draft\/\d+$/.test(page.pathname);
   if (!Number.isInteger(tabId) || tabId < 1 || page.origin !== "https://seller.tiktokshopglobalselling.com" ||
-      !/^\/product\/edit-draft\/\d+$/.test(page.pathname) || page.searchParams.get("shop_region") !== "MX")
+      !validPage || page.searchParams.get("shop_region") !== "MX")
     throw Error("Expected a saved MX draft");
   async function call(tool, args) {
     if (await tabUrl(tabId) !== url) throw Error("Draft URL changed during readback");
@@ -91,15 +96,16 @@ export async function runMxDraftRead({ tabId, url }, dispatch, tabUrl) {
     if (!reply.ok || reply.result?.ok === false) throw Error(JSON.stringify(reply.error || reply.result?.error));
     return reply.result;
   }
-  return readFreshDocument(url, call);
+  if (!Number.isInteger(expectedDetails) || expectedDetails < 0 || expectedDetails > 20) throw Error("Invalid detail count");
+  return readFreshDocument(url, call, list ? draftListCode(title, null, true) : snapshotCode(true, true, true, expectedDetails));
 }
 
-export async function readFreshDocument(url, call) {
+export async function readFreshDocument(url, call, snapshot = snapshotCode(true, true, true)) {
   const guard = "if(location.href!==" + JSON.stringify(url) + ")throw Error('Wrong draft document');";
   const initial = await call("run_js", { code: guard + "return performance.timeOrigin" });
   if (!Number.isFinite(initial?.result)) throw Error("Draft document unavailable before reload");
   await call("reload_tab", {});
-  const code = guard + "if(performance.timeOrigin===" + initial.result + ")return null;" + snapshotCode(true, true, true);
+  const code = guard + "if(performance.timeOrigin===" + initial.result + ")return null;" + snapshot;
   const deadline = Date.now() + 20000;
   do {
     try {
@@ -116,7 +122,7 @@ export async function readFreshDocument(url, call) {
 export function sameText(a, b) {
   return a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
 }
-function checkCopy(state, copy) {
+export function checkCopy(state, copy) {
   if (state.captcha)
     throw new Error("TikTok verification is open in the seller editor");
   if (
@@ -206,6 +212,15 @@ export function mxEditor(bridge, runCode, skuWrites) {
     );
   }
   const applyAttributes = async (attrs) => {
+    const deadline = Date.now() + 15000;
+    for (;;) {
+      const verification = sellerVerification();
+      if (verification) throw Error("Seller verification after category selection: " + verification);
+      if (document.querySelector('[data-id="product.publish.brand"]') &&
+          document.querySelector('[data-id="product.publish.package_weight"]')) break;
+      if (Date.now() >= deadline) throw Error("Sales and shipping controls did not load for selected category");
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
     const out = {};
     for (const [label, terms] of Object.entries(attrs)) {
       const box = [...document.querySelectorAll("[role=combobox]")].find(
@@ -239,7 +254,8 @@ export function mxEditor(bridge, runCode, skuWrites) {
   };
 
   async function supplement(tab, copy) {
-    if (copy.attributes) await js(tab, applyAttributes, copy.attributes);
+    await runCode(tab, sellerVerification.toString() + "\nreturn await (" + applyAttributes.toString() +
+      ")(" + JSON.stringify(copy.attributes || {}) + ")");
   }
   const fillCopy = async (copy) => {
     const pause = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -338,7 +354,7 @@ export function mxEditor(bridge, runCode, skuWrites) {
       document.querySelector('[data-id="product.publish.product_name"]'),
       copy.title,
     );
-    desc("product.publish.description.local_lang", copy.description);
+    if (!copy.deferLocalDescription) desc("product.publish.description.local_lang", copy.description);
     return true;
   };
   async function setCopy(tab, copy) {
@@ -376,13 +392,21 @@ export function mxEditor(bridge, runCode, skuWrites) {
     const written = await setCopy(tab, { title, description, enTitle, enDescription, preserveImages: true });
     check(await restoreDetails(tab, written, copy, details), copy);
   }
+  async function uploadDetails(tab, copy, details) {
+    if (!details.length) return;
+    // On bilingual forms Seller Center copies source-language media into the
+    // local editor. Local-only attachments can disappear on the next save.
+    const sourceInput = '[data-id="product.publish.description.input_lang"] input[type=file]';
+    const useSource = copy.enDescription && await js(tab, selector => Boolean(document.querySelector(selector)), sourceInput);
+    const selector = useSource ? sourceInput : localDesc + " input[type=file]";
+    for (const file of details) await bridge("upload_file", { tabId: tab, selector, paths: [file] });
+  }
   async function restoreDetails(tab, state, copy, details) {
     if (state.captcha || !details.length || state.detailImages !== 0 || state.gallery !== copy.gallery.length)
       return state;
     // Seller Center can replace the local description (including all its images)
     // when it translates the English text. Only restore a completely empty gallery.
-    for (const file of details)
-      await bridge("upload_file", { tabId: tab, selector: localDesc + " input[type=file]", paths: [file] });
+    await uploadDetails(tab, copy, details);
     return runCode(tab, "for(let i=0;i<50;i++){const s=(" + formState.toString() +
       ")(); if(s.detailImages >= " + details.length + ") return s; await new Promise(r=>setTimeout(r,200))} throw Error('Detail images did not finish uploading')");
   }
@@ -392,6 +416,7 @@ export function mxEditor(bridge, runCode, skuWrites) {
     update = false,
     force = false,
     snapshot = null,
+    creating = false,
   ) {
     let state = snapshot || (await runCode(tab, commerceScript(sellerRead)));
     let differences = commercialDifferences(state, plan);
@@ -408,15 +433,14 @@ export function mxEditor(bridge, runCode, skuWrites) {
       );
       if (structureChanged) {
         for (const { option } of plan.skus) {
-          const selector = await runCode(tab, commerceScript(sellerVariants, {
-            axis: plan.axis, brand: plan.brand, skus: [{ option }], trustedCommit: true,
+          await runCode(tab, commerceScript(sellerVariants, {
+            axis: plan.axis, brand: plan.brand, skus: [{ option }],
           }));
-          if (selector === true) continue;
-          await bridge("trusted_type", { tabId: tab, selector, value: option, clear: true, submit: true });
-          await bridge("press_keys", { tabId: tab, keys: ["Tab"] });
           await runCode(tab, commerceScript(async (ui, label) => {
-            await ui.wait(() => ui.options().some(slot =>
-              ui.optionLabels(slot).some(value => ui.norm(value) === ui.norm(label))), "committed option " + label);
+            await ui.wait(() => {
+              const tags = ui.options().map(ui.optionLabels).filter(parts => parts.includes(label));
+              return tags.length === 1 && ui.rows().filter(row => tags[0].includes(row.label)).length === 1;
+            }, "SKU row " + label);
             return true;
           }, option));
         }
@@ -426,7 +450,18 @@ export function mxEditor(bridge, runCode, skuWrites) {
         let keys = ["stock", "priceMXN"];
         const attempts = [];
         for (let attempt = 0; attempt < 2; attempt++) {
-          for (const key of keys) {
+          if (creating && !force && attempt === 0) {
+            await runCode(tab, commerceScript((ui, sku) => {
+              const labels = ui.options().map(ui.optionLabels).filter(aliases => aliases.includes(sku.option));
+              if (labels.length !== 1) throw Error("Ambiguous option " + sku.option);
+              for (const [field, value] of [["stock", sku.stock], ["price", sku.priceMXN]]) {
+                const rows = ui.rows().filter(r => labels[0].includes(r.label));
+                if (rows.length !== 1) throw Error("Cannot identify SKU row " + sku.option);
+                if (ui.numeric(rows[0][field]) !== value) ui.set(rows[0][field], value);
+              }
+              return true;
+            }, { option: sku.option, stock: sku.stock, priceMXN: sku.priceMXN }));
+          } else for (const key of keys) {
             const selector = await runCode(tab, commerceScript(locateSkuInput, sku.option, key, sku[key], force));
             if (!selector) continue;
             const typed = await bridge("trusted_type", {
@@ -435,19 +470,28 @@ export function mxEditor(bridge, runCode, skuWrites) {
             if (typed?.ok === false) throw Error("Trusted SKU input failed");
             await bridge("press_keys", { tabId: tab, keys: ["Tab"] });
           }
-          const observed = await runCode(tab, commerceScript((ui, sku, force) => {
-            const tags = ui.options().map(ui.optionLabels).filter(labels => labels.includes(sku.option));
-            const rows = ui.rows().filter(row => tags.length === 1 && tags[0].includes(row.label));
-            if (rows.length !== 1) throw Error("Cannot identify SKU row " + sku.option);
-            const receipts = Object.values(JSON.parse(document.body.dataset.plSkuWrites || "{}"))
-              .filter(r => r.option === sku.option);
-            const values = { stock: ui.numeric(rows[0].stock), priceMXN: ui.numeric(rows[0].price) };
-            const missing = Object.keys(values).filter(key => {
-              const hit = receipts.find(r => r.field === key);
-              return values[key] !== sku[key] || (force && !hit?.events.some(
-                e => e.type === "insertText" && e.value && Number(e.value) === sku[key]));
-            });
-            return { values, missing, receipts };
+          const observed = await runCode(tab, commerceScript(async (ui, sku, force) => {
+            const observe = () => {
+              const tags = ui.options().map(ui.optionLabels).filter(labels => labels.includes(sku.option));
+              const rows = ui.rows().filter(row => tags.length === 1 && tags[0].includes(row.label));
+              if (rows.length !== 1) throw Error("Cannot identify SKU row " + sku.option);
+              const receipts = Object.values(JSON.parse(document.body.dataset.plSkuWrites || "{}"))
+                .filter(r => r.option === sku.option);
+              const values = { stock: ui.numeric(rows[0].stock), priceMXN: ui.numeric(rows[0].price) };
+              const missing = Object.keys(values).filter(key => {
+                const hit = receipts.find(r => r.field === key);
+                return values[key] !== sku[key] || (force && !hit?.events.some(
+                  e => e.type === "insertText" && e.value && Number(e.value) === sku[key]));
+              });
+              return { values, missing, receipts };
+            };
+            let result = observe();
+            // A blur may replace the price input in the next render.
+            for (let i = 0; result.missing.length && i < 3; i++) {
+              await new Promise(resolve => setTimeout(resolve, 70));
+              result = observe();
+            }
+            return result;
           }, { option: sku.option, stock: sku.stock, priceMXN: sku.priceMXN }, force));
           attempts.push(observed.values);
           keys = observed.missing;
@@ -490,56 +534,94 @@ export function mxEditor(bridge, runCode, skuWrites) {
     let state = await js(tab, formState);
     if (state.url !== url || state.captcha) throw Error("Unexpected draft editor or verification");
     if (new URL(url).pathname === "/product/create") {
+      // The seller uploads asynchronously. Submit the ordered selection once on
+      // its multi-file input, then use the upload time for the dependent controls.
+      const multiple = gallery.length > 1 && await js(tab, selector =>
+        document.querySelector(selector)?.multiple === true, gallerySelector);
+      // Larger selections occasionally leave a trailing slot at 0% indefinitely.
+      // Keep the gallery ordered and submit a new batch only after the prior one settles.
+      const batchSize = multiple ? 3 : 1;
+      const uploadBatch = offset => bridge("upload_file", {
+        tabId: tab, selector: gallerySelector, paths: gallery.slice(offset, offset + batchSize),
+      });
+      await uploadBatch(0);
       const { title, description, enTitle, enDescription } = copy;
       if (enTitle && state.enTitle !== enTitle) {
         const selector = '[data-id="product.publish.title.input_lang"]';
         await bridge("trusted_type", { tabId: tab, selector, clear: true, value: enTitle });
         await bridge("press_keys", { tabId: tab, selector, keys: ["Tab"] });
       }
-      checkCopy(
-        await setCopy(tab, { title, description, enTitle, enDescription }),
-        copy,
-      );
+      const sourceInput = '[data-id="product.publish.description.input_lang"] input[type=file]';
+      const bilingualMedia = Boolean(details.length && enTitle && enDescription &&
+        await js(tab, selector => Boolean(document.querySelector(selector)), sourceInput));
+      const written = await setCopy(tab, { title, description, enTitle, enDescription, deferLocalDescription: bilingualMedia });
+      if (bilingualMedia) {
+        if (written.captcha || written.enTitle !== enTitle || !sameText(written.enDescription || "", enDescription))
+          throw Error("Source-language copy changed before uploading images");
+        await uploadDetails(tab, copy, details);
+        phases.uploadsSubmitted = Date.now();
+      } else checkCopy(written, copy);
       phases.copyRead = Date.now();
-      // The seller uploads asynchronously. Submit the ordered selection once on
-      // its multi-file input, then use the upload time for the dependent controls.
-      const multiple = gallery.length > 1 && await js(tab, selector =>
-        document.querySelector(selector)?.multiple === true, gallerySelector);
-      const batchSize = multiple ? gallery.length : 1;
-      for (let i = 0; i < gallery.length; i += batchSize) {
-        await bridge("upload_file", { tabId: tab, selector: gallerySelector, paths: gallery.slice(i, i + batchSize) });
-        if (!multiple && i + 1 < gallery.length) {
-          await bridge("wait_for", { tabId: tab,
-            selector: '[data-id="product.widget.main_image.' + i + '"] img:not([src*="placeholder"])',
-            timeoutMs: 30000 });
+      const finishGallery = async () => {
+        if (phases.gallerySubmitted) return;
+        for (let offset = batchSize; offset < gallery.length; offset += batchSize) {
+          await runCode(tab, "const until=Date.now()+25000;do{const s=(" + formState.toString() +
+            ")();if(s.captcha)throw Error('Seller verification');if(s.gallery===" + offset +
+            ")return true;await new Promise(r=>setTimeout(r,150))}while(Date.now()<until);throw Error('Previous gallery batch still uploading')");
+          await uploadBatch(offset);
         }
-      }
-      for (const file of details)
-        await bridge("upload_file", { tabId: tab, selector: localDesc + " input[type=file]", paths: [file] });
-      phases.uploadsSubmitted = Date.now();
+        phases.gallerySubmitted = Date.now();
+      };
+      let detailsSubmitted = bilingualMedia;
+      const submitDetails = async () => {
+        await uploadDetails(tab, copy, details);
+        detailsSubmitted = true;
+        phases.uploadsSubmitted = Date.now();
+      };
+      // Both widgets can upload the same asset. Finish the gallery queue before
+      // handing those files to the description widget.
+      if (!detailsSubmitted && (!details.some(file => gallery.includes(file)) || (await js(tab, formState)).gallery === gallery.length))
+        await submitDetails();
       const fillSales = async selected => {
         const categoryPath = value => (value || "").replace(/\s*[-/>]\s*/g, "/");
         if (categoryPath(selected.shown) !== categoryPath(copy.category?.label))
           throw Error("Selected category differs");
         phases.categoryRead = Date.now();
         await supplement(tab, copy);
-        const result = await commercialState(tab, plan, true);
+        await finishGallery();
+        if (!detailsSubmitted && (await js(tab, formState)).gallery === gallery.length) await submitDetails();
+        phases.salesControlsReady = Date.now();
+        const result = await commercialState(tab, plan, true, false, null, true);
         phases.fieldsRead = Date.now();
         return result;
       };
       let cat = await category(tab, copy.category);
       let commerce = cat.selected ? await fillSales(cat) : null;
+      await finishGallery();
       // A slow earlier slot may still show 上传中 after the last slot is ready.
       // Check every image in the page, without submitting the same file again.
+      const expectedPath = JSON.stringify(copy.category?.label || "");
       const waitForMedia = `const until=Date.now()+12000;do{
         const s=(${formState.toString()})();
-        if(s.captcha || (s.gallery===${gallery.length} && s.detailImages>=${details.length}) || Date.now()>=until)return s;
+        if(!commerceReady && expectedPath && (sameCategory(s.category,expectedPath) ||
+          [...document.querySelectorAll("button")].some(b=>!b.disabled && b.innerText.trim()==="应用" &&
+            sameCategory(b.parentElement.parentElement.innerText.replace("应用","").trim(),expectedPath)))) return s;
+        if(s.captcha || (s.gallery===${gallery.length} && (!detailsSubmitted || s.detailImages>=${details.length})) || Date.now()>=until)return s;
         await new Promise(r=>setTimeout(r,250));
       }while(true)`;
       for (let i = 0; i < 4; i++) {
-        state = await runCode(tab, waitForMedia);
+        state = await runCode(tab, "const commerceReady=" + Boolean(commerce || cat.selected) +
+          ";const detailsSubmitted=" + detailsSubmitted + ";const expectedPath=" + expectedPath + ";" + sameCategory.toString() + ";" + waitForMedia);
+        if (!detailsSubmitted && !state.captcha && state.gallery === gallery.length) await submitDetails();
+        if (!commerce && !cat.selected && !state.captcha) {
+          cat = await category(tab, copy.category);
+          if (cat.selected) commerce = await fillSales(cat);
+        }
         if (state.captcha || (state.gallery === gallery.length && state.detailImages >= details.length)) break;
       }
+      if (!state.captcha && state.detailImages === details.length && copy.enDescription &&
+          (!sameText(state.description, copy.description) || state.title !== copy.title))
+        state = await setCopy(tab, { title: copy.title, description: copy.description, preserveImages: true });
       check(state, copy);
       phases.mediaRead = Date.now();
       if (!cat.selected && sameCategory(state.category, copy.category?.label))

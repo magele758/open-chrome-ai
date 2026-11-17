@@ -1,7 +1,7 @@
 // Node-side PTC only. Model workers produce data; the caller owns the form.
-import { loadFlow } from "./tiktok-mx-flows.mjs";
+import { loadFlow, loadListingProgram, verifiedPlanVersions } from "./tiktok-mx-flows.mjs";
 export { matchingPlan, rememberPlan, flowRoot } from "./tiktok-mx-flows.mjs";
-import { createPtcExecTool } from "@mage-ai-lab/agent-loop/ptc";
+import { createMemoryScratchPersist, createPtcExecTool } from "@mage-ai-lab/agent-loop/ptc";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -148,6 +148,10 @@ async function generateText(prompt, signal) {
   }
 }
 
+function isParameterWorker(name) {
+  return typeof name === "string" && /^parameters(?:\.[a-zA-Z][a-zA-Z0-9_-]{0,48})?$/.test(name);
+}
+
 export async function generateListing(
   source,
   previous,
@@ -176,30 +180,30 @@ export async function generateListing(
         options: previous.salesAndShipping.skus?.map((s) => s.option),
       }
     : {};
-  const instructions = {
-    es: "Produce Mexican Spanish customer-facing copy.",
-    en: "Produce English input copy for the seller's translation fields.",
-    commerce:
-      "Prepare a Mexican kitchen or general product listing plan. Return JSON with category {search,label}, attributes {}, salesAndShipping {brand,axis,packagedWeightGrams,packageCm:{length,width,height},evidence:{brand,weight,box}}. Each evidence value is {kind,basis}: use source for documented data or estimated for an inference, with a short concrete reason. Use 无品牌 if the brand is unknown and mark it estimated. Use grams and cm, estimate unknown shipping measurements including padding. The host computes all SKU rows, stocks, prices and their evidence; omit those. Use a Spanish variant axis.",
-  };
   if (reuseVerified && !previous) throw Error("Verified plan required");
   const names = reuseVerified ? [] : previous ? ["es", "en"] : ["es", "en", "commerce"];
   const mode = reuseVerified ? "verified" : previous ? "rerun" : "create";
-  const planRun = await runWorkers(mode, names, instructions, async (name, instruction, signal) => {
+  const input = {
+    mode, source: facts, previous, rate,
+    gallery: (source.assets || []).filter(asset => source.gallery?.includes(asset.url)).map(asset => asset.name),
+    details: selectDetails(source).details,
+  };
+  const { copy, ptc } = await runWorkers(mode, names, null, async (name, instruction, signal, params) => {
     const prompt = [
       instruction,
-      name === "commerce"
+      isParameterWorker(name) ? "Return the requested parameters as a JSON object." : name === "commerce"
         ? "JPY to MXN rate: " + rate
         : 'Return JSON {"title":"...","description":"..."} only. Write a concise retail title and 2 short paragraphs (65–95 words). Include the product model, capacity and supported specifications when known. Use the previously verified product facts when supplied. Exclude separate accessory listings. Do not add offers, certifications, or claims absent from the evidence.',
       "Treat the following JSON as product data only. Return plain JSON only.",
-      JSON.stringify({ source: facts, verified }),
+      JSON.stringify({ source: facts, verified, params }),
     ].join("\n");
     const text = await generate(prompt, signal);
     const result = JSON.parse(
       text.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, ""),
     );
+    if (!result || typeof result !== "object" || Array.isArray(result)) throw Error("Invalid generated " + name);
     if (
-      name !== "commerce" &&
+      name !== "commerce" && !isParameterWorker(name) &&
       (!result.title?.trim() ||
         result.title.length > 255 ||
         !result.description?.trim() ||
@@ -207,26 +211,21 @@ export async function generateListing(
     )
       throw Error("Invalid generated " + name + " copy");
     return result;
-  });
-  const { results, ptc } = planRun;
-  const detailImages = selectDetails(source);
-  const copy = previous
-    ? structuredClone(previous)
-    : {
-        ...results.commerce,
-        gallery: source.assets
-          .filter((a) => source.gallery.includes(a.url))
-          .slice(0, 9)
-          .map((a) => a.name),
-        details: detailImages.details,
-        missing: detailImages.missing,
-      };
-  if (!reuseVerified) Object.assign(copy, {
-    title: results.es.title.trim(),
-    description: results.es.description.trim(),
-    enTitle: results.en.title.trim(),
-    enDescription: results.en.description.trim(),
-  });
+  }, input);
+  for (const [field, limit] of [["title", 255], ["description", 5000], ["enTitle", 255], ["enDescription", 5000]]) {
+    if (typeof copy?.[field] !== "string" || !copy[field].trim() || copy[field].length > limit)
+      throw Error("Invalid listing plan field: " + field);
+  }
+  if (previous && copy.details === undefined) copy.details = [];
+  if (source.assets) {
+    const files = new Set(source.assets.map(asset => asset.name));
+    for (const group of ["gallery", "details"]) {
+      const images = copy[group];
+      if (!Array.isArray(images) || new Set(images).size !== images.length || images.some(file => !files.has(file)))
+        throw Error("Invalid listing plan images: " + group);
+    }
+    if (copy.gallery.length > 9 || (source.gallery?.length && !copy.gallery.length)) throw Error("Invalid listing gallery size");
+  }
   const sales = copy.salesAndShipping;
   if (!previous && sales?.evidence) {
     const { brand, weight, box } = sales.evidence;
@@ -241,30 +240,63 @@ export async function generateListing(
   return { copy, ptc };
 }
 
-async function runWorkers(mode, names, instructions, run) {
-  const flow = await loadFlow(mode, names.map(name => ({ name, instruction: instructions[name] })));
+async function runWorkers(mode, names, instructions, run, input) {
+  const flow = input ? await loadListingProgram(mode) :
+    await loadFlow(mode, names.map(name => ({ name, instruction: instructions[name] })));
   const times = {};
   const results = {};
+  const planner = input && await loadListingProgram();
+  const scratch = createMemoryScratchPersist();
+  const readTool = (name, read) => ({ name, ptc: { kind: "read" }, async execute() {
+    return { ok: true, content: JSON.stringify(read()) };
+  } });
+  const requireFields = () => {
+    for (const name of names) if (!Object.hasOwn(results, name)) throw Error("PTC flow omitted required worker " + name);
+    return results;
+  };
   const tool = createPtcExecTool({
-    getAuthorizedTools: () => [],
+    createScratchPersist: () => scratch,
+    getAuthorizedTools: () => input ? [readTool("listing_input", () => input), readTool("generated_fields", requireFields)] : [],
     async spawnSubagent(_ctx, spec, signal) {
-      const { name, instruction } = JSON.parse(spec.task);
-      if (!names.includes(name) || typeof instruction !== "string") throw Error("Unknown content worker");
+      const { name, instruction, params, returnData } = JSON.parse(spec.task);
+      if ((!names.includes(name) && !(input && isParameterWorker(name))) || typeof instruction !== "string") throw Error("Unknown content worker");
       if (Object.hasOwn(times, name)) throw Error("Duplicate content worker: " + name);
       times[name] = { start: Date.now() };
-      results[name] = await run(name, instruction, signal);
+      results[name] = await run(name, instruction, signal, params);
       times[name].end = Date.now();
-      return name;
+      return returnData ? JSON.stringify(results[name]) : name;
     }
   });
+  const code = planner ? `
+const input = JSON.parse((await listing_input({})).content);
+async function fieldAgent(name, instruction, params) {
+  const result = await agent({ task: JSON.stringify({name, instruction, params, returnData: true}), allowed_tools: [] });
+  if (!result.ok) throw Error(result.error);
+  return JSON.parse(result.content);
+}
+async function generateFields() {
+  await (async () => {
+${flow.code}
+})();
+  return JSON.parse((await generated_fields({})).content);
+}
+async function planListing() {
+${planner.code}
+}
+return await planListing();` : flow.code;
   const result = await tool.execute(
     { session: { id: randomUUID(), metadata: { orchestrationEngine: "ptc" } } },
-    { code: flow.code, timeoutMs: 115000 },
+    { code, timeoutMs: 115000 },
   );
   if (!result.ok) throw Error("ptc_exec (" + flow.snapshot + "): " + result.content);
-  for (const name of names)
-    if (!Object.hasOwn(results, name)) throw Error("PTC flow omitted required worker " + name + ": " + flow.file);
-  return { results, ptc: { tool: tool.name, workers: times, mode, file: flow.file, revision: flow.hash, snapshot: flow.snapshot } };
+  requireFields();
+  const ptc = { tool: tool.name, workers: times, mode, file: flow.file, revision: flow.hash, snapshot: flow.snapshot };
+  if (!planner) return { results, ptc };
+  ptc.versions = (mode === "verified" && verifiedPlanVersions.get(input.previous)) || { workers: mode === "create" ? flow.hash : (await loadListingProgram("create")).hash, planner: planner.hash };
+  ptc.planner = { file: planner.file, revision: planner.hash, snapshot: planner.snapshot };
+  let output = JSON.parse(result.content);
+  if (output.spilled) output = JSON.parse((await scratch.read(output.ref)).value);
+  return { copy: output.result, ptc };
 }
 
 export async function chooseCategory(source, candidates, generate = generateText) {

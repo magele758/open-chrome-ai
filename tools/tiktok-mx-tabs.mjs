@@ -6,9 +6,10 @@ export class DraftTabs {
     this.bridge = bridge;
     this.tabs = new Map();
     this.owned = new Set();
+    this.pendingForm = null;
   }
 
-  async open(url) {
+  validate(url) {
     const page = new URL(url);
     const source = page.origin === "https://shop.tiktok.com" &&
       page.pathname.replace(/\/$/, "").split("/").pop() === this.product;
@@ -16,20 +17,32 @@ export class DraftTabs {
       /^\/product\/(manage|create|edit-draft\/\d+)$/.test(page.pathname) &&
       page.searchParams.get("shop_region") === "MX";
     if (!source && !seller) throw Error("Unexpected product page");
+    return page;
+  }
+
+  async open(url, backgroundUrls = [], active) {
+    const page = this.validate(url);
+    for (const related of backgroundUrls) this.validate(related);
     const anchor = this.owned.values().next().value;
-    const { tabId, groupId } = await this.bridge("open_tab", {
+    const { tabId, groupId, backgroundTabIds } = await this.bridge("open_tab", {
       url: page.href,
-      active: seller && page.pathname !== "/product/manage",
+      active: active ?? (page.origin === "https://seller.tiktokshopglobalselling.com" && page.pathname !== "/product/manage"),
+      ...(backgroundUrls.length && { backgroundUrls }),
       ...(anchor == null ? { groupTitle: "PageLens · MX " + this.product.slice(-6) } : { groupWithTab: anchor }),
     });
     this.owned.add(tabId);
+    for (const [i, id] of (backgroundTabIds || []).entries()) {
+      this.owned.add(id);
+      this.tabs.set(backgroundUrls[i], id);
+    }
     if (!Number.isInteger(groupId) || groupId < 0) throw Error("Chrome did not group the task tab");
+    this.groupId = groupId;
     this.tabs.set(url, tabId);
     return tabId;
   }
 
   async close() {
-    const ids = [...this.owned];
+    const ids = [...this.owned].filter(id => id !== this.pendingForm);
     const results = await Promise.allSettled(ids.map(id => this.bridge("close_tab", { tabId: id })));
     const remaining = ids.length ? await this.bridge("list_tabs", {}) : [];
     for (const [index, id] of ids.entries()) {
@@ -37,8 +50,9 @@ export class DraftTabs {
       if (remaining.some(t => t.id === id) || (result.status === "rejected" && !String(result.reason).includes("TAB_NOT_FOUND")))
         throw Error("Could not close task tab " + id + ": " + (result.reason || "still open"));
     }
-    this.owned.clear();
+    for (const id of ids) this.owned.delete(id);
     this.tabs.clear();
-    if (ids.length) console.error("PageLens group cleared (" + ids.length + " work tabs)");
+    if (this.pendingForm != null) console.error("Unconfirmed draft: kept editor tab " + this.pendingForm);
+    else if (ids.length) console.error("PageLens group cleared (" + ids.length + " work tabs)");
   }
 }

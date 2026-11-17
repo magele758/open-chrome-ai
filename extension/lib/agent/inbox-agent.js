@@ -221,7 +221,18 @@ export async function startAgentPrompt(job, jobId, { auth = null } = {}) {
   // without a user gesture, so `auto` just pings once and falls back.
   const target = Number.isInteger(job.tabId) ? await chrome.tabs.get(job.tabId).catch(() => null) : null;
   const windowId = target?.windowId ?? (await chrome.windows.getLastFocused()).id;
-  const pong = runtime === "panel" ? await ensurePanel(windowId) : await pingPanel(windowId);
+  let pong = await pingPanel(windowId);
+  if (!pong && runtime === "panel" && job.tabId == null && !job.tabUrlIncludes) {
+    // A link-only request has no tab owner. Discover live panels before dispatching once.
+    const contexts = await chrome.runtime.getContexts?.({ contextTypes: ["SIDE_PANEL"] });
+    let ids = [...new Set((contexts || []).map(context => context.windowId).filter(id => id >= 0))];
+    if (!ids.length) ids = (await chrome.windows.getAll?.() || []).map(window => window.id);
+    const replies = await Promise.all(ids.filter(id => id !== windowId).map(pingPanel));
+    const panels = replies.filter(Boolean);
+    if (panels.length > 1) return { done: failure("AMBIGUOUS_PANEL", "多个窗口已打开侧栏，请指定目标标签。") };
+    pong = panels[0];
+  }
+  if (!pong && runtime === "panel") pong = await ensurePanel(windowId);
   if (!pong) {
     if (runtime === "auto") return startHeadless(job, jobId, prompt, settings, auth);
     return {

@@ -252,6 +252,21 @@ assert.equal(
   assert.equal(refreshed.url, url);
   assert.deepEqual(commercialDifferences(refreshed.salesAndShipping, plan), []);
   await assert.rejects(runMxDraftRead({ tabId: 1, url }, dispatch, () => url.replace("123", "987")), /URL changed/);
+  const listUrl = "https://seller.tiktokshopglobalselling.com/product/manage?shop_region=MX&tab=draft";
+  const listRequest = { action: "refresh_mx_draft_list", tabId: 1, url: listUrl, title: "Rack" };
+  const listCalls = [];
+  const rows = { matches: [{ id: "321" }], ids: ["321"] };
+  const listRead = await runMxDraftRead(listRequest, async (tool, args) => {
+    listCalls.push(tool);
+    if (tool === "reload_tab") return { ok: true, result: {} };
+    const result = args.code.endsWith("return performance.timeOrigin") ? 10 : rows;
+    if (result === rows) assert.ok(args.code.includes("performance.timeOrigin===10"));
+    return { ok: true, result: { ok: true, result } };
+  }, () => listUrl);
+  assert.deepEqual(listRead, rows);
+  assert.deepEqual(listCalls, ["run_js", "reload_tab", "run_js"]);
+  await assert.rejects(runMxDraftRead({ ...listRequest, url: listUrl.replace("draft", "live") },
+    dispatch, () => listUrl), /Expected a saved MX draft/);
   const count = actions.length;
   await assert.rejects(runMxDraftJob(job, dispatch, () => job.url.replace("123", "987")), /editor changed/);
   assert.equal(actions.length, count);
@@ -289,7 +304,12 @@ assert.equal(
   doc.querySelector('[data-id^="product.widget.main_image."]').remove();
   doc.querySelector("#product-cascader-select-view").textContent = "";
   doc.body.insertAdjacentHTML("beforeend", "<section>Cocina<span><button>应用</button></span></section>");
-  doc.querySelector("button").onclick = () => { doc.querySelector("#product-cascader-select-view").textContent = "Cocina"; };
+  doc.querySelector("button").onclick = () => {
+    doc.querySelector("#product-cascader-select-view").textContent = "Cocina";
+    const shipping = doc.querySelector('[data-id="product.publish.package_weight"]');
+    shipping.remove();
+    setTimeout(() => doc.body.append(shipping), 350);
+  };
   for (const e of doc.querySelectorAll('[data-id*="skus."] input')) e.value = "";
   let mainImages = 0;
   const upload = async (tool, args) => {
@@ -307,18 +327,18 @@ assert.equal(
   assert.deepEqual([created.state.gallery, created.state.detailImages], [1, 1]);
   assert.deepEqual(commercialDifferences(created.commerce.state, plan), []);
   assert.equal(created.steps.filter(s => s.tool === "upload_file").length, 2);
-  // The first slot is slower than the last one. A single multi-file selection
-  // must keep its order and wait for all nine, without uploading any twice.
+  // The first slot is slower than the last. Each selection waits for the previous batch.
   doc.querySelector('[data-id^="product.widget.main_image."]').remove();
   doc.body.insertAdjacentHTML("beforeend", '<input type="file" accept=".jpg,.png,.jpeg" multiple>');
   const nine = Array.from({ length: 9 }, (_, i) => "/gallery-" + i + ".jpg");
   const selections = [];
   const delayed = async (tool, args) => {
     if (tool !== "upload_file") return dispatch(tool, args);
+    assert.equal(doc.querySelectorAll('[data-id^="product.widget.main_image."] [role="progressbar"]').length, 0);
     selections.push(args.paths);
     args.paths.forEach((file, i) => {
       const slot = doc.createElement("div");
-      slot.dataset.id = "product.widget.main_image." + i;
+      slot.dataset.id = "product.widget.main_image." + doc.querySelectorAll('[data-id^="product.widget.main_image."]').length;
       doc.body.append(slot);
       if (i === 0) {
         slot.innerHTML = '<img src="' + file + '"><span role="progressbar"></span>';
@@ -329,9 +349,35 @@ assert.equal(
     return { ok: true, result: { ok: true } };
   };
   const bulk = await runMxDraftJob({ ...job, url: createUrl, gallery: nine, copy: { ...copy, gallery: nine } }, delayed, () => createUrl);
-  assert.deepEqual(selections, [nine]);
+  assert.deepEqual(selections, [nine.slice(0, 3), nine.slice(3, 6), nine.slice(6)]);
   assert.equal(bulk.state.gallery, 9);
   assert.equal(bulk.state.category, "Cocina");
+  doc.querySelectorAll('[data-id^="product.widget.main_image."]').forEach(slot => slot.remove());
+  doc.querySelectorAll(".ProseMirror img").forEach(img => img.remove());
+  doc.body.insertAdjacentHTML("beforeend", field("description.input_lang", '<input type="file"><div class="ProseMirror">Ice</div>'));
+  const shared = "/shared.jpg";
+  const order = [];
+  const overlapping = async (tool, args) => {
+    if (tool !== "upload_file") return dispatch(tool, args);
+    if (args.selector.includes("description")) {
+      assert.ok(!doc.querySelector('[role="progressbar"]'));
+      order.push("detail");
+      assert.ok(args.selector.includes("description.input_lang"));
+      const local = doc.querySelector('[data-id="product.publish.description.local_lang"] .ProseMirror');
+      local.insertAdjacentHTML("beforeend", '<img src="blob:temporary">');
+      setTimeout(() => { local.querySelector("img").src = "/shared.jpg"; }, 350);
+    } else {
+      order.push("gallery");
+      doc.body.insertAdjacentHTML("beforeend", '<div data-id="product.widget.main_image.0"><img src="/shared.jpg"><i role="progressbar"></i></div>');
+      setTimeout(() => doc.querySelector('[role="progressbar"]').remove(), 700);
+    }
+    return { ok: true, result: { ok: true } };
+  };
+  const sharedResult = await runMxDraftJob({ ...job, url: createUrl, gallery: [shared], details: [shared],
+    copy: { ...copy, enDescription: "Ice", gallery: [shared], details: [shared] } }, overlapping, () => createUrl);
+  assert.deepEqual(order, ["gallery", "detail"]);
+  assert.ok(!doc.querySelector('.ProseMirror img[src^="blob:"]'));
+  assert.deepEqual([sharedResult.state.gallery, sharedResult.state.detailImages], [1, 1]);
   dom.reconfigure({ url: job.url });
 }
 // Forced re-entry on an existing draft must still select the right row at an unchanged value.
@@ -404,7 +450,14 @@ function appendOption() {
     field("sale_property.value.name." + n, "<input>"),
   );
   const slot = doc.body.lastElementChild;
+  let typedAt = null, accepted = false;
+  slot.firstChild.oninput = () => { typedAt = Date.now(); };
+  slot.firstChild.onkeydown = event => {
+    if (event.key === "Enter" && typedAt !== null && Date.now() - typedAt >= 300)
+      accepted = true;
+  };
   slot.firstChild.onblur = () => {
+    if (!accepted) return;
     const value = slot.firstChild.value;
     slot.innerHTML = '<span class="pulse-input-tag-item"></span>';
     slot.firstChild.textContent = value;
@@ -422,11 +475,15 @@ doc.querySelector("tbody").replaceChildren();
 for (const slot of doc.querySelectorAll('[data-id^="product.publish.sale_property.value.name."]')) slot.remove();
 appendOption();
 const entered = [];
+doc.addEventListener("keydown", e => {
+  if (e.key === "Enter" && e.target.closest('[data-id*="sale_property.value.name"]'))
+    entered.push(e.target.value);
+});
 const editor = mxEditor(async (tool, args) => {
   if (tool === "trusted_type") {
     const el = doc.querySelector(args.selector);
+    assert.ok(el.closest('[data-id*="skus."]'), "Variant labels must commit inside their own input");
     el.focus(); el.value = args.value;
-    if (args.submit) { entered.push(args.value); el.blur(); }
   } else if (tool === "press_keys") doc.activeElement.blur();
   else throw Error("Unexpected test action " + tool);
   return { ok: true };

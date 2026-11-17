@@ -11,6 +11,8 @@ import { inject, injectMain, restrictedUrl } from "../chrome.js";
 import { pasteIntoPage } from "./page-fns.js";
 import { cosePublish } from "./companions.js";
 import { loadSettings } from "../storage.js";
+import { runNativeDraft } from "../../skills/tiktok-mx-draft/tiktok-mx-native.mjs";
+import { inspectDraftJob } from "../../skills/tiktok-mx-draft/tiktok-mx-inspect.mjs";
 import { runMxDraftJob, runMxDraftRead } from "../../skills/tiktok-mx-draft/tiktok-mx-editor.mjs";
 import { getBridge } from "../bridge/index.js";
 import { isUrlAllowed } from "../bridge/policy.js";
@@ -614,6 +616,12 @@ export async function executeJob(
     if (res.error) return res.error;
     auth = res.record;
   }
+  if (action === "ptc_inspect_mx_draft" || action === "ptc_create_mx_draft") {
+    const bridge = getBridge();
+    if (!bridge) return { ok: false, error: "PageLens bridge unavailable" };
+    const run = action === "ptc_create_mx_draft" ? runNativeDraft : inspectDraftJob;
+    return { ok: true, result: await run(job, bridge) };
+  }
   if (action === "clipboard_write") return runClipboardWrite(job);
   if (needsConfirmation(action)) {
     const s = settings || (await loadSettings());
@@ -682,7 +690,7 @@ export async function executeJob(
     if (output) await writeAgentPromptOutput(output);
     return result;
   }
-  if (action === "bridge_call" || action === "fill_mx_draft" || action === "read_mx_draft") {
+  if (["bridge_call", "fill_mx_draft", "read_mx_draft", "refresh_mx_draft_list"].includes(action)) {
     const bridge = getBridge();
     if (!bridge) return { ok: false, error: "bridge 未安装" };
     const session =
@@ -693,7 +701,7 @@ export async function executeJob(
       const dispatch = (tool, args) => bridge.call({
         id: job.id + "." + ++step, tool, args,
       }, { session });
-      const run = action === "read_mx_draft" ? runMxDraftRead : runMxDraftJob;
+      const run = action === "fill_mx_draft" ? runMxDraftJob : runMxDraftRead;
       const result = await run(job, dispatch, async id => (await chrome.tabs.get(id)).url);
       return { ok: true, result, meta: { tool: action, ms: Date.now() - start } };
     }
@@ -704,6 +712,18 @@ export async function executeJob(
 }
 
 let polling = false;
+let followUpTimer;
+function pollForNextStep() {
+  clearTimeout(followUpTimer);
+  const until = Date.now() + 1800;
+  const next = async () => {
+    followUpTimer = null;
+    const result = await pollAgentInboxOnce().catch(() => null);
+    if (!followUpTimer && result?.ok && !result.processed && Date.now() < until)
+      followUpTimer = setTimeout(next, 220);
+  };
+  followUpTimer = setTimeout(next, 130);
+}
 
 async function claimJob(jobName, job) {
   await writeJson(INBOX_ROOT, `${PROCESSED_REL}/${jobName}`, redactJobToken(job));
@@ -839,6 +859,8 @@ export async function pollAgentInboxOnce(deps = {}) {
       }
       await recordJobFinished(job, result, startedAt);
       results.push(await finishJob(name, job, result));
+      if (result.ok && job.followUp === true && ["bridge_call", "fill_mx_draft", "read_mx_draft", "refresh_mx_draft_list"].includes(job.action))
+        pollForNextStep();
     }
     return { ok: true, processed: results.length, results };
   } finally {

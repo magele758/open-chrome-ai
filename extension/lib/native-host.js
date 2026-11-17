@@ -53,12 +53,15 @@ export async function pingNativeHost() {
 }
 
 export async function execNativeShell({ command, cwd, timeoutMs } = {}) {
+  const requested = Number(timeoutMs);
+  const commandMs = Number.isFinite(requested) && requested > 0 ? Math.min(Math.floor(requested), 300_000) : 60_000;
+  // Let the host terminate the process and return its exit status before the transport times out.
   return nativeSend({
     op: "exec",
     command: String(command || ""),
     cwd: cwd ? String(cwd) : undefined,
-    timeoutMs,
-  });
+    timeoutMs: commandMs,
+  }, { timeoutMs: commandMs + 5_000 });
 }
 
 export async function nativeFs(payload, extra = {}) {
