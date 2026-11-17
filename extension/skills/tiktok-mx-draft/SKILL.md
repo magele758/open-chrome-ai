@@ -52,7 +52,7 @@ description: 给一个 TikTok Shop 商品链接，用 PageLens 在已登录的�
 
 新版将采集、填表、保存和回读分开计时。Node 合并 PTC 产出的结构化资料，在新建页或登记的编辑页发送一次 fill_mx_draft。扩展识别页面地址，在同一标签里按类目、变体和 SKU 行的依赖执行并回读。保存、重新打开及刷新后的核对独立进行；若新建页尚未加载销售字段，可在取得草稿 ID 后继续补齐。formRuns 记录每页填表使用的通信方式、步骤及时间。更新扩展后重新加载 PageLens，运行中的旧版会继续使用逐步通信。
 
-新建可运行 `node ~/.pagelens/tiktok-mx-draft.mjs create PRODUCT_URL JPY_TO_MXN`。该流程在采集和并行生成期间预先打开空表单；写入前仍核对草稿列表和来源记录。SKU 分类先匹配配件类型及明确单卖措辞，保留套装和以该配件为主商品的规格，把排除原因按源 SKU ID 记入 excludedSkus。首次保存后刷新编辑页，一次回读图文、标题、全部 SKU 及物流；firstPersisted 与 formRuns 可用于区分首次写入、刷新结果及后续修正。
+新建可运行 `node ~/.pagelens/tiktok-mx-draft.mjs create PRODUCT_URL JPY_TO_MXN`。该流程在采集和并行生成期间预先打开空表单；写入前仍核对草稿列表和来源记录。SKU 分类先匹配配件类型及明确单卖措辞，保留套装和以该配件为主商品的规格，把排除原因按源 SKU ID 记入 excludedSkus。主图控件支持多选时一次提交整组图片，随后核对每个槽位。保存后用 read_mx_draft 刷新同一草稿 ID，并从新文档读回双语内容、图片、全部 SKU 和物流。保存提示存入 saveSignals，读回值滞后时最多刷新核对三次，再决定是否补填。firstPersisted 与 formRuns 可用于区分首次写入、刷新结果及后续修正。
 
 PTC 程序放在项目的 `.pagelens-flows/tiktok-mx/`，该目录由 Git 忽略。可直接编辑 `create.ptc.js`、`rerun.ptc.js` 及类目和译名核对程序；下一次执行重新读取文件。每个执行版本按内容摘要保存在 `revisions/`，生成记录包含版本和路径。已核对的来源方案在 `verified/`，匹配时按当前来源重新核算销售数值。跨店库存仍标为估算。新商品的资料生成和商品图下载并行，填表由 PageLens 按页面依赖执行。
 

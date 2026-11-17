@@ -309,8 +309,8 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
   const beforeRecord = await fs.readFile(recordFile);
   const link = "https://seller.tiktokshopglobalselling.com/product/edit-draft/555?shop_region=MX";
   let scripts = 0;
-  draft.setDraftBridgeForTests(async (tool) => {
-    if (tool === "open_tab") return { tabId: 7, groupId: 1 };
+  draft.setDraftBridgeForTests(async (tool, args) => {
+    if (tool === "open_tab") return { tabId: args.url.includes("edit-draft") ? 8 : 7, groupId: 1 };
     if (tool === "run_js") {
       scripts += 1;
       if (scripts === 1) return { ok: true, result: { matches: [{ id: "555", text: "Molde" }], ids: ["555"] } };
@@ -327,18 +327,22 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
     assert.deepEqual(await fs.readFile(recordFile), beforeRecord);
     assert.equal(logs.some((line) => line.includes('"verified"')), false);
     scripts = 0;
+    let snapshots = 0, reloads = 0;
     draft.setDraftBridgeForTests(async (tool, args) => {
       if (tool === "open_tab") return { tabId: args.url.includes("edit-draft") ? 8 : 7, groupId: 1 };
+      if (tool === "reload_tab") { if (args.tabId === 8) reloads++; return {}; }
       if (tool === "run_js") {
         if (String(args.code).includes("readDraftList"))
           return { ok: true, result: { matches: [{ id: "555", text: "Molde" }], ids: ["555"] } };
+        if (args.code.endsWith("return performance.timeOrigin")) return { ok: true, result: 1000 };
+        snapshots++;
         return {
           ok: true,
           result: {
             url: link,
             title: "Molde",
             description: "Hielo",
-            enTitle: "Mold",
+            enTitle: snapshots === 2 ? "Old translation" : "Mold",
             enDescription: "Ice",
             gallery: 1,
             detailImages: 0,
@@ -348,7 +352,7 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
               brand: "无品牌",
               axes: ["Modelo"],
               options: [["M"]],
-              skus: [{ label: "M", stock: 5, priceMXN: 100 }],
+              skus: snapshots === 1 ? [] : [{ label: "M", stock: 5, priceMXN: 100 }],
               packagedWeightGrams: 500,
               dimensionsInCm: true,
               packageCm: { length: 10, width: 8, height: 7 },
@@ -361,6 +365,8 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
       return { ok: true };
     });
     await draft.save(dir, true);
+    assert.equal(snapshots, 3);
+    assert.ok(reloads >= 3);
     assert.deepEqual(await fs.readFile(path.join(dir, "receipt.json")), beforeReceipt);
     assert.deepEqual(await fs.readFile(recordFile), beforeRecord);
     assert.equal(logs.some((line) => line.includes('"verified":true') || line.includes('"verified": true')), true);

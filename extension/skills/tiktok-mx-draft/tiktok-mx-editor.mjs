@@ -3,7 +3,6 @@ import { commercialDifferences, commerceScript, locateSkuInput, sellerRead, sell
 export const titleSelector = '[data-id="product.publish.product_name"]';
 const localDesc = '[data-id="product.publish.description.local_lang"]';
 const gallerySelector = 'input[type=file][accept=".jpg,.png,.jpeg"]';
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function sameCategory(a, b) {
   const normalize = s => s?.trim().replace(/\s+(?:-|>|\/)\s+/g, "/");
   return Boolean(a && b && normalize(a) === normalize(b));
@@ -21,7 +20,8 @@ export function formState() {
     !/placeholder|ProseMirror-separator/.test(i.src + " " + i.className);
   const gallery = [
     ...document.querySelectorAll('[data-id^="product.widget.main_image."]'),
-  ].filter((slot) => [...slot.querySelectorAll("img")].some(realImage)).length;
+  ].filter(slot => !slot.querySelector('[role="progressbar"],[class*="_uploading_"]') &&
+    [...slot.querySelectorAll("img")].some(realImage)).length;
   return {
     url: location.href,
     title: title?.value || "",
@@ -67,6 +67,52 @@ export function formState() {
       ?.slice(-700),
   };
 }
+// Kept within the run_js size limit; the caller checks all values against its plan.
+export function snapshotCode(withCommerce, allowEmptyDescription, settle = false) {
+  const numbers = withCommerce ? commerceScript(sellerRead).replace(/^return await /, "") : "null";
+  return `let seen=0;for(let i=0;i<100;i++){
+    if(document.querySelector('${titleSelector}')?.value && (document.querySelector('${localDesc} .ProseMirror')?.textContent.trim() || (${allowEmptyDescription} && i>=12 && document.querySelector('${localDesc} .ProseMirror')))){
+      const state=(${formState.toString()})();state.salesAndShipping=await ${numbers};
+      if(!${settle} || state.captcha || (state.category && state.gallery && state.enTitle && state.salesAndShipping?.skus.length) || ++seen>=16)return state;
+    }
+    await new Promise(r=>setTimeout(r,150));
+  }throw Error("Draft editor did not load")`.split("\n").map(line => line.trimStart()).join("\n");
+}
+
+// One inbox round trip. Each step still passes through the configured PageLens bridge.
+export async function runMxDraftRead({ tabId, url }, dispatch, tabUrl) {
+  const page = new URL(url);
+  if (!Number.isInteger(tabId) || tabId < 1 || page.origin !== "https://seller.tiktokshopglobalselling.com" ||
+      !/^\/product\/edit-draft\/\d+$/.test(page.pathname) || page.searchParams.get("shop_region") !== "MX")
+    throw Error("Expected a saved MX draft");
+  async function call(tool, args) {
+    if (await tabUrl(tabId) !== url) throw Error("Draft URL changed during readback");
+    const reply = await dispatch(tool, { tabId, ...args });
+    if (!reply.ok || reply.result?.ok === false) throw Error(JSON.stringify(reply.error || reply.result?.error));
+    return reply.result;
+  }
+  return readFreshDocument(url, call);
+}
+
+export async function readFreshDocument(url, call) {
+  const guard = "if(location.href!==" + JSON.stringify(url) + ")throw Error('Wrong draft document');";
+  const initial = await call("run_js", { code: guard + "return performance.timeOrigin" });
+  if (!Number.isFinite(initial?.result)) throw Error("Draft document unavailable before reload");
+  await call("reload_tab", {});
+  const code = guard + "if(performance.timeOrigin===" + initial.result + ")return null;" + snapshotCode(true, true, true);
+  const deadline = Date.now() + 20000;
+  do {
+    try {
+      const reply = await call("run_js", { code });
+      if (reply?.result) return reply.result;
+    } catch (error) {
+      if (!/frame (?:was removed|with ID 0 (?:was removed|does not exist))|execution context was destroyed|document unloaded/i.test(error.message)) throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 150));
+  } while (Date.now() < deadline);
+  throw Error("Fresh draft document did not load");
+}
+
 export function sameText(a, b) {
   return a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
 }
@@ -108,6 +154,13 @@ export function mxEditor(bridge, runCode, skuWrites) {
         if (!control)
           return { selected: false, reason: "Category selector unavailable" };
         const norm = (s) => s.replace(/\s*[-/>]\s*/g, "/").trim();
+        const selected = () => document.querySelector("#product-cascader-select-view")?.innerText.trim() || "";
+        const readSelection = async () => {
+          for (let i = 0; i < 24 && !selected(); i++) await pause(200);
+          const shown = selected();
+          return { selected: norm(shown) === norm(label), label, shown };
+        };
+        if (norm(selected()) === norm(label)) return readSelection();
         const recommendation = [...document.querySelectorAll("button")].find(
           (b) =>
             b.innerText.trim() === "应用" &&
@@ -116,12 +169,7 @@ export function mxEditor(bridge, runCode, skuWrites) {
         );
         if (recommendation && !recommendation.disabled) {
           recommendation.click();
-          for (let i = 0; i < 24 && !control.innerText.trim(); i++) await pause(200);
-          return {
-            selected: !!control.innerText.trim(),
-            label,
-            shown: control.innerText.trim(),
-          };
+          return readSelection();
         }
         control.click();
         await pause(300);
@@ -149,12 +197,7 @@ export function mxEditor(bridge, runCode, skuWrites) {
             };
           }
           option.click();
-          await pause(350);
-          return {
-            selected: !!control.innerText.trim(),
-            label,
-            shown: control.innerText.trim(),
-          };
+          return readSelection();
         }
         control.click();
         return { selected: false, reason: "Exact category not offered", label };
@@ -363,16 +406,21 @@ export function mxEditor(bridge, runCode, skuWrites) {
       const structureChanged = differences.some(
         (d) => d === "brand" || d === "SKU count" || d.startsWith("variant "),
       );
-      if (structureChanged)
-        for (const skus of batches)
-          await runCode(
-            tab,
-            commerceScript(sellerVariants, {
-              axis: plan.axis,
-              brand: plan.brand,
-              skus: skus.map(({ option }) => ({ option })),
-            }),
-          );
+      if (structureChanged) {
+        for (const { option } of plan.skus) {
+          const selector = await runCode(tab, commerceScript(sellerVariants, {
+            axis: plan.axis, brand: plan.brand, skus: [{ option }], trustedCommit: true,
+          }));
+          if (selector === true) continue;
+          await bridge("trusted_type", { tabId: tab, selector, value: option, clear: true, submit: true });
+          await bridge("press_keys", { tabId: tab, keys: ["Tab"] });
+          await runCode(tab, commerceScript(async (ui, label) => {
+            await ui.wait(() => ui.options().some(slot =>
+              ui.optionLabels(slot).some(value => ui.norm(value) === ui.norm(label))), "committed option " + label);
+            return true;
+          }, option));
+        }
+      }
       for (const sku of plan.skus) {
         const rowStart = Date.now();
         let keys = ["stock", "priceMXN"];
@@ -443,50 +491,50 @@ export function mxEditor(bridge, runCode, skuWrites) {
     if (state.url !== url || state.captcha) throw Error("Unexpected draft editor or verification");
     if (new URL(url).pathname === "/product/create") {
       const { title, description, enTitle, enDescription } = copy;
+      if (enTitle && state.enTitle !== enTitle) {
+        const selector = '[data-id="product.publish.title.input_lang"]';
+        await bridge("trusted_type", { tabId: tab, selector, clear: true, value: enTitle });
+        await bridge("press_keys", { tabId: tab, selector, keys: ["Tab"] });
+      }
       checkCopy(
         await setCopy(tab, { title, description, enTitle, enDescription }),
         copy,
       );
       phases.copyRead = Date.now();
-      for (let i = 0; i < gallery.length; i += 3) {
-        const batch = gallery.slice(i, i + 3);
-        await bridge("upload_file", {
-          tabId: tab,
-          selector: gallerySelector,
-          paths: batch,
-        });
-        await bridge("wait_for", {
-          tabId: tab,
-          selector:
-            '[data-id="product.widget.main_image.' +
-            (i + batch.length - 1) +
-            '"] img:not([src*="placeholder"])',
-          timeoutMs: 30000,
-        });
+      // The seller uploads asynchronously. Submit the ordered selection once on
+      // its multi-file input, then use the upload time for the dependent controls.
+      const multiple = gallery.length > 1 && await js(tab, selector =>
+        document.querySelector(selector)?.multiple === true, gallerySelector);
+      const batchSize = multiple ? gallery.length : 1;
+      for (let i = 0; i < gallery.length; i += batchSize) {
+        await bridge("upload_file", { tabId: tab, selector: gallerySelector, paths: gallery.slice(i, i + batchSize) });
+        if (!multiple && i + 1 < gallery.length) {
+          await bridge("wait_for", { tabId: tab,
+            selector: '[data-id="product.widget.main_image.' + i + '"] img:not([src*="placeholder"])',
+            timeoutMs: 30000 });
+        }
       }
-      for (const file of details) {
-        await bridge("upload_file", {
-          tabId: tab,
-          selector: localDesc + " input[type=file]",
-          paths: [file],
-        });
-      }
-
-      for (let attempt = 0; attempt < 15; attempt++) {
-        state = await js(tab, formState);
-        if (
-          state.captcha ||
-          (state.gallery === gallery.length &&
-            state.detailImages >= details.length)
-        )
-          break;
-        await sleep(1500);
+      for (const file of details)
+        await bridge("upload_file", { tabId: tab, selector: localDesc + " input[type=file]", paths: [file] });
+      phases.uploadsSubmitted = Date.now();
+      let cat = await category(tab, copy.category);
+      // A slow earlier slot may still show 上传中 after the last slot is ready.
+      // Check every image in the page, without submitting the same file again.
+      const waitForMedia = `const until=Date.now()+12000;do{
+        const s=(${formState.toString()})();
+        if(s.captcha || (s.gallery===${gallery.length} && s.detailImages>=${details.length}) || Date.now()>=until)return s;
+        await new Promise(r=>setTimeout(r,250));
+      }while(true)`;
+      for (let i = 0; i < 4; i++) {
+        state = await runCode(tab, waitForMedia);
+        if (state.captcha || (state.gallery === gallery.length && state.detailImages >= details.length)) break;
       }
       check(state, copy);
       phases.mediaRead = Date.now();
-      // Recommendations depend on the uploaded media. Resolve the planned
-      // category once both the title and the product images are available.
-      const cat = await category(tab, copy.category);
+      if (!cat.selected && sameCategory(state.category, copy.category?.label))
+        cat = { selected: true, shown: state.category, label: copy.category.label };
+      else if (!cat.selected && !state.category && !state.captcha && copy.category)
+        cat = await category(tab, copy.category);
       if (cat.selected) {
         if (
           cat.shown?.replace(/\s*[-/>]\s*/g, "/") !==

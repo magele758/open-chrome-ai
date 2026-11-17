@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { runMxDraftJob } from "./tiktok-mx-editor.mjs";
+import { mxEditor, runMxDraftJob, runMxDraftRead } from "./tiktok-mx-editor.mjs";
 import { JSDOM } from "jsdom";
 import {
   commercialPlan,
@@ -237,10 +237,25 @@ assert.equal(
   const result = await runMxDraftJob(job, dispatch, () => job.url);
   assert.deepEqual(commercialDifferences(result.commerce.state, plan), []);
   assert.equal(actions.filter(a => a === "trusted_type").length, 4);
+  // Reload may finish scheduling before Chrome replaces the old document.
+  // Exercise the generated page code and verify the old snapshot is discarded.
+  const fillActions = actions.length;
+  const url = job.url;
+  let reads = 0, documentEpoch = 12;
+  Object.defineProperty(w.performance, "timeOrigin", { configurable: true, get: () => documentEpoch });
+  const refreshed = await runMxDraftRead({ tabId: 1, url }, async (tool, args) => {
+    if (tool === "reload_tab") return { ok: true, result: {} };
+    if (!args.code.endsWith("return performance.timeOrigin") && ++reads === 2) documentEpoch++;
+    return dispatch(tool, args);
+  }, () => url);
+  assert.equal(reads, 2);
+  assert.equal(refreshed.url, url);
+  assert.deepEqual(commercialDifferences(refreshed.salesAndShipping, plan), []);
+  await assert.rejects(runMxDraftRead({ tabId: 1, url }, dispatch, () => url.replace("123", "987")), /URL changed/);
   const count = actions.length;
   await assert.rejects(runMxDraftJob(job, dispatch, () => job.url.replace("123", "987")), /editor changed/);
   assert.equal(actions.length, count);
-  assert.equal(result.steps.length, actions.length);
+  assert.equal(result.steps.length, fillActions);
 
   // A SKU gets a server ID after the first commit. Only the lost value is retyped.
   const slot = w.document.querySelector('[data-id="product.publish.skus.stock.2"]');
@@ -292,6 +307,31 @@ assert.equal(
   assert.deepEqual([created.state.gallery, created.state.detailImages], [1, 1]);
   assert.deepEqual(commercialDifferences(created.commerce.state, plan), []);
   assert.equal(created.steps.filter(s => s.tool === "upload_file").length, 2);
+  // The first slot is slower than the last one. A single multi-file selection
+  // must keep its order and wait for all nine, without uploading any twice.
+  doc.querySelector('[data-id^="product.widget.main_image."]').remove();
+  doc.body.insertAdjacentHTML("beforeend", '<input type="file" accept=".jpg,.png,.jpeg" multiple>');
+  const nine = Array.from({ length: 9 }, (_, i) => "/gallery-" + i + ".jpg");
+  const selections = [];
+  const delayed = async (tool, args) => {
+    if (tool !== "upload_file") return dispatch(tool, args);
+    selections.push(args.paths);
+    args.paths.forEach((file, i) => {
+      const slot = doc.createElement("div");
+      slot.dataset.id = "product.widget.main_image." + i;
+      doc.body.append(slot);
+      if (i === 0) {
+        slot.innerHTML = '<img src="' + file + '"><span role="progressbar"></span>';
+        setTimeout(() => slot.querySelector("span").remove(), 400);
+      }
+      else slot.innerHTML = '<img src="' + file + '">';
+    });
+    return { ok: true, result: { ok: true } };
+  };
+  const bulk = await runMxDraftJob({ ...job, url: createUrl, gallery: nine, copy: { ...copy, gallery: nine } }, delayed, () => createUrl);
+  assert.deepEqual(selections, [nine]);
+  assert.equal(bulk.state.gallery, 9);
+  assert.equal(bulk.state.category, "Cocina");
   dom.reconfigure({ url: job.url });
 }
 // Forced re-entry on an existing draft must still select the right row at an unchanged value.
@@ -378,6 +418,22 @@ add.onclick = appendOption;
 doc.body.append(add);
 assert.deepEqual(commercialDifferences(await execute("write", plan), plan), []);
 assert.equal(index, 2);
+doc.querySelector("tbody").replaceChildren();
+for (const slot of doc.querySelectorAll('[data-id^="product.publish.sale_property.value.name."]')) slot.remove();
+appendOption();
+const entered = [];
+const editor = mxEditor(async (tool, args) => {
+  if (tool === "trusted_type") {
+    const el = doc.querySelector(args.selector);
+    el.focus(); el.value = args.value;
+    if (args.submit) { entered.push(args.value); el.blur(); }
+  } else if (tool === "press_keys") doc.activeElement.blur();
+  else throw Error("Unexpected test action " + tool);
+  return { ok: true };
+}, async (_tab, code) => w.eval("(async()=>{" + code + "})()"), []);
+const typedVariants = await editor.commercialState(1, plan, true);
+assert.deepEqual(entered, ["A", "B"]);
+assert.deepEqual(commercialDifferences(typedVariants.state, plan), []);
 dom.window.close();
 console.log(
   "MX commerce: source identity, provenance, per-SKU writes, units, zero and incomplete readback passed",

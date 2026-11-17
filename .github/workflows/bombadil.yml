@@ -1,0 +1,58 @@
+name: Bombadil UI
+on:
+  pull_request:
+    paths:
+      - 'extension/**'
+      - 'scripts/bombadil/**'
+      - 'package*.json'
+      - '.github/workflows/bombadil.yml'
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: Exploration time per browser
+        type: choice
+        default: 45s
+        options: [45s, 5m]
+permissions:
+  contents: read
+
+jobs:
+  explore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { scenario: settings, width: 400 }
+          - { scenario: panel, width: 400 }
+          - { scenario: panel, width: 900 }
+          - { scenario: graph, width: 900 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run bundle:agent-loop
+      - id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: stable
+      - name: Explore UI and verify reached states
+        env:
+          CHROME: ${{ steps.chrome.outputs.chrome-path }}
+          BUDGET: ${{ inputs.budget || '45s' }}
+          SCENARIO: ${{ matrix.scenario }}
+          WIDTH: ${{ matrix.width }}
+        run: >
+          npm exec --yes --package=@antithesishq/bombadil@0.7.10 --
+          npm run test:bombadil -- --case "$SCENARIO" --width "$WIDTH"
+          --time "$BUDGET" --output "$RUNNER_TEMP/bombadil-results"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bombadil-${{ matrix.scenario }}-${{ matrix.width }}
+          path: ${{ runner.temp }}/bombadil-results/
+          retention-days: 7

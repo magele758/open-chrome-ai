@@ -2,8 +2,8 @@
 // Browser operations run in the signed-in Chrome profile through PageLens.
 import { DraftTabs } from "./tiktok-mx-tabs.mjs";
 import fs from "node:fs/promises";
-import { commercialPlan, commerceScript, sellerRead } from "./tiktok-mx-commerce.mjs";
-import { mxEditor, formState, sameText, check, titleSelector } from "./tiktok-mx-editor.mjs";
+import { commercialDifferences, commercialPlan } from "./tiktok-mx-commerce.mjs";
+import { mxEditor, formState, readFreshDocument, snapshotCode, sameText, check, titleSelector } from "./tiktok-mx-editor.mjs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -34,6 +34,7 @@ const stages = {};
 const bridgeCalls = [];
 const skuWrites = [];
 const formRuns = [];
+const saveSignals = [];
 const editor = mxEditor(bridge, runCode, skuWrites);
 const { setCopy, category, supplement, commercialState, restoreDetails, repairSavedCopy } = editor;
 function mark(name) {
@@ -283,7 +284,15 @@ async function prepare(url, fresh = false, afterOpening, onFactsReady) {
   group = new DraftTabs(id, bridge);
   const tab = await open(url);
   afterOpening?.();
-  const data = await js(tab, extract, id);
+  let data;
+  try {
+    data = await js(tab, extract, id);
+  } catch (error) {
+    if (!/Frame with ID 0 is showing error page/i.test(error.message)) throw error;
+    mark("sourceReload");
+    await bridge("reload_tab", { tabId: tab });
+    data = await js(tab, extract, id);
+  }
   mark("sourceRead");
   if (!data.title || !data.gallery?.length)
     throw new Error("Product title or gallery missing");
@@ -436,20 +445,7 @@ async function rerun(url, yenToPeso) {
 }
 
 async function readyForm(tab, withCommerce = false, allowEmptyDescription = false) {
-  const numbers = withCommerce
-    ? commerceScript(sellerRead).replace(/^return await /, "")
-    : "null";
-  return runCode(
-    tab,
-    `for(let i=0;i<100;i++){
-    if(document.querySelector('${titleSelector}')?.value && (document.querySelector('${localDesc} .ProseMirror')?.textContent.trim() || (${allowEmptyDescription} && i>=12 && document.querySelector('${localDesc} .ProseMirror')))){
-      const state=(${formState.toString()})();
-      state.salesAndShipping=await ${numbers};
-      return state;
-    }
-    await new Promise(r=>setTimeout(r,150));
-  } throw Error("Draft editor did not load")`,
-  );
+  return runCode(tab, snapshotCode(withCommerce, allowEmptyDescription));
 }
 export function normDraftTitle(value) {
   return String(value ?? "").normalize("NFKC").trim().replace(/\s+/g, " ");
@@ -614,10 +610,51 @@ async function draftButton(tab, alreadyActive = false) {
       observer.disconnect();
     }
   });
-  if (alreadyActive && message !== "草稿保存成功")
-    throw Error("Draft save was not acknowledged: " + message);
-  if (/失败/.test(message))
-    throw new Error("Seller Center rejected the draft: " + message);
+  saveSignals.push({ tab, message, at: Date.now() });
+  return message === "草稿保存成功";
+}
+// Read the same draft after a save. Seller Center can expose an older snapshot
+// while an acknowledged or apparently failed write is still propagating.
+function matchesDraft(state, copy, plan) {
+  const normalizeCategory = value => value?.trim().replace(/\s*[-/>]\s*/g, "/");
+  if (!state.category || normalizeCategory(state.category) !== normalizeCategory(copy.category?.label)) return false;
+  if (commercialDifferences(state.salesAndShipping, plan).length) return false;
+  try {
+    check(state, copy);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function reconcileDraft({ link, copy, plan, readFresh, attempts = 3 }) {
+  let state;
+  for (let i = 0; i < attempts; i++) {
+    if (i) await sleep(i === 1 ? 1000 : 4000);
+    state = await readFresh();
+    if (state.url !== link || state.captcha) throw Error("Unexpected draft URL or verification during readback");
+    if (matchesDraft(state, copy, plan)) break;
+  }
+  return state;
+}
+
+let supportsDraftRead = true;
+async function readSaved(tab, link, copy, plan, attempts) {
+  return reconcileDraft({ link, copy, plan, attempts, readFresh: async () => {
+    if (supportsDraftRead && !bridgeOverride) {
+      try {
+        return await inbox("read_mx_draft", { action: "read_mx_draft", tabId: tab, url: link });
+      } catch (error) {
+        if (!error.message.includes("unknown action: read_mx_draft")) throw error;
+        supportsDraftRead = false;
+      }
+    }
+    return readFreshDocument(link, async (tool, args) => {
+      const result = await bridge(tool, { ...args, tabId: tab });
+      if (result?.ok === false) throw Error(result.error || "PageLens draft read failed");
+      return result;
+    });
+  } });
 }
 async function sellerTab(url, forceReload = false) {
   const existing = group.tabs.get(url);
@@ -680,16 +717,20 @@ export async function save(
     mark("saveStarted");
     if (target && knownId !== target.expectedId)
       throw Error("Draft mapping changed while preparing content");
-    const list = target ? null : await sellerTab(drafts, true);
-    const listState = target ? { matches: [], ids: [] } : await listDrafts(list, copy.title, knownId);
+    const registeredLink = seller + "/product/edit-draft/" + knownId + "?shop_region=MX";
+    const verifiedRecord = readOnly && previous.verified && previous.id === registered?.id &&
+      previous.link === registeredLink && registered?.link === registeredLink;
+    const skipList = target || verifiedRecord;
+    const list = skipList ? null : await sellerTab(drafts, true);
+    const listState = skipList ? { matches: [], ids: [] } : await listDrafts(list, copy.title, knownId);
     const seenIds = [...new Set((listState.ids || []).map(String))];
-    if (!target) mark("listRead");
+    if (!skipList) mark("listRead");
     const claimed = Boolean(previous.saving || previous.startedTab || previous.stagedTab);
     const beforeIds = new Set((previous.draftIdsBefore || []).map(String));
     const matches = !knownId && claimed
       ? listState.matches.filter((row) => row.id && Array.isArray(previous.draftIdsBefore) && !beforeIds.has(String(row.id)))
       : listState.matches;
-    let id = target ? target.expectedId : writableDraftId({ matches, knownId, previous });
+    let id = skipList ? knownId : writableDraftId({ matches, knownId, previous });
     if (copy.missing?.length)
       throw new Error(
         "Resolve outstanding fields before saving: " + copy.missing.join(", "),
@@ -710,6 +751,7 @@ export async function save(
       });
     }
     let cat = previous.category;
+    let initialAcknowledged = true;
     if (!id) {
       if (readOnly) throw new Error("No existing draft ID to verify");
       if (previous.saving || previous.id)
@@ -744,7 +786,7 @@ export async function save(
         startedTab: tab,
       });
       mark("initialFieldsReady");
-      await draftButton(tab, true);
+      initialAcknowledged = await draftButton(tab, true);
       mark("initialSave");
       for (let i = 0; i < 3 && !id; i++) {
         await bridge("reload_tab", { tabId: list });
@@ -761,11 +803,15 @@ export async function save(
     }
     if (!knownId) mark("draftIdentified");
     const link = seller + "/product/edit-draft/" + id + "?shop_region=MX";
-    let edit = target?.edit ?? (await sellerTab(link, true));
+    let edit = target?.edit ?? (await sellerTab(link, Boolean(knownId && !readOnly)));
     // One read waits for the editor and captures bilingual text, media and every SKU.
     // Reload explicitly after the initial save, then reuse this persisted snapshot.
-    if (!knownId && !target) await bridge("reload_tab", { tabId: edit });
-    let state = target?.original ?? await readyForm(edit, true, true);
+    let state = target?.original;
+    if (!state && (!knownId || readOnly)) {
+      const attempts = readOnly || cat?.selected || !initialAcknowledged ? 3 : 1;
+      state = await readSaved(edit, link, copy, plan, attempts);
+    }
+    state ??= await readyForm(edit, true, true);
     if (state.url !== link) throw Error("Draft URL changed before readback");
     const firstPersisted = { at: Date.now(), title: state.enTitle, skus: state.salesAndShipping.skus };
     let changed = false;
@@ -832,24 +878,19 @@ export async function save(
       stages.copyRead = filled.phases.copyRead;
       changed = true;
     }
-    if (
-      !readOnly &&
-      !state.captcha &&
-      state.title === copy.title &&
-      state.gallery === gallery.length &&
-      !state.detailImages &&
-      (!state.description || state.description === "翻译为西班牙语")
-    ) {
-      const { title, description, enTitle, enDescription } = copy;
-      await setCopy(edit, { title, description, enTitle, enDescription });
-      for (const file of details)
-        await bridge("upload_file", {
-          tabId: edit,
-          selector: localDesc + " input[type=file]",
-          paths: [file],
-        });
-      state = await js(edit, formState);
-      changed = true;
+    if (!target && !readOnly && !state.captcha && state.title === copy.title &&
+        state.gallery === gallery.length) {
+      const differentProse = !sameText(state.description, copy.description) ||
+        (copy.enDescription && !sameText(state.enDescription || "", copy.enDescription));
+      if (differentProse) {
+        state = await setCopy(edit, { title: copy.title, description: copy.description,
+          enTitle: copy.enTitle, enDescription: copy.enDescription, preserveImages: true });
+        changed = true;
+      }
+      if (!state.detailImages && details.length) {
+        state = await restoreDetails(edit, state, copy, details);
+        changed = true;
+      }
     }
     if (!target && !readOnly && await recoverTitle(edit, link, state, copy, dir)) {
       state = await js(edit, formState);
@@ -890,18 +931,19 @@ export async function save(
         state = await restoreDetails(edit, state, copy, details);
         check(state, copy);
       }
-      await draftButton(edit, !!target);
+      const acknowledged = await draftButton(edit, !!target);
       mark("saved");
       // A successful save can navigate the editor back to the product list.
       edit = await open(link);
-      await bridge("reload_tab", { tabId: edit });
-      state = await readyForm(edit, true);
+      state = await readSaved(edit, link, copy, plan);
+      // A forced rewrite of identical values needs a positive save indication.
+      if (resave && !acknowledged && target && matchesDraft(target.original, copy, plan))
+        throw Error("Original values match but the requested resave was not acknowledged");
       if (await recoverTitle(edit, link, state, copy, dir)) {
         mark("titleRepair");
         await draftButton(edit, true);
         edit = await open(link);
-        await bridge("reload_tab", { tabId: edit });
-        state = await readyForm(edit, true);
+        state = await readSaved(edit, link, copy, plan);
       } else if (target && state.url === link && state.gallery === gallery.length &&
                  state.detailImages >= details.length && !state.captcha) {
         try {
@@ -910,8 +952,7 @@ export async function save(
           await repairSavedCopy(edit, state, copy, details);
           await draftButton(edit, true);
           edit = await open(link);
-          await bridge("reload_tab", { tabId: edit });
-          state = await readyForm(edit, true);
+          state = await readSaved(edit, link, copy, plan);
         }
       }
       check(state, copy);
@@ -962,6 +1003,7 @@ export async function save(
       formRuns,
       skuWrites,
       firstPersisted,
+      saveSignals,
       bridgeCalls,
       ...(target && {
         ptc: target.ptc,
