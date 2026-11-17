@@ -517,7 +517,18 @@ export function mxEditor(bridge, runCode, skuWrites) {
       for (const file of details)
         await bridge("upload_file", { tabId: tab, selector: localDesc + " input[type=file]", paths: [file] });
       phases.uploadsSubmitted = Date.now();
+      const fillSales = async selected => {
+        const categoryPath = value => (value || "").replace(/\s*[-/>]\s*/g, "/");
+        if (categoryPath(selected.shown) !== categoryPath(copy.category?.label))
+          throw Error("Selected category differs");
+        phases.categoryRead = Date.now();
+        await supplement(tab, copy);
+        const result = await commercialState(tab, plan, true);
+        phases.fieldsRead = Date.now();
+        return result;
+      };
       let cat = await category(tab, copy.category);
+      let commerce = cat.selected ? await fillSales(cat) : null;
       // A slow earlier slot may still show 上传中 after the last slot is ready.
       // Check every image in the page, without submitting the same file again.
       const waitForMedia = `const until=Date.now()+12000;do{
@@ -535,21 +546,19 @@ export function mxEditor(bridge, runCode, skuWrites) {
         cat = { selected: true, shown: state.category, label: copy.category.label };
       else if (!cat.selected && !state.category && !state.captcha && copy.category)
         cat = await category(tab, copy.category);
-      if (cat.selected) {
-        if (
-          cat.shown?.replace(/\s*[-/>]\s*/g, "/") !==
-          copy.category.label.replace(/\s*[-/>]\s*/g, "/")
-        )
-          throw Error("Selected category differs");
-        await supplement(tab, copy);
+      if (cat.selected && !commerce) {
+        commerce = await fillSales(cat);
+        state = await js(tab, formState);
+        check(state, copy);
       }
-      phases.categoryRead = Date.now();
-      state = await js(tab, formState);
-      check(state, copy);
       if (state.category && copy.category?.label && !sameCategory(state.category, copy.category.label))
         throw Error("Expected category did not load: " + (state.category || cat.reason || ""));
-      const commerce = state.category ? await commercialState(tab, plan, true) : null;
-      phases.fieldsRead = Date.now();
+      if (commerce && phases.fieldsRead <= phases.mediaRead) {
+        // Upload completion can re-render controlled inputs. Only repair rows
+        // whose final committed values differ from the original plan.
+        commerce = await commercialState(tab, plan, true);
+        phases.fieldsRead = Date.now();
+      }
       return { category: cat, state, commerce, phases };
 
     }
