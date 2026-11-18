@@ -335,6 +335,7 @@ assert.equal(
   const delayed = async (tool, args) => {
     if (tool !== "upload_file") return dispatch(tool, args);
     assert.equal(doc.querySelectorAll('[data-id^="product.widget.main_image."] [role="progressbar"]').length, 0);
+    assert.ok(args.selector.includes(`main_image.${selections.length}"]`));
     selections.push(args.paths);
     args.paths.forEach((file, i) => {
       const slot = doc.createElement("div");
@@ -349,7 +350,7 @@ assert.equal(
     return { ok: true, result: { ok: true } };
   };
   const bulk = await runMxDraftJob({ ...job, url: createUrl, gallery: nine, copy: { ...copy, gallery: nine } }, delayed, () => createUrl);
-  assert.deepEqual(selections, [nine.slice(0, 3), nine.slice(3, 6), nine.slice(6)]);
+  assert.deepEqual(selections, nine.map(file => [file]));
   assert.equal(bulk.state.gallery, 9);
   assert.equal(bulk.state.category, "Cocina");
   doc.querySelectorAll('[data-id^="product.widget.main_image."]').forEach(slot => slot.remove());

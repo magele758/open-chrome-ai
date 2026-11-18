@@ -481,7 +481,7 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
 
   // Same retained form, partial content present: do not upload its files a second time.
   const createUrl = "https://seller.tiktokshopglobalselling.com/product/create?shop_region=MX";
-  let clicks = 0, showSaved = false;
+  let clicks = 0, showSaved = false, loseGalleryBeforeSave = true, formReads = 0;
   draft.setDraftBridgeForTests(async (tool, args) => {
     if (tool === "open_tab") {
       assert.ok(args.url.includes("/product/manage") || args.url.includes("/edit-draft/556"));
@@ -493,10 +493,17 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
         ? { ids: ["556"], matches: [{ id: "556", text: "Molde" }] } : { ids: [], matches: [] } };
       if (args.code.includes("另存为草稿")) { clicks++; return { ok: true, result: "" }; }
       assert.equal(args.tabId, 4);
-      return { ok: true, result: { url: createUrl, ...listing, gallery: 1, detailImages: 0, category: "" } };
+      const gallery = ++formReads === 2 && loseGalleryBeforeSave ? 0 : 1;
+      return { ok: true, result: { url: createUrl, ...listing, gallery, detailImages: 0, category: "" } };
     }
     return { ok: true };
   });
+  await assert.rejects(draft.save(reuseDir), /Seller readback differs/);
+  const blocked = JSON.parse(await fs.readFile(path.join(reuseDir, "receipt.json"), "utf8"));
+  assert.match(blocked.fillError, /Seller readback differs/);
+  assert.equal(blocked.saving, undefined);
+  assert.equal(clicks, 0);
+  loseGalleryBeforeSave = false;
   await assert.rejects(draft.save(reuseDir), /draft ID not yet confirmed/);
   const staged = JSON.parse(await fs.readFile(path.join(reuseDir, "receipt.json"), "utf8"));
   assert.deepEqual([staged.startedTab, staged.partial, staged.verified, clicks], [4, true, false, 1]);
@@ -531,6 +538,25 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
   await filling;
   const firstReceipt = JSON.parse(await fs.readFile(path.join(firstDir, "receipt.json"), "utf8"));
   assert.deepEqual([firstReceipt.partial, firstReceipt.verified, firstReceipt.startedTab, clicks], [undefined, false, 4, 1]);
+
+  await fs.unlink(path.join(firstDir, "receipt.json"));
+  await fs.unlink(path.join(inboxDir, message.id + ".json"));
+  const mediaFailure = assert.rejects(draft.save(firstDir, false, false, null, null, null, 4), /Seller readback differs/);
+  let mediaJob;
+  for (let i = 0; i < 200 && !mediaJob; i++) {
+    const file = (await fs.readdir(inboxDir)).find(name => name.endsWith(".json"));
+    if (file) mediaJob = JSON.parse(await fs.readFile(path.join(inboxDir, file), "utf8"));
+    else await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(mediaJob?.action, "fill_mx_draft");
+  const rowWrite = { option: "M", attempts: [{ stock: 5, priceMXN: 100 }] };
+  await fs.writeFile(path.join(outboxDir, mediaJob.id + ".json"), JSON.stringify({ ok: true,
+    result: { fillError: "Seller readback differs: missing final image", steps: [], skuWrites: [rowWrite] } }));
+  await mediaFailure;
+  const mediaReceipt = JSON.parse(await fs.readFile(path.join(firstDir, "receipt.json"), "utf8"));
+  assert.deepEqual(mediaReceipt.skuWrites.at(-1), rowWrite);
+  assert.equal(mediaReceipt.saving, undefined);
+  assert.equal(clicks, 1);
 
   // Only an explicitly rejected save with its original editor gone can be replaced.
   const rejected = { ...firstReceipt, saving: true, saveMessage: "提交失败", startedGroup: 1,

@@ -559,17 +559,11 @@ export function mxEditor(bridge, runCode, skuWrites) {
     let state = await js(tab, formState);
     if (state.url !== url || state.captcha) throw Error("Unexpected draft editor or verification");
     if (new URL(url).pathname === "/product/create") {
-      // The seller uploads asynchronously. Submit the ordered selection once on
-      // its multi-file input, then use the upload time for the dependent controls.
-      const multiple = gallery.length > 1 && await js(tab, selector =>
-        document.querySelector(selector)?.multiple === true, gallerySelector);
-      // Larger selections occasionally leave a trailing slot at 0% indefinitely.
-      // Keep the gallery ordered and submit a new batch only after the prior one settles.
-      const batchSize = multiple ? 3 : 1;
-      const uploadBatch = offset => bridge("upload_file", {
-        tabId: tab, selector: gallerySelector, paths: gallery.slice(offset, offset + batchSize),
-      });
-      await uploadBatch(0);
+      const uploadSlot = async index => {
+        const slot = `[data-id="product.widget.main_image.${index}"]`;
+        await bridge("upload_file", { tabId: tab, selector: slot + " " + gallerySelector, paths: [gallery[index]] });
+      };
+      await uploadSlot(0);
       const { title, description, enTitle, enDescription } = copy;
       if (enTitle && state.enTitle !== enTitle) {
         const selector = '[data-id="product.publish.title.input_lang"]';
@@ -589,11 +583,11 @@ export function mxEditor(bridge, runCode, skuWrites) {
       phases.copyRead = Date.now();
       const finishGallery = async () => {
         if (phases.gallerySubmitted) return;
-        for (let offset = batchSize; offset < gallery.length; offset += batchSize) {
+        for (let offset = 1; offset < gallery.length; offset++) {
           await runCode(tab, "const until=Date.now()+25000;do{const s=(" + formState.toString() +
             ")();if(s.captcha)throw Error('Seller verification');if(s.gallery===" + offset +
             ")return true;await new Promise(r=>setTimeout(r,150))}while(Date.now()<until);throw Error('Previous gallery batch still uploading')");
-          await uploadBatch(offset);
+          await uploadSlot(offset);
         }
         phases.gallerySubmitted = Date.now();
       };
@@ -719,6 +713,11 @@ export async function runMxDraftJob(job, dispatch, tabUrl) {
     if (!result?.ok) throw Error("Seller page script did not complete");
     return result.result;
   }
-  const result = await mxEditor(call, runCode, skuWrites).fillPage(tabId, url, copy, plan, gallery, details, force);
-  return { ...result, skuWrites, steps };
+  try {
+    const result = await mxEditor(call, runCode, skuWrites).fillPage(tabId, url, copy, plan, gallery, details, force);
+    return { ...result, skuWrites, steps };
+  } catch (error) {
+    if (!steps.length && !skuWrites.length) throw error;
+    return { fillError: error.message, skuWrites, steps };
+  }
 }

@@ -4,7 +4,7 @@ import { DraftTabs } from "./tiktok-mx-tabs.mjs";
 import fs from "node:fs/promises";
 import { commercialDifferences, commercialPlan } from "./tiktok-mx-commerce.mjs";
 export { normDraftTitle, draftTitleOf, draftIdOf, selectDraftRows, draftListReady } from "./tiktok-mx-editor.mjs";
-import { attributeCode, checkAttributes, checkDraftAttributes, matchAttributeValue, draftListCode, mxEditor, formState, readFreshDocument, snapshotCode, sameText, check, checkCopy, titleSelector } from "./tiktok-mx-editor.mjs";
+import { attributeCode, checkAttributes, checkDraftAttributes, matchAttributeValue, draftListCode, mxEditor, formState, readFreshDocument, snapshotCode, sameText, check, titleSelector } from "./tiktok-mx-editor.mjs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -69,8 +69,9 @@ async function fillPage(tabId, url, copy, plan, gallery, details, force = false)
     formRuns.push({ url, transport: "per-step", phases: legacy.phases });
     return legacy;
   }
-  formRuns.push({ url, transport: "page", steps: result.steps, phases: result.phases, enTitle: result.state.enTitle, skus: result.commerce?.state.skus });
+  formRuns.push({ url, transport: "page", steps: result.steps, phases: result.phases, enTitle: result.state?.enTitle, skus: result.commerce?.state.skus });
   skuWrites.push(...result.skuWrites);
+  if (result.fillError) throw Error(result.fillError);
   return result;
 }
 async function inbox(tool, job, timeoutMs = 75000) {
@@ -860,24 +861,6 @@ export async function save(
       // those fields and finish on the identified draft instead of uploading again.
       let checkpoint = previous.startedTab && !replacing ? await js(tab, formState) : null;
       if (checkpoint && checkpoint.url !== createUrl) throw Error("Unexpected retained form URL");
-      let galleryCheckpoint = null;
-      const recordGalleryPrefix = async () => {
-        const current = await js(tab, formState);
-        if (current.url !== createUrl || !current.category || current.gallery < 1 ||
-            current.gallery >= gallery.length || (current.detailImages && current.detailImages !== details.length)) return null;
-        checkCopy(current, copy);
-        const indices = await js(tab, expected => {
-          if (location.href !== expected) throw Error("Unexpected create page");
-          return [...document.querySelectorAll('[data-id^="product.widget.main_image."]')]
-            .filter(slot => !slot.querySelector('[role="progressbar"],[class*="_uploading_"]') &&
-              [...slot.querySelectorAll("img[src]")].some(i => !/placeholder/.test(i.src)))
-            .map(slot => Number(slot.dataset.id.split(".").pop()));
-        }, createUrl);
-        if (indices.length !== current.gallery || indices.some((index, i) => index !== i)) return null;
-        galleryCheckpoint = { gallery: copy.gallery, confirmedPrefix: current.gallery, tab, title: copy.title };
-        await write(path.join(dir, "gallery-checkpoint.json"), galleryCheckpoint);
-        return current;
-      };
       if (!checkpoint?.gallery && !checkpoint?.detailImages) {
         try {
           const result = await fillPage(tab, createUrl, copy, plan, gallery, details);
@@ -891,30 +874,23 @@ export async function save(
           if (cat?.selected) await ensureAttributes(tab, createUrl, result.state, data, copy, dir);
           checkpoint = null;
         } catch (error) {
-          if (error.message.includes("Seller readback differs") && (checkpoint = await recordGalleryPrefix())) {
-            cat = { selected: true, shown: checkpoint.category };
-          } else {
-            const mounting = error.message.includes("Select an available product category first");
-            if (!mounting && !/Seller control not ready: committed option |Variant slot changed before retry:/.test(error.message)) throw error;
-            await write(resultFile, { ...pending, fillError: error.message });
-            if (mounting) {
-              const code = "const read=" + formState.toString() + ";const until=Date.now()+20000;" +
-                "do { const s=read(); if (s.url!==" + JSON.stringify(createUrl) +
-                " || s.captcha || (s.category && s.gallery===" + gallery.length +
-                " && s.detailImages>=" + details.length + ")) return s;" +
-                "await new Promise(r=>setTimeout(r,200)); } while(Date.now()<until); return read()";
-              checkpoint = await runCode(tab, code);
-            } else checkpoint = await readyForm(tab, false, true);
-            if (!checkpoint.category) throw error;
-          }
+          await write(resultFile, { ...pending, skuWrites, formRuns, fillError: error.message });
+          const mounting = error.message.includes("Select an available product category first");
+          if (!mounting && !/Seller control not ready: committed option |Variant slot changed before retry:/.test(error.message)) throw error;
+          if (mounting) {
+            const code = "const read=" + formState.toString() + ";const until=Date.now()+20000;" +
+              "do { const s=read(); if (s.url!==" + JSON.stringify(createUrl) +
+              " || s.captcha || (s.category && s.gallery===" + gallery.length +
+              " && s.detailImages>=" + details.length + ")) return s;" +
+              "await new Promise(r=>setTimeout(r,200)); } while(Date.now()<until); return read()";
+            checkpoint = await runCode(tab, code);
+          } else checkpoint = await readyForm(tab, false, true);
+          if (!checkpoint.category) throw error;
         }
       }
       if (checkpoint) {
         if (checkpoint.url !== createUrl) throw Error("Unexpected draft checkpoint URL");
-        if (!galleryCheckpoint && previous.startedTab && JSON.stringify(previous.galleryOrder) === JSON.stringify(copy.gallery) && checkpoint.gallery < gallery.length)
-          await recordGalleryPrefix();
-        if (galleryCheckpoint) checkCopy(checkpoint, copy);
-        else check(checkpoint, copy);
+        check(checkpoint, copy);
         cat = { selected: Boolean(checkpoint.category), shown: checkpoint.category };
         if (checkpoint.category) {
           if (checkpoint.category?.replace(/\s*[-/>]\s*/g, "/") !== copy.category?.label?.replace(/\s*[-/>]\s*/g, "/"))
@@ -922,14 +898,24 @@ export async function save(
           await supplement(tab, { attributes: {} });
           await ensureAttributes(tab, createUrl, checkpoint, data, copy, dir);
           await commercialState(tab, plan, true);
-          if (!galleryCheckpoint) checkpoint = null;
+          checkpoint = null;
         }
       }
       if (checkpoint) {
         mark("partialFieldsReady");
       } else mark("initialFieldsReady");
+      let beforeSave;
+      try {
+        beforeSave = await js(tab, formState);
+        if (beforeSave.url !== createUrl) throw Error("Unexpected editor before first save");
+        check(beforeSave, copy);
+      } catch (error) {
+        await write(resultFile, { ...pending, skuWrites, formRuns, fillError: error.message });
+        throw error;
+      }
       const submitting = {
         ...pending,
+        skuWrites, formRuns, firstSaveGallery: beforeSave.gallery,
         saving: true,
         partial: Boolean(checkpoint),
         tab,
@@ -954,7 +940,7 @@ export async function save(
         throw new Error(
           "Save sent; draft ID not yet confirmed. Check before retrying.",
         );
-      await write(resultFile, { ...pending, id, category: cat, saving: true, partial: Boolean(checkpoint) });
+      await write(resultFile, { ...submitting, id, saveMessage: saveSignals.at(-1).message });
       await write(recordFile, { dir, id, title: copy.title, link: seller + "/product/edit-draft/" + id + "?shop_region=MX" });
       group.pendingForm = null;
     }
@@ -1174,6 +1160,7 @@ export async function save(
       refreshReads,
       saveSignals,
       bridgeCalls,
+      firstSaveGallery: (await lookup(resultFile))?.firstSaveGallery,
       ...(target && {
         ptc: target.ptc,
         preflight: { editorAt: target.editorAt },
