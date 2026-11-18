@@ -263,6 +263,19 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
     matches: [{ id: "1000", text: "Vaso de vidrio" }],
     previous: { saving: true, draftIdsBefore: ["999"] },
   }), "1000");
+  const stale = { ids: ["999"], matches: [{ id: "999", text: "same" }] };
+  const current = await draft.confirmCreateList(stale, async () => ({ ids: ["600"], matches: [] }));
+  assert.deepEqual(current, { ids: ["999", "600"], matches: [] });
+  assert.equal(draft.writableDraftId(current), null);
+  assert.throws(() => draft.writableDraftId(stale), /already exists/);
+  assert.deepEqual(await draft.confirmCreateList(stale, async () => stale), stale);
+  assert.deepEqual(await draft.confirmCreateList(current, () => assert.fail("unexpected refresh")), current);
+  const binding = { category: "A > B", values: { Material: ["Glass\nVidrio"] } };
+  const catalog = [{ name: "Material", options: ["玻璃\nVidrio"] }];
+  assert.equal(draft.compatibleAttributePlan(binding, "A - B", catalog), true);
+  assert.equal(draft.compatibleAttributePlan(binding, "C - B", catalog), false);
+  assert.equal(draft.compatibleAttributePlan(binding, "A - B", [{ ...catalog[0], options: ["Metal"] }]), false);
+  assert.equal(draft.compatibleAttributePlan(binding, "A - B", [...catalog, { name: "Size", options: [] }]), false);
   assert.equal(draft.imageHostAllowed("p16-sign.tiktokcdn-us.com"), true);
   assert.equal(draft.imageHostAllowed("img.tiktokcdn.com"), true);
   assert.equal(draft.imageHostAllowed("p16.ibyteimg.com"), true);
@@ -323,6 +336,12 @@ assert.equal(sourceVariants({...withAccessory,title:"クリーニングクロス
         packagedWeightGrams: 500, dimensionsInCm: true, packageCm: listing.salesAndShipping.packageCm } };
     const inspect = () => inspectWithPtc({ sourceId: product, draftId }, async () => state, async () => ({ source: sourceFile, copy: listing }));
     assert.equal((await inspect()).verified, true);
+    listing.attributePlan = { category: "Cocina", values: { Material: ["Glass"] } };
+    state.attributeCatalog = [{ name: "Material", options: ["Glass", "Wood"], selected: ["Wood"] }];
+    await assert.rejects(inspect(), /Draft attribute differs: Material/);
+    state.attributeCatalog[0].selected = ["Glass"];
+    assert.equal((await inspect()).verified, true);
+    delete listing.attributePlan;
     state.salesAndShipping.skus[0].stock = 2;
     await assert.rejects(inspect(), /M stock/);
     let calls = 0;
@@ -599,9 +618,20 @@ const receipt = { verified:true, id:"123", link, readback:{url:link, title:updat
 await rememberPlan(sample, updated.copy, receipt, updated.ptc.versions);
 assert.equal((await matchingPlan(sample)).salesAndShipping.skus[0].stock, 4);
 assert.equal(await matchingPlan({...sample, title:"Changed product"}), null);
+const { chooseAttributes } = await import("./tiktok-mx-ptc.mjs");
+const { confirmedControls } = await import("./tiktok-mx-flows.mjs");
+const material = [{ name: "材质", options: ["Glass\nVidrio", "Metal"] }, { name: "风格", options: ["Modern"] }];
+const select = fields => chooseAttributes({ title: "Glass jar" }, material, async () => JSON.stringify({ fields }));
+const picked = await select([{ index: 0, evidence: "Glass" }, { index: null, evidence: null }]);
+assert.deepEqual(picked.values, { 材质: ["Glass\nVidrio"], 风格: [] });
+await assert.rejects(select([{ index: 1, evidence: "Steel" }, {index:null}]), /Unsupported attribute/);
+await assert.rejects(select([{ index: 5, evidence: "Glass" }, {index:null}]), /Unsupported attribute/);
+await assert.rejects(select([]), /Incomplete attribute/);
 const plannerBefore = await fs.readFile(updated.ptc.planner.file, "utf8");
 await fs.appendFile(updated.ptc.planner.file, "\n// revision");
 assert.equal(await matchingPlan(sample), null);
+assert.equal((await confirmedControls(sample)).options.get("111"), "M");
+assert.equal(await confirmedControls({ ...sample, title: "Different product" }), null);
 await fs.writeFile(updated.ptc.planner.file, plannerBefore);
 await assert.rejects(rememberPlan(sample, updated.copy, {...receipt,verified:false}), /verified/);
 console.log("PTC local revision replay, missing workers, confirmed category, title checks and cache invalidation passed");

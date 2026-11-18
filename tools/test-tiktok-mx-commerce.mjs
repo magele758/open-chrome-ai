@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mxEditor, runMxDraftJob, runMxDraftRead } from "./tiktok-mx-editor.mjs";
+import { attributeCode, checkAttributes, mxEditor, runMxDraftJob, runMxDraftRead } from "./tiktok-mx-editor.mjs";
 import { JSDOM } from "jsdom";
 import {
   commercialPlan,
@@ -495,3 +495,39 @@ dom.window.close();
 console.log(
   "MX commerce: source identity, provenance, per-SKU writes, units, zero and incomplete readback passed",
 );
+
+// Bilingual option text and a localized, nonempty control can describe different choices.
+{
+  const fixture = new JSDOM('<body><section>Material\n<div><div><div><div role="combobox" aria-haspopup="listbox" aria-controls="materials" aria-expanded="false"><button class="core-select-view">Vidrio</button></div></div></div></div></section><ul id="materials"><li role="option" aria-selected="true">Glass\nVidrio</li><li role="option">Metal</li></ul></body>',
+    { url: "https://seller.tiktokshopglobalselling.com/product/create?shop_region=MX", runScripts: "outside-only" });
+  const win = fixture.window, doc = win.document;
+  Object.defineProperty(win.HTMLElement.prototype, "innerText", { get() { return this.textContent; } });
+  win.HTMLElement.prototype.getClientRects = () => [{}];
+  const box = doc.querySelector('[role=combobox]');
+  box.querySelector("button").onclick = () => box.setAttribute("aria-expanded", String(box.getAttribute("aria-expanded") !== "true"));
+  let clicks = 0;
+  for (const li of doc.querySelectorAll("li")) li.onclick = () => {
+    clicks++;
+    for (const option of doc.querySelectorAll("li")) option.setAttribute("aria-selected", String(option === li));
+  };
+  const read = plan => win.eval("(async()=>{" + attributeCode(win.location.href, plan) + "})()");
+  const plan = { Material: ["Metal"] };
+  assert.throws(() => checkAttributes(plan, [{name:"Material",options:["Glass\nVidrio","Metal"],selected:["Glass\nVidrio"]}]), /Material/);
+  checkAttributes(plan, await read(plan));
+  checkAttributes(plan, await read(plan));
+  assert.equal(clicks, 1);
+  checkAttributes({ Material: ["Glass\nVidrio"] }, [{name:"Material", options:["玻璃\nVidrio", "Metal"], selected:["玻璃\nVidrio"]}]);
+  assert.throws(() => checkAttributes({ Material: ["Glass\nVidrio"] }, [{name:"Material",
+    options:["A\nVidrio", "B\nVidrio"], selected:["A\nVidrio"]}]), /Material/);
+  await assert.rejects(read({ Material: ["Plastic"] }), /option changed/);
+  assert.equal(box.getAttribute("aria-expanded"), "false");
+  const driver = mxEditor(null, async (_tab, code) => win.eval("(async()=>{" + code + "})()"), []);
+  doc.body.insertAdjacentHTML("beforeend", '<div id="product-cascader-select-view">Old</div><div>Kitchen / Racks<span><button id="apply">应用</button></span></div>');
+  doc.querySelector("#apply").onclick = () => {
+    doc.body.insertAdjacentHTML("beforeend", '<div role="dialog">更改商品类目？属性信息将被清除<button>继续</button></div>');
+    const dialog = doc.querySelector('[role=dialog]');
+    dialog.querySelector("button").onclick = () => { doc.querySelector("#product-cascader-select-view").textContent="Kitchen - Racks"; dialog.remove(); };
+  };
+  assert.equal((await driver.category(1, { label:"Kitchen / Racks",search:"Racks" })).selected,true);
+  fixture.window.close();
+}

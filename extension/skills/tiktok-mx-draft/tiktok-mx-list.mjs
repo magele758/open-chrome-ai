@@ -66,7 +66,9 @@ async function readDraftList(title, draftId, waitForMatch) {
     if (verification) throw Error("Seller verification on draft list: " + verification);
     const text = document.body?.innerText || "";
     const empty = text.includes("暂无商品") && text.includes("你正在编辑的发品草稿会显示在此处");
-    const records = [...document.querySelectorAll("tbody tr, [role=row]")].map((row) => {
+    const records = [...document.querySelectorAll("tbody tr, [role=row]")].filter(row =>
+      row.getClientRects().length && [...row.querySelectorAll("td,[role=cell]")].some(cell =>
+        /^(草稿|draft|borrador)(?:\s|$)/i.test(cell.innerText.trim()))).map((row) => {
       // The generic overflow component is also used by the “草稿” status badge.
       // The product cell contains the standalone draft ID and its adjacent title.
       const cell = [...row.querySelectorAll("td,[role=cell]")].find(c => draftIdOf(c.innerText));

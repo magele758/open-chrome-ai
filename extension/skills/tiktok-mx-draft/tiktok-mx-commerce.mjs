@@ -206,9 +206,12 @@ function commerceDom() {
   const optionLabels = (e) => [
     ...new Set(all(".pulse-input-tag-item", e).map(text).filter(Boolean)),
   ];
-  const axisName = (e) =>
-    text(e?.querySelector(".core-cascader-view-value,.pulse-overflow-text")) ||
-    text(e);
+  const axisLabels = e => {
+    const value = e.querySelector(".core-cascader-view-value,.pulse-overflow-text") || e;
+    const labels = all("span", value).filter(s => !s.children.length).map(text).filter(Boolean);
+    return labels.length ? labels : [text(value)];
+  };
+  const axisMatches = (e, axis) => axisLabels(e).some(label => norm(label) === norm(axis));
   const brandValue = () =>
     text(field("brand")?.querySelector(".core-select-view-value"));
   const rows = () =>
@@ -265,7 +268,8 @@ function commerceDom() {
     names,
     options,
     optionLabels,
-    axisName,
+    axisLabels,
+    axisMatches,
     brandValue,
     rows,
     units,
@@ -288,7 +292,7 @@ export async function sellerVariants(ui, plan) {
     names,
     options,
     optionLabels,
-    axisName,
+    axisMatches,
     brandValue,
   } = ui;
   ui.verifyEditor();
@@ -324,15 +328,16 @@ export async function sellerVariants(ui, plan) {
   if (names().length !== 1)
     throw new Error("Existing draft has a different variant structure");
   const box = name.querySelector("[role=combobox]");
-  if (norm(axisName(name)) !== norm(plan.axis)) {
+  if (!axisMatches(name, plan.axis)) {
     if (options().some((e) => optionLabels(e).length))
-      throw new Error("Existing variant name differs: " + axisName(name));
+      throw new Error("Existing variant name differs: " + ui.axisLabels(name).join(" / "));
     box.querySelector("input").click();
     await sleep(200);
     const menu = () =>
       document.getElementById(box.getAttribute("aria-controls"));
-    const exact = all("li,[role=menuitem]", menu() || document).find(
-      (e) => visible(e) && norm(text(e)) === norm(plan.axis),
+    const exact = all('li,[role=menuitem],[role=option]', menu() || box).find(
+      e => visible(e) && e.getAttribute("aria-disabled") !== "true" &&
+        [text(e), ...all("span", e).map(text)].some(label => norm(label) === norm(plan.axis)),
     );
     if (exact) exact.click();
     else {
@@ -364,7 +369,7 @@ export async function sellerVariants(ui, plan) {
       add.click();
     }
     await wait(
-      () => names()[0] && norm(axisName(names()[0])) === norm(plan.axis),
+      () => names()[0] && axisMatches(names()[0], plan.axis),
       "selected variant name",
     );
   }
@@ -423,7 +428,7 @@ export function sellerRead(ui) {
     names,
     options,
     optionLabels,
-    axisName,
+    axisLabels,
     brandValue,
     rows,
     units,
@@ -434,7 +439,8 @@ export function sellerRead(ui) {
   const weight = numeric(numberInput(field("package_weight")));
   return {
     brand: brandValue(),
-    axes: names().map(axisName),
+    axes: names().map(e => axisLabels(e)[0]),
+    axisLabels: names().map(axisLabels),
     options: options()
       .map(optionLabels)
       .filter((x) => x.length),
@@ -505,7 +511,7 @@ export async function sellerNumbers(ui, readState, mode, plan) {
     names,
     options,
     optionLabels,
-    axisName,
+    axisMatches,
     brandValue,
     rows,
     units,
@@ -521,7 +527,7 @@ export async function sellerNumbers(ui, readState, mode, plan) {
     plan.brand &&
     (brandValue() !== plan.brand ||
       names().length !== 1 ||
-      norm(axisName(names()[0])) !== norm(plan.axis))
+      !axisMatches(names()[0], plan.axis))
   )
     throw Error("Brand or variant axis changed before writing SKU values");
   const table = await wait(
@@ -594,7 +600,7 @@ export function commercialDifferences(state, plan) {
       .toLowerCase();
   const errors = [];
   if (norm(state.brand) !== norm(plan.brand)) errors.push("brand");
-  if (state.axes.length !== 1 || norm(state.axes[0]) !== norm(plan.axis))
+  if (state.axes.length !== 1 || !(state.axisLabels?.[0] || state.axes).some(label => norm(label) === norm(plan.axis)))
     errors.push("variant name");
   if (
     state.options.length !== plan.skus.length ||

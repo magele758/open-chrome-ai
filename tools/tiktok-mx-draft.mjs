@@ -4,7 +4,7 @@ import { DraftTabs } from "./tiktok-mx-tabs.mjs";
 import fs from "node:fs/promises";
 import { commercialDifferences, commercialPlan } from "./tiktok-mx-commerce.mjs";
 export { normDraftTitle, draftTitleOf, draftIdOf, selectDraftRows, draftListReady } from "./tiktok-mx-editor.mjs";
-import { draftListCode, mxEditor, formState, readFreshDocument, snapshotCode, sameText, check, checkCopy, titleSelector } from "./tiktok-mx-editor.mjs";
+import { attributeCode, checkAttributes, checkDraftAttributes, matchAttributeValue, draftListCode, mxEditor, formState, readFreshDocument, snapshotCode, sameText, check, checkCopy, titleSelector } from "./tiktok-mx-editor.mjs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -53,8 +53,8 @@ async function bridge(tool, args) {
   return inbox(tool, { action: "bridge_call", request: { tool, args } });
 }
 async function fillPage(tabId, url, copy, plan, gallery, details, force = false) {
-  const { title, description, enTitle, enDescription, category, attributes } = copy;
-  const content = { title, description, enTitle, enDescription, category, attributes, gallery: copy.gallery, details: copy.details };
+  const { title, description, enTitle, enDescription, category } = copy;
+  const content = { title, description, enTitle, enDescription, category, gallery: copy.gallery, details: copy.details };
   const { brand, axis, skus, packagedWeightGrams, packageCm } = plan;
   const commerce = { brand, axis, skus, packagedWeightGrams, packageCm };
   const job = { action: "fill_mx_draft", tabId, url, copy: content, plan: commerce, gallery, details, force };
@@ -522,6 +522,27 @@ export function writableDraftId({ matches, knownId = null, previous = {} }) {
 async function listDrafts(list, title, draftId = null, waitForMatch = false) {
   return runCode(list, draftListCode(title, draftId, waitForMatch));
 }
+async function refreshDraftList(list, title, waitForMatch = false) {
+  if (!bridgeOverride) {
+    try {
+      return await inbox("refresh_mx_draft_list", { action: "refresh_mx_draft_list",
+        tabId: list, url: drafts, title, waitForMatch });
+    } catch (error) {
+      if (!error.message.includes("unknown action: refresh_mx_draft_list")) throw error;
+    }
+  }
+  await bridge("reload_tab", { tabId: list });
+  return listDrafts(list, title, null, waitForMatch);
+}
+
+// Keep IDs seen before the refresh excluded from post-save identification, even
+// when a deleted row disappears and later resurfaces on a stale seller replica.
+export async function confirmCreateList(snapshot, refresh) {
+  if (!snapshot.matches.length) return snapshot;
+  const current = await refresh();
+  return { ...current, ids: [...new Set([...snapshot.ids, ...current.ids])] };
+}
+
 async function recoverTitle(tab, link, state, copy, dir) {
   if (state.url !== link || !copy.enTitle || state.enTitle === copy.enTitle) return false;
   // Only a title discrepancy can take this path. Keep all other checks active.
@@ -555,19 +576,21 @@ async function recoverTitle(tab, link, state, copy, dir) {
 }
 async function draftButton(tab, alreadyActive = false) {
   if (!alreadyActive) await bridge("activate_tab", { tabId: tab });
-  const message = await js(tab, async () => {
+  const signal = await js(tab, async () => {
     const button = [...document.querySelectorAll("button")].find(
       (e) => e.textContent.trim() === "另存为草稿",
     );
     if (!button || button.disabled)
       throw new Error("Draft save control not available");
-    let result = "";
+    let result = "", savedLink = "";
     const observer = new MutationObserver(() => {
       for (const e of document.querySelectorAll(
         "[class*=message-content],[role=alert]",
       )) {
-        if (/提交失败|保存失败|草稿保存成功/.test(e.innerText))
+        if (/提交失败|保存失败|草稿保存成功/.test(e.innerText)) {
           result = e.innerText.trim();
+          savedLink = result.includes("草稿保存成功") ? e.querySelector('a[href*="/product/edit-draft/"]')?.href || "" : "";
+        }
       }
     });
     observer.observe(document.body, { childList: true, subtree: true });
@@ -575,12 +598,19 @@ async function draftButton(tab, alreadyActive = false) {
       button.click();
       for (let i = 0; i < 18 && !result; i++)
         await new Promise((r) => setTimeout(r, 150));
-      return result;
+      return { message: result, url: savedLink || location.href };
     } finally {
       observer.disconnect();
     }
   });
-  saveSignals.push({ tab, message, at: Date.now() });
+  const message = signal?.message ?? signal;
+  let draftId = null;
+  if (signal?.url && message?.includes("草稿保存成功")) {
+    const page = new URL(signal.url);
+    if (page.origin === seller && page.searchParams.get("shop_region") === "MX")
+      draftId = page.pathname.match(/^\/product\/edit-draft\/(\d+)$/)?.[1] ?? null;
+  }
+  saveSignals.push({ tab, message, draftId, at: Date.now() });
   return message === "草稿保存成功";
 }
 // Read the same draft after a save. Seller Center can expose an older snapshot
@@ -591,6 +621,7 @@ function matchesDraft(state, copy, plan) {
   if (commercialDifferences(state.salesAndShipping, plan).length) return false;
   try {
     check(state, copy);
+    checkDraftAttributes(copy, state);
     return true;
   } catch {
     return false;
@@ -631,6 +662,58 @@ async function readSaved(tab, link, copy, plan, attempts, repairProse = false) {
     });
   } });
 }
+async function resolveCategory(tab, url, source, copy, dir) {
+  const candidates = await js(tab, expected => {
+    if (location.href !== expected) throw Error("Draft changed during category selection");
+    return [...new Set([...document.querySelectorAll("button")].filter(b => b.innerText.trim() === "应用" &&
+      !b.disabled && b.getClientRects().length).map(b => b.parentElement.parentElement.innerText.replace(/\s*应用\s*$/, "").trim())
+      .filter(path => path.split(/\s+[>/-]\s+/).length >= 3))];
+  }, url);
+  const { chooseCategory } = await import("./tiktok-mx-ptc.mjs");
+  const { choice, ptc } = await chooseCategory(source, candidates);
+  const selected = await category(tab, choice);
+  if (!selected.selected) throw Error("Recommended category did not persist: " + choice.label);
+  copy.category = choice;
+  await write(path.join(dir, "listing.json"), copy);
+  await write(path.join(dir, "category-generation.json"), ptc);
+  return selected;
+}
+
+export function compatibleAttributePlan(binding, category, catalog) {
+  const path = value => value?.trim().replace(/\s+[-/>]\s+|\s*[>/]\s*/g, "/");
+  if (!binding?.category || path(binding.category) !== path(category) || !binding.values ||
+      catalog.length !== Object.keys(binding.values).length) return false;
+  return catalog.every(field => {
+    const values = binding.values[field.name];
+    return Array.isArray(values) && (field.multiple || values.length <= 1) &&
+      values.every(value => typeof value === "string" && matchAttributeValue(field.options, value));
+  });
+}
+
+async function ensureAttributes(tab, url, state, source, copy, dir) {
+  if (!state.hasCategoryAttributes && !copy.attributePlan) return false;
+  const catalog = state.attributeCatalog ?? await runCode(tab, attributeCode(url));
+  let binding = copy.attributePlan;
+  if (!catalog.length && (state.hasCategoryAttributes || binding && Object.keys(binding.values).length)) throw Error("Category attributes disappeared");
+  const fits = compatibleAttributePlan(binding, state.category, catalog);
+  if (!fits) {
+    const { chooseAttributes } = await import("./tiktok-mx-ptc.mjs");
+    const { values, ptc } = await chooseAttributes(source, catalog, undefined, copy.attributes);
+    binding = { category: state.category, values };
+    copy.attributePlan = binding;
+    await write(path.join(dir, "attribute-generation.json"), ptc);
+    await write(path.join(dir, "listing.json"), copy);
+  }
+  if (fits) mark("attributePlanReused");
+  if (catalog.every(f => binding.values[f.name].every(value => f.selected.includes(matchAttributeValue(f.options, value))))) {
+    state.attributeCatalog = catalog;
+    return false;
+  }
+  state.attributeCatalog = await runCode(tab, attributeCode(url, binding.values));
+  checkAttributes(binding.values, state.attributeCatalog);
+  return true;
+}
+
 async function sellerTab(url, forceReload = false) {
   const existing = group.tabs.get(url);
   if (!existing) return open(url);
@@ -699,7 +782,9 @@ export async function save(
       previous.link === registeredLink && registered?.link === registeredLink;
     const skipList = target || verifiedRecord;
     const list = skipList ? null : await sellerTab(drafts, preparedForm == null);
-    const listState = skipList ? { matches: [], ids: [] } : await (initialList && !knownId ? initialList : listDrafts(list, copy.title, knownId));
+    let listState = skipList ? { matches: [], ids: [] } : await (initialList && !knownId ? initialList : listDrafts(list, copy.title, knownId));
+    if (!skipList && !knownId && !previous.startedTab && !previous.saving && !previous.stagedTab)
+      listState = await confirmCreateList(listState, () => refreshDraftList(list, copy.title));
     const seenIds = [...new Set((listState.ids || []).map(String))];
     if (!skipList) mark("listRead");
     const claimed = Boolean(previous.saving || previous.startedTab || previous.stagedTab);
@@ -797,6 +882,13 @@ export async function save(
         try {
           const result = await fillPage(tab, createUrl, copy, plan, gallery, details);
           cat = result.category;
+          if (!cat?.selected && copy.category) {
+            cat = await resolveCategory(tab, createUrl, data, copy, dir);
+            await supplement(tab, { attributes: {} });
+            await commercialState(tab, plan, true);
+            result.state = await js(tab, formState);
+          }
+          if (cat?.selected) await ensureAttributes(tab, createUrl, result.state, data, copy, dir);
           checkpoint = null;
         } catch (error) {
           if (error.message.includes("Seller readback differs") && (checkpoint = await recordGalleryPrefix())) {
@@ -827,7 +919,8 @@ export async function save(
         if (checkpoint.category) {
           if (checkpoint.category?.replace(/\s*[-/>]\s*/g, "/") !== copy.category?.label?.replace(/\s*[-/>]\s*/g, "/"))
             throw Error("Retained draft category changed");
-          await supplement(tab, copy);
+          await supplement(tab, { attributes: {} });
+          await ensureAttributes(tab, createUrl, checkpoint, data, copy, dir);
           await commercialState(tab, plan, true);
           if (!galleryCheckpoint) checkpoint = null;
         }
@@ -846,25 +939,13 @@ export async function save(
       initialAcknowledged = await draftButton(tab, true);
       await write(resultFile, { ...submitting, saveMessage: saveSignals.at(-1).message });
       mark("initialSave");
-      // Seller Center can keep the pre-save list snapshot across soft navigation.
-      // Start with a new list document. Only retry reads while the save propagates.
-      const savedList = await group.open(drafts, [], true);
+      const signalId = saveSignals.at(-1).draftId;
+      if (signalId && !seenIds.includes(signalId)) id = signalId;
+      // Reload the existing list immediately. A second fresh read is cheaper
+      // than waiting on a list document that cannot see the new row yet.
       const identifyUntil = Date.now() + 60000;
-      for (let i = 0; i < 10 && Date.now() < identifyUntil && !id; i++) {
-        let saved;
-        if (i === 0) saved = await listDrafts(savedList, copy.title, null, true);
-        else if (!bridgeOverride) {
-          try {
-            saved = await inbox("refresh_mx_draft_list", { action: "refresh_mx_draft_list",
-              tabId: savedList, url: drafts, title: copy.title });
-          } catch (error) {
-            if (!error.message.includes("unknown action: refresh_mx_draft_list")) throw error;
-          }
-        }
-        if (!saved) {
-          await bridge("reload_tab", { tabId: savedList });
-          saved = await listDrafts(savedList, copy.title, null, true);
-        }
+      for (let i = 0; i < 24 && Date.now() < identifyUntil && !id; i++) {
+        const saved = await refreshDraftList(list, copy.title, i >= 2);
         const fresh = (saved.matches || []).filter((row) => row.id && !seenIds.includes(String(row.id)));
         if (fresh.length > 1) throw new Error("Ambiguous draft match");
         if (fresh.length === 1) id = fresh[0].id;
@@ -890,28 +971,11 @@ export async function save(
     state ??= await readyForm(edit, true, true);
     if (state.url !== link) throw Error("Draft URL changed before readback");
     const firstPersisted = refreshReads[0] ?? { at: Date.now(), matched: matchesDraft(state, copy, plan), title: state.enTitle, skus: state.salesAndShipping.skus };
-    const expectedPath = copy.category?.label?.replace(/\s+[-/>]\s+/g, "/");
     let changed = false;
     if (!state.category && copy.category && !readOnly) {
       cat = await category(edit, copy.category);
       if (!cat.selected && ["Exact category not offered", "Option disabled by seller center"].includes(cat.reason)) {
-        const candidates = await js(edit, expected => {
-          if (location.href !== expected) throw Error("Wrong draft during category recovery");
-          const buttons = [...document.querySelectorAll("button")];
-          return [...new Set(buttons.filter(b => b.innerText.trim() === "应用" && !b.disabled && b.getClientRects().length)
-            .map(b => b.parentElement.parentElement.innerText.replace(/\s*应用\s*$/, "").trim())
-            .filter(path => path.split(/\s+[>/-]\s+/).length >= 3))];
-        }, link);
-        if (candidates.length) {
-          const { chooseCategory } = await import("./tiktok-mx-ptc.mjs");
-          const { choice, ptc } = await chooseCategory(data, candidates);
-          cat = await category(edit, choice);
-          if (cat.selected) {
-            copy.category = choice;
-            await write(path.join(dir, "listing.json"), copy);
-            await write(path.join(dir, "category-generation.json"), ptc);
-          }
-        }
+        cat = await resolveCategory(edit, link, data, copy, dir);
       }
       for (let attempt = 0; !cat.selected && attempt < 20; attempt++) {
         const status = await js(edit, () => ({
@@ -943,7 +1007,7 @@ export async function save(
       }
       if (!cat.selected)
         throw Error("Category could not be selected: " + JSON.stringify(cat));
-      await supplement(edit, copy);
+      await supplement(edit, { attributes: {} });
       state = await js(edit, formState);
       changed = true;
     }
@@ -965,6 +1029,7 @@ export async function save(
     let filled;
     // A form can already exist as a draft after a previous run stopped. Use the
     // same single-job editor as the normal rewrite when its content identifies it.
+    const expectedPath = copy.category?.label?.replace(/\s+[-/>]\s+/g, "/");
     const incompleteRows = !readOnly && !target && state.salesAndShipping &&
       commercialDifferences(state.salesAndShipping, plan).length > 0 &&
       state.title === copy.title && state.category && state.category.replace(/\s+[-/>]\s+/g, "/") === expectedPath && state.gallery === gallery.length &&
@@ -1003,6 +1068,7 @@ export async function save(
       categoryPath(categoryShown) !== categoryPath(expectedCategory)
     )
       throw new Error("Category differs: " + categoryShown);
+    if (!readOnly && await ensureAttributes(edit, link, state, data, copy, dir)) changed = true;
     mark("editorRead");
     const commerce = filled?.commerce ?? await commercialState(
       edit,
@@ -1090,6 +1156,10 @@ export async function save(
         refreshed = await commercialState(edit, plan);
       }
     }
+    if (copy.attributePlan || state.hasCategoryAttributes) {
+      state.attributeCatalog ??= await runCode(edit, attributeCode(link));
+      checkDraftAttributes(copy, state);
+    }
     mark("verified");
     const started =
       (knownId && !resave) || previous.startedTab || readOnly ? invocationStarted : data.start;
@@ -1154,7 +1224,8 @@ function printReceipt(receipt, resultFile) {
       attempts: writes.reduce((count, write) => count + write.attempts.length, 0) };
   });
   console.log(JSON.stringify(compactOutput ? {
-    verified, id, link, enTitle: readback.enTitle, gallery: readback.gallery, detailImages: readback.detailImages,
+    verified, id, link, enTitle: readback.enTitle,
+    attributes: readback.attributeCatalog?.map(({ name, selected }) => ({ name, selected })), gallery: readback.gallery, detailImages: readback.detailImages,
     rows, brand, packagedWeightGrams, packageCm, estimatedFields: Object.keys(receipt.estimates),
     elapsedSeconds, stages, receiptFile: resultFile, firstRefreshMatched: receipt.firstPersisted.matched,
   } : receipt));
@@ -1188,7 +1259,7 @@ try {
       new URL("./tiktok-mx-tabs.mjs", import.meta.url),
       path.join(home, "tiktok-mx-tabs.mjs"),
     );
-    for (const name of ["tiktok-mx-commerce.mjs", "tiktok-mx-editor.mjs", "tiktok-mx-list.mjs"])
+    for (const name of ["tiktok-mx-commerce.mjs", "tiktok-mx-editor.mjs", "tiktok-mx-list.mjs", "tiktok-mx-attributes.mjs"])
       await fs.copyFile(new URL("../extension/skills/tiktok-mx-draft/" + name, import.meta.url), path.join(home, name));
     for (const name of ["listing.ptc.js", "listing-workers.ptc.js"])
       await fs.copyFile(new URL("./" + name, import.meta.url), path.join(home, name));

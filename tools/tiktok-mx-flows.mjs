@@ -101,7 +101,7 @@ export async function rememberPlan(source, copy, receipt, versions = null) {
 // Preserve the revision that produced a reused plan if a cell is edited mid-run.
 export const verifiedPlanVersions = new WeakMap();
 
-export async function matchingPlan(source) {
+async function verifiedRecord(source) {
   let record;
   try {
     record = JSON.parse(await fs.readFile(planFile(source), "utf8"));
@@ -110,7 +110,22 @@ export async function matchingPlan(source) {
     throw error;
   }
   if (record.key !== planKey(source) || !Array.isArray(record.copy.salesAndShipping?.skus)) return null;
-  if (!record.versions) return null;
+  return record;
+}
+
+// Previously accepted labels remain useful when content-generation programs change.
+export async function confirmedControls(source) {
+  if (!/^\d{12,22}$/.test(source.id)) return null;
+  const record = await verifiedRecord(source);
+  if (!record) return null;
+  const { category, salesAndShipping } = record.copy;
+  return { category, attributePlan: record.copy.attributePlan, axis: salesAndShipping.axis,
+    options: new Map(salesAndShipping.skus.map(row => [row.sourceSkuId, row.option])) };
+}
+
+export async function matchingPlan(source) {
+  const record = await verifiedRecord(source);
+  if (!record?.versions) return null;
   const versions = await listingVersions();
   if (record.versions.workers !== versions.workers || record.versions.planner !== versions.planner) return null;
   // Seller-entered prices/inventory belong to the original listing. Only

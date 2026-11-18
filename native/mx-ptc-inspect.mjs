@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { createPtcExecTool } from "@mage-ai-lab/agent-loop/ptc";
 import { commercialPlan, commercialDifferences } from "../tools/tiktok-mx-commerce.mjs";
-import { check } from "../tools/tiktok-mx-editor.mjs";
+import { check, checkDraftAttributes } from "../tools/tiktok-mx-editor.mjs";
 
 const program = `
 const reads = await Promise.all([expected_listing({}), saved_draft({})]);
@@ -30,6 +30,7 @@ export async function inspectWithPtc({ sourceId, draftId }, readSaved, readExpec
       tool("compare_fields", () => {
         if (saved?.url !== link || saved.captcha) throw Error("Wrong draft or seller verification");
         check(saved, expected.copy);
+        checkDraftAttributes(expected.copy, saved);
         const normalize = s => (s || "").split(/\s+[-/>]\s+/).map(x => x.trim()).join("/");
         if (!saved.category || normalize(saved.category) !== normalize(expected.copy.category?.label))
           throw Error("Category mismatch");
@@ -44,7 +45,7 @@ export async function inspectWithPtc({ sourceId, draftId }, readSaved, readExpec
   if (!result.ok || JSON.parse(result.content).result !== "verified") throw Error(result.content);
   const { skus, brand, packagedWeightGrams, packageCm } = saved.salesAndShipping;
   return { verified: true, executor: executor.name, steps, draftId, link, enTitle: saved.enTitle,
-    gallery: saved.gallery, detailImages: saved.detailImages, skus: skus.map(({ label, stock, priceMXN }) => ({ label, stock, priceMXN })),
+    attributes: saved.attributeCatalog?.map(({name, selected}) => ({ name, selected })), gallery: saved.gallery, detailImages: saved.detailImages, skus: skus.map(({ label, stock, priceMXN }) => ({ label, stock, priceMXN })),
     brand, packagedWeightGrams, packageCm };
 }
 

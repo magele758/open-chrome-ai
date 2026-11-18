@@ -1,3 +1,6 @@
+import { sellerAttributes, checkAttributes, matchAttributeValue } from "./tiktok-mx-attributes.mjs";
+export { checkAttributes, matchAttributeValue };
+export { checkDraftAttributes } from "./tiktok-mx-attributes.mjs";
 import { draftListCode, sellerVerification } from "./tiktok-mx-list.mjs";
 export * from "./tiktok-mx-list.mjs";
 import { commercialDifferences, commerceScript, locateSkuInput, sellerRead, sellerVariants, sellerNumbers } from "./tiktok-mx-commerce.mjs";
@@ -48,6 +51,8 @@ export function formState() {
       document
         .querySelector("#product-cascader-select-view")
         ?.innerText.trim() || "",
+    hasCategoryAttributes: [...document.querySelectorAll('[role="combobox"][aria-haspopup="listbox"]')]
+      .some(e => e.getClientRects().length && !e.closest('[data-id],table,[role="row"]')),
     singleSku: document.body.innerText.includes("价格和库存"),
     attributes: [...document.querySelectorAll("[role=combobox]")]
       .filter((e) => !e.closest("[data-id]"))
@@ -82,7 +87,7 @@ export function snapshotCode(withCommerce, allowEmptyDescription, settle = false
 }
 
 // One inbox round trip. Each step still passes through the configured PageLens bridge.
-export async function runMxDraftRead({ action, tabId, url, title, expectedDetails = 0 }, dispatch, tabUrl) {
+export async function runMxDraftRead({ action, tabId, url, title, waitForMatch = true, expectedDetails = 0 }, dispatch, tabUrl) {
   const page = new URL(url);
   const list = action === "refresh_mx_draft_list";
   const validPage = list ? page.pathname === "/product/manage" && page.searchParams.get("tab") === "draft" &&
@@ -97,7 +102,15 @@ export async function runMxDraftRead({ action, tabId, url, title, expectedDetail
     return reply.result;
   }
   if (!Number.isInteger(expectedDetails) || expectedDetails < 0 || expectedDetails > 20) throw Error("Invalid detail count");
-  return readFreshDocument(url, call, list ? draftListCode(title, null, true) : snapshotCode(true, true, true, expectedDetails));
+  const state = await readFreshDocument(url, call, list ? draftListCode(title, null, waitForMatch) : snapshotCode(true, true, true, expectedDetails));
+  if (!list && state.hasCategoryAttributes)
+    state.attributeCatalog = (await call("run_js", { code: attributeCode(url) })).result;
+  return state;
+}
+
+export function attributeCode(url, plan = null) {
+  return sellerVerification.toString() + "\n" + matchAttributeValue.toString() + "\nreturn await (" + sellerAttributes.toString() + ")(" +
+    JSON.stringify(url) + "," + JSON.stringify(plan) + ")";
 }
 
 export async function readFreshDocument(url, call, snapshot = snapshotCode(true, true, true)) {
@@ -161,10 +174,22 @@ export function mxEditor(bridge, runCode, skuWrites) {
           return { selected: false, reason: "Category selector unavailable" };
         const norm = (s) => s.replace(/\s*[-/>]\s*/g, "/").trim();
         const selected = () => document.querySelector("#product-cascader-select-view")?.innerText.trim() || "";
+        const changeDialog = () => [...document.querySelectorAll('[role="dialog"]')].find(e =>
+          e.getClientRects().length && e.innerText.includes("更改商品类目") && e.innerText.includes("属性信息将被清除"));
+        if (changeDialog()) throw Error("A prior category change is awaiting confirmation");
         const readSelection = async () => {
-          for (let i = 0; i < 24 && !selected(); i++) await pause(200);
+          let confirmed = false;
+          for (let i = 0; i < 24; i++) {
+            const dialog = changeDialog();
+            if (dialog) {
+              const confirm = [...dialog.querySelectorAll("button")].find(b => !b.disabled && b.innerText.trim() === "继续");
+              if (confirm && !confirmed) { confirm.click(); confirmed = true; }
+            }
+            if (norm(selected()) === norm(label) && !dialog) return { selected: true, label, shown: selected() };
+            await pause(200);
+          }
           const shown = selected();
-          return { selected: norm(shown) === norm(label), label, shown };
+          return { selected: false, label, shown };
         };
         if (norm(selected()) === norm(label)) return readSelection();
         const recommendation = [...document.querySelectorAll("button")].find(
@@ -230,7 +255,7 @@ export function mxEditor(bridge, runCode, skuWrites) {
           )[0] === label,
       );
       if (!box) continue;
-      for (const term of terms) {
+      for (const term of Array.isArray(terms) ? terms : [terms]) {
         if (box.innerText.split("\n").includes(term)) continue;
         if (box.getAttribute("aria-expanded") !== "true")
           box.querySelector(".core-select-view")?.click();
@@ -633,7 +658,7 @@ export function mxEditor(bridge, runCode, skuWrites) {
         state = await js(tab, formState);
         check(state, copy);
       }
-      if (state.category && copy.category?.label && !sameCategory(state.category, copy.category.label))
+      if (cat.selected && state.category && copy.category?.label && !sameCategory(state.category, copy.category.label))
         throw Error("Expected category did not load: " + (state.category || cat.reason || ""));
       if (commerce && phases.fieldsRead <= phases.mediaRead) {
         // Upload completion can re-render controlled inputs. Only repair rows
