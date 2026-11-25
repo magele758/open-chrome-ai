@@ -1970,7 +1970,7 @@ export function resolveActiveTools({
 
   // DOM 页面交互意图
   if (
-    /点击|填写|输入|按键|滚动|选择|登录|提交|按钮|控件|下拉|粘贴|复制|剪贴|悬停|拖|上传|对话框|弹窗|右键|双击|快捷键|组合键|整页|长图|click|fill|submit|input|button|scroll|paste|copy|clipboard|hover|drag|upload|dialog|shortcut/i.test(
+    /点击|填写|输入|按键|滚动|选择|登录|提交|按钮|控件|下拉|粘贴|复制|剪贴|悬停|拖|上传|对话框|弹窗|右键|双击|快捷键|组合键|整页|长图|click|fill|submit|input|button|scroll|paste|copy|clipboard|hover|drag|upload|dialog|shortcut|风控|验证码|拼图|playground/i.test(
       text,
     )
   ) {
