@@ -4,6 +4,7 @@
  *
  *   node native/install-native-host.mjs
  *   node native/install-native-host.mjs --extension-id <id>
+ *   node native/install-native-host.mjs --prepare-helper
  *   node native/install-native-host.mjs --uninstall
  *
  * 外部 Agent（MCP）：
@@ -17,6 +18,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { HOST_NAME } from "./pagelens-host.mjs";
+import { checkMacAccessibility, ensureMacAxHelper } from "./saved-tab-groups.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -119,7 +121,7 @@ function writeWrapper() {
   const pathEnv = process.env.PATH || "";
   const body = `#!/bin/sh
 export PATH=${JSON.stringify(pathEnv)}
-exec ${JSON.stringify(nodePath)} ${JSON.stringify(hostMjs)}
+exec ${JSON.stringify(nodePath)} ${JSON.stringify(hostMjs)} "$@"
 `;
   fs.writeFileSync(runner, body, { mode: 0o755 });
   fs.chmodSync(runner, 0o755);
@@ -268,6 +270,7 @@ function main() {
   if (hasFlag("--help") || hasFlag("-h")) {
     console.log(`Usage:
   node native/install-native-host.mjs [--extension-id <id>]
+  node native/install-native-host.mjs --prepare-helper
   node native/install-native-host.mjs --uninstall
   node native/install-native-host.mjs --save-token <name> [--token plk_...]
   node native/install-native-host.mjs --mcp-config <name> [--write-cursor]
@@ -304,7 +307,15 @@ function main() {
 
 if (isMain) {
   try {
-    if (hasFlag("--print-ids")) {
+    if (hasFlag("--prepare-helper")) {
+      const result = await ensureMacAxHelper({ force: true });
+      if (!result.ok) throw new Error([result.error, result.hint].filter(Boolean).join(" ") || "无法准备 PageLens Helper。");
+      console.log(`已从当前项目构建 ${result.appPath}。`);
+      const status = await checkMacAccessibility();
+      if (!status.ok) throw new Error([status.error, status.hint].filter(Boolean).join(" ") || "PageLens Helper 启动检测失败。");
+      console.log(status.trusted ? "Helper 已启动，辅助功能已授权。" : "Helper 已启动，请在 macOS 辅助功能设置中允许 PageLens Helper。");
+      console.log("回到「已保存标签组」，点「重新检测」。");
+    } else if (hasFlag("--print-ids")) {
       console.log(findExtensionIds(argValue("--extension-id")).join("\n") || "(none)");
     } else if (!(await agentCommands())) {
       main();

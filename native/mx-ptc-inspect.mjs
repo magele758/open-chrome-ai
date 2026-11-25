@@ -49,7 +49,7 @@ export async function inspectWithPtc({ sourceId, draftId }, readSaved, readExpec
     brand, packagedWeightGrams, packageCm };
 }
 
-async function registeredListing(sourceId, draftId) {
+export async function registeredListing(sourceId, draftId) {
   const json = async file => JSON.parse(await fs.readFile(file, "utf8"));
   const home = process.env.PAGELENS_HOME || path.join(os.homedir(), ".pagelens");
   const map = await json(path.join(home, "mx-draft-sources", sourceId + ".json"));
@@ -59,5 +59,5 @@ async function registeredListing(sourceId, draftId) {
     throw Error("Unexpected run directory");
   const [source, copy] = await Promise.all(["source.json", "listing.json"].map(file => json(path.join(dir, file))));
   if (source.id !== sourceId || copy.title !== map.title) throw Error("Registered source has changed");
-  return { source, copy };
+  return { source, copy, dir };
 }

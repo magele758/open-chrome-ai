@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Browser operations run in the signed-in Chrome profile through PageLens.
 import { DraftTabs } from "./tiktok-mx-tabs.mjs";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import { commercialDifferences, commercialPlan } from "./tiktok-mx-commerce.mjs";
 export { normDraftTitle, draftTitleOf, draftIdOf, selectDraftRows, draftListReady } from "./tiktok-mx-editor.mjs";
-import { attributeCode, checkAttributes, checkDraftAttributes, matchAttributeValue, draftListCode, mxEditor, formState, readFreshDocument, snapshotCode, sameText, check, titleSelector } from "./tiktok-mx-editor.mjs";
+import { attributeCode, checkAttributes, checkDraftAttributes, matchAttributeValue, draftListCode, mxEditor, formState, normDraftTitle, readFreshDocument, saveDraftCode, sellerCategoryOptionsCode, sellerCategorySearchCode, shopAllowedCategoriesCode, snapshotCode, sameText, check, titleSelector } from "./tiktok-mx-editor.mjs";
+import { SELLER_LOGIN_ERROR, isSellerLoginUrl } from "../extension/skills/tiktok-mx-draft/tiktok-mx-seller-request.mjs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -82,7 +84,11 @@ async function inbox(tool, job, timeoutMs = 75000) {
     try { return await nativeDispatch(job); }
     finally { bridgeCalls.push({ tool, start, end: Date.now() }); }
   }
-  const queue = path.join(home, "agent-inbox");
+  const extensionId = process.env.PAGELENS_EXTENSION_ID || (await fs.readFile(path.join(home, "agent-inbox-extension-id"), "utf8")
+    .catch(error => { if (error.code !== "ENOENT") throw error; return ""; })).trim();
+  if (extensionId && !/^[a-p]{32}$/.test(extensionId)) throw Error("Invalid PageLens inbox extension ID");
+  const queue = path.join(home, "agent-inbox", extensionId || "");
+  if (extensionId) await fs.mkdir(queue, { recursive: true, mode: 0o700 });
   const start = Date.now();
   calls++;
   await write(path.join(queue, id + ".json"), {
@@ -94,6 +100,8 @@ async function inbox(tool, job, timeoutMs = 75000) {
   while (Date.now() - start < timeoutMs) {
     try {
       const reply = await read(path.join(home, "agent-outbox", id + ".json"));
+      if (extensionId && reply.consumerExtensionId !== extensionId)
+        throw Error("PageLens inbox receipt came from a different extension");
       bridgeCalls.push({ tool, start, end: Date.now(), executionMs: reply.meta?.ms });
       if (!reply.ok) throw new Error(tool + ": " + JSON.stringify(reply.error));
       return reply.result;
@@ -280,6 +288,74 @@ async function lookup(file) {
     return null;
   }
 }
+const maxHistoryArtifactBytes = 1024 * 1024;
+
+function isOwnedHistoryEntry(stat) {
+  return (typeof process.getuid !== "function" || stat.uid === process.getuid()) &&
+    (stat.mode & 0o022) === 0;
+}
+
+async function readHistoryArtifact(file) {
+  let handle;
+  try {
+    handle = await fs.open(file, fsConstants.O_RDONLY |
+      (fsConstants.O_NOFOLLOW || 0) | (fsConstants.O_NONBLOCK || 0));
+    const stat = await handle.stat();
+    if (!stat.isFile() || !isOwnedHistoryEntry(stat) || stat.size > maxHistoryArtifactBytes) return null;
+    const buffer = Buffer.alloc(stat.size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    if (length !== stat.size) return null;
+    return JSON.parse(buffer.subarray(0, length).toString("utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError || ["ENOENT", "ELOOP", "ENOTDIR", "EISDIR"].includes(error.code)) return null;
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function assertSourceCanBeCreated(id) {
+  const registered = await fs.lstat(sourceRecord(id)).catch(error => {
+    if (error.code !== "ENOENT") throw error;
+    return null;
+  });
+  if (registered) throw Error("Source already registered; use rerun");
+
+  const root = await fs.realpath(os.tmpdir());
+  const prefix = "pagelens-mx-" + id + "-";
+  const candidateIds = new Set();
+  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (!entry.name.startsWith(prefix) || !entry.isDirectory()) continue;
+    const dir = path.join(root, entry.name);
+    const stat = await fs.lstat(dir).catch(error => {
+      if (error.code !== "ENOENT") throw error;
+      return null;
+    });
+    if (!stat?.isDirectory() || !isOwnedHistoryEntry(stat)) continue;
+    const receipt = await readHistoryArtifact(path.join(dir, "receipt.json"));
+    if (receipt?.verified !== true || typeof receipt.id !== "string" || !/^\d{12,22}$/.test(receipt.id)) continue;
+    const link = seller + "/product/edit-draft/" + receipt.id + "?shop_region=MX";
+    if (receipt.link !== link || receipt.readback?.url !== link || typeof receipt.title !== "string" ||
+        !receipt.title.trim() || receipt.readback.title !== receipt.title) continue;
+    const source = await readHistoryArtifact(path.join(dir, "source.json"));
+    if (source?.id !== id || typeof source.url !== "string") continue;
+    let capturedId;
+    try { capturedId = sourceId(source.url); } catch { continue; }
+    if (capturedId !== id) continue;
+    const listing = await readHistoryArtifact(path.join(dir, "listing.json"));
+    if (listing?.title !== receipt.title || (listing.enTitle && listing.enTitle !== receipt.readback.enTitle)) continue;
+    candidateIds.add(receipt.id);
+  }
+  if (candidateIds.size) {
+    throw Error("Verified local history includes draft IDs " + [...candidateIds].sort().join(", ") +
+      ". Verify them by ID and reconcile the source record before creating.");
+  }
+}
 // Chrome may return a new tab while its visible URL is still empty. The bridge
 // can authorize that tab (including as a group anchor) only after navigation.
 export async function waitForSourceTab(tab, url, list = () => bridge("list_tabs", { query: new URL(url).hostname })) {
@@ -298,7 +374,7 @@ export async function waitForSourceTab(tab, url, list = () => bridge("list_tabs"
   } while (Date.now() < deadline);
   throw Error("Source tab did not finish navigating to the requested product");
 }
-async function prepare(url, fresh = false, afterOpening, onFactsReady, preloadCreate = false) {
+async function prepare(url, fresh = false, afterOpening, onFactsReady, reuseSourceForCreate = false) {
   const previousRun = await lookup(sourceRecord(sourceId(url)));
   if (previousRun && !fresh) {
     if (!nativeDispatch) console.log(JSON.stringify({ existing: true, ...previousRun }));
@@ -310,23 +386,33 @@ async function prepare(url, fresh = false, afterOpening, onFactsReady, preloadCr
     path.join(os.tmpdir(), "pagelens-mx-" + id + "-"),
   );
   group = new DraftTabs(id, bridge);
-  if (preloadCreate) await group.open(createUrl, [url, drafts]);
-  const tab = group.tabs.get(url) ?? await open(url);
-  if (preloadCreate) afterOpening?.();
+  const tab = await group.open(url, reuseSourceForCreate ? [drafts] : [], reuseSourceForCreate || undefined);
   await waitForSourceTab(tab, url);
-  if (!preloadCreate) afterOpening?.();
   let data;
-  try {
-    data = await js(tab, extract, id);
-  } catch (error) {
-    if (!/Frame with ID 0 is showing error page/i.test(error.message)) throw error;
-    mark("sourceReload");
-    await bridge("reload_tab", { tabId: tab });
-    data = await js(tab, extract, id);
+  const retryDelays = [2500, 5000, 9000, 14000];
+  for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+    try {
+      data = await js(tab, extract, id);
+      break;
+    } catch (error) {
+      if (/SELLER_LOGIN_REQUIRED/i.test(error?.message || "")) throw error;
+      if (attempt === retryDelays.length || !/Frame with ID 0 is showing error page|Product data unavailable|PageLens page script failed|execution context was destroyed|did not finish navigating/i.test(error.message)) throw error;
+      mark("sourceReload");
+      await sleep(retryDelays[attempt]);
+      await bridge("activate_tab", { tabId: tab }).catch(() => {});
+      if (!bridgeOverride && /showing error page/i.test(error.message)) {
+        await bridge("navigate_tab", { tabId: tab, url });
+        await waitForSourceTab(tab, url).catch(() => {});
+      } else {
+        await bridge("reload_tab", { tabId: tab });
+      }
+      await sleep(1500);
+    }
   }
   mark("sourceRead");
   if (!data.title || !data.gallery?.length)
     throw new Error("Product title or gallery missing");
+  afterOpening?.(tab);
   await write(path.join(dir, "source-capture.json"), {
     ...data,
     url,
@@ -393,13 +479,14 @@ async function prepare(url, fresh = false, afterOpening, onFactsReady, preloadCr
 }
 
 async function createDraft(url, rate) {
-  if (await lookup(sourceRecord(sourceId(url)))) throw Error("Source already registered; use rerun");
+  await assertSourceCanBeCreated(sourceId(url));
   const { generateListing, matchingPlan } = await import("./tiktok-mx-ptc.mjs");
   let generated, initialList;
-  const dir = await prepare(url, false, () => {
-    pendingPreflight = openCreateForm();
+  const dir = await prepare(url, false, sourceTab => {
+    pendingPreflight = openCreateForm(sourceTab);
     pendingPreflight.catch(() => {});
   }, async (facts, dir) => {
+    await pendingPreflight;
     const previous = await matchingPlan(facts);
     mark("generationStarted");
     generated = await generateListing(facts, previous, rate, undefined, Boolean(previous));
@@ -417,12 +504,39 @@ async function createDraft(url, rate) {
   return dir;
 }
 
+async function staggerConcurrentCreate() {
+  const lockDir = path.join(home, "tiktok-mx-stagger.lock");
+  const stampFile = path.join(home, "tiktok-mx-stagger.json");
+  for (let attempt = 0; attempt < 60; attempt++) {
+    try {
+      await fs.mkdir(lockDir, { mode: 0o700 });
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      await sleep(80);
+      continue;
+    }
+    let delay;
+    try {
+      const prior = await lookup(stampFile);
+      const now = Date.now();
+      const nextAt = Math.max(now, Number(prior?.nextAt) || 0);
+      delay = nextAt - now;
+      await write(stampFile, { nextAt: nextAt + 4500 });
+    } finally {
+      await fs.rmdir(lockDir);
+    }
+    if (delay > 0) await sleep(delay);
+    return;
+  }
+}
+
 // Native Messaging gives each workflow its own host process and private port.
 export async function createHostedDraft(sourceId, rate, dispatch) {
   if (nativeDispatch || !/^\d{12,22}$/.test(sourceId) || !Number.isFinite(rate) || rate <= 0)
     throw Error("Invalid native draft task");
   nativeDispatch = dispatch;
   try {
+    await staggerConcurrentCreate();
     const dir = await createDraft("https://shop.tiktok.com/jp/pdp/" + sourceId, rate);
     return { dir, receipt: await read(path.join(dir, "receipt.json")) };
   } finally {
@@ -525,6 +639,7 @@ async function listDrafts(list, title, draftId = null, waitForMatch = false) {
 }
 async function refreshDraftList(list, title, waitForMatch = false) {
   if (!bridgeOverride) {
+    await bridge("activate_tab", { tabId: list });
     try {
       return await inbox("refresh_mx_draft_list", { action: "refresh_mx_draft_list",
         tabId: list, url: drafts, title, waitForMatch });
@@ -539,7 +654,6 @@ async function refreshDraftList(list, title, waitForMatch = false) {
 // Keep IDs seen before the refresh excluded from post-save identification, even
 // when a deleted row disappears and later resurfaces on a stale seller replica.
 export async function confirmCreateList(snapshot, refresh) {
-  if (!snapshot.matches.length) return snapshot;
   const current = await refresh();
   return { ...current, ids: [...new Set([...snapshot.ids, ...current.ids])] };
 }
@@ -575,35 +689,9 @@ async function recoverTitle(tab, link, state, copy, dir) {
   copy.title = translated;
   return true;
 }
-async function draftButton(tab, alreadyActive = false) {
+async function draftButton(tab, alreadyActive = false, expectedUrl = null) {
   if (!alreadyActive) await bridge("activate_tab", { tabId: tab });
-  const signal = await js(tab, async () => {
-    const button = [...document.querySelectorAll("button")].find(
-      (e) => e.textContent.trim() === "另存为草稿",
-    );
-    if (!button || button.disabled)
-      throw new Error("Draft save control not available");
-    let result = "", savedLink = "";
-    const observer = new MutationObserver(() => {
-      for (const e of document.querySelectorAll(
-        "[class*=message-content],[role=alert]",
-      )) {
-        if (/提交失败|保存失败|草稿保存成功/.test(e.innerText)) {
-          result = e.innerText.trim();
-          savedLink = result.includes("草稿保存成功") ? e.querySelector('a[href*="/product/edit-draft/"]')?.href || "" : "";
-        }
-      }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    try {
-      button.click();
-      for (let i = 0; i < 18 && !result; i++)
-        await new Promise((r) => setTimeout(r, 150));
-      return { message: result, url: savedLink || location.href };
-    } finally {
-      observer.disconnect();
-    }
-  });
+  const signal = await runCode(tab, saveDraftCode(expectedUrl));
   const message = signal?.message ?? signal;
   let draftId = null;
   if (signal?.url && message?.includes("草稿保存成功")) {
@@ -663,19 +751,136 @@ async function readSaved(tab, link, copy, plan, attempts, repairProse = false) {
     });
   } });
 }
-async function resolveCategory(tab, url, source, copy, dir) {
-  const candidates = await js(tab, expected => {
+const categoryPath = value => String(value || "").trim().replace(/\s+/g, " ").replace(/\s*>\s*|\s+[-/]\s+/g, "/");
+
+export async function resolveCategory(tab, url, source, copy, dir, persistListing = true, planners = {}) {
+  const suggestions = () => js(tab, expected => {
     if (location.href !== expected) throw Error("Draft changed during category selection");
     return [...new Set([...document.querySelectorAll("button")].filter(b => b.innerText.trim() === "应用" &&
       !b.disabled && b.getClientRects().length).map(b => b.parentElement.parentElement.innerText.replace(/\s*应用\s*$/, "").trim())
       .filter(path => path.split(/\s+[>/-]\s+/).length >= 3))];
   }, url);
-  const { chooseCategory } = await import("./tiktok-mx-ptc.mjs");
-  const { choice, ptc } = await chooseCategory(source, candidates);
-  const selected = await category(tab, choice);
+  const { chooseCategory, categorySearchQuery, hanCategoryTerm } = await import("./tiktok-mx-ptc.mjs");
+  const choose = planners.chooseCategory ?? chooseCategory;
+  const queryWorker = planners.categorySearchQuery ?? categorySearchQuery;
+  const candidateTerms = list => [...new Set((Array.isArray(list) ? list : [])
+    .map(term => (typeof term === "string" ? term.trim() : ""))
+    .filter(term => hanCategoryTerm.test(term)))].slice(0, 3);
+  const planned = candidateTerms(copy.category?.searches?.length ? copy.category.searches : [copy.category?.search]);
+  let usedQueryWorker = Boolean(copy.category?.searches?.length && planned.length);
+  let terms = planned;
+  if (!terms.length) {
+    terms = (await queryWorker(source)).queries;
+    usedQueryWorker = true;
+  }
+  const paths = new Map();
+  const searched = [];
+  let lastTerm = null;
+  let lastChoices = [];
+  const searchOnce = async term => {
+    await runCode(tab, sellerCategorySearchCode(url));
+    const typed = await bridge("trusted_type", { tabId: tab, value: term });
+    if (!typed?.ok) throw Error("Seller category search failed");
+    return runCode(tab, sellerCategoryOptionsCode(url));
+  };
+  const searchAndRead = async term => {
+    try {
+      return await searchOnce(term);
+    } catch (error) {
+      if (!/Search the current draft category before reading choices/.test(error.message)) throw error;
+      return searchOnce(term);
+    }
+  };
+  const searchTerms = async list => {
+    for (const term of list) {
+      if (searched.includes(term)) continue;
+      searched.push(term);
+      const menu = await searchAndRead(term);
+      lastTerm = term;
+      lastChoices = menu.choices || [];
+      for (const label of lastChoices) {
+        const key = categoryPath(label);
+        if (!paths.has(key)) paths.set(key, { label, term });
+      }
+    }
+  };
+  await searchTerms(terms.slice(0, 3));
+  if (!paths.size && !usedQueryWorker) {
+    const fallback = await queryWorker(source);
+    await searchTerms(fallback.queries);
+  }
+  const candidates = [...new Set([...(await suggestions()), ...[...paths.values()].map(entry => entry.label)])];
+  let choice, ptc, selected;
+  const fallbackToAllowedScope = async () => {
+    const scope = await runCode(tab, shopAllowedCategoriesCode(url)).catch(() => ({ roots: [], leaves: [] }));
+    if (!scope?.leaves?.length) return null;
+    const flex = await choose(source, scope.leaves, undefined, { flexibleScope: true });
+    const leafTerm = flex.choice.label.split(/\s+[>/-]\s+/).at(-1);
+    const flexChoice = { label: flex.choice.label, search: leafTerm };
+    try {
+      await runCode(tab, sellerCategorySearchCode(url));
+      const typed = await bridge("trusted_type", { tabId: tab, value: leafTerm });
+      if (typed?.ok) {
+        const res = await runCode(tab, sellerCategoryOptionsCode(url, flex.choice.label));
+        if (categoryPath(res.choice) === categoryPath(flex.choice.label)) {
+          return { choice: flexChoice, ptc: flex.ptc, selected: { selected: true, label: flex.choice.label, shown: res.choice } };
+        }
+      }
+    } catch {}
+    const applied = await category(tab, flexChoice);
+    if (!applied?.selected) return null;
+    return { choice: flexChoice, ptc: flex.ptc, selected: applied };
+  };
+  if (!candidates.length) {
+    const flexDone = await fallbackToAllowedScope();
+    if (!flexDone) throw Error("Seller offered no category candidates for " + searched.join(", "));
+    ({ choice, ptc, selected } = flexDone);
+  } else {
+    try {
+      ({ choice, ptc } = await choose(source, candidates));
+    } catch (error) {
+      if (!/No suitable seller category/.test(error.message)) throw error;
+      const flexDone = await fallbackToAllowedScope();
+      if (!flexDone) throw error;
+      ({ choice, ptc, selected } = flexDone);
+    }
+    if (!selected) {
+      const hit = paths.get(categoryPath(choice.label));
+      if (hit) {
+        const applyChoice = async forceReopen => {
+          if (forceReopen || lastTerm !== hit.term || !lastChoices.some(label => categoryPath(label) === categoryPath(choice.label))) {
+            await runCode(tab, sellerCategorySearchCode(url));
+            const typed = await bridge("trusted_type", { tabId: tab, value: hit.term });
+            if (!typed?.ok) throw Error("Seller category search failed");
+          }
+          return runCode(tab, sellerCategoryOptionsCode(url, choice.label));
+        };
+        let applied;
+        try {
+          applied = await applyChoice(false);
+        } catch (error) {
+          if (!/Search the current draft category before reading choices/.test(error.message)) throw error;
+          applied = await applyChoice(true);
+        }
+        selected = {
+          selected: categoryPath(applied.choice) === categoryPath(choice.label),
+          label: choice.label,
+          shown: applied.choice,
+        };
+        choice.search = hit.term;
+      } else {
+        choice.search = searched[0] || terms[0];
+        selected = await category(tab, choice);
+      }
+      if (!selected.selected && selected.reason === "Category outside shop business scope") {
+        const flexDone = await fallbackToAllowedScope();
+        if (flexDone) ({ choice, ptc, selected } = flexDone);
+      }
+    }
+  }
   if (!selected.selected) throw Error("Recommended category did not persist: " + choice.label);
   copy.category = choice;
-  await write(path.join(dir, "listing.json"), copy);
+  if (persistListing) await write(path.join(dir, "listing.json"), copy);
   await write(path.join(dir, "category-generation.json"), ptc);
   return selected;
 }
@@ -721,9 +926,29 @@ async function sellerTab(url, forceReload = false) {
   if (forceReload) await bridge("reload_tab", { tabId: existing });
   return existing;
 }
-async function openCreateForm() {
-  const tab = group.tabs.get(createUrl) ?? await open(createUrl);
-  await bridge("wait_for", { tabId: tab, selector: titleSelector, timeoutMs: 20000 });
+async function finishGalleryPrefix(tab, url, gallery, prefix) {
+  for (let i = prefix; i < gallery.length; i++) {
+    await bridge("upload_file", { tabId: tab, selector: 'input[type=file][accept=".jpg,.png,.jpeg"]', paths: [gallery[i]] });
+    await runCode(tab, "const until=Date.now()+25000;do{const s=(" + formState.toString() +
+      ")();if(s.url!==" + JSON.stringify(url) + "||s.captcha)throw Error('Unexpected draft or verification');if(s.gallery===" +
+      (i + 1) + ")return true;await new Promise(r=>setTimeout(r,200))}while(Date.now()<until);throw Error('Gallery upload pending')");
+  }
+}
+async function openCreateForm(sourceTab) {
+  const tab = sourceTab == null
+    ? group.tabs.get(createUrl) ?? await open(createUrl)
+    : await group.navigate(sourceTab, createUrl);
+  if (sourceTab != null) await bridge("activate_tab", { tabId: tab });
+  const current = (await bridge("list_tabs", {})).find(entry => entry.id === tab);
+  if (isSellerLoginUrl(current?.url)) throw Error(SELLER_LOGIN_ERROR);
+  try {
+    const ready = await bridge("wait_for", { tabId: tab, selector: titleSelector, timeoutMs: 20000 });
+    if (ready?.ok === false) throw Error(ready.error || "MX seller editor did not open");
+  } catch (error) {
+    const live = (await bridge("list_tabs", {}).catch(() => [])).find(entry => entry.id === tab);
+    if (isSellerLoginUrl(live?.url)) throw Error(SELLER_LOGIN_ERROR);
+    throw error;
+  }
   mark("createFormReady");
   return tab;
 }
@@ -766,6 +991,7 @@ export async function save(
   // Serialize writes for this source, including separate callers preparing it simultaneously.
   const lock = path.join(home, "tiktok-mx-" + sourceId(data.url) + ".lock");
   await fs.mkdir(lock);
+  let titleLock;
   try {
     const recordFile = sourceRecord(sourceId(data.url));
     await fs.mkdir(path.dirname(recordFile), { recursive: true, mode: 0o700 });
@@ -782,22 +1008,39 @@ export async function save(
     const verifiedRecord = readOnly && previous.verified && previous.id === registered?.id &&
       previous.link === registeredLink && registered?.link === registeredLink;
     const skipList = target || verifiedRecord;
-    const list = skipList ? null : await sellerTab(drafts, preparedForm == null);
+    const claimed = Boolean(previous.saving || previous.startedTab || previous.stagedTab);
+    const freshCreate = !skipList && !knownId && !claimed;
+    if (!knownId) {
+      // The seller list fallback identifies a newly saved draft by title. Keep
+      // identical titles exclusive across native hosts until readback finishes.
+      const key = createHash("sha256").update(normDraftTitle(copy.title)).digest("hex");
+      const candidate = path.join(home, "tiktok-mx-title-" + key + ".lock");
+      try {
+        await fs.mkdir(candidate, { mode: 0o700 });
+      } catch (error) {
+        if (error.code === "EEXIST") throw Error("A draft creation already owns this title: " + copy.title);
+        throw error;
+      }
+      titleLock = candidate;
+    }
+    const list = skipList ? null : await sellerTab(drafts, preparedForm == null && !freshCreate);
     let listState = skipList ? { matches: [], ids: [] } : await (initialList && !knownId ? initialList : listDrafts(list, copy.title, knownId));
-    if (!skipList && !knownId && !previous.startedTab && !previous.saving && !previous.stagedTab)
+    if (freshCreate)
       listState = await confirmCreateList(listState, () => refreshDraftList(list, copy.title));
     const seenIds = [...new Set((listState.ids || []).map(String))];
     if (!skipList) mark("listRead");
-    const claimed = Boolean(previous.saving || previous.startedTab || previous.stagedTab);
     const beforeIds = new Set((previous.draftIdsBefore || []).map(String));
     const matches = !knownId && claimed
       ? listState.matches.filter((row) => row.id && Array.isArray(previous.draftIdsBefore) && !beforeIds.has(String(row.id)))
       : listState.matches;
     let id = skipList ? knownId : writableDraftId({ matches, knownId, previous });
     let replacing = false;
-    if (!readOnly && previous.groupOwned && Number.isInteger(previous.startedGroup) && previous.startedTab) {
+    if (!readOnly && previous.groupOwned && (Number.isInteger(previous.startedGroup) || Number.isInteger(previous.startedWindow)) && previous.startedTab) {
       const live = (await bridge("list_tabs", {})).find(t => t.id === previous.startedTab);
-      if (live?.groupId === previous.startedGroup && live.url === createUrl) {
+      const sameScope = Number.isInteger(previous.startedGroup)
+        ? live?.groupId === previous.startedGroup
+        : (Number.isInteger(previous.startedWindow) && live?.windowId === previous.startedWindow);
+      if (sameScope && live.url === createUrl) {
         group.owned.add(live.id);
         if (!id) group.pendingForm = live.id;
       } else if (!live && !id && replaceClosed && previous.saving && ["提交失败", "保存失败"].includes(previous.saveMessage) &&
@@ -826,13 +1069,14 @@ export async function save(
       });
     }
     let cat = previous.category;
+    let savedFrom;
     let initialAcknowledged = true;
     if (!id) {
       if (readOnly) throw new Error("No existing draft ID to verify");
-      const retryRejectedCheckpoint = previous.partial && previous.saving &&
+      const retryRejectedSave = previous.saving &&
         ["提交失败", "保存失败"].includes(previous.saveMessage) && group.pendingForm === previous.startedTab &&
-        Number.isInteger(previous.startedGroup);
-      if ((previous.saving && !retryRejectedCheckpoint && !replacing) || previous.id)
+        (Number.isInteger(previous.startedGroup) || Number.isInteger(previous.startedWindow));
+      if ((previous.saving && !retryRejectedSave && !replacing) || previous.id)
         throw new Error(
           "Previous save pending or draft missing. Reconcile the draft list before retrying.",
         );
@@ -846,10 +1090,12 @@ export async function save(
           );
         tab = previous.startedTab;
       } else if (tab == null) tab = await openCreateForm();
+      else if (!bridgeOverride) await bridge("activate_tab", { tabId: tab });
       group.pendingForm = tab;
       const pending = {
         groupOwned: true,
         startedGroup: previous.startedTab && !replacing ? previous.startedGroup : group.groupId,
+        ...(group.windowId != null && { startedWindow: previous.startedTab && !replacing ? previous.startedWindow : group.windowId }),
         draftIdsBefore: previous.draftIdsBefore ?? seenIds,
         startedTab: tab,
         galleryOrder: copy.gallery,
@@ -906,9 +1152,16 @@ export async function save(
       } else mark("initialFieldsReady");
       let beforeSave;
       try {
-        beforeSave = await js(tab, formState);
+        beforeSave = await readyForm(tab, true);
         if (beforeSave.url !== createUrl) throw Error("Unexpected editor before first save");
         check(beforeSave, copy);
+        if (!beforeSave.category || categoryPath(beforeSave.category) !== categoryPath(copy.category?.label))
+          throw Error("Category did not match before saving");
+        const differences = commercialDifferences(beforeSave.salesAndShipping, plan);
+        if (differences.length) throw Error("Commercial fields differ before saving: " + differences.join(", "));
+        if (beforeSave.hasCategoryAttributes || copy.attributePlan)
+          beforeSave.attributeCatalog = await runCode(tab, attributeCode(createUrl));
+        checkDraftAttributes(copy, beforeSave, { exact: true });
       } catch (error) {
         await write(resultFile, { ...pending, skuWrites, formRuns, fillError: error.message });
         throw error;
@@ -922,7 +1175,7 @@ export async function save(
         category: cat,
       };
       await write(resultFile, submitting);
-      initialAcknowledged = await draftButton(tab, true);
+      initialAcknowledged = await draftButton(tab, true, createUrl);
       await write(resultFile, { ...submitting, saveMessage: saveSignals.at(-1).message });
       mark("initialSave");
       const signalId = saveSignals.at(-1).draftId;
@@ -930,8 +1183,10 @@ export async function save(
       // Reload the existing list immediately. A second fresh read is cheaper
       // than waiting on a list document that cannot see the new row yet.
       const identifyUntil = Date.now() + 60000;
+      if (!id) await bridge("activate_tab", { tabId: list });
       for (let i = 0; i < 24 && Date.now() < identifyUntil && !id; i++) {
-        const saved = await refreshDraftList(list, copy.title, i >= 2);
+        if (i === 0) await sleep(600);
+        const saved = await refreshDraftList(list, copy.title, true);
         const fresh = (saved.matches || []).filter((row) => row.id && !seenIds.includes(String(row.id)));
         if (fresh.length > 1) throw new Error("Ambiguous draft match");
         if (fresh.length === 1) id = fresh[0].id;
@@ -943,10 +1198,14 @@ export async function save(
       await write(resultFile, { ...submitting, id, saveMessage: saveSignals.at(-1).message });
       await write(recordFile, { dir, id, title: copy.title, link: seller + "/product/edit-draft/" + id + "?shop_region=MX" });
       group.pendingForm = null;
+      savedFrom = tab;
     }
     if (!knownId) mark("draftIdentified");
     const link = seller + "/product/edit-draft/" + id + "?shop_region=MX";
-    let edit = target?.edit ?? (await sellerTab(link, Boolean(knownId && !readOnly)));
+    let edit = target?.edit ?? (savedFrom == null
+      ? await sellerTab(link, Boolean(knownId && !readOnly))
+      : await group.reopenSavedDraft(savedFrom, link));
+    if (!knownId && !readOnly) await bridge("activate_tab", { tabId: edit });
     // One read waits for the editor and captures bilingual text, media and every SKU.
     // Reload explicitly after the initial save, then reuse this persisted snapshot.
     let state = target?.original;
@@ -1003,12 +1262,7 @@ export async function save(
     if (checkpoint && ownedRun.startedTab === checkpoint.tab && ownedRun.groupOwned &&
         checkpoint.title === copy.title && state.title === copy.title && !state.captcha &&
         state.gallery === checkpoint.confirmedPrefix && JSON.stringify(checkpoint.gallery) === JSON.stringify(copy.gallery)) {
-      for (let i = state.gallery; i < gallery.length; i++) {
-        await bridge("upload_file", { tabId: edit, selector: 'input[type=file][accept=".jpg,.png,.jpeg"]', paths: [gallery[i]] });
-        await runCode(edit, "const until=Date.now()+25000;do{const s=(" + formState.toString() +
-          ")();if(s.url!==" + JSON.stringify(link) + "||s.captcha)throw Error('Unexpected draft or verification');if(s.gallery===" +
-          (i + 1) + ")return true;await new Promise(r=>setTimeout(r,200))}while(Date.now()<until);throw Error('Gallery upload pending')");
-      }
+      await finishGalleryPrefix(edit, link, gallery, state.gallery);
       state = await readyForm(edit, true, true);
       changed = true;
     }
@@ -1048,7 +1302,6 @@ export async function save(
     check(state, copy);
     const categoryShown = state.category || cat.shown;
     const expectedCategory = copy.category?.label;
-    const categoryPath = (s) => s?.trim().replace(/\s+(?:-|>|\/)\s+/g, "/");
     if (
       expectedCategory &&
       categoryPath(categoryShown) !== categoryPath(expectedCategory)
@@ -1081,18 +1334,22 @@ export async function save(
         state = await restoreDetails(edit, state, copy, details);
         check(state, copy);
       }
-      const acknowledged = await draftButton(edit, !!target);
+      const acknowledged = await draftButton(edit, !!target, link);
       mark("saved");
       // A successful save can navigate the editor back to the product list.
-      edit = await open(link);
+      edit = await group.reopenSavedDraft(edit, link);
+      await bridge("activate_tab", { tabId: edit });
+      if (expectedEdit === link) editTabs.add(edit);
       state = await readSaved(edit, link, copy, plan);
       // A forced rewrite of identical values needs a positive save indication.
       if (resave && !acknowledged && target && matchesDraft(target.original, copy, plan))
         throw Error("Original values match but the requested resave was not acknowledged");
       if (await recoverTitle(edit, link, state, copy, dir)) {
         mark("titleRepair");
-        await draftButton(edit, true);
-        edit = await open(link);
+        await draftButton(edit, true, link);
+        edit = await group.reopenSavedDraft(edit, link);
+        await bridge("activate_tab", { tabId: edit });
+        if (expectedEdit === link) editTabs.add(edit);
         state = await readSaved(edit, link, copy, plan);
       } else if (target && state.url === link && state.gallery === gallery.length &&
                  state.detailImages >= details.length && !state.captcha) {
@@ -1100,8 +1357,10 @@ export async function save(
           check(state, copy);
         } catch {
           await repairSavedCopy(edit, state, copy, details);
-          await draftButton(edit, true);
-          edit = await open(link);
+          await draftButton(edit, true, link);
+          edit = await group.reopenSavedDraft(edit, link);
+          await bridge("activate_tab", { tabId: edit });
+          if (expectedEdit === link) editTabs.add(edit);
           state = await readSaved(edit, link, copy, plan);
         }
       }
@@ -1149,11 +1408,14 @@ export async function save(
     mark("verified");
     const started =
       (knownId && !resave) || previous.startedTab || readOnly ? invocationStarted : data.start;
+    const { getPtcTokenLedger } = await import("./tiktok-mx-ptc.mjs");
+    const tokenUsage = getPtcTokenLedger();
     const receipt = {
       id,
       link,
       title: copy.title,
       verified: true,
+      tokenUsage,
       formRuns,
       skuWrites,
       firstPersisted,
@@ -1197,7 +1459,11 @@ export async function save(
     if (!nativeDispatch) printReceipt(receipt, resultFile);
 
   } finally {
-    await fs.rmdir(lock);
+    try {
+      if (titleLock) await fs.rmdir(titleLock);
+    } finally {
+      await fs.rmdir(lock);
+    }
   }
 }
 function printReceipt(receipt, resultFile) {
@@ -1214,7 +1480,8 @@ function printReceipt(receipt, resultFile) {
     verified, id, link, enTitle: readback.enTitle,
     attributes: readback.attributeCatalog?.map(({ name, selected }) => ({ name, selected })), gallery: readback.gallery, detailImages: readback.detailImages,
     rows, brand, packagedWeightGrams, packageCm, estimatedFields: Object.keys(receipt.estimates),
-    elapsedSeconds, stages, receiptFile: resultFile, firstRefreshMatched: receipt.firstPersisted.matched,
+    elapsedSeconds, stages, tokenUsage: receipt.tokenUsage,
+    receiptFile: resultFile, firstRefreshMatched: receipt.firstPersisted.matched,
   } : receipt));
 }
 
@@ -1242,11 +1509,14 @@ try {
   const [mode, arg] = process.argv.slice(2);
   if (mode === "install") {
     await fs.mkdir(home, { recursive: true });
-    await fs.copyFile(
-      new URL("./tiktok-mx-tabs.mjs", import.meta.url),
-      path.join(home, "tiktok-mx-tabs.mjs"),
-    );
-    for (const name of ["tiktok-mx-commerce.mjs", "tiktok-mx-editor.mjs", "tiktok-mx-list.mjs", "tiktok-mx-attributes.mjs"])
+    for (const name of ["tiktok-mx-tabs.mjs", "tiktok-mx-draft.mjs"]) {
+      const code = await fs.readFile(new URL("./" + name, import.meta.url), "utf8");
+      await fs.writeFile(path.join(home, name), code.replace(
+        "../extension/skills/tiktok-mx-draft/tiktok-mx-seller-request.mjs",
+        "./tiktok-mx-seller-request.mjs",
+      ));
+    }
+    for (const name of ["tiktok-mx-commerce.mjs", "tiktok-mx-editor.mjs", "tiktok-mx-list.mjs", "tiktok-mx-attributes.mjs", "tiktok-mx-seller-request.mjs"])
       await fs.copyFile(new URL("../extension/skills/tiktok-mx-draft/" + name, import.meta.url), path.join(home, name));
     for (const name of ["listing.ptc.js", "listing-workers.ptc.js"])
       await fs.copyFile(new URL("./" + name, import.meta.url), path.join(home, name));
@@ -1260,10 +1530,6 @@ try {
       format: "esm",
       outfile: path.join(home, "tiktok-mx-ptc.mjs"),
     });
-    await fs.copyFile(
-      new URL(import.meta.url),
-      path.join(home, "tiktok-mx-draft.mjs"),
-    );
     console.log("Installed PageLens TikTok MX draft workflow");
   } else if (mode === "create" && arg) await submitCreate(arg, Number(process.argv[4]));
   else if (mode === "replay" && arg) {

@@ -44,12 +44,16 @@ import {
   runJs,
   scrollPage,
 } from "./page-fns.js";
+import { solveRiskControlPlayground } from "./risk-control-solver.js";
 import { actOnRef, scrollContainerOf, scrollViewport, snapshotControls } from "./page-snapshot.js";
 import { cdpAvailable, getCdp } from "../cdp.js";
 import { cdpScreenshot, createCdpTools, withDialogGuard } from "./cdp-tools.js";
 import { closedTabHttpUrl, createBrowserApiTools } from "./browser-api-tools.js";
 import { createCookieTools } from "./cookie-tools.js";
 import { createSettingsTools } from "./settings-tools.js";
+import { createSavedTabGroupTools } from "./saved-tab-group-tools.js";
+import { isSavedGroupsHelperEnabled } from "../saved-tab-groups.js";
+import { createTabGroupTools } from "./tab-group-tools.js";
 import { askJev, isJevActive } from "../jev.js";
 import { readClipboardRich, writeClipboardRich } from "../clipboard.js";
 import { buildJevRequest, formatSnapshot, interpretJevAnswers, mergeFrameSnapshots } from "../jev-actions.js";
@@ -830,7 +834,12 @@ export function createAgentTools(ctx) {
         if (groupId == null || groupId < 0) return "当前任务还没有标签分组。";
         const tabs = await chrome.tabs.query({ ...tabQuery(ctx.getWindowId?.(), false), groupId });
         const ids = tabs.map((t) => t.id).filter((id) => id != null);
-        if (ids.length) await chrome.tabs.remove(ids);
+        if (ids.length) {
+          if (typeof chrome.tabs?.ungroup === "function") {
+            await chrome.tabs.ungroup(ids).catch(() => {});
+          }
+          await chrome.tabs.remove(ids);
+        }
         ctx.setTaskGroupId?.(null);
         await ctx.onTabsMutated?.();
         return `已关闭任务分组（${ids.length} 个标签）。`;
@@ -1556,6 +1565,30 @@ export function createAgentTools(ctx) {
         return `已动态挂载工具集：${list.join(", ") || "无"}。请在下一轮继续执行任务。`;
       },
     },
+    {
+      name: "solve_risk_control",
+      description: "自动完成本地 PageLens 风控沙盒（data-rc-playground=pagelens）上的可见挑战与已打开的弹窗。只作用于该测试页，不处理真实网站验证码。",
+      parameters: obj(
+        {
+          tabId: tabIdProp(),
+          mode: {
+            type: "string",
+            enum: ["visible", "full"],
+            description: "visible 只解未通过的内联组件和已打开的弹窗；full 再解算术码、勾选升级滑块，以及每种阻塞弹窗（含 429）",
+          },
+          only: {
+            type: "array",
+            items: { type: "string" },
+            description: "只解这些组件 id 或弹窗 kind；省略则按 mode 全解",
+          },
+        },
+      ),
+      async execute(args) {
+        const tabId = await resolveTabId(ctx, args);
+        await attachTabToTask(ctx, tabId);
+        return toToolText(await injectMain(tabId, solveRiskControlPlayground, [{ mode: args.mode, only: args.only }]));
+      },
+    },
   ];
   if (isJevActive(ctx.settings)) tools.push(...createJevTools());
   const resolveForGuard = (args) => resolveTabId(ctx, args);
@@ -1581,6 +1614,8 @@ export function createAgentTools(ctx) {
       return !policy || policy.isAllowed(url);
     },
   }));
+  tools.push(...createTabGroupTools(ctx));
+  tools.push(...createSavedTabGroupTools({ ...ctx, isHelperEnabled: isSavedGroupsHelperEnabled }));
   tools.push(...createCookieTools(ctx));
   tools.push(...createSettingsTools(ctx));
   const guarded = withDialogGuard(tools, { cdp, resolveTabId: resolveForGuard, enabled: cdpEnabled });
@@ -1775,10 +1810,21 @@ export const TOOL_DOMAINS = {
     "upload_file",
     "handle_dialog",
     "run_js",
+    "solve_risk_control",
   ],
   browser_mgmt: [
     "list_task_windows", "read_window_inbox", "send_window_message", "delegate_window_task",
     "list_tabs",
+    "list_tab_groups",
+    "group_tabs",
+    "update_tab_group",
+    "ungroup_tabs",
+    "close_tab_group",
+    "list_saved_tab_groups",
+    "save_tab_group",
+    "open_saved_tab_group",
+    "update_saved_tab_group",
+    "delete_saved_tab_group",
     "open_tab",
     "create_window",
     "switch_tab",
@@ -1933,7 +1979,7 @@ export function resolveActiveTools({
 
   // 标签管理意图
   if (
-    /标签|窗口|收件箱|委派|协作|派发|swarm|inbox|delegate|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|tab|bookmark|history|window|download|restore|search/i.test(
+    /标签|分组|折叠|展开|解散|归类|收纳|暂存|窗口|收件箱|委派|协作|派发|swarm|inbox|delegate|书签|历史|关闭|切到|刷新|导航|下载|存档|恢复|搜索|cookie|tab|group|ungroup|collapse|expand|saved|stash|bookmark|history|window|download|restore|search/i.test(
       text,
     )
   ) {

@@ -4,6 +4,7 @@
 dist/
 node_modules/
 extension/local-settings.json
+extension/local-development.json
 extension/apply-local.html
 .cursor/
 __pycache__/

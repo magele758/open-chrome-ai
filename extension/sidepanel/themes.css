@@ -62,7 +62,7 @@ html[data-theme="cyber"] .send{border-radius:2px 8px 2px 2px;box-shadow:2px 2px 
 html[data-theme="terminal"] body{font-family:"SFMono-Regular",Menlo,Consolas,"PingFang SC",monospace}
 html[data-theme="terminal"] .mark{background:none;width:21px;border-radius:0}
 html[data-theme="terminal"] .mark::before{content:">_";color:var(--accent);font-weight:700}
-html[data-theme="terminal"] :is(.input-box,.ctx-action,.block,.provider-card,.msg.user,.theme-option,.tool-card,.compact-player-bar,.send,.mode-seg){border-radius:2px}
+html[data-theme="terminal"] :is(.input-box,.ctx-action,.block,.provider-card,.msg.user,.theme-option,.tool-card,.compact-player-bar,.send,.mode-seg,.hist-sort-btn){border-radius:2px}
 html[data-theme="terminal"] .msg.user{margin-left:0;background:transparent;border-left:2px solid var(--accent)}
 html[data-theme="terminal"] .msg.user::before{content:"❯ ";color:var(--accent)}
 html[data-theme="terminal"] .msg.bot .who{color:var(--teal)}
@@ -75,7 +75,7 @@ html[data-theme="warm"] .mark{background:#ae8054;border-radius:9px 2px 9px 2px}
 html[data-theme="mint"] .header{background:radial-gradient(ellipse at 90% 0,#e2eaa6a6,transparent 65%),#f0f3d1;border-top:3px solid #c1ce70}
 html[data-theme="mint"] .mark{border-radius:12px 0 12px 0;background:#a7b94f;transform:rotate(-12deg)}
 html[data-theme="mint"] .input-box{background:#fcfdec;border-color:#bbc879;border-radius:16px}
-html[data-theme="mint"] :is(.ctx-action,.send){border-radius:18px}
+html[data-theme="mint"] :is(.ctx-action,.send,.hist-sort-btn){border-radius:18px}
 html[data-theme="mint"] .msg.user{border-radius:16px 16px 4px 16px}
 html[data-theme="mint"] .msg.bot .body blockquote{border-left-color:#b2bf65;background:#e9edc9;border-radius:0 12px 12px 0}
 @media(prefers-reduced-motion:reduce){html[data-theme]:not([data-theme="default"]) *,html[data-theme]:not([data-theme="default"]) *::before,html[data-theme]:not([data-theme="default"]) *::after{animation:none!important;scroll-behavior:auto!important}}

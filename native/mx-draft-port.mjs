@@ -1,3 +1,6 @@
+import { repairDraftRequest } from "../extension/skills/tiktok-mx-draft/tiktok-mx-native.mjs";
+import { mxSellerRequest } from "../extension/skills/tiktok-mx-draft/tiktok-mx-seller-request.mjs";
+
 // One unpacked extension task per Chrome Native Messaging port.
 export function draftPort(write) {
   let started = false, next = 0, closed = false;
@@ -11,9 +14,20 @@ export function draftPort(write) {
     });
   }
   return {
-    async start({ sourceId, rate }) {
+    async start(message) {
       if (started) throw Error("Draft task already started");
       started = true;
+      if (message.type === "mx.seller") {
+        const parameters = mxSellerRequest(message.request);
+        const { runMxSellerAction } = await import("./mx-ptc-seller.mjs");
+        return runMxSellerAction(parameters, request);
+      }
+      if (message.type === "mx.repair") {
+        const parameters = repairDraftRequest(message);
+        const { repairHostedDraft } = await import("./mx-ptc-repair.mjs");
+        return repairHostedDraft(parameters, request);
+      }
+      const { sourceId, rate } = message;
       const { createHostedDraft } = await import("../tools/tiktok-mx-draft.mjs");
       const { inspectWithPtc } = await import("./mx-ptc-inspect.mjs");
       const { dir, receipt } = await createHostedDraft(sourceId, rate, request);

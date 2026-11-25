@@ -14,6 +14,7 @@
 import { getCdp } from "../cdp.js";
 import { inject, injectFrames, restrictedUrl, runJsInTab } from "../chrome.js";
 import { createSwClipboard } from "../clipboard-sw.js";
+import { nativeSavedTabGroups } from "../native-host.js";
 import { loadSettings, saveSettings } from "../storage.js";
 import {
   BRIDGE_PROTOCOL,
@@ -26,6 +27,7 @@ import {
 } from "./protocol.js";
 import { isUrlAllowed } from "./policy.js";
 import { createBridgeTools } from "./tools.js";
+import { flowBridgeCall } from "./tools-flow.js";
 import { publicTokenInfo, requireScope, scopeAllows, tokenUrlAllowed, verifyToken } from "./auth.js";
 import { loadAgentTokens } from "./token-store.js";
 import { auditEntry, getAuditLog, originOfUrl } from "./audit.js";
@@ -52,6 +54,7 @@ export function createDefaultEnv() {
       reload: (id) => chrome.tabs.reload(id),
       goBack: (id) => chrome.tabs.goBack(id),
       goForward: (id) => chrome.tabs.goForward(id),
+      ungroup: (ids) => chrome.tabs.ungroup(ids),
       remove: (id) => chrome.tabs.remove(id),
     },
     windows: {
@@ -78,8 +81,15 @@ export function createDefaultEnv() {
     getAgentTokens: () => loadAgentTokens(),
     auditLog: getAuditLog(),
     sessionStorage: chromeSessionStorage(),
-    tabGroups: chromeTabGroups(),
+    get tabGroups() {
+      return chromeTabGroups();
+    },
+    get savedGroupsStorage() {
+      return chrome.storage?.local || null;
+    },
+    nativeSavedTabGroups,
     approvals: createApprovalQueue({ storage: chromeStorageAdapter() }),
+    onFlowProgress: (progress) => chrome.runtime.sendMessage({ type: "pl.flow.progress", ...progress }),
   };
 }
 
@@ -127,10 +137,11 @@ export function createBridge(env = createDefaultEnv()) {
   const loadTokens = env.getAgentTokens || (async () => []);
   const now = () => env.now?.() ?? Date.now();
   const events = env.events || createEventBus({ loadTokens, now });
-  const leases = createTabLeases({ now, groups: env.tabGroups || null });
+  const leases = createTabLeases({ now, groups: () => env.tabGroups || null, tabs: env.tabs });
   const queue = createKeyedQueue();
   const jobs = createJobStore({ storage: env.sessionStorage || null, now });
   const approvals = env.approvals || createApprovalQueue({ now: () => env.now() });
+  const flowRuns = new Map();
 
   const describe = (t) => ({
     name: t.name,
@@ -140,7 +151,11 @@ export function createBridge(env = createDefaultEnv()) {
     ...(t.scope ? { scope: t.scope } : {}),
     parameters: t.parameters,
   });
-  const visibleTools = (auth) => (auth ? tools.filter((t) => scopeAllows(auth.record, t.scope)) : tools);
+  const visibleTools = (auth) => tools.filter((tool) => !tool.flowOnly && (
+    auth
+      ? scopeAllows(auth.record, tool.scope) && (tool.requiredScopes?.({}) || []).every((scope) => scopeAllows(auth.record, scope))
+      : !tool.sessionOnly),
+  );
   const metaTools = [
     { name: "list_tools", description: "列出可用工具（同 hello().tools）。", focus: "none", needsTab: false, parameters: { type: "object", properties: {}, additionalProperties: false, required: [] } },
     {
@@ -196,7 +211,7 @@ export function createBridge(env = createDefaultEnv()) {
       enabled,
       allowedOrigins: enabled ? settings.agentBridgeOrigins : [],
       errorCodes: Object.keys(ERROR_CODES),
-      tools: enabled ? [...visibleMeta(null), ...tools].map(describe) : [],
+      tools: enabled ? [...visibleMeta(null), ...visibleTools(null)].map(describe) : [],
     };
   }
 
@@ -238,11 +253,15 @@ export function createBridge(env = createDefaultEnv()) {
     return tab;
   }
 
-  function withTimeout(promise, ms, tool) {
+  function withTimeout(promise, ms, tool, controller) {
     let timer;
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(
-        () => reject(new BridgeError(ERROR_CODES.TIMEOUT, `${tool} 超时（${ms}ms）；操作可能仍在执行，重试前请先回读校验。`)),
+        () => {
+          const error = new BridgeError(ERROR_CODES.TIMEOUT, `${tool} 超时（${ms}ms）；操作可能仍在执行，重试前请先回读校验。`);
+          controller?.abort(error);
+          reject(error);
+        },
         ms,
       );
     });
@@ -290,13 +309,92 @@ export function createBridge(env = createDefaultEnv()) {
     while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
   }
 
-  async function execute(req, settings, auth) {
+  async function guardFlowDialog(tabId, run) {
+    const cdp = env.cdp;
+    const fail = ({ type, message }) => {
+      throw new BridgeError(ERROR_CODES.TOOL_FAILED, "页面弹出了浏览器对话框。", {
+        details: { dialog: { type, message: String(message || "").slice(0, 200) } },
+      });
+    };
+    const pending = cdp?.pendingDialog?.(tabId);
+    if (pending) fail(pending);
+    const watch = cdp?.watchDialog?.(tabId);
+    if (!watch) return run();
+    try {
+      return await Promise.race([run(), watch.promise.then(fail)]);
+    } finally {
+      watch.cancel();
+    }
+  }
+
+  async function executeFlow(tool, req, ctx, auth, session, controller) {
+    const { id: tabId, url } = ctx.tab;
+    if (!auth.sessionId) throw new BridgeError(ERROR_CODES.UNAUTHORIZED, "确定性流程需要外部 Agent 会话。");
+    if (flowRuns.has(tabId)) throw new BridgeError(ERROR_CODES.TAB_LEASED, "该标签正在执行流程。", { retryable: true });
+    const lock = { controller, signal: controller.signal, url, sessionId: auth.sessionId, runId: crypto.randomUUID() };
+    lock.signal.throwIfAborted();
+
+    let temporaryLease = null;
+    if (!leases.holder(tabId)) {
+      leases.claim(tabId, owner(auth));
+      temporaryLease = leases.holder(tabId);
+    }
+    flowRuns.set(tabId, lock);
+
+    const flowId = String(req.args.flowId).slice(0, 80);
+    const announce = (status, { step, tool: stepTool, code } = {}) => {
+      const data = {
+        flowId, tabId, runId: lock.runId, source: "gateway", status,
+        ...(typeof step === "string" ? { step: step.slice(0, 80) } : {}),
+        ...(typeof stepTool === "string" ? { tool: stepTool.slice(0, 80) } : {}),
+        ...(typeof code === "string" ? { code: code.slice(0, 80) } : {}),
+      };
+      ctx.progress(data);
+      if (env.onFlowProgress) {
+        // Progress is observational; a closed side panel must not block action.
+        Promise.resolve().then(() => env.onFlowProgress(data)).catch(() => {});
+      }
+    };
+
+    try {
+      announce("running");
+      const result = await tool.execute(req.args, {
+        ...ctx,
+        signal: lock.signal,
+        flowProgress: (data) => announce("running", data),
+        flowCall: async (name, args) => {
+          lock.signal.throwIfAborted();
+          const request = flowBridgeCall(name, args, tabId);
+          const response = await call({ id: crypto.randomUUID(), ...request, timeoutMs: req.timeoutMs }, { session, flow: lock });
+          if (!response.ok) {
+            const code = response.error.details?.dialog ? "modal" : response.error.code;
+            return { ok: false, code, error: response.error };
+          }
+          const dialog = response.result?.dialog;
+          if (typeof dialog?.type === "string") return { ok: false, code: "modal", error: dialog };
+          return response.result;
+        },
+      });
+      lock.signal.throwIfAborted();
+      announce(result.status === "verified" ? "verified" : "needs-review", result);
+      return result;
+    } catch (err) {
+      announce("failed", { code: err?.code || ERROR_CODES.TOOL_FAILED });
+      throw err;
+    } finally {
+      flowRuns.delete(tabId);
+      if (temporaryLease && leases.holder(tabId) === temporaryLease) leases.release(tabId, auth.sessionId);
+    }
+  }
+
+  async function execute(req, settings, auth, { session, flow } = {}) {
     const started = env.now();
     const meta = { tool: req.tool };
     const artifacts = [];
     let tabId = null;
     let origin = originOfUrl(req.args?.url);
     let trust = null;
+    const controller = req.tool === "run_flow" ? new AbortController() : null;
     try {
       if (req.tool === "list_tools") {
         const result = { tools: [...visibleMeta(auth), ...visibleTools(auth)].map(describe) };
@@ -320,11 +418,18 @@ export function createBridge(env = createDefaultEnv()) {
         return okResponse(req.id, await sessionMeta(req.tool, req.args, auth, settings), { meta });
       }
       const tool = byName.get(req.tool);
-      if (!tool) {
+      if (!tool || tool.flowOnly && !flow) {
         throw new BridgeError(ERROR_CODES.UNKNOWN_TOOL, `未知工具：${req.tool}`, { hint: "用 list_tools 查看可用工具。" });
       }
-      if (auth) requireScope(auth.record, tool.scope, tool.name);
+      if (auth) {
+        requireScope(auth.record, tool.scope, tool.name);
+      } else if (tool.sessionOnly) {
+        throw new BridgeError(ERROR_CODES.UNAUTHORIZED, "此工具需要外部 Agent token。");
+      }
       checkArgs(tool, req.args);
+      if (auth) {
+        for (const scope of tool.requiredScopes?.(req.args) || []) requireScope(auth.record, scope, tool.name);
+      }
       meta.focus = tool.focus;
       // 会话里工具看到的白名单就是 token 的 origin 范围（list_tabs / open_tab 等直接读 settings）。
       const toolSettings = auth ? { ...settings, agentBridgeOrigins: auth.record.origins } : settings;
@@ -346,18 +451,31 @@ export function createBridge(env = createDefaultEnv()) {
           : null,
         authorizeTab: (id) => authorizeTab(id, settings, auth),
         authorizeUrl: (url) => authorizeUrl(url, settings, auth),
-        checkTabLease: (id) => leases.check(id, owner(auth)),
+        checkTabLease: (id) => {
+          leases.check(id, owner(auth));
+          const activeFlow = flowRuns.get(id);
+          if (activeFlow && activeFlow !== flow) {
+            throw new BridgeError(ERROR_CODES.TAB_LEASED, "该标签正在执行流程。", { retryable: true });
+          }
+        },
+        trackTaskGroup: leases.trackTaskGroup,
+        isTaskGroupedTab: leases.isTaskGroupedTab,
         progress: (data) => {
           if (req.async && auth) events.emit({ type: "job.progress", agentId: auth.record.id, jobId: req.id, tool: req.tool, status: "running", data });
         },
       };
       const run = async () => {
+        flow?.signal.throwIfAborted();
+        controller?.signal.throwIfAborted();
         if (tool.needsTab) {
           ctx.tab = await authorizeTab(req.args.tabId, settings, auth);
           tabId = ctx.tab.id;
           meta.tabId = tabId;
           origin = originOfUrl(ctx.tab.url);
-          if (leaseGuarded(tool)) leases.check(tabId, owner(auth));
+          if (flow && flow.url !== ctx.tab.url) {
+            throw new BridgeError(ERROR_CODES.BAD_ARGS, "流程目标页面已变化，请核对后重试。");
+          }
+          if (leaseGuarded(tool)) ctx.checkTabLease(tabId);
         }
         if (auth) {
           let elementText = "";
@@ -374,10 +492,13 @@ export function createBridge(env = createDefaultEnv()) {
             sessionId: auth.sessionId,
           });
         }
+        flow?.signal.throwIfAborted();
+        if (controller) return executeFlow(tool, req, ctx, auth, session, controller);
+        if (flow) return guardFlowDialog(tabId, () => tool.execute(req.args, ctx));
         return tool.execute(req.args, ctx);
       };
       const guarded = tool.exclusive ? () => queue.run(queueKeys(tool, req.args, tool.needsTab ? req.args.tabId : null), run) : run;
-      const result = await withTimeout(guarded(), req.timeoutMs, req.tool);
+      const result = await withTimeout(guarded(), req.timeoutMs, req.tool, controller);
       if (auth) await leases.adopt(openedTabIds(tool.name, result), owner(auth)).catch(() => {});
       meta.ms = env.now() - started;
       if (trust?.confirmed) meta.confirmed = true;
@@ -396,7 +517,7 @@ export function createBridge(env = createDefaultEnv()) {
    * @param rawReq 协议 v1 请求
    * @param opts.session 来自网关或带 token 的 inbox job：{ token, sessionId, agentName }
    */
-  async function call(rawReq, { session } = {}) {
+  async function call(rawReq, { session, flow } = {}) {
     let req;
     try {
       req = validateRequest(rawReq);
@@ -438,7 +559,7 @@ export function createBridge(env = createDefaultEnv()) {
     }
 
     const entry = { fp, at: env.now(), done: false };
-    const promise = execute(req, settings, auth).then((res) => {
+    const promise = execute(req, settings, auth, { session, flow }).then((res) => {
       entry.done = true;
       entry.at = env.now();
       if (!res.ok && res.error.retryable) cache.delete(key);
@@ -472,10 +593,14 @@ export function createBridge(env = createDefaultEnv()) {
     jobs,
     /** 网关会话断开（socket 关闭）：清掉它的订阅与租约。 */
     closeSession(sessionId) {
+      for (const run of flowRuns.values()) {
+        if (run.sessionId === sessionId) run.controller.abort(new BridgeError(ERROR_CODES.UNAUTHORIZED, "外部 Agent 会话已断开。"));
+      }
       events.closeSession(sessionId);
       leases.releaseSession(sessionId);
     },
     closeAllSessions() {
+      for (const run of flowRuns.values()) run.controller.abort(new BridgeError(ERROR_CODES.UNAUTHORIZED, "外部 Agent 会话已断开。"));
       events.closeAll();
       leases.clear();
     },

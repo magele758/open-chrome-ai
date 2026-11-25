@@ -350,6 +350,58 @@ export function filterSessions(index, query) {
   });
 }
 
+export const DEFAULT_HISTORY_SORT = "recent";
+export const HISTORY_SORT_MODES = ["recent", "domain"];
+
+export function normalizeHistorySortMode(mode) {
+  return mode === "domain" ? "domain" : DEFAULT_HISTORY_SORT;
+}
+
+export function sessionHosts(item) {
+  return [...new Set((item?.pages || []).map((page) => page?.hostname).filter(Boolean))];
+}
+
+export function primaryHost(item) {
+  return sessionHosts(item)[0] || "未分享页面";
+}
+
+export function sessionSortTime(item) {
+  const updated = Number(item?.updatedAt);
+  if (Number.isFinite(updated) && updated > 0) return updated;
+  const created = Number(item?.createdAt);
+  if (Number.isFinite(created) && created > 0) return created;
+  return 0;
+}
+
+export function sortSessionsByRecent(items) {
+  return [...(items || [])].sort((a, b) => {
+    const dt = sessionSortTime(b) - sessionSortTime(a);
+    if (dt !== 0) return dt;
+    const dc = (Number(b?.createdAt) || 0) - (Number(a?.createdAt) || 0);
+    if (dc !== 0) return dc;
+    return String(a?.id || "").localeCompare(String(b?.id || ""));
+  });
+}
+
+export function groupSessionsByDomain(items) {
+  const sorted = sortSessionsByRecent(items);
+  const groups = new Map();
+  for (const item of sorted) {
+    const name = primaryHost(item);
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(item);
+  }
+  return [...groups.entries()].sort((a, b) => {
+    if (a[0] === "未分享页面") return 1;
+    if (b[0] === "未分享页面") return -1;
+    return (
+      b[1].length - a[1].length ||
+      sessionSortTime(b[1][0]) - sessionSortTime(a[1][0]) ||
+      a[0].localeCompare(b[0], "zh")
+    );
+  });
+}
+
 function yamlScalar(value) {
   const s = String(value ?? "");
   if (s === "") return '""';
@@ -582,13 +634,15 @@ export function openSessionInWindow(id, windowId) {
     const bindings = await localGet(keys);
     const runWindowId = session.run?.windowId;
     const runBelongsElsewhere = runWindowId != null && runWindowId !== windowId;
+    let forked = false;
     if (Object.values(bindings).includes(id) || runBelongsElsewhere) {
+      forked = true;
       session.id = crypto.randomUUID();
       session.createdAt = Date.now();
       delete session.run;
       delete session.taskGroupId;
     }
-    return storeSession(session, { windowId });
+    return storeSession(session, { windowId, preserveUpdatedAt: !forked });
   });
 }
 
@@ -635,9 +689,11 @@ export function saveSession(raw, options = {}) {
   return withSessionIndexLock(() => storeSession(raw, options));
 }
 
-async function storeSession(raw, options) {
+async function storeSession(raw, options = {}) {
   const session = normalizeSession(raw);
-  session.updatedAt = Date.now();
+  if (!options.preserveUpdatedAt || !(Number(raw?.updatedAt) > 0)) {
+    session.updatedAt = Date.now();
+  }
   session.title = sessionTitle(session);
   if (!session.messages.length) return session;
 

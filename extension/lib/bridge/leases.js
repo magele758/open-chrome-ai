@@ -57,12 +57,45 @@ export function openedTabIds(toolName, result) {
 }
 
 /**
- * @param groups 可选 { group(tabIds, groupId?) → groupId, update(groupId, props) }（chrome.tabs.group + chrome.tabGroups）
+ * @param groups 可选标签组 adapter 或返回 adapter 的函数（chrome.tabs.group + chrome.tabGroups）
  */
-export function createTabLeases({ now = () => Date.now(), groups = null } = {}) {
+export function createTabLeases({ now = () => Date.now(), groups = null, tabs = null } = {}) {
   const leases = new Map();
   const groupBySession = new Map();
+  const groupedTabs = new Map();
   let colorIdx = 0;
+
+  const getGroups = () => typeof groups === "function" ? groups() : groups;
+
+  function trackTaskGroup(tabIds, groupId) {
+    if (groupId != null) for (const id of tabIds) groupedTabs.set(id, { groupId });
+  }
+
+  function isTaskGroupedTab(tab) {
+    return tab?.groupId >= 0 && groupedTabs.get(tab.id)?.groupId === tab.groupId;
+  }
+
+  function takeAdoptedGroup(tabId, lease) {
+    const group = groupedTabs.get(tabId);
+    if (group?.lease !== lease) return null;
+    groupedTabs.delete(tabId);
+    return [tabId, group.groupId];
+  }
+
+  async function ungroupSafe(entries) {
+    const tg = getGroups();
+    if (!entries.length || typeof tg?.ungroup !== "function") return;
+    const ids = await Promise.all(entries.map(async ([id, groupId]) => {
+      if (!tabs?.get) return id;
+      try {
+        return (await tabs.get(id))?.groupId === groupId ? id : null;
+      } catch {
+        return null;
+      }
+    }));
+    const remaining = ids.filter((id) => id != null && !groupedTabs.has(id));
+    if (remaining.length) await tg.ungroup(remaining);
+  }
 
   const holderInfo = (lease) => ({ agentName: lease.agentName || "agent", since: lease.since });
 
@@ -94,18 +127,24 @@ export function createTabLeases({ now = () => Date.now(), groups = null } = {}) 
     if (!lease) return false;
     if (lease.sessionId !== sessionId) check(tabId, { sessionId });
     leases.delete(tabId);
+    const grouped = takeAdoptedGroup(tabId, lease);
+    if (grouped) ungroupSafe([grouped]).catch(() => {});
     return true;
   }
 
   function releaseSession(sessionId) {
     const freed = [];
+    const toUngroup = [];
     for (const [tabId, lease] of leases) {
       if (lease.sessionId === sessionId) {
         leases.delete(tabId);
         freed.push(tabId);
+        const grouped = takeAdoptedGroup(tabId, lease);
+        if (grouped) toUngroup.push(grouped);
       }
     }
     groupBySession.delete(sessionId);
+    ungroupSafe(toUngroup).catch(() => {});
     return freed;
   }
 
@@ -116,15 +155,25 @@ export function createTabLeases({ now = () => Date.now(), groups = null } = {}) 
   /** 会话新开的标签：归它所有，并放进它的标签组（有 tabGroups 时）。失败不影响调用结果。 */
   async function adopt(tabIds, owner) {
     if (!owner?.sessionId || !tabIds.length) return;
-    for (const id of tabIds) if (!leases.has(id)) claim(id, owner);
-    if (!groups) return;
+    for (const id of tabIds) claim(id, owner);
+    const tg = getGroups();
+    if (!tg) return;
+    const adopted = tabIds.map((id) => [id, leases.get(id)]);
     try {
       const known = groupBySession.get(owner.sessionId);
-      const groupId = await groups.group(tabIds, known ?? undefined);
-      if (groupId != null && groupId !== known) {
+      const groupId = await tg.group(tabIds, known ?? undefined);
+      if (groupId == null) return;
+      const orphaned = [];
+      for (const [id, lease] of adopted) {
+        if (leases.get(id) === lease) groupedTabs.set(id, { groupId, lease });
+        else orphaned.push([id, groupId]);
+      }
+      ungroupSafe(orphaned).catch(() => {});
+      if (orphaned.length === adopted.length) return;
+      if (groupId !== known) {
         groupBySession.set(owner.sessionId, groupId);
         const color = GROUP_COLORS[colorIdx++ % GROUP_COLORS.length];
-        await groups.update(groupId, { title: `Agent: ${owner.agentName || "agent"}`, color });
+        await tg.update(groupId, { title: `Agent: ${owner.agentName || "agent"}`, color });
       }
     } catch {
       groupBySession.delete(owner.sessionId);
@@ -139,10 +188,18 @@ export function createTabLeases({ now = () => Date.now(), groups = null } = {}) 
     releaseSession,
     owned,
     adopt,
-    dropTab: (tabId) => leases.delete(tabId),
+    trackTaskGroup,
+    isTaskGroupedTab,
+    dropTab: (tabId) => {
+      groupedTabs.delete(tabId);
+      return leases.delete(tabId);
+    },
     clear: () => {
+      const toUngroup = [...leases].map(([id, lease]) => takeAdoptedGroup(id, lease)).filter(Boolean);
       leases.clear();
       groupBySession.clear();
+      groupedTabs.clear();
+      ungroupSafe(toUngroup).catch(() => {});
     },
     size: () => leases.size,
   };
@@ -151,14 +208,22 @@ export function createTabLeases({ now = () => Date.now(), groups = null } = {}) 
 export function chromeTabGroups(api = globalThis.chrome) {
   if (typeof api?.tabs?.group !== "function" || typeof api?.tabGroups?.update !== "function") return null;
   return {
-    async group(tabIds, groupId) {
+    async group(tabIds, groupId, { strict = false, createProperties } = {}) {
+      const target =
+        groupId == null
+          ? { tabIds, ...(createProperties ? { createProperties } : {}) }
+          : { tabIds, groupId };
       try {
-        return await api.tabs.group(groupId == null ? { tabIds } : { tabIds, groupId });
+        return await api.tabs.group(target);
       } catch (err) {
-        if (groupId == null) throw err;
+        if (groupId == null || strict) throw err;
         return api.tabs.group({ tabIds });
       }
     },
+    ...(typeof api.tabs?.ungroup === "function" ? { ungroup: (tabIds) => api.tabs.ungroup(tabIds) } : {}),
+    ...(typeof api.tabGroups?.get === "function" ? { get: (groupId) => api.tabGroups.get(groupId) } : {}),
+    ...(typeof api.tabGroups?.query === "function" ? { query: (queryInfo = {}) => api.tabGroups.query(queryInfo) } : {}),
     update: (groupId, props) => api.tabGroups.update(groupId, props),
+    ...(typeof api.tabGroups?.move === "function" ? { move: (groupId, props) => api.tabGroups.move(groupId, props) } : {}),
   };
 }

@@ -1,0 +1,125 @@
+#shopee-marketing-dialog {
+  box-sizing: border-box;
+  width: min(620px, calc(100% - 20px));
+  max-width: none;
+  max-height: calc(100% - 20px);
+  margin: auto;
+  padding: 17px;
+  overflow: auto;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 14px 48px #0003;
+}
+#shopee-marketing-dialog::backdrop { background: #1c191766; }
+#shopee-marketing-dialog [hidden] { display: none !important; }
+#shopee-marketing-dialog .ptc-target { margin-bottom: 7px; }
+.shopee-marketing-actions,
+.shopee-marketing-options,
+.shopee-marketing-links,
+.shopee-marketing-section-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+.shopee-marketing-navigation { display: grid; gap: 4px; margin: 0 0 12px; font-size: 12px; }
+.shopee-marketing-links { gap: 10px; }
+.shopee-marketing-navigation details .shopee-marketing-links { margin: 5px 0 0 12px; }
+.shopee-marketing-links a, #shopee-marketing-source { color: var(--accent); }
+.shopee-marketing-options {
+  justify-content: space-between;
+  margin-top: 9px;
+  color: var(--muted);
+}
+.shopee-marketing-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.shopee-marketing-checkbox input { accent-color: var(--accent); }
+.shopee-marketing-warnings {
+  margin: 9px 0;
+  padding-inline-start: 21px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.shopee-marketing-section {
+  margin-top: 14px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+.shopee-marketing-section-heading { justify-content: space-between; }
+.shopee-marketing-section-heading h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.shopee-marketing-report-summary {
+  margin: 7px 0;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.shopee-marketing-rows {
+  max-height: 280px;
+  margin: 8px 0 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.shopee-marketing-rows table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+.shopee-marketing-rows :is(th, td) {
+  min-width: 78px;
+  max-width: 260px;
+  padding: 6px 8px;
+  text-align: start;
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--line);
+}
+.shopee-marketing-rows th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+}
+.shopee-marketing-empty { margin: 10px; color: var(--muted); }
+.shopee-marketing-hint { color: var(--muted); margin: 6px 0 10px; }
+.shopee-marketing-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(154px, 100%), 1fr));
+  align-items: start;
+  gap: 8px;
+}
+.shopee-marketing-fields label,
+.shopee-marketing-json-input label {
+  display: block;
+  font-size: 12px;
+}
+.shopee-marketing-fields .shopee-marketing-field-key { color: var(--muted); }
+.shopee-marketing-fields :is(input:not([type="checkbox"]), textarea, select),
+#shopee-marketing-trial-json {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 3px;
+  padding: 6px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.shopee-marketing-json-input { margin: 9px 0; }
+#shopee-marketing-trial-json { resize: vertical; font-family: ui-monospace, monospace; }
+.shopee-marketing-receipt {
+  margin-top: 9px;
+  padding: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}

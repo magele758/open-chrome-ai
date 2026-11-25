@@ -59,7 +59,7 @@ MCP 配置（用户在 PageLens 设置 → 外部 Agent 建 token 后生成）�
 
 ## 操作标签
 
-1. `list_tabs`（可带 `query`）拿到白名单内的标签。看不到的标签不在 token 的 origins 里。
+1. `list_tabs`（可带 `query`）拿到白名单内的标签。看不到的标签不在 token 的 origins 里。管理已打开标签组用 `list_tab_groups` / `group_tabs` / `update_tab_group` / `ungroup_tabs` / `close_tab_group`；管理已保存（含已关闭）标签组用 `list_saved_tab_groups` / `save_tab_group` / `open_saved_tab_group` / `update_saved_tab_group` / `delete_saved_tab_group`（同时支持 Chrome 原生保存组与 PageLens 保存库）。
 2. 没有目标页就 `open_tab`（默认后台）。返回时页面可能还没加载完，接着 `wait_for`。
 3. 读正文用 `extract_page`。要可点击的控件时用 `snapshot_controls`，拿到的 `ref` 在导航、翻页、弹窗之后失效，重新快照。
 4. 用 `act_element` 按 `ref` 做 `click` / `fill` / `select`。过期时 `details.stale=true`，重新快照，不要用旧 ref 重试。

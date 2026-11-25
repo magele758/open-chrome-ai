@@ -1,11 +1,14 @@
 import {
+  DEFAULT_HISTORY_SORT,
   INDEX_KEY,
   MAX_SESSIONS,
   filterSessions,
   formatWhen,
+  groupSessionsByDomain,
   itemKey,
   mergePage,
   nextIndex,
+  normalizeHistorySortMode,
   normalizeMessage,
   normalizeSession,
   saveSession,
@@ -13,6 +16,7 @@ import {
   loadSession,
   loadActiveSession,
   openSessionInWindow,
+  primaryHost,
   getActiveId,
   clearActiveId,
   ACTIVE_KEY,
@@ -21,12 +25,15 @@ import {
   loadAllSessions,
   deleteSession,
   sessionFilename,
+  sessionHosts,
   sessionNoteRelPath,
+  sessionSortTime,
   sessionTitle,
   sessionToMarkdown,
   sessionToObsidianMarkdown,
   sessionsToJSON,
   sessionsToMarkdown,
+  sortSessionsByRecent,
   toSummary,
 } from "../lib/sessions.js";
 import { installMemoryIndexedDB } from "./idb_mem.mjs";
@@ -145,6 +152,39 @@ const idx = [
 assert(filterSessions(idx, "x.com")[0].id === "b", "filter host");
 assert(filterSessions(idx, "Alpha").length === 1, "filter title");
 assert(filterSessions(idx, "").length === 2, "empty query");
+
+assert(DEFAULT_HISTORY_SORT === "recent", "default history sort is recent");
+assert(normalizeHistorySortMode("domain") === "domain", "domain sort recognized");
+assert(normalizeHistorySortMode("recent") === "recent", "recent sort recognized");
+assert(normalizeHistorySortMode("invalid") === "recent", "invalid sort falls back to recent");
+assert(normalizeHistorySortMode(null) === "recent", "null sort falls back to recent");
+
+const unsorted = [
+  { id: "old-a", title: "Old A", createdAt: 100, updatedAt: 100, pages: [{ hostname: "a.com" }] },
+  { id: "newest-none", title: "Newest No Page", createdAt: 500, updatedAt: 500, pages: [] },
+  { id: "mid-b", title: "Mid B", createdAt: 300, updatedAt: 300, pages: [{ hostname: "b.com" }] },
+  { id: "newer-a", title: "Newer A", createdAt: 200, updatedAt: 400, pages: [{ hostname: "a.com" }, { hostname: "c.com" }] },
+  { id: "fallback-created", title: "Created Only", createdAt: 250, pages: [{ hostname: "d.com" }] },
+];
+const recentOrder = sortSessionsByRecent(unsorted);
+assert(
+  recentOrder.map((s) => s.id).join(",") === "newest-none,newer-a,mid-b,fallback-created,old-a",
+  "recent sort orders strictly newest first: " + recentOrder.map((s) => s.id).join(","),
+);
+assert(unsorted[0].id === "old-a", "sortSessionsByRecent does not mutate input");
+assert(sessionSortTime({ createdAt: 250 }) === 250, "sessionSortTime falls back to createdAt");
+assert(sessionHosts(unsorted[3]).join(",") === "a.com,c.com", "sessionHosts deduplicates");
+assert(primaryHost(unsorted[1]) === "未分享页面", "primaryHost fallback");
+
+const grouped = groupSessionsByDomain(unsorted);
+assert(
+  grouped.map(([name]) => name).join(",") === "a.com,b.com,d.com,未分享页面",
+  "domain groups order by count desc, then latest desc, with unshared last: " + grouped.map(([name]) => name).join(","),
+);
+assert(
+  grouped[0][1].map((s) => s.id).join(",") === "newer-a,old-a",
+  "items inside each domain group stay sorted newest first",
+);
 
 const grown = nextIndex(
   Array.from({ length: 3 }, (_, i) => ({ id: "old" + i, updatedAt: i })),
@@ -366,4 +406,22 @@ chrome.windows = { getAll: async () => [{ id: 11 }, { id: 22 }] };
 const liveFork = await openSessionInWindow("live-elsewhere", 22);
 assert(liveFork.id !== "live-elsewhere" && liveFork.run == null && liveFork.taskGroupId == null, "live active binding still forks");
 assert(await getActiveId(11) === "live-elsewhere", "source window keeps original");
+
+// Reopening a session in the same window (without forking) preserves its updatedAt timestamp.
+bag[INDEX_KEY] = bag[INDEX_KEY].slice(0, 10);
+const historicalTs = Date.parse("2026-01-15T08:00:00.000Z");
+await saveSession({
+  id: "reopen-keep-ts",
+  createdAt: historicalTs,
+  updatedAt: historicalTs,
+  messages: [{ role: "user", text: "历史对话" }, { role: "bot", text: "历史回复" }],
+}, { windowId: 11, preserveUpdatedAt: true });
+chrome.windows = { getAll: async () => [{ id: 11 }] };
+const reopened = await openSessionInWindow("reopen-keep-ts", 11);
+assert(reopened.id === "reopen-keep-ts", "reopen without fork keeps id");
+assert(reopened.updatedAt === historicalTs, "reopen without fork preserves updatedAt");
+assert(
+  (await listSessions()).find((s) => s.id === "reopen-keep-ts")?.updatedAt === historicalTs,
+  "index preserves updatedAt on read-only reopen",
+);
 console.log("PASS sessions");

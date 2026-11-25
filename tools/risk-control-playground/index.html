@@ -1,0 +1,2723 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PageLens 风控组件测试页 · Risk Control Playground</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6fb;
+      --surface: #ffffff;
+      --surface-subtle: #f8fafc;
+      --border: #e2e8f0;
+      --border-strong: #cbd5e1;
+      --text: #0f172a;
+      --muted: #64748b;
+      --accent: #4f46e5;
+      --accent-hover: #4338ca;
+      --accent-soft: #eef2ff;
+      --success: #059669;
+      --success-soft: #ecfdf5;
+      --warning: #d97706;
+      --warning-soft: #fffbeb;
+      --danger: #dc2626;
+      --danger-soft: #fef2f2;
+      --radius: 14px;
+      --shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
+      --shadow-lg: 0 20px 50px rgba(15, 23, 42, 0.22);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .topbar-inner {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 14px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .brand p {
+      margin: 2px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .topbar-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--surface-subtle);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .pill.passed {
+      background: var(--success-soft);
+      border-color: #a7f3d0;
+      color: var(--success);
+    }
+
+    .pill.warning {
+      background: var(--warning-soft);
+      border-color: #fde68a;
+      color: var(--warning);
+    }
+
+    .pill.failed {
+      background: var(--danger-soft);
+      border-color: #fecaca;
+      color: var(--danger);
+    }
+
+    .pill.verifying {
+      background: var(--accent-soft);
+      border-color: #c7d2fe;
+      color: var(--accent);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: 1px solid var(--border-strong);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
+    }
+
+    .btn:hover:not(:disabled) {
+      background: var(--surface-subtle);
+      border-color: #94a3b8;
+    }
+
+    .btn:active:not(:disabled) {
+      transform: translateY(1px);
+    }
+
+    .btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+
+    .btn-sm {
+      padding: 5px 10px;
+      font-size: 12px;
+      border-radius: 7px;
+    }
+
+    .container {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .card-title-group h2,
+    .card-title-group h3 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .card-subtitle {
+      margin: 3px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.92em;
+      background: #f1f5f9;
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: #334155;
+    }
+
+    .tag {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 6px;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .scenario-bar {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    @media (max-width: 900px) {
+      .scenario-bar {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    @media (max-width: 600px) {
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .field label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #334155;
+    }
+
+    .input,
+    .select {
+      width: 100%;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      color: var(--text);
+      background: #ffffff;
+      outline: none;
+    }
+
+    .input:focus,
+    .select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14);
+    }
+
+    .quick-triggers {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .scenario-result {
+      padding: 10px 12px;
+      border-radius: 9px;
+      font-size: 13px;
+      background: var(--surface-subtle);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .scenario-result.passed {
+      background: var(--success-soft);
+      border-color: #a7f3d0;
+      color: var(--success);
+    }
+
+    .scenario-result.blocked {
+      background: var(--warning-soft);
+      border-color: #fde68a;
+      color: var(--warning);
+    }
+
+    .widgets-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    @media (max-width: 920px) {
+      .widgets-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .widget-body {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      flex: 1;
+    }
+
+    .widget-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--border);
+      font-size: 12px;
+      color: var(--muted);
+      flex-wrap: wrap;
+    }
+
+    .widget-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .feedback {
+      min-height: 20px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .feedback.passed { color: var(--success); font-weight: 600; }
+    .feedback.failed { color: var(--danger); font-weight: 600; }
+
+    /* Slider Puzzle */
+    .puzzle-stage {
+      position: relative;
+      width: 100%;
+      max-width: 320px;
+      aspect-ratio: 2 / 1;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid var(--border-strong);
+      background: #e2e8f0;
+      user-select: none;
+    }
+
+    .puzzle-bg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .puzzle-piece {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: calc(68 / 320 * 100%);
+      height: 100%;
+      pointer-events: none;
+      filter: drop-shadow(0 2px 6px rgba(15, 23, 42, 0.45));
+    }
+
+    .slider-track {
+      position: relative;
+      width: 100%;
+      max-width: 320px;
+      height: 42px;
+      border-radius: 10px;
+      border: 1px solid var(--border-strong);
+      background: #f1f5f9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      user-select: none;
+      touch-action: none;
+    }
+
+    .slider-track.shake {
+      animation: rc-shake 0.35s ease;
+    }
+
+    @keyframes rc-shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-6px); }
+      50% { transform: translateX(6px); }
+      75% { transform: translateX(-4px); }
+    }
+
+    .slider-fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 0;
+      background: linear-gradient(90deg, rgba(79, 70, 229, 0.16), rgba(79, 70, 229, 0.28));
+    }
+
+    .slider-track.passed .slider-fill {
+      background: linear-gradient(90deg, rgba(5, 150, 105, 0.16), rgba(5, 150, 105, 0.3));
+    }
+
+    .slider-track.failed .slider-fill {
+      background: rgba(220, 38, 38, 0.18);
+    }
+
+    .slider-label {
+      position: relative;
+      z-index: 1;
+      font-size: 12px;
+      color: var(--muted);
+      pointer-events: none;
+    }
+
+    .slider-track.passed .slider-label {
+      color: var(--success);
+      font-weight: 600;
+    }
+
+    .slider-handle {
+      position: absolute;
+      left: 3px;
+      top: 3px;
+      width: 44px;
+      height: 34px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: var(--accent);
+      font-size: 16px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: grab;
+      z-index: 2;
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.14);
+    }
+
+    .slider-handle:active { cursor: grabbing; }
+
+    .slider-track.passed .slider-handle {
+      color: var(--success);
+      border-color: #6ee7b7;
+      cursor: default;
+    }
+
+    /* Click Text */
+    .click-prompt {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .char-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 26px;
+      height: 26px;
+      padding: 0 6px;
+      border-radius: 6px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      border: 1px solid #c7d2fe;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .click-stage {
+      position: relative;
+      width: 100%;
+      max-width: 320px;
+      aspect-ratio: 2 / 1;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid var(--border-strong);
+      cursor: crosshair;
+      user-select: none;
+    }
+
+    .click-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .click-pin {
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      margin-left: -12px;
+      margin-top: -12px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #ffffff;
+      border: 2px solid #ffffff;
+      font-size: 12px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.32);
+      cursor: pointer;
+    }
+
+    /* Rotate Image */
+    .rotate-layout {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+
+    .rotate-ring {
+      width: 152px;
+      height: 152px;
+      border-radius: 999px;
+      padding: 6px;
+      border: 2px dashed var(--border-strong);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--surface-subtle);
+      flex-shrink: 0;
+    }
+
+    .rotate-ring.passed {
+      border-color: var(--success);
+      border-style: solid;
+      background: var(--success-soft);
+    }
+
+    .rotate-canvas {
+      width: 136px;
+      height: 136px;
+      border-radius: 999px;
+      display: block;
+    }
+
+    .rotate-controls {
+      flex: 1;
+      min-width: 180px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .range-input {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    /* Image Grid 3x3 */
+    .grid-prompt {
+      padding: 8px 12px;
+      border-radius: 9px;
+      background: #1e293b;
+      color: #ffffff;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .grid-prompt strong {
+      font-size: 15px;
+      color: #93c5fd;
+    }
+
+    .image-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      max-width: 300px;
+    }
+
+    .grid-tile {
+      position: relative;
+      aspect-ratio: 1 / 1;
+      border-radius: 10px;
+      border: 2px solid var(--border);
+      background: var(--surface-subtle);
+      padding: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.12s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .grid-tile:hover {
+      border-color: #94a3b8;
+    }
+
+    .grid-tile.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);
+      transform: scale(0.96);
+    }
+
+    .grid-tile svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .tile-check {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: 700;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .grid-tile.selected .tile-check {
+      display: flex;
+    }
+
+    /* Checkbox Turnstile */
+    .turnstile-box {
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      background: var(--surface-subtle);
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      max-width: 360px;
+    }
+
+    .turnstile-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .turnstile-check {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      border: 2px solid #94a3b8;
+      background: #ffffff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--success);
+      flex-shrink: 0;
+    }
+
+    .turnstile-check.verifying {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .turnstile-check.passed {
+      border-color: var(--success);
+      background: var(--success-soft);
+    }
+
+    .turnstile-brand {
+      text-align: right;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .toggle-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #334155;
+      cursor: pointer;
+    }
+
+    /* Text / Math CAPTCHA */
+    .captcha-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .text-captcha-canvas {
+      width: 180px;
+      height: 56px;
+      border-radius: 8px;
+      border: 1px solid var(--border-strong);
+      cursor: pointer;
+      display: block;
+    }
+
+    .mode-tabs {
+      display: inline-flex;
+      background: var(--surface-subtle);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 2px;
+      gap: 2px;
+      width: fit-content;
+    }
+
+    .mode-tab {
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .mode-tab.active {
+      background: #ffffff;
+      color: var(--accent);
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+
+    /* 2FA */
+    .mock-notice {
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      border: 1px solid #c7d2fe;
+      color: #312e81;
+      font-size: 12px;
+      display: none;
+    }
+
+    .mock-notice.visible {
+      display: block;
+    }
+
+    /* Iframe */
+    .challenge-iframe {
+      width: 100%;
+      height: 192px;
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      background: #f8fafc;
+    }
+
+    /* Inspector & Logs */
+    .inspector-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.15fr;
+      gap: 18px;
+    }
+
+    @media (max-width: 900px) {
+      .inspector-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .status-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .status-item {
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 12px;
+    }
+
+    .log-box {
+      height: 210px;
+      overflow-y: auto;
+      border-radius: 10px;
+      border: 1px solid #1e293b;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 10px 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .log-entry {
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+      padding: 3px 0;
+    }
+
+    .log-time { color: #94a3b8; }
+    .log-kind { color: #93c5fd; font-weight: 600; }
+    .log-pass { color: #34d399; }
+    .log-fail { color: #f87171; }
+
+    /* Modal Backdrop */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(15, 23, 42, 0.56);
+      backdrop-filter: blur(3px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal-dialog {
+      width: 100%;
+      max-width: 440px;
+      background: #ffffff;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
+    }
+
+    .modal-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .modal-header h3 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .modal-body {
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .modal-subtitle {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .rate-limit-box {
+      padding: 16px;
+      border-radius: 10px;
+      background: var(--warning-soft);
+      border: 1px solid #fde68a;
+      color: #92400e;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .rate-limit-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--danger);
+    }
+  </style>
+</head>
+<body data-rc-playground="pagelens" data-rc-modal-open="false" data-rc-modal-kind="">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <h1>PageLens 风控组件测试页 · Risk Control Playground</h1>
+        <p>本地离线风控校验沙盒（支持手工交互、模态弹窗拦截、跨帧 iframe 验证与状态观测）</p>
+      </div>
+      <div class="topbar-actions">
+        <span class="pill" id="rc-summary-pill">已通过 0 / 8</span>
+        <span class="pill" id="rc-modal-pill">拦截弹窗：未触发</span>
+        <button type="button" class="btn btn-sm" id="btn-refresh-all">刷新全部题目</button>
+        <button type="button" class="btn btn-sm" id="btn-reset-all">重置全部状态</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Scenario & Blocking Modal Simulator -->
+    <section class="card" aria-label="业务风控弹窗拦截模拟器">
+      <div class="card-header">
+        <div class="card-title-group">
+          <h2>业务操作与风控弹窗拦截模拟器 <span class="tag">场景模拟</span></h2>
+          <p class="card-subtitle">模拟真实电商/管理后台在敏感提交时弹出的模态风控拦截，用于调试扩展检测到验证弹窗后的暂停、人工接管与完成恢复。</p>
+        </div>
+        <span class="pill" id="scenario-status-pill">未提交</span>
+      </div>
+
+      <div class="scenario-bar">
+        <form id="protected-action-form" class="widget-body" novalidate>
+          <div class="form-grid">
+            <div class="field">
+              <label for="mock-item-title">模拟商品标题</label>
+              <input id="mock-item-title" class="input" type="text" value="便携式静音筋膜枪 Pro（测试草稿）" />
+            </div>
+            <div class="field">
+              <label for="mock-item-price">模拟售价 (MXN)</label>
+              <input id="mock-item-price" class="input" type="number" min="1" step="1" value="699" />
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="modal-challenge-select">提交时触发的风控拦截类型</label>
+              <select id="modal-challenge-select" class="select">
+                <option value="slider-puzzle">滑块拼图验证弹窗 (Slider Puzzle)</option>
+                <option value="click-text">顺序点选文字弹窗 (Click-Text)</option>
+                <option value="rotate-image">旋转图片验证弹窗 (Rotate Image)</option>
+                <option value="iframe-challenge">VerifyCenter iframe 弹窗</option>
+                <option value="two-factor-auth">二次身份校验弹窗 (SMS / Email 2FA)</option>
+                <option value="rate-limit-429">频率限制冷却拦截 (HTTP 429)</option>
+              </select>
+            </div>
+            <div class="field" style="justify-content: flex-end;">
+              <label>&nbsp;</label>
+              <button type="submit" class="btn btn-primary" id="btn-submit-protected">提交敏感操作（触发风控）</button>
+            </div>
+          </div>
+          <div class="scenario-result" id="scenario-result">等待提交。点击「提交敏感操作」或右侧快捷按钮将弹出阻塞式风控校验弹窗。</div>
+        </form>
+
+        <div class="widget-body">
+          <div style="font-size: 12px; font-weight: 600; color: #334155;">快捷弹出阻塞式风控弹窗：</div>
+          <div class="quick-triggers">
+            <button type="button" class="btn btn-sm" data-open-modal="slider-puzzle">弹出滑块拼图</button>
+            <button type="button" class="btn btn-sm" data-open-modal="click-text">弹出点选文字</button>
+            <button type="button" class="btn btn-sm" data-open-modal="rotate-image">弹出旋转图片</button>
+            <button type="button" class="btn btn-sm" data-open-modal="iframe-challenge">弹出 iframe 验证</button>
+            <button type="button" class="btn btn-sm" data-open-modal="two-factor-auth">弹出二次校验</button>
+            <button type="button" class="btn btn-sm" data-open-modal="rate-limit-429">模拟 429 限流拦截</button>
+          </div>
+          <p class="card-subtitle">弹窗激活时，页面 <code>body</code> 会更新 <code>data-rc-modal-open="true"</code> 及 <code>data-rc-modal-kind</code>，并展示常见的中英文安全提示文案（如「请完成下列验证后继续 / Verify to continue」）。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 8 Independent Risk-Control Widgets -->
+    <section class="widgets-grid" aria-label="风控验证组件集合">
+      <!-- 1. Slider Puzzle -->
+      <article class="card" id="rc-slider-puzzle" data-rc-widget="slider-puzzle" data-rc-status="idle">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>1. 滑块拼图验证 <span class="tag">行为验证</span></h3>
+            <p class="card-subtitle">请拖动滑块完成上方拼图 · Drag slider to complete puzzle</p>
+          </div>
+          <span class="pill" data-status-badge>待验证</span>
+        </div>
+        <div class="widget-body" data-mount="slider-puzzle"></div>
+        <div class="widget-footer">
+          <span class="feedback" data-feedback>拖动下方滑块将拼图块对齐至缺口处</span>
+          <div class="widget-actions">
+            <button type="button" class="btn btn-sm" data-action="refresh">换一张</button>
+            <button type="button" class="btn btn-sm" data-open-modal="slider-puzzle">弹窗模式</button>
+          </div>
+        </div>
+      </article>
+
+      <!-- 2. Ordered Click-Text -->
+      <article class="card" id="rc-click-text" data-rc-widget="click-text" data-rc-status="idle">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>2. 顺序点选文字验证 <span class="tag">视觉点选</span></h3>
+            <p class="card-subtitle">按指定顺序依次点击画布中的目标汉字 · Click characters in order</p>
+          </div>
+          <span class="pill" data-status-badge>待验证</span>
+        </div>
+        <div class="widget-body" data-mount="click-text"></div>
+        <div class="widget-footer">
+          <span class="feedback" data-feedback>依次点击 3 个目标汉字后点击确认</span>
+          <div class="widget-actions">
+            <button type="button" class="btn btn-sm" data-action="clear-pins">清空标记</button>
+            <button type="button" class="btn btn-sm" data-action="refresh">换一组</button>
+            <button type="button" class="btn btn-sm" data-open-modal="click-text">弹窗模式</button>
+          </div>
+        </div>
+      </article>
+
+      <!-- 3. Rotate Image -->
+      <article class="card" id="rc-rotate-image" data-rc-widget="rotate-image" data-rc-status="idle">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>3. 旋转图片验证 <span class="tag">角度对齐</span></h3>
+            <p class="card-subtitle">拖动滑块使圆形图案摆正 · Rotate image upright</p>
+          </div>
+          <span class="pill" data-status-badge>待验证</span>
+        </div>
+        <div class="widget-body" data-mount="rotate-image"></div>
+        <div class="widget-footer">
+          <span class="feedback" data-feedback>调整旋转滑块使画面保持正立，然后点击确认</span>
+          <div class="widget-actions">
+            <button type="button" class="btn btn-sm" data-action="refresh">换一题</button>
+            <button type="button" class="btn btn-sm" data-open-modal="rotate-image">弹窗模式</button>
+          </div>
+        </div>
+      </article>
+
+      <!-- 4. Image Grid 3x3 -->
+      <article class="card" id="rc-image-grid" data-rc-widget="image-grid" data-rc-status="idle">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>4. 九宫格图选验证 <span class="tag">分类选择</span></h3>
+            <p class="card-subtitle">按题目要求勾选所有符合类别的图像块 · Select matching tiles</p>
+          </div>
+          <span class="pill" data-status-badge>待验证</span>
+        </div>
+        <div class="widget-body" data-mount="image-grid"></div>
+        <div class="widget-footer">
+          <span class="feedback" data-feedback>点击选中所有目标图块，完成后点击确认验证</span>
+          <div class="widget-actions">
+            <button type="button" class="btn btn-sm" data-action="refresh">换一组</button>
+          </div>
+        </div>
+      </article>
+
+      <!-- 5. Human Checkbox / Turnstile -->
+      <article class="card" id="rc-checkbox-human" data-rc-widget="checkbox-human" data-rc-status="idle">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>5. 人机勾选校验 <span class="tag">无感 / 升级</span></h3>
+            <p class="card-subtitle">模拟 Turnstile / reCAPTCHA 勾选框及二次风控升级</p>
+          </div>
+          <span class="pill" data-status-badge>待验证</span>
+        </div>
+        <div class="widget-body" data-mount="checkbox-human"></div>
+        <div class="widget-footer">
+          <span class="feedback" data-feedback>点击复选框完成人机确认，或开启升级模式测试弹窗联动</span>
+          <div class="widget-actions">
+            <button type="button" class="btn btn-sm" data-action="refresh">重置</button>
+          </div>
+        </div>
+      </article>
+
+      <!-- 6. Text / Math CAPTCHA -->
+      <article class="card" id="rc-text-captcha" data-rc-widget="text-captcha" data-rc-status="idle">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>6. 图形字符 / 算术验证码 <span class="tag">文本输入</span></h3>
+            <p class="card-subtitle">支持干扰线字母数字验证码与简单四则算术题切换</p>
+          </div>
+          <span class="pill" data-status-badge>待验证</span>
+        </div>
+        <div class="widget-body" data-mount="text-captcha"></div>
+        <div class="widget-footer">
+          <span class="feedback" data-feedback>点击验证码图片可随时刷新，字符校验不区分大小写</span>
+          <div class="widget-actions">
+            <button type="button" class="btn btn-sm" data-action="refresh">换一张</button>
+          </div>
+        </div>
+      </article>
+
+      <!-- 7. Two-Factor Auth (SMS / Email) -->
+      <article class="card" id="rc-two-factor-auth" data-rc-widget="two-factor-auth" data-rc-status="idle">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>7. 二次身份校验（短信 / 邮箱） <span class="tag">二次鉴权</span></h3>
+            <p class="card-subtitle">模拟账号异常登录或敏感操作时的 6 位动态验证码校验</p>
+          </div>
+          <span class="pill" data-status-badge>待验证</span>
+        </div>
+        <div class="widget-body" data-mount="two-factor-auth"></div>
+        <div class="widget-footer">
+          <span class="feedback" data-feedback>点击「获取验证码」后，在本地模拟通知条查看并手动输入</span>
+          <div class="widget-actions">
+            <button type="button" class="btn btn-sm" data-action="refresh">重置</button>
+            <button type="button" class="btn btn-sm" data-open-modal="two-factor-auth">弹窗模式</button>
+          </div>
+        </div>
+      </article>
+
+      <!-- 8. Cross-Frame VerifyCenter Iframe -->
+      <article class="card" id="rc-iframe-challenge" data-rc-widget="iframe-challenge" data-rc-status="idle">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>8. 独立 iframe 风控校验 <span class="tag">跨帧隔离</span></h3>
+            <p class="card-subtitle">嵌入独立 <code>./verifycenter-captcha-frame.html</code> 并通过 <code>postMessage</code> 回传状态</p>
+          </div>
+          <span class="pill" data-status-badge>待验证</span>
+        </div>
+        <div class="widget-body">
+          <iframe
+            id="rc-verifycenter-iframe"
+            name="verifycenter-challenge"
+            class="challenge-iframe"
+            src="./verifycenter-captcha-frame.html"
+            title="VerifyCenter 安全验证"
+          ></iframe>
+        </div>
+        <div class="widget-footer">
+          <span class="feedback" data-feedback>请在上方 iframe 内完成拖动校验，父页面将接收通过事件</span>
+          <div class="widget-actions">
+            <button type="button" class="btn btn-sm" data-action="refresh">重置 iframe</button>
+            <button type="button" class="btn btn-sm" data-open-modal="iframe-challenge">弹窗模式</button>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <!-- Live Status Inspector & Event Log -->
+    <section class="inspector-grid" aria-label="风控状态与事件日志">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>组件状态总览</h3>
+            <p class="card-subtitle">实时同步各组件 <code>data-rc-status</code> 与尝试次数，便于手工核对与调试。</p>
+          </div>
+        </div>
+        <div class="status-list" id="rc-status-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <h3>交互事件日志</h3>
+            <p class="card-subtitle">记录弹窗触发、验证尝试、通过/失败与重置事件。</p>
+          </div>
+          <button type="button" class="btn btn-sm" id="btn-clear-log">清空日志</button>
+        </div>
+        <div class="log-box" id="rc-event-log" role="log" aria-live="polite"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Blocking Risk-Control Modal -->
+  <div class="modal-backdrop" id="rc-modal-backdrop" aria-hidden="true">
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="rc-modal-title">
+      <div class="modal-header">
+        <div>
+          <h3 id="rc-modal-title">安全验证 · 请完成下列验证后继续</h3>
+          <p class="modal-subtitle" id="rc-modal-subtitle">Verify to continue</p>
+        </div>
+        <button type="button" class="btn btn-sm" id="rc-modal-close" aria-label="关闭风控弹窗">关闭</button>
+      </div>
+      <div class="modal-body" id="rc-modal-body"></div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      const WIDGET_META = {
+        'slider-puzzle': { label: '滑块拼图验证', modalTitle: '安全验证 · 拖动完成上方拼图' },
+        'click-text': { label: '顺序点选文字', modalTitle: '安全验证 · 请依次点击目标文字' },
+        'rotate-image': { label: '旋转图片验证', modalTitle: '安全验证 · 旋转图片使其摆正' },
+        'image-grid': { label: '九宫格图选', modalTitle: '安全验证 · 选择符合条件的图片' },
+        'checkbox-human': { label: '人机勾选校验', modalTitle: '安全验证 · 人机确认' },
+        'text-captcha': { label: '图形 / 算术码', modalTitle: '安全验证 · 输入验证码' },
+        'two-factor-auth': { label: '二次身份校验', modalTitle: '账号安全校验 · 二次验证' },
+        'iframe-challenge': { label: 'VerifyCenter iframe', modalTitle: '安全验证 · 请完成下列验证后继续' }
+      };
+
+      const STATUS_LABELS = {
+        idle: '待验证',
+        verifying: '验证中',
+        passed: '已通过',
+        failed: '未通过'
+      };
+
+      const widgetStates = {};
+      const widgetControllers = {};
+      const modalState = { open: false, kind: '', pendingAction: null, cleanup: null };
+
+      Object.keys(WIDGET_META).forEach(function (id) {
+        widgetStates[id] = { status: 'idle', attempts: 0, updatedAt: null };
+      });
+
+      const summaryPill = document.getElementById('rc-summary-pill');
+      const modalPill = document.getElementById('rc-modal-pill');
+      const statusListEl = document.getElementById('rc-status-list');
+      const eventLogEl = document.getElementById('rc-event-log');
+      const modalBackdrop = document.getElementById('rc-modal-backdrop');
+      const modalTitleEl = document.getElementById('rc-modal-title');
+      const modalSubtitleEl = document.getElementById('rc-modal-subtitle');
+      const modalBodyEl = document.getElementById('rc-modal-body');
+      const modalCloseBtn = document.getElementById('rc-modal-close');
+      const scenarioResultEl = document.getElementById('scenario-result');
+      const scenarioStatusPill = document.getElementById('scenario-status-pill');
+
+      function nowTime() {
+        const d = new Date();
+        return [d.getHours(), d.getMinutes(), d.getSeconds()]
+          .map(function (n) { return String(n).padStart(2, '0'); })
+          .join(':');
+      }
+
+      function randInt(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+      }
+
+      function shuffle(list) {
+        const copy = list.slice();
+        for (let i = copy.length - 1; i > 0; i -= 1) {
+          const j = Math.floor(Math.random() * (i + 1));
+          const tmp = copy[i];
+          copy[i] = copy[j];
+          copy[j] = tmp;
+        }
+        return copy;
+      }
+
+      function appendLog(kind, message, tone) {
+        if (!eventLogEl) return;
+        const row = document.createElement('div');
+        row.className = 'log-entry';
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'log-time';
+        timeSpan.textContent = '[' + nowTime() + '] ';
+
+        const kindSpan = document.createElement('span');
+        kindSpan.className = 'log-kind';
+        kindSpan.textContent = kind + ': ';
+
+        const msgSpan = document.createElement('span');
+        if (tone === 'passed') msgSpan.className = 'log-pass';
+        if (tone === 'failed') msgSpan.className = 'log-fail';
+        msgSpan.textContent = message;
+
+        row.appendChild(timeSpan);
+        row.appendChild(kindSpan);
+        row.appendChild(msgSpan);
+        eventLogEl.prepend(row);
+        while (eventLogEl.children.length > 80) {
+          eventLogEl.removeChild(eventLogEl.lastChild);
+        }
+      }
+
+      function renderSummary() {
+        const ids = Object.keys(WIDGET_META);
+        const passedCount = ids.filter(function (id) {
+          return widgetStates[id].status === 'passed';
+        }).length;
+
+        if (summaryPill) {
+          summaryPill.textContent = '已通过 ' + passedCount + ' / ' + ids.length;
+          summaryPill.className = passedCount === ids.length ? 'pill passed' : 'pill';
+        }
+        if (modalPill) {
+          modalPill.textContent = modalState.open ? ('拦截弹窗：' + modalState.kind) : '拦截弹窗：未触发';
+          modalPill.className = modalState.open ? 'pill warning' : 'pill';
+        }
+        if (statusListEl) {
+          statusListEl.textContent = '';
+          ids.forEach(function (id) {
+            const st = widgetStates[id];
+            const item = document.createElement('div');
+            item.className = 'status-item';
+            const left = document.createElement('span');
+            left.textContent = WIDGET_META[id].label + ' (尝试 ' + st.attempts + ')';
+            const pill = document.createElement('span');
+            pill.className = 'pill ' + (st.status === 'idle' ? '' : st.status);
+            pill.textContent = STATUS_LABELS[st.status] || st.status;
+            item.appendChild(left);
+            item.appendChild(pill);
+            statusListEl.appendChild(item);
+          });
+        }
+      }
+
+      function setCardStatus(widgetId, status, feedbackText, countAttempt) {
+        const card = document.getElementById('rc-' + widgetId);
+        const state = widgetStates[widgetId];
+        if (state) {
+          state.status = status;
+          if (countAttempt) state.attempts += 1;
+          state.updatedAt = new Date().toISOString();
+        }
+        if (card) {
+          card.dataset.rcStatus = status;
+          const badge = card.querySelector('[data-status-badge]');
+          if (badge) {
+            badge.className = 'pill ' + (status === 'idle' ? '' : status);
+            badge.textContent = STATUS_LABELS[status] || status;
+          }
+          const fb = card.querySelector('[data-feedback]');
+          if (fb && typeof feedbackText === 'string') {
+            fb.className = 'feedback ' + (status === 'passed' || status === 'failed' ? status : '');
+            fb.textContent = feedbackText;
+          }
+        }
+        renderSummary();
+      }
+
+      /* --------------------------------------------------------------------
+       * 1. Slider Puzzle Widget Factory
+       * ------------------------------------------------------------------ */
+      function drawJigsawPath(ctx, x, y, size, r) {
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + size / 2 - r, y);
+        ctx.arc(x + size / 2, y - r * 0.2, r, Math.PI, 0, false);
+        ctx.lineTo(x + size, y);
+        ctx.lineTo(x + size, y + size / 2 - r);
+        ctx.arc(x + size + r * 0.2, y + size / 2, r, -Math.PI / 2, Math.PI / 2, false);
+        ctx.lineTo(x + size, y + size);
+        ctx.lineTo(x, y + size);
+        ctx.lineTo(x, y + size / 2 + r);
+        ctx.arc(x + r * 0.2, y + size / 2, r, Math.PI / 2, -Math.PI / 2, true);
+        ctx.closePath();
+      }
+
+      function renderScenery(ctx, width, height) {
+        const palettes = [
+          { skyTop: '#38bdf8', skyBot: '#e0f2fe', sun: '#fde047', hill1: '#22c55e', hill2: '#15803d', accent: '#f97316' },
+          { skyTop: '#6366f1', skyBot: '#e0e7ff', sun: '#fca5a5', hill1: '#3b82f6', hill2: '#1e3a8a', accent: '#facc15' },
+          { skyTop: '#fb923c', skyBot: '#fef3c7', sun: '#fffbeb', hill1: '#0d9488', hill2: '#115e59', accent: '#ec4899' },
+          { skyTop: '#0ea5e9', skyBot: '#cffafe', sun: '#fef08a', hill1: '#84cc16', hill2: '#3f6212', accent: '#ef4444' }
+        ];
+        const p = palettes[randInt(0, palettes.length - 1)];
+        const grad = ctx.createLinearGradient(0, 0, 0, height);
+        grad.addColorStop(0, p.skyTop);
+        grad.addColorStop(1, p.skyBot);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, width, height);
+
+        // Sun
+        ctx.fillStyle = p.sun;
+        ctx.beginPath();
+        ctx.arc(randInt(40, width - 40), randInt(26, 56), randInt(14, 22), 0, Math.PI * 2);
+        ctx.fill();
+
+        // Clouds
+        ctx.fillStyle = 'rgba(255,255,255,0.72)';
+        for (let i = 0; i < 3; i += 1) {
+          const cx = randInt(30, width - 40);
+          const cy = randInt(20, 62);
+          ctx.beginPath();
+          ctx.arc(cx, cy, 12, 0, Math.PI * 2);
+          ctx.arc(cx + 12, cy - 4, 14, 0, Math.PI * 2);
+          ctx.arc(cx + 24, cy, 11, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Far hill
+        ctx.fillStyle = p.hill1;
+        ctx.beginPath();
+        ctx.moveTo(0, height);
+        ctx.quadraticCurveTo(width * 0.3, randInt(60, 95), width * 0.65, randInt(85, 115));
+        ctx.quadraticCurveTo(width * 0.85, randInt(70, 100), width, height * 0.72);
+        ctx.lineTo(width, height);
+        ctx.closePath();
+        ctx.fill();
+
+        // Near hill
+        ctx.fillStyle = p.hill2;
+        ctx.beginPath();
+        ctx.moveTo(0, height);
+        ctx.quadraticCurveTo(width * 0.25, randInt(105, 128), width * 0.55, randInt(115, 138));
+        ctx.quadraticCurveTo(width * 0.82, randInt(98, 125), width, height * 0.85);
+        ctx.lineTo(width, height);
+        ctx.closePath();
+        ctx.fill();
+
+        // Decorative geometric landmark accents
+        for (let i = 0; i < 6; i += 1) {
+          ctx.fillStyle = i % 2 === 0 ? p.accent : 'rgba(255,255,255,0.45)';
+          ctx.beginPath();
+          ctx.arc(randInt(20, width - 20), randInt(40, height - 20), randInt(5, 11), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function mountSliderPuzzle(container, options) {
+        const W = 320;
+        const H = 160;
+        const PIECE_SIZE = 42;
+        const TAB_R = 9;
+        const PIECE_CANVAS_W = 68;
+        const PIECE_ORIGIN_X = 10;
+        const MAX_PIECE_DX = W - (PIECE_ORIGIN_X + PIECE_SIZE + TAB_R + 6);
+
+        container.innerHTML =
+          '<div class="puzzle-stage">' +
+            '<canvas class="puzzle-bg" width="320" height="160" aria-label="滑块拼图背景"></canvas>' +
+            '<canvas class="puzzle-piece" width="68" height="160" aria-label="可拖动拼图块"></canvas>' +
+          '</div>' +
+          '<div class="slider-track">' +
+            '<div class="slider-fill"></div>' +
+            '<span class="slider-label">向右拖动滑块完成上方拼图</span>' +
+            '<button type="button" class="slider-handle" role="slider" aria-label="滑块拼图拖动柄" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">→</button>' +
+          '</div>';
+
+        const bgCanvas = container.querySelector('.puzzle-bg');
+        const pieceCanvas = container.querySelector('.puzzle-piece');
+        const track = container.querySelector('.slider-track');
+        const fill = container.querySelector('.slider-fill');
+        const label = container.querySelector('.slider-label');
+        const handle = container.querySelector('.slider-handle');
+
+        let targetX = 170;
+        let targetY = 56;
+        let dragging = false;
+        let solved = false;
+        let startX = 0;
+        let startAt = 0;
+        let moveSamples = 0;
+        let currentHandleOffset = 0;
+
+        function getMaxHandleOffset() {
+          return Math.max(1, (track.clientWidth || 320) - (handle.offsetWidth || 44) - 6);
+        }
+
+        function setPosition(handleOffset) {
+          const maxHandle = getMaxHandleOffset();
+          const clamped = Math.max(0, Math.min(maxHandle, handleOffset));
+          currentHandleOffset = clamped;
+          const ratio = clamped / maxHandle;
+          const pieceDx = ratio * MAX_PIECE_DX;
+          handle.style.left = (3 + clamped) + 'px';
+          fill.style.width = (clamped + (handle.offsetWidth || 44) / 2) + 'px';
+          pieceCanvas.style.left = ((pieceDx / W) * 100) + '%';
+          handle.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
+          return pieceDx;
+        }
+
+        function generate(silent) {
+          solved = false;
+          dragging = false;
+          moveSamples = 0;
+          targetX = randInt(106, 244);
+          targetY = randInt(28, 92);
+
+          const srcCanvas = document.createElement('canvas');
+          srcCanvas.width = W;
+          srcCanvas.height = H;
+          const sctx = srcCanvas.getContext('2d');
+          const bctx = bgCanvas.getContext('2d');
+          const pctx = pieceCanvas.getContext('2d');
+
+          if (sctx && bctx && pctx) {
+            renderScenery(sctx, W, H);
+            bctx.clearRect(0, 0, W, H);
+            bctx.drawImage(srcCanvas, 0, 0);
+
+            bctx.save();
+            drawJigsawPath(bctx, targetX, targetY, PIECE_SIZE, TAB_R);
+            bctx.fillStyle = 'rgba(15, 23, 42, 0.56)';
+            bctx.fill();
+            bctx.lineWidth = 1.5;
+            bctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+            bctx.stroke();
+            bctx.restore();
+
+            pctx.clearRect(0, 0, PIECE_CANVAS_W, H);
+            pctx.save();
+            drawJigsawPath(pctx, PIECE_ORIGIN_X, targetY, PIECE_SIZE, TAB_R);
+            pctx.clip();
+            pctx.drawImage(srcCanvas, PIECE_ORIGIN_X - targetX, 0);
+            pctx.restore();
+
+            pctx.save();
+            drawJigsawPath(pctx, PIECE_ORIGIN_X, targetY, PIECE_SIZE, TAB_R);
+            pctx.lineWidth = 2;
+            pctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+            pctx.stroke();
+            pctx.restore();
+          }
+
+          track.classList.remove('passed', 'failed', 'shake');
+          handle.textContent = '→';
+          label.textContent = '向右拖动滑块完成上方拼图';
+          setPosition(0);
+          if (!silent && options.onStatus) {
+            options.onStatus('idle', '已刷新拼图位置，请拖动滑块对齐缺口', false);
+          }
+        }
+
+        function onPointerDown(e) {
+          if (solved) return;
+          dragging = true;
+          startX = e.clientX;
+          startAt = Date.now();
+          moveSamples = 0;
+          track.classList.remove('failed', 'shake');
+          if (handle.setPointerCapture) {
+            try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+          }
+          if (options.onStatus) options.onStatus('verifying', '正在拖动滑块…', false);
+        }
+
+        function onPointerMove(e) {
+          if (!dragging || solved) return;
+          moveSamples += 1;
+          setPosition(e.clientX - startX);
+        }
+
+        function onPointerUp() {
+          if (!dragging || solved) return;
+          dragging = false;
+          const pieceDx = setPosition(currentHandleOffset);
+          const actualX = PIECE_ORIGIN_X + pieceDx;
+          const diff = Math.abs(actualX - targetX);
+          const elapsed = Date.now() - startAt;
+          if (diff <= 6 && elapsed >= 120 && moveSamples >= 3) {
+            solved = true;
+            track.classList.add('passed');
+            handle.textContent = '✓';
+            label.textContent = '拼图验证通过 (' + (elapsed / 1000).toFixed(2) + 's)';
+            if (options.onStatus) {
+              options.onStatus('passed', '验证通过（误差 ' + diff.toFixed(1) + 'px，耗时 ' + (elapsed / 1000).toFixed(2) + 's）', true);
+            }
+            if (options.onPass) options.onPass();
+          } else {
+            track.classList.add('failed', 'shake');
+            const reason = diff > 6
+              ? '拼图未对齐（误差 ' + diff.toFixed(1) + 'px），请重试'
+              : '拖动过快，请以正常节奏手工拖动';
+            if (options.onStatus) options.onStatus('failed', reason, true);
+            window.setTimeout(function () {
+              if (!solved) {
+                track.classList.remove('failed', 'shake');
+                setPosition(0);
+              }
+            }, 420);
+          }
+        }
+
+        handle.addEventListener('pointerdown', onPointerDown);
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', onPointerUp);
+
+        generate(true);
+
+        return {
+          refresh: function () { generate(false); },
+          reset: function () { generate(true); if (options.onStatus) options.onStatus('idle', '拖动下方滑块将拼图块对齐至缺口处', false); },
+          destroy: function () {
+            window.removeEventListener('pointermove', onPointerMove);
+            window.removeEventListener('pointerup', onPointerUp);
+          }
+        };
+      }
+
+      /* --------------------------------------------------------------------
+       * 2. Ordered Click-Text Widget Factory
+       * ------------------------------------------------------------------ */
+      const CLICK_CHAR_SETS = [
+        ['风', '和', '日', '丽', '云', '淡'],
+        ['春', '暖', '花', '开', '山', '青'],
+        ['晴', '空', '万', '里', '星', '河'],
+        ['安', '全', '验', '证', '守', '护'],
+        ['海', '阔', '天', '空', '明', '月'],
+        ['锦', '绣', '前', '程', '如', '意']
+      ];
+
+      function mountClickText(container, options) {
+        const W = 320;
+        const H = 160;
+
+        container.innerHTML =
+          '<div class="click-prompt"><span>请依次点击：</span><span class="click-targets"></span></div>' +
+          '<div class="click-stage">' +
+            '<canvas class="click-canvas" width="320" height="160" aria-label="点选文字画布"></canvas>' +
+            '<div class="click-pins"></div>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;max-width:320px;">' +
+            '<span class="click-count" style="font-size:12px;color:#64748b;">已标记 0 / 3</span>' +
+            '<button type="button" class="btn btn-primary btn-sm click-confirm">确认验证</button>' +
+          '</div>';
+
+        const targetsEl = container.querySelector('.click-targets');
+        const stageEl = container.querySelector('.click-stage');
+        const canvas = container.querySelector('.click-canvas');
+        const pinsEl = container.querySelector('.click-pins');
+        const countEl = container.querySelector('.click-count');
+        const confirmBtn = container.querySelector('.click-confirm');
+
+        let placements = [];
+        let targetSequence = [];
+        let selectedPoints = [];
+        let solved = false;
+
+        function renderPins() {
+          pinsEl.textContent = '';
+          selectedPoints.forEach(function (pt, idx) {
+            const pin = document.createElement('button');
+            pin.type = 'button';
+            pin.className = 'click-pin';
+            pin.style.left = ((pt.x / W) * 100) + '%';
+            pin.style.top = ((pt.y / H) * 100) + '%';
+            pin.textContent = String(idx + 1);
+            pin.title = '点击撤销此标记';
+            pin.addEventListener('click', function (ev) {
+              ev.stopPropagation();
+              if (solved) return;
+              selectedPoints = selectedPoints.slice(0, idx);
+              renderPins();
+            });
+            pinsEl.appendChild(pin);
+          });
+          countEl.textContent = '已标记 ' + selectedPoints.length + ' / ' + targetSequence.length;
+        }
+
+        function generate(silent) {
+          solved = false;
+          selectedPoints = [];
+          const pool = shuffle(CLICK_CHAR_SETS[randInt(0, CLICK_CHAR_SETS.length - 1)]);
+          const cellIndices = shuffle([0, 1, 2, 3, 4, 5]);
+          const colors = ['#0f172a', '#1d4ed8', '#b91c1c', '#047857', '#7c2d12', '#6d28d9'];
+
+          placements = pool.map(function (ch, idx) {
+            const cell = cellIndices[idx];
+            const col = cell % 3;
+            const row = Math.floor(cell / 3);
+            const x = Math.round(col * 100 + 56 + randInt(-16, 16));
+            const y = Math.round(row * 74 + 43 + randInt(-11, 11));
+            const angle = (randInt(-24, 24) * Math.PI) / 180;
+            return { char: ch, x: x, y: y, angle: angle, color: colors[idx % colors.length] };
+          });
+
+          targetSequence = shuffle(placements).slice(0, 3);
+          targetsEl.textContent = '';
+          targetSequence.forEach(function (item) {
+            const chip = document.createElement('span');
+            chip.className = 'char-chip';
+            chip.textContent = item.char;
+            targetsEl.appendChild(chip);
+          });
+
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            const grad = ctx.createLinearGradient(0, 0, W, H);
+            grad.addColorStop(0, '#f8fafc');
+            grad.addColorStop(1, '#e2e8f0');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, W, H);
+
+            // Subtle background curves
+            for (let i = 0; i < 6; i += 1) {
+              ctx.strokeStyle = 'rgba(100, 116, 139, 0.22)';
+              ctx.lineWidth = 1.2;
+              ctx.beginPath();
+              ctx.moveTo(randInt(0, W), randInt(0, H));
+              ctx.quadraticCurveTo(randInt(0, W), randInt(0, H), randInt(0, W), randInt(0, H));
+              ctx.stroke();
+            }
+
+            // Soft dots
+            for (let i = 0; i < 28; i += 1) {
+              ctx.fillStyle = 'rgba(148, 163, 184, 0.35)';
+              ctx.beginPath();
+              ctx.arc(randInt(6, W - 6), randInt(6, H - 6), randInt(1, 3), 0, Math.PI * 2);
+              ctx.fill();
+            }
+
+            placements.forEach(function (item) {
+              ctx.save();
+              ctx.translate(item.x, item.y);
+              ctx.rotate(item.angle);
+              ctx.font = 'bold 28px "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif';
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillStyle = item.color;
+              ctx.fillText(item.char, 0, 0);
+              ctx.restore();
+            });
+          }
+
+          renderPins();
+          if (!silent && options.onStatus) {
+            options.onStatus('idle', '已更换题目，请依次点击目标文字', false);
+          }
+        }
+
+        stageEl.addEventListener('click', function (e) {
+          if (solved) return;
+          if (selectedPoints.length >= targetSequence.length) return;
+          const rect = canvas.getBoundingClientRect();
+          if (!rect.width || !rect.height) return;
+          const x = ((e.clientX - rect.left) / rect.width) * W;
+          const y = ((e.clientY - rect.top) / rect.height) * H;
+          selectedPoints.push({ x: x, y: y });
+          renderPins();
+          if (options.onStatus) {
+            options.onStatus('verifying', '已标记第 ' + selectedPoints.length + ' 个位置', false);
+          }
+        });
+
+        confirmBtn.addEventListener('click', function () {
+          if (solved) return;
+          if (selectedPoints.length < targetSequence.length) {
+            if (options.onStatus) options.onStatus('failed', '请先依次点齐 ' + targetSequence.length + ' 个目标文字', true);
+            return;
+          }
+          const matched = targetSequence.every(function (target, i) {
+            const pt = selectedPoints[i];
+            const dist = Math.hypot(pt.x - target.x, pt.y - target.y);
+            return dist <= 26;
+          });
+          if (matched) {
+            solved = true;
+            if (options.onStatus) options.onStatus('passed', '顺序点选文字验证通过', true);
+            if (options.onPass) options.onPass();
+          } else {
+            selectedPoints = [];
+            renderPins();
+            if (options.onStatus) options.onStatus('failed', '点选顺序或位置不正确，请重新点选', true);
+          }
+        });
+
+        generate(true);
+
+        return {
+          refresh: function () { generate(false); },
+          clearPins: function () {
+            if (solved) return;
+            selectedPoints = [];
+            renderPins();
+            if (options.onStatus) options.onStatus('idle', '已清空点选标记', false);
+          },
+          reset: function () { generate(true); if (options.onStatus) options.onStatus('idle', '依次点击 3 个目标汉字后点击确认', false); },
+          destroy: function () {}
+        };
+      }
+
+      /* --------------------------------------------------------------------
+       * 3. Rotate Image Widget Factory
+       * ------------------------------------------------------------------ */
+      function drawUprightIllustration(ctx, size, themeIndex) {
+        const half = size / 2;
+        ctx.clearRect(0, 0, size, size);
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(half, half, half - 1, 0, Math.PI * 2);
+        ctx.clip();
+
+        // Sky
+        ctx.fillStyle = themeIndex % 2 === 0 ? '#bae6fd' : '#dbeafe';
+        ctx.fillRect(0, 0, size, half + 14);
+        // Ground / Sea
+        ctx.fillStyle = themeIndex === 0 ? '#0284c7' : themeIndex === 1 ? '#16a34a' : '#334155';
+        ctx.fillRect(0, half + 14, size, size);
+
+        // Sun at top-right
+        ctx.fillStyle = '#fde047';
+        ctx.beginPath();
+        ctx.arc(size * 0.74, size * 0.24, 12, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (themeIndex === 0) {
+          // Sailboat
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.moveTo(half, 26);
+          ctx.lineTo(half + 32, half + 10);
+          ctx.lineTo(half, half + 10);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = '#f97316';
+          ctx.beginPath();
+          ctx.moveTo(half - 4, 38);
+          ctx.lineTo(half - 28, half + 10);
+          ctx.lineTo(half - 4, half + 10);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = '#7c2d12';
+          ctx.beginPath();
+          ctx.moveTo(half - 34, half + 12);
+          ctx.lineTo(half + 34, half + 12);
+          ctx.lineTo(half + 24, half + 28);
+          ctx.lineTo(half - 24, half + 28);
+          ctx.closePath();
+          ctx.fill();
+        } else if (themeIndex === 1) {
+          // House + Tree
+          ctx.fillStyle = '#f8fafc';
+          ctx.fillRect(half - 24, half - 14, 48, 30);
+          ctx.fillStyle = '#dc2626';
+          ctx.beginPath();
+          ctx.moveTo(half - 30, half - 14);
+          ctx.lineTo(half, half - 40);
+          ctx.lineTo(half + 30, half - 14);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = '#92400e';
+          ctx.fillRect(half - 7, half, 14, 16);
+        } else {
+          // Rocket upright
+          ctx.fillStyle = '#f8fafc';
+          ctx.beginPath();
+          ctx.moveTo(half, 22);
+          ctx.quadraticCurveTo(half + 20, 48, half + 16, half + 10);
+          ctx.lineTo(half - 16, half + 10);
+          ctx.quadraticCurveTo(half - 20, 48, half, 22);
+          ctx.fill();
+          ctx.fillStyle = '#ef4444';
+          ctx.beginPath();
+          ctx.moveTo(half - 16, half - 2);
+          ctx.lineTo(half - 28, half + 16);
+          ctx.lineTo(half - 14, half + 10);
+          ctx.closePath();
+          ctx.fill();
+          ctx.beginPath();
+          ctx.moveTo(half + 16, half - 2);
+          ctx.lineTo(half + 28, half + 16);
+          ctx.lineTo(half + 14, half + 10);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = '#38bdf8';
+          ctx.beginPath();
+          ctx.arc(half, half - 14, 8, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      function mountRotateImage(container, options) {
+        container.innerHTML =
+          '<div class="rotate-layout">' +
+            '<div class="rotate-ring"><canvas class="rotate-canvas" width="136" height="136" aria-label="可旋转验证图片"></canvas></div>' +
+            '<div class="rotate-controls">' +
+              '<div style="font-size:13px;font-weight:600;">拖动滑块将画面旋转至正立</div>' +
+              '<input type="range" class="range-input" min="0" max="360" value="0" aria-label="旋转角度滑块" />' +
+              '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
+                '<span class="rotate-deg" style="font-size:12px;color:#64748b;">当前调整：0°</span>' +
+                '<button type="button" class="btn btn-primary btn-sm rotate-confirm">确认角度</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>';
+
+        const ring = container.querySelector('.rotate-ring');
+        const canvas = container.querySelector('.rotate-canvas');
+        const range = container.querySelector('.range-input');
+        const degEl = container.querySelector('.rotate-deg');
+        const confirmBtn = container.querySelector('.rotate-confirm');
+
+        let initialAngle = 120;
+        let userAngle = 0;
+        let themeIndex = 0;
+        let solved = false;
+
+        function render() {
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          const size = canvas.width;
+          const totalRad = (((initialAngle + userAngle) % 360) * Math.PI) / 180;
+          ctx.clearRect(0, 0, size, size);
+          ctx.save();
+          ctx.translate(size / 2, size / 2);
+          ctx.rotate(totalRad);
+          ctx.translate(-size / 2, -size / 2);
+          drawUprightIllustration(ctx, size, themeIndex);
+          ctx.restore();
+        }
+
+        function generate(silent) {
+          solved = false;
+          initialAngle = randInt(55, 305);
+          userAngle = 0;
+          themeIndex = randInt(0, 2);
+          range.value = '0';
+          range.disabled = false;
+          degEl.textContent = '当前调整：0°';
+          ring.classList.remove('passed');
+          render();
+          if (!silent && options.onStatus) {
+            options.onStatus('idle', '已更换图片，请旋转至正立角度', false);
+          }
+        }
+
+        range.addEventListener('input', function () {
+          if (solved) return;
+          userAngle = Number(range.value) || 0;
+          degEl.textContent = '当前调整：' + userAngle + '°';
+          render();
+          if (options.onStatus) options.onStatus('verifying', '正在调整角度 (' + userAngle + '°)', false);
+        });
+
+        confirmBtn.addEventListener('click', function () {
+          if (solved) return;
+          const norm = ((initialAngle + userAngle) % 360 + 360) % 360;
+          const error = Math.min(norm, 360 - norm);
+          if (error <= 14) {
+            solved = true;
+            range.disabled = true;
+            ring.classList.add('passed');
+            if (options.onStatus) options.onStatus('passed', '角度校验通过（偏差 ' + error + '°）', true);
+            if (options.onPass) options.onPass();
+          } else {
+            if (options.onStatus) options.onStatus('failed', '画面尚未摆正（偏差 ' + error + '°），请继续调整', true);
+          }
+        });
+
+        generate(true);
+
+        return {
+          refresh: function () { generate(false); },
+          reset: function () { generate(true); if (options.onStatus) options.onStatus('idle', '调整旋转滑块使画面保持正立，然后点击确认', false); },
+          destroy: function () {}
+        };
+      }
+
+      /* --------------------------------------------------------------------
+       * 4. 3x3 Image Grid Widget Factory
+       * ------------------------------------------------------------------ */
+      const GRID_CATEGORIES = [
+        {
+          key: 'traffic-light',
+          label: '交通信号灯',
+          svg: '<svg viewBox="0 0 80 80" aria-hidden="true"><rect width="80" height="80" rx="10" fill="#e0f2fe"/><rect x="27" y="10" width="26" height="52" rx="6" fill="#1e293b"/><circle cx="40" cy="22" r="6" fill="#ef4444"/><circle cx="40" cy="36" r="6" fill="#f59e0b"/><circle cx="40" cy="50" r="6" fill="#22c55e"/><rect x="37" y="62" width="6" height="12" fill="#475569"/></svg>'
+        },
+        {
+          key: 'bicycle',
+          label: '自行车',
+          svg: '<svg viewBox="0 0 80 80" aria-hidden="true"><rect width="80" height="80" rx="10" fill="#ecfdf5"/><circle cx="22" cy="54" r="12" fill="none" stroke="#0f172a" stroke-width="4"/><circle cx="58" cy="54" r="12" fill="none" stroke="#0f172a" stroke-width="4"/><path d="M22 54 L36 32 L54 32 L58 54 M36 32 L40 54 L54 32 M30 28 H40" fill="none" stroke="#2563eb" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        },
+        {
+          key: 'hydrant',
+          label: '消防栓',
+          svg: '<svg viewBox="0 0 80 80" aria-hidden="true"><rect width="80" height="80" rx="10" fill="#fef2f2"/><rect x="28" y="28" width="24" height="36" rx="4" fill="#dc2626"/><path d="M26 28 Q40 12 54 28 Z" fill="#b91c1c"/><rect x="19" y="36" width="9" height="8" rx="2" fill="#991b1b"/><rect x="52" y="36" width="9" height="8" rx="2" fill="#991b1b"/><rect x="22" y="62" width="36" height="8" rx="3" fill="#7f1d1d"/></svg>'
+        },
+        {
+          key: 'bus',
+          label: '公交车',
+          svg: '<svg viewBox="0 0 80 80" aria-hidden="true"><rect width="80" height="80" rx="10" fill="#fffbeb"/><rect x="12" y="22" width="56" height="34" rx="6" fill="#f59e0b"/><rect x="18" y="28" width="16" height="12" rx="2" fill="#e0f2fe"/><rect x="38" y="28" width="16" height="12" rx="2" fill="#e0f2fe"/><rect x="58" y="28" width="6" height="18" rx="1" fill="#fde68a"/><circle cx="24" cy="58" r="6" fill="#1e293b"/><circle cx="56" cy="58" r="6" fill="#1e293b"/></svg>'
+        },
+        {
+          key: 'house',
+          label: '房屋',
+          svg: '<svg viewBox="0 0 80 80" aria-hidden="true"><rect width="80" height="80" rx="10" fill="#eef2ff"/><polygon points="40,14 14,38 66,38" fill="#4f46e5"/><rect x="20" y="38" width="40" height="28" fill="#ffffff" stroke="#4f46e5" stroke-width="2.5"/><rect x="34" y="48" width="12" height="18" fill="#818cf8"/></svg>'
+        },
+        {
+          key: 'umbrella',
+          label: '雨伞',
+          svg: '<svg viewBox="0 0 80 80" aria-hidden="true"><rect width="80" height="80" rx="10" fill="#f5f3ff"/><path d="M14 42 A26 24 0 0 1 66 42 Z" fill="#7c3aed"/><path d="M40 42 V60 A5 5 0 0 1 30 60" fill="none" stroke="#1e293b" stroke-width="3.5" stroke-linecap="round"/></svg>'
+        }
+      ];
+
+      function mountImageGrid(container, options) {
+        container.innerHTML =
+          '<div class="grid-prompt"><span>请选择所有包含：<strong class="grid-target-name"></strong></span><span class="grid-count" style="font-size:12px;color:#cbd5e1;">已选 0 项</span></div>' +
+          '<div class="image-grid" role="group" aria-label="九宫格图选网格"></div>' +
+          '<div><button type="button" class="btn btn-primary btn-sm grid-confirm">确认验证</button></div>';
+
+        const targetNameEl = container.querySelector('.grid-target-name');
+        const countEl = container.querySelector('.grid-count');
+        const gridEl = container.querySelector('.image-grid');
+        const confirmBtn = container.querySelector('.grid-confirm');
+
+        let targetCategory = GRID_CATEGORIES[0];
+        let tiles = [];
+        let selected = new Set();
+        let solved = false;
+
+        function updateCount() {
+          countEl.textContent = '已选 ' + selected.size + ' 项';
+        }
+
+        function generate(silent) {
+          solved = false;
+          selected = new Set();
+          targetCategory = GRID_CATEGORIES[randInt(0, GRID_CATEGORIES.length - 1)];
+          const others = GRID_CATEGORIES.filter(function (c) { return c.key !== targetCategory.key; });
+          const matchCount = randInt(3, 4);
+          const list = [];
+          for (let i = 0; i < matchCount; i += 1) list.push(targetCategory);
+          while (list.length < 9) {
+            list.push(others[randInt(0, others.length - 1)]);
+          }
+          tiles = shuffle(list);
+          targetNameEl.textContent = '「' + targetCategory.label + '」';
+
+          gridEl.textContent = '';
+          tiles.forEach(function (cat, idx) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'grid-tile';
+            btn.setAttribute('aria-pressed', 'false');
+            btn.setAttribute('aria-label', '九宫格第 ' + (idx + 1) + ' 格');
+            btn.innerHTML = cat.svg + '<span class="tile-check">✓</span>';
+            btn.addEventListener('click', function () {
+              if (solved) return;
+              if (selected.has(idx)) {
+                selected.delete(idx);
+                btn.classList.remove('selected');
+                btn.setAttribute('aria-pressed', 'false');
+              } else {
+                selected.add(idx);
+                btn.classList.add('selected');
+                btn.setAttribute('aria-pressed', 'true');
+              }
+              updateCount();
+              if (options.onStatus) options.onStatus('verifying', '已勾选 ' + selected.size + ' 个图像块', false);
+            });
+            gridEl.appendChild(btn);
+          });
+          updateCount();
+          if (!silent && options.onStatus) {
+            options.onStatus('idle', '已更换九宫格题目，请选择所有匹配图片', false);
+          }
+        }
+
+        confirmBtn.addEventListener('click', function () {
+          if (solved) return;
+          const expected = new Set();
+          tiles.forEach(function (cat, idx) {
+            if (cat.key === targetCategory.key) expected.add(idx);
+          });
+          const ok = expected.size === selected.size &&
+            Array.from(expected).every(function (idx) { return selected.has(idx); });
+          if (ok) {
+            solved = true;
+            if (options.onStatus) options.onStatus('passed', '九宫格分类选择验证通过', true);
+            if (options.onPass) options.onPass();
+          } else {
+            if (options.onStatus) options.onStatus('failed', '所选图片与目标类别不完全匹配，请重新核对', true);
+          }
+        });
+
+        generate(true);
+
+        return {
+          refresh: function () { generate(false); },
+          reset: function () { generate(true); if (options.onStatus) options.onStatus('idle', '点击选中所有目标图块，完成后点击确认验证', false); },
+          destroy: function () {}
+        };
+      }
+
+      /* --------------------------------------------------------------------
+       * 5. Checkbox Human Verification (Turnstile-style)
+       * ------------------------------------------------------------------ */
+      function mountCheckboxHuman(container, options) {
+        container.innerHTML =
+          '<div class="turnstile-box">' +
+            '<div class="turnstile-left">' +
+              '<button type="button" class="turnstile-check" role="checkbox" aria-checked="false" aria-label="确认您是人类"></button>' +
+              '<div>' +
+                '<div class="turnstile-label" style="font-size:13px;font-weight:600;">请勾选以确认您是人类</div>' +
+                '<div style="font-size:11px;color:#64748b;">Verify you are human</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="turnstile-brand"><strong>ShieldCheck</strong><br/>本地模拟组件</div>' +
+          '</div>' +
+          '<label class="toggle-row">' +
+            '<input type="checkbox" class="escalate-toggle" />' +
+            '<span>启用二次升级风控（勾选后弹出滑块拼图弹窗）</span>' +
+          '</label>';
+
+        const checkBtn = container.querySelector('.turnstile-check');
+        const labelEl = container.querySelector('.turnstile-label');
+        const escalateToggle = container.querySelector('.escalate-toggle');
+
+        let status = 'idle';
+        let timerId = null;
+
+        function reset(silent) {
+          if (timerId) window.clearTimeout(timerId);
+          timerId = null;
+          status = 'idle';
+          checkBtn.className = 'turnstile-check';
+          checkBtn.textContent = '';
+          checkBtn.setAttribute('aria-checked', 'false');
+          labelEl.textContent = '请勾选以确认您是人类';
+          if (!silent && options.onStatus) {
+            options.onStatus('idle', '已重置勾选状态', false);
+          }
+        }
+
+        function markPassed() {
+          status = 'passed';
+          checkBtn.className = 'turnstile-check passed';
+          checkBtn.textContent = '✓';
+          checkBtn.setAttribute('aria-checked', 'true');
+          labelEl.textContent = '已通过人机确认';
+          if (options.onStatus) options.onStatus('passed', '人机勾选校验通过', true);
+          if (options.onPass) options.onPass();
+        }
+
+        checkBtn.addEventListener('click', function () {
+          if (status === 'passed' || status === 'verifying') return;
+          status = 'verifying';
+          checkBtn.className = 'turnstile-check verifying';
+          checkBtn.textContent = '…';
+          labelEl.textContent = '正在校验环境特征…';
+          if (options.onStatus) options.onStatus('verifying', '正在执行人机确认…', false);
+
+          timerId = window.setTimeout(function () {
+            if (escalateToggle.checked) {
+              labelEl.textContent = '触发二次升级风控，请在弹窗中完成验证';
+              openRiskModal('slider-puzzle', {
+                reason: '人机勾选触发二次升级风控',
+                onComplete: function () {
+                  markPassed();
+                },
+                onCancel: function () {
+                  reset(true);
+                  if (options.onStatus) options.onStatus('failed', '未完成二次升级风控验证', true);
+                }
+              });
+            } else {
+              markPassed();
+            }
+          }, 550);
+        });
+
+        return {
+          refresh: function () { reset(false); },
+          reset: function () { reset(true); if (options.onStatus) options.onStatus('idle', '点击复选框完成人机确认，或开启升级模式测试弹窗联动', false); },
+          destroy: function () { if (timerId) window.clearTimeout(timerId); }
+        };
+      }
+
+      /* --------------------------------------------------------------------
+       * 6. Text / Math CAPTCHA Widget Factory
+       * ------------------------------------------------------------------ */
+      const CAPTCHA_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+      function mountTextCaptcha(container, options) {
+        container.innerHTML =
+          '<div class="mode-tabs" role="tablist">' +
+            '<button type="button" class="mode-tab active" data-mode="alnum" role="tab" aria-selected="true">图形字符</button>' +
+            '<button type="button" class="mode-tab" data-mode="math" role="tab" aria-selected="false">算术验证码</button>' +
+          '</div>' +
+          '<div class="captcha-row">' +
+            '<canvas class="text-captcha-canvas" width="180" height="56" title="点击刷新验证码" aria-label="图形验证码画布"></canvas>' +
+            '<input type="text" class="input text-captcha-input" style="max-width:140px;" placeholder="输入结果" autocomplete="off" />' +
+            '<button type="button" class="btn btn-primary btn-sm text-captcha-submit">验证</button>' +
+          '</div>';
+
+        const tabs = container.querySelectorAll('.mode-tab');
+        const canvas = container.querySelector('.text-captcha-canvas');
+        const input = container.querySelector('.text-captcha-input');
+        const submitBtn = container.querySelector('.text-captcha-submit');
+
+        let mode = 'alnum';
+        let expectedAnswer = '';
+        let solved = false;
+
+        function drawCaptchaText(text) {
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          const W = canvas.width;
+          const H = canvas.height;
+          ctx.fillStyle = '#f8fafc';
+          ctx.fillRect(0, 0, W, H);
+
+          for (let i = 0; i < 5; i += 1) {
+            ctx.strokeStyle = 'rgba(79, 70, 229, 0.28)';
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.moveTo(randInt(0, W), randInt(0, H));
+            ctx.bezierCurveTo(randInt(0, W), randInt(0, H), randInt(0, W), randInt(0, H), randInt(0, W), randInt(0, H));
+            ctx.stroke();
+          }
+          for (let i = 0; i < 36; i += 1) {
+            ctx.fillStyle = 'rgba(100, 116, 139, 0.4)';
+            ctx.fillRect(randInt(2, W - 2), randInt(2, H - 2), 2, 2);
+          }
+
+          const chars = text.split('');
+          const step = (W - 24) / Math.max(1, chars.length);
+          const colors = ['#1e293b', '#1d4ed8', '#b91c1c', '#047857', '#6d28d9'];
+          chars.forEach(function (ch, idx) {
+            ctx.save();
+            ctx.translate(16 + idx * step + step / 2, H / 2 + randInt(-4, 4));
+            ctx.rotate((randInt(-18, 18) * Math.PI) / 180);
+            ctx.font = 'bold ' + (mode === 'math' ? 21 : 25) + 'px ui-monospace, SFMono-Regular, Menlo, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = colors[idx % colors.length];
+            ctx.fillText(ch, 0, 0);
+            ctx.restore();
+          });
+        }
+
+        function generate(silent) {
+          solved = false;
+          input.value = '';
+          let display = '';
+          if (mode === 'alnum') {
+            for (let i = 0; i < 5; i += 1) {
+              display += CAPTCHA_ALPHABET[randInt(0, CAPTCHA_ALPHABET.length - 1)];
+            }
+            expectedAnswer = display.toLowerCase();
+            input.placeholder = '输入 5 位字符';
+          } else {
+            const a = randInt(8, 29);
+            const b = randInt(3, 18);
+            const isAdd = randInt(0, 1) === 1;
+            if (isAdd) {
+              display = a + ' + ' + b + ' = ?';
+              expectedAnswer = String(a + b);
+            } else {
+              const big = Math.max(a, b);
+              const small = Math.min(a, b);
+              display = big + ' - ' + small + ' = ?';
+              expectedAnswer = String(big - small);
+            }
+            input.placeholder = '输入计算结果';
+          }
+          drawCaptchaText(display);
+          if (!silent && options.onStatus) {
+            options.onStatus('idle', '已刷新验证码，请手动输入结果', false);
+          }
+        }
+
+        function verify() {
+          if (solved) return;
+          const val = input.value.trim().toLowerCase();
+          if (!val) {
+            if (options.onStatus) options.onStatus('failed', '请先输入验证码内容', true);
+            return;
+          }
+          if (val === expectedAnswer) {
+            solved = true;
+            if (options.onStatus) options.onStatus('passed', '验证码校验通过', true);
+            if (options.onPass) options.onPass();
+          } else {
+            if (options.onStatus) options.onStatus('failed', '输入不正确，已刷新验证码', true);
+            generate(true);
+          }
+        }
+
+        tabs.forEach(function (tab) {
+          tab.addEventListener('click', function () {
+            mode = tab.dataset.mode;
+            tabs.forEach(function (t) {
+              const active = t === tab;
+              t.classList.toggle('active', active);
+              t.setAttribute('aria-selected', String(active));
+            });
+            generate(false);
+          });
+        });
+
+        canvas.addEventListener('click', function () { generate(false); });
+        submitBtn.addEventListener('click', verify);
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            verify();
+          }
+        });
+
+        generate(true);
+
+        return {
+          refresh: function () { generate(false); },
+          reset: function () { generate(true); if (options.onStatus) options.onStatus('idle', '点击验证码图片可随时刷新，字符校验不区分大小写', false); },
+          destroy: function () {}
+        };
+      }
+
+      /* --------------------------------------------------------------------
+       * 7. Two-Factor Auth (SMS / Email) Widget Factory
+       * ------------------------------------------------------------------ */
+      function mountTwoFactorAuth(container, options) {
+        container.innerHTML =
+          '<div class="mode-tabs" role="tablist">' +
+            '<button type="button" class="mode-tab active" data-channel="sms" role="tab" aria-selected="true">手机短信 (+86 138****8842)</button>' +
+            '<button type="button" class="mode-tab" data-channel="email" role="tab" aria-selected="false">安全邮箱 (s***@example.com)</button>' +
+          '</div>' +
+          '<div class="captcha-row">' +
+            '<input type="text" inputmode="numeric" maxlength="6" class="input tfa-input" style="max-width:160px;" placeholder="输入 6 位验证码" autocomplete="one-time-code" />' +
+            '<button type="button" class="btn btn-sm tfa-send">获取验证码</button>' +
+            '<button type="button" class="btn btn-primary btn-sm tfa-verify">确认验证</button>' +
+          '</div>' +
+          '<div class="mock-notice tfa-notice" role="status"></div>';
+
+        const tabs = container.querySelectorAll('.mode-tab');
+        const input = container.querySelector('.tfa-input');
+        const sendBtn = container.querySelector('.tfa-send');
+        const verifyBtn = container.querySelector('.tfa-verify');
+        const noticeEl = container.querySelector('.tfa-notice');
+
+        let channel = 'sms';
+        let expectedCode = '';
+        let countdown = 0;
+        let intervalId = null;
+        let solved = false;
+
+        function clearTimer() {
+          if (intervalId) window.clearInterval(intervalId);
+          intervalId = null;
+          countdown = 0;
+          sendBtn.disabled = false;
+          sendBtn.textContent = '获取验证码';
+        }
+
+        function reset(silent) {
+          clearTimer();
+          solved = false;
+          expectedCode = '';
+          input.value = '';
+          noticeEl.classList.remove('visible');
+          noticeEl.textContent = '';
+          if (!silent && options.onStatus) {
+            options.onStatus('idle', '已重置二次身份校验状态', false);
+          }
+        }
+
+        tabs.forEach(function (tab) {
+          tab.addEventListener('click', function () {
+            if (solved) return;
+            channel = tab.dataset.channel;
+            tabs.forEach(function (t) {
+              const active = t === tab;
+              t.classList.toggle('active', active);
+              t.setAttribute('aria-selected', String(active));
+            });
+            reset(false);
+          });
+        });
+
+        sendBtn.addEventListener('click', function () {
+          if (solved || countdown > 0) return;
+          expectedCode = String(randInt(100000, 999999));
+          countdown = 60;
+          sendBtn.disabled = true;
+          sendBtn.textContent = countdown + 's 后重发';
+          noticeEl.textContent = '[本地模拟' + (channel === 'sms' ? '短信' : '邮件') + '] 您的安全验证码为：' + expectedCode + '（5 分钟内有效，请手动输入）';
+          noticeEl.classList.add('visible');
+          if (options.onStatus) options.onStatus('verifying', '已发送本地模拟验证码，请查收并输入', false);
+
+          intervalId = window.setInterval(function () {
+            countdown -= 1;
+            if (countdown <= 0) {
+              clearTimer();
+            } else {
+              sendBtn.textContent = countdown + 's 后重发';
+            }
+          }, 1000);
+        });
+
+        verifyBtn.addEventListener('click', function () {
+          if (solved) return;
+          const val = input.value.trim();
+          if (!expectedCode) {
+            if (options.onStatus) options.onStatus('failed', '请先点击「获取验证码」', true);
+            return;
+          }
+          if (val === expectedCode) {
+            solved = true;
+            clearTimer();
+            if (options.onStatus) options.onStatus('passed', '二次身份校验通过', true);
+            if (options.onPass) options.onPass();
+          } else {
+            if (options.onStatus) options.onStatus('failed', '验证码不匹配，请核对后重试', true);
+          }
+        });
+
+        return {
+          refresh: function () { reset(false); },
+          reset: function () { reset(true); if (options.onStatus) options.onStatus('idle', '点击「获取验证码」后，在本地模拟通知条查看并手动输入', false); },
+          destroy: function () { clearTimer(); }
+        };
+      }
+
+      /* --------------------------------------------------------------------
+       * Blocking Risk-Control Modal Orchestrator
+       * ------------------------------------------------------------------ */
+      function closeRiskModal(completed) {
+        if (!modalState.open) return;
+        const kind = modalState.kind;
+        const pending = modalState.pendingAction;
+        if (modalState.cleanup) {
+          try { modalState.cleanup(); } catch (_) {}
+        }
+        modalState.open = false;
+        modalState.kind = '';
+        modalState.pendingAction = null;
+        modalState.cleanup = null;
+        modalBackdrop.classList.remove('open');
+        modalBackdrop.setAttribute('aria-hidden', 'true');
+        modalBodyEl.textContent = '';
+        document.body.dataset.rcModalOpen = 'false';
+        document.body.dataset.rcModalKind = '';
+        renderSummary();
+
+        if (completed) {
+          appendLog('modal:' + kind, '弹窗风控验证已完成并放行', 'passed');
+          if (pending && pending.onComplete) pending.onComplete();
+        } else {
+          appendLog('modal:' + kind, '用户取消或关闭了风控弹窗', 'failed');
+          if (pending && pending.onCancel) pending.onCancel();
+        }
+      }
+
+      function openRiskModal(kind, pendingAction) {
+        if (modalState.open) closeRiskModal(false);
+        modalState.open = true;
+        modalState.kind = kind;
+        modalState.pendingAction = pendingAction || null;
+        document.body.dataset.rcModalOpen = 'true';
+        document.body.dataset.rcModalKind = kind;
+        modalBackdrop.classList.add('open');
+        modalBackdrop.setAttribute('aria-hidden', 'false');
+
+        const meta = WIDGET_META[kind];
+        modalTitleEl.textContent = kind === 'rate-limit-429'
+          ? '访问频率受限 · Unusual traffic detected'
+          : (meta ? meta.modalTitle : '安全验证 · 请完成下列验证后继续');
+        modalSubtitleEl.textContent = (pendingAction && pendingAction.reason ? pendingAction.reason + ' · ' : '') + 'Verify to continue';
+
+        modalBodyEl.textContent = '';
+        const mountEl = document.createElement('div');
+        mountEl.className = 'widget-body';
+        const fbEl = document.createElement('div');
+        fbEl.className = 'feedback';
+        fbEl.textContent = '请在弹窗内手动完成验证以继续操作';
+        modalBodyEl.appendChild(mountEl);
+        modalBodyEl.appendChild(fbEl);
+
+        const modalHooks = {
+          onStatus: function (st, text) {
+            fbEl.className = 'feedback ' + (st === 'passed' || st === 'failed' ? st : '');
+            fbEl.textContent = text;
+          },
+          onPass: function () {
+            window.setTimeout(function () {
+              closeRiskModal(true);
+            }, 350);
+          }
+        };
+
+        if (kind === 'slider-puzzle') {
+          const ctrl = mountSliderPuzzle(mountEl, modalHooks);
+          modalState.cleanup = ctrl.destroy;
+        } else if (kind === 'click-text') {
+          const ctrl = mountClickText(mountEl, modalHooks);
+          modalState.cleanup = ctrl.destroy;
+        } else if (kind === 'rotate-image') {
+          const ctrl = mountRotateImage(mountEl, modalHooks);
+          modalState.cleanup = ctrl.destroy;
+        } else if (kind === 'two-factor-auth') {
+          const ctrl = mountTwoFactorAuth(mountEl, modalHooks);
+          modalState.cleanup = ctrl.destroy;
+        } else if (kind === 'iframe-challenge') {
+          const iframe = document.createElement('iframe');
+          iframe.className = 'challenge-iframe';
+          iframe.name = 'verifycenter-modal-challenge';
+          iframe.title = 'VerifyCenter 弹窗安全验证';
+          iframe.src = './verifycenter-captcha-frame.html';
+          mountEl.appendChild(iframe);
+          const onMsg = function (e) {
+            if (e.source === iframe.contentWindow && e.data && e.data.source === 'pagelens-rc-iframe') {
+              if (e.data.status === 'passed') {
+                modalHooks.onStatus('passed', 'iframe 安全验证通过');
+                modalHooks.onPass();
+              } else if (e.data.status === 'failed') {
+                modalHooks.onStatus('failed', e.data.detail || '验证未通过，请重试');
+              }
+            }
+          };
+          window.addEventListener('message', onMsg);
+          modalState.cleanup = function () { window.removeEventListener('message', onMsg); };
+        } else if (kind === 'rate-limit-429') {
+          let remain = 5;
+          mountEl.innerHTML =
+            '<div class="rate-limit-box">' +
+              '<div class="rate-limit-code">HTTP 429 TOO MANY REQUESTS · RISK_RATE_LIMIT</div>' +
+              '<div>系统检测到当前会话操作频率较高，请稍候冷却完成后再试。</div>' +
+              '<div style="font-size:12px;">We detected unusual traffic from your session. Please wait before retrying.</div>' +
+            '</div>' +
+            '<div style="display:flex;justify-content:flex-end;">' +
+              '<button type="button" class="btn btn-primary btn-sm rl-retry" disabled>冷却中 (5s)</button>' +
+            '</div>';
+          const retryBtn = mountEl.querySelector('.rl-retry');
+          const timer = window.setInterval(function () {
+            remain -= 1;
+            if (remain <= 0) {
+              window.clearInterval(timer);
+              retryBtn.disabled = false;
+              retryBtn.textContent = '确认并恢复操作';
+              fbEl.className = 'feedback passed';
+              fbEl.textContent = '冷却时间已结束，可手动恢复操作';
+            } else {
+              retryBtn.textContent = '冷却中 (' + remain + 's)';
+            }
+          }, 1000);
+          retryBtn.addEventListener('click', function () {
+            closeRiskModal(true);
+          });
+          modalState.cleanup = function () { window.clearInterval(timer); };
+        }
+
+        appendLog('modal:' + kind, '已弹出阻塞式风控拦截弹窗', 'verifying');
+        renderSummary();
+      }
+
+      modalCloseBtn.addEventListener('click', function () {
+        closeRiskModal(false);
+      });
+
+      /* --------------------------------------------------------------------
+       * Mount All 8 Inline Widgets
+       * ------------------------------------------------------------------ */
+      function makeCardCallbacks(widgetId) {
+        return {
+          onStatus: function (st, msg, countAttempt) {
+            setCardStatus(widgetId, st, msg, countAttempt);
+            if (st === 'passed' || st === 'failed') {
+              appendLog(widgetId, msg, st);
+            }
+          },
+          onPass: function () {}
+        };
+      }
+
+      widgetControllers['slider-puzzle'] = mountSliderPuzzle(
+        document.querySelector('#rc-slider-puzzle [data-mount]'),
+        makeCardCallbacks('slider-puzzle')
+      );
+      widgetControllers['click-text'] = mountClickText(
+        document.querySelector('#rc-click-text [data-mount]'),
+        makeCardCallbacks('click-text')
+      );
+      widgetControllers['rotate-image'] = mountRotateImage(
+        document.querySelector('#rc-rotate-image [data-mount]'),
+        makeCardCallbacks('rotate-image')
+      );
+      widgetControllers['image-grid'] = mountImageGrid(
+        document.querySelector('#rc-image-grid [data-mount]'),
+        makeCardCallbacks('image-grid')
+      );
+      widgetControllers['checkbox-human'] = mountCheckboxHuman(
+        document.querySelector('#rc-checkbox-human [data-mount]'),
+        makeCardCallbacks('checkbox-human')
+      );
+      widgetControllers['text-captcha'] = mountTextCaptcha(
+        document.querySelector('#rc-text-captcha [data-mount]'),
+        makeCardCallbacks('text-captcha')
+      );
+      widgetControllers['two-factor-auth'] = mountTwoFactorAuth(
+        document.querySelector('#rc-two-factor-auth [data-mount]'),
+        makeCardCallbacks('two-factor-auth')
+      );
+
+      // 8. Inline VerifyCenter iframe bridge
+      const inlineIframe = document.getElementById('rc-verifycenter-iframe');
+      window.addEventListener('message', function (e) {
+        if (!inlineIframe || e.source !== inlineIframe.contentWindow) return;
+        if (!e.data || e.data.source !== 'pagelens-rc-iframe') return;
+        const st = e.data.status;
+        if (st === 'passed') {
+          setCardStatus('iframe-challenge', 'passed', 'iframe 拖动校验已通过（' + (e.data.detail || '完成') + '）', true);
+          appendLog('iframe-challenge', '收到跨帧验证通过消息', 'passed');
+        } else if (st === 'failed') {
+          setCardStatus('iframe-challenge', 'failed', e.data.detail || 'iframe 校验未通过', true);
+          appendLog('iframe-challenge', e.data.detail || 'iframe 校验未通过', 'failed');
+        } else if (st === 'idle') {
+          setCardStatus('iframe-challenge', 'idle', '已重置 iframe 校验状态', false);
+        }
+      });
+
+      widgetControllers['iframe-challenge'] = {
+        refresh: function () {
+          if (inlineIframe && inlineIframe.contentWindow) {
+            inlineIframe.contentWindow.postMessage({ source: 'pagelens-rc-parent', action: 'reset' }, '*');
+          }
+          setCardStatus('iframe-challenge', 'idle', '已重置 iframe 校验状态', false);
+        },
+        reset: function () {
+          if (inlineIframe && inlineIframe.contentWindow) {
+            inlineIframe.contentWindow.postMessage({ source: 'pagelens-rc-parent', action: 'reset' }, '*');
+          }
+          setCardStatus('iframe-challenge', 'idle', '请在上方 iframe 内完成拖动校验，父页面将接收通过事件', false);
+        }
+      };
+
+      // Wire per-card refresh / clear buttons
+      document.querySelectorAll('[data-rc-widget]').forEach(function (card) {
+        const id = card.dataset.rcWidget;
+        const ctrl = widgetControllers[id];
+        const refreshBtn = card.querySelector('[data-action="refresh"]');
+        if (refreshBtn && ctrl && ctrl.refresh) {
+          refreshBtn.addEventListener('click', function () {
+            ctrl.refresh();
+            appendLog(id, '刷新了验证题目');
+          });
+        }
+        const clearBtn = card.querySelector('[data-action="clear-pins"]');
+        if (clearBtn && ctrl && ctrl.clearPins) {
+          clearBtn.addEventListener('click', function () {
+            ctrl.clearPins();
+          });
+        }
+      });
+
+      // Wire quick modal trigger buttons
+      document.querySelectorAll('[data-open-modal]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          const kind = btn.dataset.openModal;
+          openRiskModal(kind, { reason: '快捷触发弹窗测试' });
+        });
+      });
+
+      // Wire protected action form
+      const form = document.getElementById('protected-action-form');
+      const modalSelect = document.getElementById('modal-challenge-select');
+      const titleInput = document.getElementById('mock-item-title');
+      const priceInput = document.getElementById('mock-item-price');
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        const kind = modalSelect.value;
+        const itemTitle = titleInput.value.trim() || '未命名商品';
+        const price = priceInput.value.trim() || '0';
+        scenarioStatusPill.className = 'pill warning';
+        scenarioStatusPill.textContent = '风控拦截中';
+        scenarioResultEl.className = 'scenario-result blocked';
+        scenarioResultEl.textContent = '操作「' + itemTitle + ' / ' + price + ' MXN」被风控拦截，等待人工完成「' + kind + '」验证…';
+        appendLog('scenario-form', '提交敏感操作并触发风控拦截 (' + kind + ')');
+
+        openRiskModal(kind, {
+          reason: '提交敏感操作前需完成安全验证',
+          onComplete: function () {
+            scenarioStatusPill.className = 'pill passed';
+            scenarioStatusPill.textContent = '已放行';
+            scenarioResultEl.className = 'scenario-result passed';
+            scenarioResultEl.textContent = '✓ 风控验证已通过！业务操作「' + itemTitle + ' / ' + price + ' MXN」已成功放行（' + nowTime() + '）。';
+          },
+          onCancel: function () {
+            scenarioStatusPill.className = 'pill failed';
+            scenarioStatusPill.textContent = '已中止';
+            scenarioResultEl.className = 'scenario-result';
+            scenarioResultEl.textContent = '验证未完成，本次敏感操作已中止。';
+          }
+        });
+      });
+
+      // Global toolbar actions
+      document.getElementById('btn-refresh-all').addEventListener('click', function () {
+        Object.keys(widgetControllers).forEach(function (id) {
+          if (widgetControllers[id] && widgetControllers[id].refresh) {
+            widgetControllers[id].refresh();
+          }
+        });
+        appendLog('playground', '已刷新全部 8 个风控组件题目');
+      });
+
+      document.getElementById('btn-reset-all').addEventListener('click', function () {
+        closeRiskModal(false);
+        Object.keys(WIDGET_META).forEach(function (id) {
+          widgetStates[id] = { status: 'idle', attempts: 0, updatedAt: null };
+          if (widgetControllers[id] && widgetControllers[id].reset) {
+            widgetControllers[id].reset();
+          }
+        });
+        scenarioStatusPill.className = 'pill';
+        scenarioStatusPill.textContent = '未提交';
+        scenarioResultEl.className = 'scenario-result';
+        scenarioResultEl.textContent = '等待提交。点击「提交敏感操作」或右侧快捷按钮将弹出阻塞式风控校验弹窗。';
+        renderSummary();
+        appendLog('playground', '已重置全部组件与业务表单状态');
+      });
+
+      document.getElementById('btn-clear-log').addEventListener('click', function () {
+        eventLogEl.textContent = '';
+      });
+
+      // Read-only state inspector (never exposes challenge targets/answers)
+      window.__RC_PLAYGROUND_STATE__ = function () {
+        const snapshot = {};
+        Object.keys(widgetStates).forEach(function (id) {
+          snapshot[id] = {
+            status: widgetStates[id].status,
+            attempts: widgetStates[id].attempts,
+            updatedAt: widgetStates[id].updatedAt
+          };
+        });
+        const passedCount = Object.keys(snapshot).filter(function (id) {
+          return snapshot[id].status === 'passed';
+        }).length;
+        return {
+          passedCount: passedCount,
+          totalCount: Object.keys(snapshot).length,
+          modal: { open: modalState.open, kind: modalState.kind },
+          widgets: snapshot
+        };
+      };
+
+      renderSummary();
+      appendLog('playground', '风控组件测试页已就绪（共 8 类验证组件 + 6 种弹窗拦截场景）');
+    })();
+  </script>
+</body>
+</html>

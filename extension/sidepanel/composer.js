@@ -25,7 +25,7 @@ async function consumePending() {
   if (!pending) return;
   await chrome.storage.session.remove(key);
   if (pending.clip) {
-    openClipModal(pending.clip);
+    openClipModal({ ...pending.clip, selection: Boolean(pending.clip.text) });
     return;
   }
   const pendingSelection = pending.selection;

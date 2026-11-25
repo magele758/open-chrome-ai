@@ -21,6 +21,7 @@ const state = {
   sessionCreatedAt: null,
   sessionPages: [],
   histQuery: "",
+  histSort: "recent",
   run: null,
   stopIntent: null,
   taskGroupId: null,

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>连接有声书工作台 · PageLens</title>
+    <style>
+      :root { font: 16px/1.6 system-ui, sans-serif; color-scheme: light dark; }
+      body { margin: 0; padding: 24px; }
+      main { max-width: 32rem; margin: 12vh auto 0; }
+      h1 { font-size: 1.55rem; line-height: 1.4; }
+      dl { display: grid; grid-template-columns: auto 1fr; gap: .3rem 1rem; }
+      [hidden] { display: none; }
+      dd { margin: 0; overflow-wrap: anywhere; }
+      button { font: inherit; padding: .4rem 1rem; }
+      [role="status"] { min-height: 1.6em; }
+    </style>
+    <script type="module" src="audiobook-connect.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>将当前文本模型用于有声书翻译</h1>
+      <dl hidden id="selection">
+        <dt>模型服务</dt><dd id="provider"></dd>
+        <dt>模型名称</dt><dd id="model"></dd>
+      </dl>
+      <p>确认后，本机有声书工作台（127.0.0.1:4173）将保存这个模型的服务地址、名称和已配置的 API 密钥，用于翻译你导入的网页。</p>
+      <button id="connect" type="button" disabled>连接到有声书工作台</button>
+      <p role="status" id="status">正在读取 PageLens 当前模型…</p>
+    </main>
+  </body>
+</html>

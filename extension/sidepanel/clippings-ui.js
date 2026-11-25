@@ -1,3 +1,4 @@
+import { nativeSend } from "../lib/native-host.js";
 import { $ } from "./dom.js";
 import { ensureLibraryForWrite, flashStatus } from "./history.js";
 import { restorePageContext } from "./media-chrome.js";
@@ -18,8 +19,8 @@ function openClipModal(msg) {
   const modal = $("clip-modal");
   if (!modal) return;
 
-  const defaultTitle = state.pack?.title || state.tab?.title || "未命名网页";
-  const defaultUrl = state.pack?.url || state.tab?.url || "";
+  const defaultTitle = msg.title || state.pack?.title || state.tab?.title || "未命名网页";
+  const defaultUrl = msg.url || state.pack?.url || state.tab?.url || "";
 
   const titleInput = $("clip-input-title");
   const urlInput = $("clip-input-url");
@@ -31,7 +32,11 @@ function openClipModal(msg) {
   if (urlInput) urlInput.value = defaultUrl;
   if (noteInput) noteInput.value = "";
   if (tagsInput) tagsInput.value = "";
-  if (preview) preview.textContent = msg.text || "";
+  const previewText = msg.text || (state.share && defaultUrl === state.pack?.url ? state.pack?.text?.slice(0, 1200) : "") || "";
+  state.currentClipMsg = { ...msg, text: previewText };
+  if (preview) preview.textContent = previewText;
+  $("clip-learning-status")?.replaceChildren();
+  if ($("btn-clip-learning")) $("btn-clip-learning").disabled = false;
 
   const dailyFolder = state.settings?.dailyNotesFolder ?? "Daily";
   const dailyRel = dailyNoteRelPath(dailyFolder, Date.now(), state.library?.path);
@@ -45,6 +50,44 @@ function openClipModal(msg) {
 function closeClipModal() {
   state.currentClipMsg = null;
   $("clip-modal")?.classList.add("hidden");
+}
+
+async function sendClipToLearning() {
+  const msg = state.currentClipMsg;
+  const button = $("btn-clip-learning"), status = $("clip-learning-status");
+  if (!msg || !button || button.disabled || !status) return;
+  const content = msg.text || "";
+  const clip = {
+    url: $("clip-input-url")?.value.trim(), title: $("clip-input-title")?.value.trim(),
+    note: $("clip-input-note")?.value.trim(), ...(msg.selection ? { quote: content } : { content }),
+  };
+  button.disabled = true;
+  status.textContent = "正在保存并查找联系…";
+  try {
+    const result = await nativeSend({ op: "learn_clip", clip }, { timeoutMs: 30000 });
+    if (state.currentClipMsg !== msg) return;
+    if (!result.ok) throw Error(result.error || "发送失败，可以重试。");
+    const saved = result.duplicate ? "资料库已有这条剪藏" : "已保存到学习资料库";
+    const details = document.createElement("a");
+    details.href = result.readerUrl; details.target = "_blank"; details.rel = "noopener noreferrer";
+    details.textContent = "打开剪藏";
+    if (!result.reviewUrl) {
+      status.replaceChildren(saved + " · ", details);
+      return;
+    }
+    const review = details.cloneNode();
+    review.href = result.reviewUrl;
+    review.textContent = "在图谱里查看";
+    let summary = saved;
+    if (result.matchingStatus === "queued") summary += "，等待匹配";
+    else if (Number.isInteger(result.pendingCount))
+      summary += result.pendingCount ? "，" + result.pendingCount + " 条联系待确认" : "，当前没有待确认联系";
+    status.replaceChildren(summary + " · ", review, " · ", details);
+  } catch (error) {
+    if (state.currentClipMsg === msg) status.textContent = error.message || "发送失败，可以重试。";
+  } finally {
+    if (state.currentClipMsg === msg) button.disabled = false;
+  }
 }
 
 async function submitClipModal() {
@@ -124,7 +167,7 @@ async function submitClipModal() {
   } finally {
     if (confirmBtn) {
       confirmBtn.disabled = false;
-      confirmBtn.textContent = "确认保存";
+      confirmBtn.textContent = "保存到所选位置";
     }
   }
 }
@@ -300,6 +343,7 @@ export {
   openClipModal,
   closeClipModal,
   submitClipModal,
+  sendClipToLearning,
   recallDismissKey,
   checkSmartRecall,
   dismissRecallBanner,

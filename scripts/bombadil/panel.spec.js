@@ -17,7 +17,7 @@ export const historyMatchesSearchAndDisclosure = always(() => panel.current.hist
 
 const visited = extract(({ document }) => (document.documentElement.dataset.bombadilVisits || '').split(' '));
 const controls = extract(({ document }) => {
-  const selectors = ['#btn-history', '#btn-hist-back', '.hist-main', '.lab-toggle', '#btn-review', '#btn-review-back',
+  const selectors = ['#btn-history', '#btn-hist-back', '#btn-hist-sort-recent', '#btn-hist-sort-domain', '.hist-main', '.lab-toggle', '#btn-review', '#btn-review-back',
     '#btn-settings', '#btn-back', '#btn-sidechat-header', '#btn-sc-list', '#btn-sc-close', '#btn-sc-resolve',
     '#btn-clear-ref', '#btn-media-toggle', '#btn-media-tools', '#btn-tasks-toggle'];
   return selectors.flatMap(selector => [...document.querySelectorAll(selector)].flatMap((el, index) =>

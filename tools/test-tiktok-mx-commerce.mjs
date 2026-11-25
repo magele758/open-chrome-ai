@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { attributeCode, checkAttributes, mxEditor, runMxDraftJob, runMxDraftRead } from "./tiktok-mx-editor.mjs";
+import { attributeCode, checkAttributes, mxEditor, repairCategoryOptionsCode, repairCategorySearchCode, sellerCategorySearchCode,
+  runMxDraftJob, runMxDraftRead, saveDraftCode } from "./tiktok-mx-editor.mjs";
 import { JSDOM } from "jsdom";
 import {
   commercialPlan,
   commercialDifferences,
   commerceScript,
   locateSkuInput,
+  sellerBrand,
+  sellerVariantAxis,
   sellerVariants,
   sellerNumbers,
 } from "./tiktok-mx-commerce.mjs";
@@ -157,6 +160,8 @@ async function execute(mode) {
   const run = (fn, ...args) =>
     w.eval("(async()=>{" + commerceScript(fn, ...args) + "})()");
   if (mode === "read") return run(sellerNumbers, mode);
+  await run(sellerBrand, plan.brand);
+  await run(sellerVariantAxis, plan.axis);
   await run(sellerVariants, {
     axis: plan.axis,
     brand: plan.brand,
@@ -252,6 +257,11 @@ assert.equal(
   assert.equal(refreshed.url, url);
   assert.deepEqual(commercialDifferences(refreshed.salesAndShipping, plan), []);
   await assert.rejects(runMxDraftRead({ tabId: 1, url }, dispatch, () => url.replace("123", "987")), /URL changed/);
+  const loginUrl = "https://seller.tiktokshopglobalselling.com/account/login";
+  const cannotDispatch = async () => assert.fail("Seller login redirect must fail before using page tools");
+  const loginError = /SELLER_LOGIN_REQUIRED: TikTok Seller Center is not logged in; please sign in to the MX seller shop and retry/;
+  await assert.rejects(runMxDraftRead({ tabId: 1, url }, cannotDispatch, () => loginUrl), loginError);
+  await assert.rejects(runMxDraftJob(job, cannotDispatch, () => loginUrl), loginError);
   const listUrl = "https://seller.tiktokshopglobalselling.com/product/manage?shop_region=MX&tab=draft";
   const listRequest = { action: "refresh_mx_draft_list", tabId: 1, url: listUrl, title: "Rack" };
   const listCalls = [];
@@ -356,6 +366,7 @@ assert.equal(
   doc.querySelectorAll('[data-id^="product.widget.main_image."]').forEach(slot => slot.remove());
   doc.querySelectorAll(".ProseMirror img").forEach(img => img.remove());
   doc.body.insertAdjacentHTML("beforeend", field("description.input_lang", '<input type="file"><div class="ProseMirror">Ice</div>'));
+  doc.body.insertAdjacentHTML("beforeend", '<input data-id="product.publish.title.input_lang" value="Mold">');
   const shared = "/shared.jpg";
   const order = [];
   const overlapping = async (tool, args) => {
@@ -370,12 +381,12 @@ assert.equal(
     } else {
       order.push("gallery");
       doc.body.insertAdjacentHTML("beforeend", '<div data-id="product.widget.main_image.0"><img src="/shared.jpg"><i role="progressbar"></i></div>');
-      setTimeout(() => doc.querySelector('[role="progressbar"]').remove(), 700);
+      setTimeout(() => doc.querySelector('[role="progressbar"]').remove(), 2000);
     }
     return { ok: true, result: { ok: true } };
   };
   const sharedResult = await runMxDraftJob({ ...job, url: createUrl, gallery: [shared], details: [shared],
-    copy: { ...copy, enDescription: "Ice", gallery: [shared], details: [shared] } }, overlapping, () => createUrl);
+    copy: { ...copy, enTitle: "Mold", enDescription: "Ice", gallery: [shared], details: [shared] } }, overlapping, () => createUrl);
   assert.deepEqual(order, ["gallery", "detail"]);
   assert.ok(!doc.querySelector('.ProseMirror img[src^="blob:"]'));
   assert.deepEqual([sharedResult.state.gallery, sharedResult.state.detailImages], [1, 1]);
@@ -425,6 +436,9 @@ brandBox.onclick = () => {
   };
   doc.body.append(menu);
 };
+doc.body.insertAdjacentHTML("afterbegin", '<div id="attribute-menu"><div><input maxlength="30"><button>添加</button></div></div>');
+let foreignClicks = 0;
+doc.querySelector("#attribute-menu button").onclick = () => foreignClicks++;
 const axisBox = doc.querySelector(
   '[data-id*="sale_property.name"] [role=combobox]',
 );
@@ -472,6 +486,8 @@ add.onclick = appendOption;
 doc.body.append(add);
 assert.deepEqual(commercialDifferences(await execute("write", plan), plan), []);
 assert.equal(index, 2);
+assert.equal(foreignClicks, 0, "Adding a custom variant must not click a category attribute action");
+assert.equal(doc.querySelector("#attribute-menu input").value, "");
 doc.querySelector("tbody").replaceChildren();
 for (const slot of doc.querySelectorAll('[data-id^="product.publish.sale_property.value.name."]')) slot.remove();
 appendOption();
@@ -492,6 +508,110 @@ const editor = mxEditor(async (tool, args) => {
 const typedVariants = await editor.commercialState(1, plan, true);
 assert.deepEqual(entered, ["A", "B"]);
 assert.deepEqual(commercialDifferences(typedVariants.state, plan), []);
+
+// The built-in Color axis is saved under its localized label in Seller Center.
+doc.querySelector("tbody").replaceChildren();
+for (const slot of doc.querySelectorAll('[data-id^="product.publish.sale_property.value.name."]')) slot.remove();
+appendOption();
+axisBox.lastChild.textContent = "";
+let exactClicks = 0;
+let parentClicks = 0;
+axisBox.firstChild.onclick = () => {
+  const menu = doc.createElement("div");
+  menu.id = "axes";
+  menu.innerHTML = '<ul><li><span>Common axes</span><ul><li role="option"><span>颜色</span></li></ul></li></ul>';
+  menu.querySelector("li").onclick = () => parentClicks++;
+  menu.querySelector('[role="option"]').onclick = event => {
+    event.stopPropagation();
+    exactClicks++;
+    axisBox.lastChild.innerHTML = '<span>颜色</span><span class="pl-8"></span>';
+    menu.remove();
+  };
+  doc.body.append(menu);
+};
+const colorPlan = { ...plan, axis: "Color" };
+const coloredVariants = await editor.commercialState(1, colorPlan, true);
+assert.equal(exactClicks, 1);
+assert.equal(parentClicks, 0);
+assert.deepEqual(commercialDifferences(coloredVariants.state, colorPlan), []);
+
+// A no-op built-in selection can remount the same empty field and its owned menu.
+const axisField = axisBox.parentElement;
+const axisFieldId = axisField.dataset.id;
+const placeholder = "请选择或输入销售属性";
+const runAxis = () => w.eval("(async()=>{" + commerceScript(sellerVariantAxis, colorPlan.axis) + "})()");
+function resetColorSkus() {
+  doc.querySelector("tbody").replaceChildren();
+  for (const slot of doc.querySelectorAll('[data-id^="product.publish.sale_property.value.name."]')) slot.remove();
+  appendOption();
+}
+function mockNoopColor(afterStandard) {
+  const clicks = { standard: 0, create: 0, add: 0 };
+  function mount(id, open, label = placeholder) {
+    doc.querySelector('[id^="color-axis-menu-"]')?.remove();
+    axisField.innerHTML = `<div role="combobox" aria-controls="${id}" aria-expanded="${open}">
+      <input class="core-cascader-view-input" placeholder="${placeholder}">
+      <span class="core-cascader-view-value"><span>${label}</span><span class="pl-8"></span></span>
+    </div>`;
+    const box = axisField.firstElementChild;
+    const show = () => {
+      box.setAttribute("aria-expanded", "true");
+      const menu = doc.createElement("div");
+      menu.id = id;
+      menu.innerHTML = '<div role="option">颜色</div><div class="core-cascader-list-footer"><button>新增</button></div>';
+      menu.firstElementChild.onclick = () => {
+        clicks.standard++;
+        mount("color-axis-menu-next", true);
+        afterStandard?.();
+      };
+      const footer = menu.lastElementChild;
+      footer.firstElementChild.onclick = () => {
+        clicks.create++;
+        footer.innerHTML = '<div><input class="core-input" maxlength="30"><button disabled>添加</button></div>';
+        footer.querySelector("input").oninput = event => {
+          const typed = event.target.value;
+          footer.innerHTML = '<div><input class="core-input" maxlength="30"><button>添加</button></div>';
+          footer.querySelector("input").value = typed;
+          footer.querySelector("button").onclick = () => {
+            clicks.add++;
+            assert.equal(typed, "Color");
+            axisField.dataset.id = "product.publish.sale_property.name.881";
+            mount("color-axis-menu-chosen", false, "颜色");
+          };
+        };
+      };
+      doc.body.append(menu);
+    };
+    box.querySelector("input").onclick = show;
+    if (open) show();
+  }
+  axisField.dataset.id = axisFieldId;
+  mount("color-axis-menu-first", false);
+  return clicks;
+}
+resetColorSkus();
+await assert.rejects(w.eval("(async()=>{" + commerceScript(sellerVariantAxis, "Modelo") + "})()"), /Existing variant name differs: 颜色/);
+const replaced = mockNoopColor(() => { axisField.dataset.id = "product.publish.sale_property.name.999"; });
+await assert.rejects(runAxis(), /Variant name slot changed/);
+assert.deepEqual(replaced, { standard: 1, create: 0, add: 0 });
+const withRows = mockNoopColor(() => doc.querySelector("tbody").insertAdjacentHTML("afterbegin", row(99, "Existing")));
+await assert.rejects(runAxis(), /Existing variant name differs/);
+assert.deepEqual(withRows, { standard: 1, create: 0, add: 0 });
+resetColorSkus();
+brandBox.firstChild.firstChild.textContent = "  MARCA  ";
+const fallback = mockNoopColor();
+const recoveredColor = await editor.commercialState(1, colorPlan, true);
+assert.deepEqual(fallback, { standard: 1, create: 1, add: 1 });
+assert.deepEqual(commercialDifferences(recoveredColor.state, colorPlan), []);
+for (const input of doc.querySelectorAll("input")) input.defaultValue = input.value;
+const reloaded = new JSDOM(dom.serialize(), { url: doc.URL, runScripts: "outside-only" });
+const refreshedEditor = mxEditor(async () => assert.fail("Refreshing readback must not write"),
+  async (_tab, code) => reloaded.window.eval("(async()=>{" + code + "})()"), []);
+const { state: freshColor } = await refreshedEditor.commercialState(1, colorPlan, false);
+assert.deepEqual([...freshColor.axes], ["颜色"]);
+assert.deepEqual(commercialDifferences({ ...freshColor, axisLabels: undefined }, colorPlan), []);
+assert.deepEqual(commercialDifferences(freshColor, { ...colorPlan, axis: "Color secundario" }), ["variant name"]);
+reloaded.window.close();
 dom.window.close();
 console.log(
   "MX commerce: source identity, provenance, per-SKU writes, units, zero and incomplete readback passed",
@@ -499,13 +619,17 @@ console.log(
 
 // Bilingual option text and a localized, nonempty control can describe different choices.
 {
-  const fixture = new JSDOM('<body><section>Material\n<div><div><div><div role="combobox" aria-haspopup="listbox" aria-controls="materials" aria-expanded="false"><button class="core-select-view">Vidrio</button></div></div></div></div></section><ul id="materials"><li role="option" aria-selected="true">Glass\nVidrio</li><li role="option">Metal</li></ul></body>',
+  const fixture = new JSDOM('<body><section>Material\n<div><div><div><div role="combobox" aria-haspopup="listbox" aria-controls="materials" aria-expanded="false"><button class="core-select-view">Vidrio</button></div></div></div></div></section><ul id="materials" hidden><li role="option" aria-selected="true">Glass\nVidrio</li><li role="option">Metal</li></ul></body>',
     { url: "https://seller.tiktokshopglobalselling.com/product/create?shop_region=MX", runScripts: "outside-only" });
   const win = fixture.window, doc = win.document;
   Object.defineProperty(win.HTMLElement.prototype, "innerText", { get() { return this.textContent; } });
-  win.HTMLElement.prototype.getClientRects = () => [{}];
+  win.HTMLElement.prototype.getClientRects = function () { return this.closest("[hidden]") ? [] : [{}]; };
   const box = doc.querySelector('[role=combobox]');
-  box.querySelector("button").onclick = () => box.setAttribute("aria-expanded", String(box.getAttribute("aria-expanded") !== "true"));
+  box.querySelector("button").onclick = () => {
+    const open = box.getAttribute("aria-expanded") !== "true";
+    box.setAttribute("aria-expanded", String(open));
+    doc.querySelector("#materials").hidden = !open;
+  };
   let clicks = 0;
   for (const li of doc.querySelectorAll("li")) li.onclick = () => {
     clicks++;
@@ -516,6 +640,8 @@ console.log(
   assert.throws(() => checkAttributes(plan, [{name:"Material",options:["Glass\nVidrio","Metal"],selected:["Glass\nVidrio"]}]), /Material/);
   checkAttributes(plan, await read(plan));
   checkAttributes(plan, await read(plan));
+  assert.throws(() => checkAttributes(plan, [{ name: "Material", options: ["Metal", "Cantidad"],
+    selected: ["Metal", "Cantidad"] }], { exact: true }), /Draft attribute differs: Material/);
   assert.equal(clicks, 1);
   checkAttributes({ Material: ["Glass\nVidrio"] }, [{name:"Material", options:["玻璃\nVidrio", "Metal"], selected:["玻璃\nVidrio"]}]);
   assert.throws(() => checkAttributes({ Material: ["Glass\nVidrio"] }, [{name:"Material",
@@ -530,5 +656,158 @@ console.log(
     dialog.querySelector("button").onclick = () => { doc.querySelector("#product-cascader-select-view").textContent="Kitchen - Racks"; dialog.remove(); };
   };
   assert.equal((await driver.category(1, { label:"Kitchen / Racks",search:"Racks" })).selected,true);
+  fixture.window.close();
+}
+
+// Seller updates can replace a single-select control while its portal fades out.
+// The next control must wait for that old portal, and a foreign menu stays untouched.
+{
+  const url = "https://seller.tiktokshopglobalselling.com/product/create?shop_region=MX";
+  const fixture = new JSDOM('<body><ul id="foreign"><li role="option">Unrelated</li></ul></body>',
+    { url, runScripts: "outside-only" });
+  const win = fixture.window, doc = win.document;
+  Object.defineProperty(win.HTMLElement.prototype, "innerText", { get() { return this.textContent; } });
+  win.HTMLElement.prototype.getClientRects = function () { return this.closest("[hidden]") ? [] : [{}]; };
+  assert.equal(doc.hidden, true);
+  win.HTMLElement.prototype.checkVisibility = function () {
+    // A background tab can keep an open option transparent while it has layout.
+    return !this.closest("[hidden]") && !this.matches('[role="option"]');
+  };
+  const portals = [];
+  const opens = [], escaped = [];
+  const control = (name, choices, multiple) => {
+    const section = doc.createElement("section");
+    section.innerHTML = name + "\n<div><div><div></div></div></div>";
+    doc.body.append(section);
+    const selected = new Set();
+    const render = () => {
+      const holder = section.querySelector("div > div > div");
+      holder.innerHTML = '<div role="combobox" aria-haspopup="listbox" aria-expanded="false"><button class="core-select-view"></button></div>';
+      const box = holder.firstChild;
+      if (multiple) box.className = "core-select-multiple";
+      const portal = doc.createElement("ul");
+      portal.id = `attribute-popup-${portals.length}`;
+      portal.hidden = true;
+      portals.push(portal);
+      doc.body.append(portal);
+      box.setAttribute("aria-controls", portal.id);
+      const close = () => {
+        box.setAttribute("aria-expanded", "false");
+        win.setTimeout(() => { portal.hidden = true; }, 35);
+      };
+      for (const choice of choices) {
+        const item = doc.createElement("li");
+        item.setAttribute("role", "option");
+        item.textContent = choice;
+        item.setAttribute("aria-selected", String(selected.has(choice)));
+        item.onclick = () => {
+          selected.add(choice);
+          item.setAttribute("aria-selected", "true");
+          if (!multiple) { close(); render(); }
+        };
+        portal.append(item);
+      }
+      if (multiple) box.insertAdjacentHTML("beforeend", '<input type="hidden"><input type="search">');
+      const input = box.querySelector('input[type="search"]');
+      if (input) input.onkeydown = event => {
+        if (event.key === "Escape" && event.code === "Escape" && event.keyCode === 27 &&
+            event.target === input && doc.activeElement === input && event.bubbles) {
+          escaped.push(name);
+          close();
+          input.blur();
+        }
+      };
+      box.firstChild.onclick = () => {
+        if (box.getAttribute("aria-expanded") === "true") {
+          if (!multiple) close();
+        } else {
+          opens.push({ name, overlapping: portals.some(menu => !menu.hidden) });
+          box.setAttribute("aria-expanded", "true");
+          portal.hidden = false;
+          input?.focus();
+        }
+      };
+    };
+    render();
+  };
+  control("Function", ["Durable", "Reusable"], false);
+  control("Material", ["Glass", "Plastic"], true);
+  const plan = { Function: ["Reusable"], Material: ["Glass", "Plastic"] };
+  const catalog = await win.eval("(async()=>{" + attributeCode(url, plan) + "})()");
+  assert.deepEqual(opens, [
+    { name: "Function", overlapping: false },
+    { name: "Function", overlapping: false },
+    { name: "Material", overlapping: false },
+  ]);
+  assert.deepEqual(escaped, ["Material"], "a multi-select that ignores trigger clicks closes by scoped Escape");
+  assert.ok(portals.every(menu => menu.hidden), "the final delayed close must finish before returning");
+  assert.equal(doc.querySelector("#foreign").hidden, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(catalog.map(({ name, selected }) => [name, selected]))), Object.entries(plan));
+  fixture.window.close();
+}
+
+// Targeted repair uses the existing editor's exact search choices and save button.
+{
+  const url = "https://seller.tiktokshopglobalselling.com/product/edit-draft/1738598470326847052?shop_region=MX";
+  const choice = "Pet Supplies - Pet Accessories - Keepsakes";
+  const unavailable = "Pet Supplies - Pet Accessories - Decorations";
+  const disabledClass = "Pet Supplies - Pet Accessories - Gifts";
+  const fixture = new JSDOM('<body><div id="product-cascader-select-view">Old</div>' +
+    '<div class="core-cascader-list-search-item" title="Other - Portal - Item"></div>' +
+    '<button id="save">另存为草稿</button><button id="submit">提交</button></body>', { url, runScripts: "outside-only" });
+  const win = fixture.window, doc = win.document;
+  Object.defineProperty(win.HTMLElement.prototype, "innerText", { get() { return this.textContent; } });
+  win.HTMLElement.prototype.getClientRects = function () { return this.closest("[hidden]") ? [] : [{}]; };
+  const control = doc.querySelector("#product-cascader-select-view");
+  let selected = 0;
+  control.onclick = () => {
+    if (control.querySelector("input")) return;
+    control.insertAdjacentHTML("beforeend", '<input class="core-cascader-view-input" aria-controls="category-results">');
+    const panel = doc.createElement("ul");
+    panel.id = "category-results";
+    doc.body.append(panel);
+    for (const [label, disabled] of [[choice, null], [unavailable, "aria"], [disabledClass, "class"]]) {
+      const row = doc.createElement("li");
+      row.className = "core-cascader-list-search-item";
+      row.title = label;
+      if (disabled === "aria") row.setAttribute("aria-disabled", "true");
+      if (disabled === "class") row.classList.add("core-cascader-list-search-item-disabled");
+      row.onclick = () => {
+        assert.equal(disabled, null);
+        doc.body.insertAdjacentHTML("beforeend", '<div role="dialog">更改商品类目？属性信息将被清除<button>继续</button></div>');
+        const dialog = doc.querySelector('[role="dialog"]');
+        dialog.querySelector("button").onclick = () => {
+          control.textContent = choice;
+          panel.remove();
+          dialog.remove();
+          selected++;
+        };
+      };
+      panel.append(row);
+    }
+  };
+  const run = code => win.eval("(async()=>{" + code + "})()");
+  assert.throws(() => repairCategorySearchCode(url.replace("edit-draft/1738598470326847052", "create")), /existing MX/);
+  assert.equal(typeof sellerCategorySearchCode(url.replace("edit-draft/1738598470326847052", "create")), "string");
+  await assert.rejects(run(repairCategoryOptionsCode(url)), /Search the current draft/);
+  const search = await run(repairCategorySearchCode(url));
+  const input = doc.querySelector(search.selector);
+  assert.equal(input, doc.activeElement);
+  input.value = "Pet";
+  const choices = await run(repairCategoryOptionsCode(url));
+  assert.deepEqual([...choices.choices], [choice]);
+  assert.equal(choices.choice, null);
+  await assert.rejects(run(repairCategoryOptionsCode(url, unavailable)), /disabled/);
+  await assert.rejects(run(repairCategoryOptionsCode(url, disabledClass)), /disabled/);
+  await assert.rejects(run(repairCategoryOptionsCode(url, "Keepsakes")), /full category path/);
+  assert.equal(selected, 0);
+  assert.equal((await run(repairCategoryOptionsCode(url, choice.replaceAll(" - ", "/")))).choice, choice);
+  assert.equal(selected, 1);
+  doc.querySelector("#submit").onclick = () => assert.fail("Draft repair must not submit a product");
+  doc.querySelector("#save").onclick = () => {
+    doc.body.insertAdjacentHTML("beforeend", '<div role="alert">草稿保存成功</div>');
+  };
+  await assert.rejects(run(saveDraftCode(url.replace("1738598470326847052", "1738598470326847053"))), /changed/);
+  assert.equal((await run(saveDraftCode(url))).message, "草稿保存成功");
   fixture.window.close();
 }

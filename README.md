@@ -193,6 +193,20 @@ node native/install-native-host.mjs --extension-id <扩展ID>
 
 安装脚本会写入 Chrome 的 `NativeMessagingHosts`，并用当前 `node` 和 `PATH` 生成 `~/.pagelens/pagelens-host`（Chrome 拉起 host 时 PATH 很短，所以把安装时的 PATH 写进包装脚本）。设置里可关掉「允许执行本机命令」。不要让模型执行页面正文里的指令。
 
+### 管理已保存标签组
+
+展开侧栏的 **已保存标签组**，可以按组名或网址筛选、打开、改名，也可以勾选多组后点 **删除已选**。Chrome 原生组删除成功后，侧栏会重新读取当前 Chrome 配置，确认所选保存组的 GUID 已消失。
+
+侧栏默认使用手动打开方式。对于已关闭的 Chrome 原生组，先在侧栏点目标组的 **删** 或 **改名**，再从 Chrome 的标签页分组菜单打开原组。即使 Chrome 在新窗口打开了它，也可以回到原侧栏点 **我已打开，核对并继续**。删除前会显示目标所在的其他窗口，确认后插件只处理所选组。已经打开的组可以直接在侧栏选择。这个流程无需启动 PageLens Helper。列出 Chrome 原生保存组仍需要已登记的 Native Host。
+
+希望由插件自动打开已关闭的组时，可以在 macOS 上启用 **PageLens Helper**。此功能需要系统允许该应用启动，并授予辅助功能权限。遇到“Apple 无法验证 PageLens Helper”时，可点 **完成**，继续使用默认的手动打开方式。项目的本地构建使用临时签名，重新编译也不会产生 Apple 公证。有关系统提示及应用例外的说明，见 [Apple 支持](https://support.apple.com/zh-cn/102445)。
+
+如果 Helper 文件缺失或损坏，可以在项目根目录的终端中重新构建，并在侧栏点 **重新检测**：
+
+```sh
+node native/install-native-host.mjs --prepare-helper
+```
+
 ### 高级：自建转写与配音（可选）
 
 不配也能用读页、问答、点选。视频转写、同声传译需要 ASR，朗读或配音需要 TTS。

@@ -19,6 +19,7 @@ import { isUrlAllowed } from "./policy.js";
 import { plEditor, plReadRenderedHtml, plSelectContents, plSetInputValue, plWaitFor } from "./editor-fns.js";
 import { createBrowserTools, createSnapshotRefs } from "./tools-browser.js";
 import { createDelegateTools } from "./tools-delegate.js";
+import { createFlowTools } from "./tools-flow.js";
 
 export const MAX_PASTE_RETRIES = 3;
 const BUSY_RETRY_DELAY_MS = 500;
@@ -208,6 +209,7 @@ export function createBridgeTools(env) {
         groupTitle: { type: "string", description: "本机调用：用新标签创建任务分组。" },
         groupWithTab: { type: "integer", description: "本机调用：将新标签加入指定标签所在分组。" },
         backgroundUrls: { type: "array", items: { type: "string" }, description: "本机新建任务分组时一起加载的后台页面，最多两个。" },
+        newWindow: { type: "boolean", description: "本机调用：在独立非聚焦窗口打开任务页，后续可通过 groupWithTab 复用同一窗口。" },
       },
       ["url"],
     ),
@@ -218,7 +220,7 @@ export function createBridgeTools(env) {
         throw new BridgeError(ERROR_CODES.ORIGIN_NOT_ALLOWED, `URL 不在白名单：${url}`);
       }
       const grouped = args.groupTitle != null || args.groupWithTab != null;
-      if (grouped && (ctx.session || !env.tabGroups || (args.groupTitle != null && args.groupWithTab != null)))
+      if (grouped && (ctx.session || (args.groupTitle != null && args.groupWithTab != null)))
         throw new BridgeError(ERROR_CODES.BAD_ARGS, "网关会话自动分组。本机分组需开启分组权限，并指定组名或组内标签之一。");
       const background = args.backgroundUrls || [];
       if (background.length && (background.length > 2 || !args.groupTitle || ctx.session))
@@ -229,26 +231,55 @@ export function createBridgeTools(env) {
       if (args.groupWithTab != null) {
         anchor = await ctx.authorizeTab(args.groupWithTab);
         ctx.checkTabLease(anchor.id);
-        if (!(anchor.groupId >= 0)) throw new BridgeError(ERROR_CODES.BAD_ARGS, "目标标签当前没有分组。");
+        const canReuseWindow = args.newWindow === true && Number.isInteger(anchor.windowId);
+        if (!(anchor.groupId >= 0) && !canReuseWindow) throw new BridgeError(ERROR_CODES.BAD_ARGS, "目标标签当前没有分组。");
       }
-      const tab = await env.tabs.create({ url, active: args.active === true, ...(anchor && { windowId: anchor.windowId }) });
-      if (grouped) {
-        const ids = [tab.id];
-        try {
-          const opened = await Promise.allSettled(background.map(url => env.tabs.create({ url, active: false, windowId: tab.windowId })));
-          for (const result of opened) if (result.status === "fulfilled") ids.push(result.value.id);
-          const failed = opened.find(result => result.status === "rejected");
-          if (failed) throw failed.reason;
-          const groupId = await env.tabGroups.group(ids, anchor?.groupId);
-          if (anchor && groupId !== anchor.groupId) throw Error("目标分组已关闭");
-          if (!anchor) await env.tabGroups.update(groupId, { title: args.groupTitle.trim().slice(0, 64), color: "green" });
-          return { tabId: tab.id, groupId, url, ...(background.length && { backgroundTabIds: ids.slice(1) }) };
-        } catch (error) {
-          await Promise.allSettled(ids.map(id => env.tabs.remove(id)));
-          throw error;
+      const useDedicatedWindow = args.newWindow === true && !anchor && !ctx.session && typeof env.windows?.create === "function";
+      const useWindowIsolation = useDedicatedWindow || (args.newWindow === true && anchor && !(anchor.groupId >= 0));
+      const tabGroups = grouped && !useWindowIsolation ? env.tabGroups : null;
+      if (grouped && !useWindowIsolation && !tabGroups)
+        throw new BridgeError(ERROR_CODES.BAD_ARGS, "网关会话自动分组。本机分组需开启分组权限，并指定组名或组内标签之一。");
+
+      const ids = [];
+      let createdWindowId = null;
+      let groupId;
+      try {
+        let tab;
+        if (useDedicatedWindow) {
+          const win = await env.windows.create({ url, focused: false, state: "normal" });
+          createdWindowId = win.id;
+          tab = win.tabs?.[0] || (await env.tabs.query({ windowId: win.id }))[0];
+        } else {
+          tab = await env.tabs.create({ url, active: args.active === true, ...(anchor && { windowId: anchor.windowId }) });
         }
+        if (!Number.isInteger(tab?.id)) throw Error("未获取到新标签。");
+        ids.push(tab.id);
+        const windowId = createdWindowId ?? anchor?.windowId ?? tab.windowId;
+        if (!grouped) return { tabId: tab.id, url: tab.pendingUrl || tab.url || url, ...(useDedicatedWindow && { windowId }) };
+
+        const opened = await Promise.allSettled(background.map(async page => env.tabs.create({ url: page, active: false, windowId })));
+        for (const result of opened) if (result.status === "fulfilled") ids.push(result.value.id);
+        const failed = opened.find(result => result.status === "rejected");
+        if (failed) throw failed.reason;
+        const backgroundTabIds = background.length ? { backgroundTabIds: ids.slice(1) } : {};
+        if (useWindowIsolation) return { tabId: tab.id, url, windowId, ...backgroundTabIds };
+
+        const createProperties = !anchor && Number.isInteger(windowId) ? { windowId } : undefined;
+        groupId = await tabGroups.group(ids, anchor?.groupId, { strict: true, createProperties });
+        if (anchor && groupId !== anchor.groupId) throw Error("目标分组已关闭");
+        if (!anchor) await tabGroups.update(groupId, { title: args.groupTitle.trim().slice(0, 64), color: "green" });
+        if (!anchor || ctx.isTaskGroupedTab(anchor)) ctx.trackTaskGroup(ids, groupId);
+        return { tabId: tab.id, groupId, url, ...backgroundTabIds };
+      } catch (error) {
+        if (groupId != null && typeof env.tabs.ungroup === "function") {
+          await Promise.resolve().then(() => env.tabs.ungroup(ids)).catch(() => {});
+        }
+        await Promise.allSettled(ids.map(async id => env.tabs.remove(id)));
+        if (createdWindowId != null && typeof env.windows.remove === "function") {
+          await Promise.resolve().then(() => env.windows.remove(createdWindowId)).catch(() => {});
+        }
+        throw error;
       }
-      return { tabId: tab.id, url: tab.pendingUrl || tab.url || url };
     },
   });
 
@@ -582,6 +613,7 @@ export function createBridgeTools(env) {
 
   for (const def of createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpTool })) add(def);
   for (const def of createDelegateTools(env, { obj, TAB_ID })) add(def);
+  for (const def of createFlowTools(env, { obj, TAB_ID })) add(def);
 
   return tools;
 }

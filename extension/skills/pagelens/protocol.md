@@ -19,7 +19,7 @@ details: {…}
 
 `id` 必填，≤128 字符。相同 id 加相同内容，10 分钟内返回缓存响应，不会再执行。相同 id 加不同内容返回 `ID_CONFLICT`。标了可重试的失败不缓存。
 
-`timeoutMs` 默认 30000，上限 120000，含排队。超时只表示应答超时，操作可能仍在执行。
+`timeoutMs` 默认 30000，上限 120000，含排队。打开、更新或删除 Chrome 原生保存组默认使用 120000，覆盖首次启动本机助手与回读。超时只表示应答超时，操作可能仍在执行。
 
 长任务用 `"async": true`，立即得到 `{jobId, status:"running"}`，再用 `job_status`。Service Worker 被回收时，正在跑的任务变成 `status:"interrupted"`：结果未知，先回读页面，再换新 id。
 
@@ -62,8 +62,8 @@ details: {…}
 
 | scope | 能力 |
 |---|---|
-| `tabs:read` | `list_tabs` `list_windows` |
-| `tabs:manage` | 打开、切换、导航、关闭标签和窗口 |
+| `tabs:read` | `list_tabs` `list_windows` `list_tab_groups` `list_saved_tab_groups` |
+| `tabs:manage` | 打开、切换、导航、关闭标签、标签组（含已保存标签组增删改查）和窗口 |
 | `page:read` | 等待、读 DOM、读 HTML、截图、挑编辑器、回读、快照、抽正文 |
 | `page:act` | 输入、可信点击和按键、粘贴、选择、滚动、拖拽、对话框 |
 | `page:js` | `run_js` |

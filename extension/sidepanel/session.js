@@ -41,9 +41,31 @@ function currentPageMeta() {
 }
 
 let persistChain = Promise.resolve();
+let lastPersistedFingerprint = "";
 
-function persistSession() {
-  persistChain = persistChain.then(persistSessionNow, persistSessionNow);
+function sessionStateFingerprint() {
+  return JSON.stringify({
+    id: state.sessionId || "",
+    pages: state.sessionPages || [],
+    messages: (state.messages || []).map((m) => ({
+      id: m.id || "",
+      role: m.role,
+      text: m.text || "",
+      error: Boolean(m.error),
+      hasImage: Boolean(m.image || m.hasImage),
+      trace: m.trace || null,
+      metrics: m.metrics || null,
+      traceLog: m.traceLog || null,
+    })),
+    sideChats: state.sideChats || [],
+    run: state.run || null,
+    taskGroupId: state.taskGroupId ?? null,
+  });
+}
+
+function persistSession(options = {}) {
+  const run = () => persistSessionNow(options);
+  persistChain = persistChain.then(run, run);
   return persistChain;
 }
 
@@ -73,8 +95,9 @@ async function settleBusy() {
   }
 }
 
-async function persistSessionNow() {
+async function persistSessionNow(options = {}) {
   if (!state.messages.some((m) => m.role === "user" && String(m.text || "").trim())) return;
+  if (options.ifDirty && state.sessionId && sessionStateFingerprint() === lastPersistedFingerprint) return;
   ensureSessionId();
   const page = currentPageMeta();
   if (page) state.sessionPages = mergePage(state.sessionPages, page);
@@ -93,6 +116,7 @@ async function persistSessionNow() {
       state.messages[i].id = saved.messages[i].id;
     }
   }
+  lastPersistedFingerprint = sessionStateFingerprint();
 }
 
 function abortAllSideChats() {
@@ -154,11 +178,13 @@ function applySession(session) {
   renderMessages();
   trustPanel.render();
   notifySideChatSync();
+  lastPersistedFingerprint = sessionStateFingerprint();
 }
 
 async function startNewSession() {
   await settleBusy();
-  await persistSession();
+  await persistSession({ ifDirty: true });
+  lastPersistedFingerprint = "";
   abortAllSideChats();
   state.sessionId = null;
   state.sessionCreatedAt = null;

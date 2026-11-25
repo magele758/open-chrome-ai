@@ -85,20 +85,20 @@ const declaredApi = new Set([...(manifest.permissions || []), ...(manifest.optio
 const declaredHosts = new Set([...(manifest.host_permissions || []), ...(manifest.optional_host_permissions || [])]);
 
 for (const name of PREVIOUS_API) {
-  assert.equal(declaredApi.has(name), true, `upgrade keeps ${name}`);
+  assert.equal(declaredApi.has(name), true, `manifest declares ${name}`);
 }
 for (const pattern of PREVIOUS_HOSTS) {
-  assert.equal(declaredHosts.has(pattern), true, `upgrade keeps host ${pattern}`);
+  assert.equal(declaredHosts.has(pattern), true, `manifest declares host ${pattern}`);
 }
-assert.deepEqual([...manifest.permissions].sort(), [...INSTALL_API].sort());
-assert.deepEqual([...(manifest.optional_permissions || [])].sort(), [...OPTIONAL_API].sort());
-assert.deepEqual([...(manifest.host_permissions || [])].sort(), []);
-assert.deepEqual([...(manifest.optional_host_permissions || [])].sort(), [...PREVIOUS_HOSTS].sort());
-assert.equal(manifest.permissions.includes("cookies"), false, "cookies is requested on first use");
-assert.equal(manifest.permissions.includes("debugger"), true, "Chrome cannot make debugger optional");
-assert.equal(manifest.permissions.includes("tts"), true, "Chrome cannot make tts optional");
-assert.equal((manifest.optional_permissions || []).includes("debugger"), false);
-assert.equal((manifest.optional_permissions || []).includes("tts"), false);
+assert.deepEqual([...manifest.permissions].sort(), [...INSTALL_API, ...OPTIONAL_API].sort(), "all API permissions are granted by default");
+assert.deepEqual([...(manifest.optional_permissions || [])].sort(), []);
+assert.deepEqual([...(manifest.host_permissions || [])].sort(), [...PREVIOUS_HOSTS].sort(), "host permissions are granted by default");
+assert.deepEqual([...(manifest.optional_host_permissions || [])].sort(), []);
+assert.equal(manifest.permissions.includes("cookies"), true);
+assert.equal(manifest.permissions.includes("tabGroups"), true);
+assert.equal(manifest.permissions.includes("tabs"), true);
+assert.equal(manifest.permissions.includes("debugger"), true);
+assert.equal(manifest.permissions.includes("tts"), true);
 
 assert.equal(originPatternFromUrl("https://example.com/a?q=1"), "https://example.com/*");
 assert.equal(originPatternFromUrl("https://example.com:8443/a"), "https://example.com:8443/*");
