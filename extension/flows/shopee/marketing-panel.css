@@ -24,6 +24,20 @@
   align-items: center;
   gap: 7px;
 }
+.shopee-marketing-actions {
+  align-items: safe center;
+  flex-wrap: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.shopee-marketing-actions > button {
+  flex: none;
+  height: 28px;
+  white-space: nowrap;
+  outline-offset: -2px;
+}
 .shopee-marketing-navigation { display: grid; gap: 4px; margin: 0 0 12px; font-size: 12px; }
 .shopee-marketing-links { gap: 10px; }
 .shopee-marketing-navigation details .shopee-marketing-links { margin: 5px 0 0 12px; }

@@ -81,6 +81,15 @@ export async function requestTemporaryMarker(chromeApi, { title, url, panelWindo
   }
 }
 
+async function waitForMarkerTitle(chromeApi, tabId, title) {
+  const deadline = Date.now() + 4000;
+  for (;;) {
+    const current = await chromeApi.tabs.get(tabId).catch(() => null);
+    if (current?.title === title || Date.now() >= deadline) return current;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 export async function createTemporaryMarkerWindow(msg, { chromeApi = globalThis.chrome } = {}) {
   const panel = finiteWindowId(msg?.panelWindowId);
   const title = typeof msg?.title === "string" ? msg.title : "";
@@ -90,28 +99,30 @@ export async function createTemporaryMarkerWindow(msg, { chromeApi = globalThis.
     if (!MARKER_TITLE.test(title) || !url.startsWith("data:text/html")) {
       return { ok: false, code: "WINDOW_NOT_FOUND", error: "临时页标题无效。" };
     }
+    // Chrome drops tabs.update onto a data: URL and leaves the tab on about:blank.
+    // Creating the window with the marker URL commits document.title while unfocused.
     win = await chromeApi.windows.create({
       type: "normal",
-      url: "about:blank",
+      url,
       focused: false,
     });
     const tabs = win?.tabs?.length ? win.tabs : await chromeApi.tabs.query({ windowId: win?.id });
     const tab = tabs?.[0];
-    if (tab?.id == null) {
+    if (tab?.id == null || win?.id == null) {
       if (win?.id != null) await chromeApi.windows.remove(win.id).catch(() => {});
       win = null;
       return { ok: false, code: "WINDOW_NOT_FOUND", error: "未找到用于打开标签组的临时页。" };
     }
-    const updated = await chromeApi.tabs.update(tab.id, { url, active: true });
-    const next = updated
-      ? { ...tab, ...updated, windowId: updated.windowId ?? tab.windowId ?? win?.id }
-      : null;
-    if (!next?.id) {
-      if (win?.id != null) await chromeApi.windows.remove(win.id).catch(() => {});
-      win = null;
-      return { ok: false, code: "WINDOW_NOT_FOUND", error: "未找到用于打开标签组的临时页。" };
+    let next = { ...tab, windowId: tab.windowId ?? win.id };
+    if (next.title !== title) {
+      const titled = await waitForMarkerTitle(chromeApi, next.id, title);
+      if (titled?.title !== title) {
+        await chromeApi.windows.remove(win.id).catch(() => {});
+        win = null;
+        return { ok: false, code: "WINDOW_NOT_FOUND", error: "无法识别本次操作所属的 Chrome 窗口。" };
+      }
+      next = { ...next, ...titled, windowId: titled.windowId ?? next.windowId };
     }
-    if (next.windowId == null) next.windowId = win.id;
     return { ok: true, tab: next };
   } catch (err) {
     if (win?.id != null) await chromeApi.windows.remove(win.id).catch(() => {});

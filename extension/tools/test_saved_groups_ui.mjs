@@ -18,6 +18,20 @@ dialog.close = (value = "") => {
   dialog.open = false;
   dialog.dispatchEvent(new Event("close"));
 };
+// jsdom recognizes method=dialog but does not implement requestSubmit, so the
+// accept click never closes the dialog. Mirror the platform close here.
+// mirrorDialogClose false is the Chrome case that sets returnValue and closes
+// without dispatching close. The test still preventDefault so jsdom does not navigate.
+let mirrorDialogClose = true;
+$("sg-dialog-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!mirrorDialogClose) {
+    dialog.returnValue = event.submitter?.value || "";
+    dialog.open = false;
+    return;
+  }
+  dialog.close(event.submitter?.value || "");
+});
 
 async function until(test, reason) {
   const deadline = Date.now() + 6500;
@@ -404,6 +418,51 @@ await until(() => $("sg-status").textContent === "已永久删除 1 个标签组
 assert.ok(nativeStore.some((row) => row.guid === "g-identical"));
 assert.equal(nativeCalls.filter((req) => req.action === "open").length, nativeOpens);
 assert.equal(mem.savedGroupsUseHelper, false);
+
+// The last closed native group hides the helper banner. A busy render during
+// that hide must not leave the checkbox disabled, or a later click cannot turn it on.
+const parkedGroups = nativeStore.splice(0);
+nativeStore.push({
+  guid: "g-last-closed",
+  title: "最后关闭组",
+  color: "grey",
+  tabCount: 1,
+  tabs: [{ url: "https://last.example/" }],
+});
+search.value = "";
+search.dispatchEvent(new Event("input"));
+document.querySelector('button[data-sg-filter="all"]').click();
+await ctrl.refresh();
+assert.equal($("sg-use-helper").checked, false);
+$("btn-sg-ax-open").click();
+await until(() => $("sg-status").textContent.includes("已获得 macOS 辅助功能权限"), "trusted grant without another status probe");
+assert.equal($("sg-use-helper").checked, false, "trust does not turn the helper on");
+assert.equal(nativeCalls.filter((req) => req.action === "ax_status").length, 1);
+const lastRow = '.sg-item[data-sg-key="native:g-last-closed"]';
+document.querySelector(`${lastRow} .sg-del-btn`).click();
+assert.equal(dialog.open, false, "helper off still guides the last closed group");
+const lastTab = await mockChrome.tabs.create({ url: "https://last.example/", windowId: 1 });
+const lastGid = await mockChrome.tabs.group({ tabIds: [lastTab.id] });
+await mockChrome.tabGroups.update(lastGid, { title: "最后关闭组", color: "grey" });
+Object.assign(nativeStore.find((row) => row.guid === "g-last-closed"), { sessionWindowId: 1, sessionTabIds: [lastTab.id] });
+nativeGuidByOpenId.set(lastGid, "g-last-closed");
+$("btn-sg-manual-refresh").click();
+await until(() => dialog.open, "the last opened group reaches confirmation");
+$("sg-dialog-accept").click();
+await until(
+  () => !document.querySelector(lastRow) && $("sg-status").textContent === "已永久删除 1 个标签组",
+  "last closed group deleted and banner can hide",
+);
+assert.ok($("sg-ax-banner").classList.contains("hidden"), "no closed native group keeps the helper banner hidden");
+assert.equal($("sg-use-helper").disabled, false, "hiding the banner clears the busy-disabled helper checkbox");
+$("sg-use-helper").click();
+assert.equal($("sg-use-helper").checked, true, "an enabled checkbox toggles on");
+$("sg-use-helper").click();
+assert.equal($("sg-use-helper").checked, false);
+if (openTabs.has(lastTab.id)) await mockChrome.tabs.remove(lastTab.id);
+nativeStore.splice(0, nativeStore.length, ...parkedGroups);
+await ctrl.refresh();
+
 // The same guided action resumes the name form for the original saved GUID.
 search.value = "";
 search.dispatchEvent(new Event("input"));
@@ -504,6 +563,24 @@ assert.match($("sg-load-error").textContent, /测试助手未安装/);
 assert.equal(document.querySelectorAll("#sg-list .sg-item").length, 0);
 
 assert.equal(nativeCalls.filter((req) => req.action === "ax_status").length, 1, "mutations and refreshes do not relaunch the status helper");
+
+listFailure = "";
+await saveTabGroupRecord(
+  { title: "关闭事件丢失", color: "grey", tabs: [{ url: "https://pl.example/drop-close", title: "D" }] },
+  { storage, now: () => 2000 },
+);
+await ctrl.refresh();
+mirrorDialogClose = false;
+document.querySelector('.sg-item[data-sg-key^="pl:"] .sg-del-btn').click();
+assert.equal(dialog.open, true, "dropped-close delete still asks");
+$("sg-dialog-accept").click();
+await until(
+  () => !document.querySelector('.sg-item[data-sg-key^="pl:"]') && $("sg-status").textContent === "已永久删除 1 个标签组",
+  "accept resumes when the dialog closes without a close event",
+);
+assert.equal(dialog.open, false);
+assert.equal(dialog.returnValue, "accept", "submit fallback must leave returnValue for a close listener that never runs");
+mirrorDialogClose = true;
 
 dom.window.close();
 console.log("PASS test_saved_groups_ui.mjs");

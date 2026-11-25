@@ -16,7 +16,7 @@
  */
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -696,50 +696,92 @@ try {
           hasNewer: Boolean(document.querySelector(${newerRow})),
           status: document.querySelector("#sg-status").textContent,
           failed: document.querySelector("#sg-status").classList.contains("bad"),
+          dialogOpen: Boolean(document.querySelector("#sg-dialog")?.open),
+          returnValue: document.querySelector("#sg-dialog")?.returnValue || "",
           resumeVisible: document.querySelector("#sg-manual-target").checkVisibility() &&
             document.querySelector("#btn-sg-manual-refresh").checkVisibility() &&
             !document.querySelector("#btn-sg-manual-refresh").disabled,
         })`);
-      // Diagnostic only. The success boolean below is unchanged.
-      let twinSnap = null;
-      let twinSnapAt = 0;
-      const takeTwinSnap = async () => {
-        const now = Date.now();
-        if (now - twinSnapAt < 2000) return;
-        twinSnapAt = now;
-        const snap = { t: now };
-        try {
-          snap.panel = await evalPanel(`({
-            dialogOpen: Boolean(document.querySelector("#sg-dialog")?.open),
-            dialogMessage: document.querySelector("#sg-dialog-message")?.textContent || "",
-            status: document.querySelector("#sg-status")?.textContent || "",
-            statusClass: document.querySelector("#sg-status")?.className || "",
-          })`, { timeoutMs: 3000 });
-        } catch (err) {
-          snap.panelError = err?.message || String(err);
-        }
-        try {
-          snap.windows = await Promise.race([
-            bridge.evaluate(`chrome.windows.getAll({populate:true}).then(ws => ws.map(w => ({id:w.id, focused:!!w.focused, titles:(w.tabs||[]).map(t => t.title || "")})))`),
-            sleep(4000).then(() => { throw new Error("windows snapshot 超时"); }),
-          ]);
-        } catch (err) {
-          snap.windowsError = err?.message || String(err);
-        }
-        twinSnap = snap;
-        console.log(`TWINSNAP ${JSON.stringify(snap)}`);
-      };
       const panelTab = await evalPanel("chrome.tabs.getCurrent().then(({id, windowId}) => ({id, windowId}))");
+      const samples = [];
+      const noteSample = (state) => {
+        const now = Date.now();
+        if (samples.length && now - samples.at(-1).t < 5000) return;
+        samples.push({
+          t: now,
+          status: state.status,
+          failed: state.failed,
+          dialogOpen: state.dialogOpen,
+          returnValue: state.returnValue,
+          hasOlder: state.hasOlder,
+          hasNewer: state.hasNewer,
+          resumeVisible: state.resumeVisible,
+        });
+      };
+      const helperLines = () => {
+        try {
+          return execFileSync("/usr/bin/pgrep", ["-lf", "PageLens Helper"], { encoding: "utf8" })
+            .trim()
+            .split("\n")
+            .filter((line) => line.includes("PageLens Helper") && !line.includes("e2e_tab_groups"));
+        } catch {
+          return [];
+        }
+      };
+      const twinDump = async (why) => {
+        let panel = null;
+        let panelError = null;
+        let windows = null;
+        let windowsError = null;
+        try {
+          panel = await readPanelState();
+        } catch (err) {
+          panelError = err?.message || String(err);
+        }
+        try {
+          windows = await evalPanel(`chrome.windows.getAll({populate:true}).then(list => list.map(win => ({
+            id: win.id,
+            focused: Boolean(win.focused),
+            tabs: (win.tabs || []).map(tab => ({
+              title: tab.title || "",
+              url: String(tab.url || tab.pendingUrl || "").slice(0, 80),
+            })),
+          })))`);
+        } catch (err) {
+          windowsError = err?.message || String(err);
+        }
+        const markers = [];
+        for (const win of windows || []) {
+          for (const tab of win.tabs || []) {
+            if (/^PageLens-[0-9a-f-]{36}$/.test(tab.title)) {
+              markers.push({ windowId: win.id, focused: win.focused, title: tab.title });
+            }
+          }
+        }
+        const helpers = helperLines();
+        const line = JSON.stringify({
+          why,
+          samples,
+          panel,
+          panelError,
+          markers,
+          helperCount: helpers.length,
+          helpers: helpers.map((line) => line.slice(0, 160)),
+          windowsError,
+        });
+        console.log(`TWINDUMP ${line}`);
+        return line;
+      };
       let result;
       try {
         result = await waitFor(async () => {
-          await takeTwinSnap();
           const state = await readPanelState();
+          noteSample(state);
           return (state.resumeVisible || state.failed || (!state.hasOlder && state.hasNewer)) && state;
         }, 45000, "同名组自动打开后的删除结果");
       } catch (err) {
-        const extra = twinSnap ? ` TWINSNAP ${JSON.stringify(twinSnap)}` : " TWINSNAP <none>";
-        throw new Error(`${err.message}${extra}`);
+        const line = await twinDump("auto-open");
+        throw new Error(`${err.message} | ${line.slice(0, 900)}`);
       }
       if (result.resumeVisible) {
         const destination = await evalPanel(`(async () => {

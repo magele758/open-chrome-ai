@@ -108,12 +108,17 @@ body.sc-is-resizing {
   z-index: 35;
   display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 4px;
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
   padding: 4px;
   border-radius: 10px;
   background: var(--surface);
   border: 1px solid var(--strong-line, var(--line));
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  overflow-x: auto;
+  overflow-y: hidden;
   white-space: nowrap;
 }
 .sc-sel-btn {
@@ -126,6 +131,11 @@ body.sc-is-resizing {
   background: transparent;
   color: var(--ink);
   transition: background-color 0.15s ease, color 0.15s ease;
+}
+.sc-selection-bar .sc-sel-btn {
+  flex: none;
+  height: 28px;
+  white-space: nowrap;
 }
 .sc-sel-btn.primary {
   background: var(--accent);
@@ -229,14 +239,20 @@ mark.sc-anchor.is-active {
 /* Message-level / orphaned fork chips */
 .sc-msg-forks {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   margin-top: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
 }
 .sc-msg-fork-item {
   display: inline-flex;
   align-items: center;
+  flex: none;
   max-width: 100%;
+  height: 28px;
+  box-sizing: border-box;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--bg);
@@ -250,15 +266,19 @@ mark.sc-anchor.is-active {
   background: var(--teal-soft);
 }
 .sc-msg-fork-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   max-width: 100%;
-  padding: 3px 8px;
+  height: 100%;
+  padding: 0 8px;
+  box-sizing: border-box;
   border: 0;
   background: transparent;
   color: var(--ink);
   font-size: 11px;
+  line-height: 26px;
+  text-align: left;
   cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -275,14 +295,16 @@ mark.sc-anchor.is-active {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 22px;
+  width: 28px;
+  height: 100%;
+  box-sizing: border-box;
   border: 0;
   border-left: 1px solid var(--line);
   background: transparent;
   color: var(--muted);
   font-size: 12px;
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
   flex: none;
 }
@@ -419,22 +441,29 @@ mark.sc-anchor.is-active {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: nowrap;
   gap: 6px;
   padding: 8px 10px;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
   flex: none;
+  min-width: 0;
+  overflow-x: auto;
+  box-sizing: border-box;
 }
 .sc-pane-left {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 6px;
   min-width: 0;
-  flex: 1;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 .sc-pane-right {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 4px;
   flex: none;
 }
@@ -442,7 +471,9 @@ mark.sc-anchor.is-active {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
+  height: 28px;
+  padding: 0 8px;
+  box-sizing: border-box;
   border-radius: 6px;
   border: 1px solid var(--line);
   background: var(--bg);
@@ -451,6 +482,7 @@ mark.sc-anchor.is-active {
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  flex: none;
 }
 .sc-nav-btn.is-active {
   background: var(--accent-soft);
@@ -464,10 +496,14 @@ mark.sc-anchor.is-active {
   font-size: 12px;
   font-weight: 600;
   text-align: left;
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 28px;
+  padding: 0 4px;
+  box-sizing: border-box;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 2px 4px;
   border-radius: 4px;
   cursor: pointer;
 }
@@ -475,7 +511,11 @@ mark.sc-anchor.is-active {
   background: var(--hover-bg, var(--bg));
 }
 .sc-new-btn {
-  padding: 4px 9px;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 9px;
+  box-sizing: border-box;
   border-radius: 6px;
   border: 0;
   background: var(--accent);
@@ -484,10 +524,18 @@ mark.sc-anchor.is-active {
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  flex: none;
 }
 .sc-close-btn {
-  width: 24px;
-  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  box-sizing: border-box;
+  flex: none;
+  white-space: nowrap;
   border-radius: 6px;
   border: 1px solid var(--line);
   background: var(--surface);
@@ -501,9 +549,12 @@ mark.sc-anchor.is-active {
 .sc-quick-strip {
   display: flex;
   align-items: center;
-  gap: 5px;
+  flex-wrap: nowrap;
+  gap: 4px;
   padding: 6px 10px;
   overflow-x: auto;
+  min-width: 0;
+  box-sizing: border-box;
   background: var(--subtle-bg, var(--surface));
   border-bottom: 1px solid var(--line);
   flex: none;
@@ -511,6 +562,8 @@ mark.sc-anchor.is-active {
 .sc-pill-wrap {
   display: inline-flex;
   align-items: center;
+  height: 28px;
+  box-sizing: border-box;
   border-radius: 999px;
   border: 1px solid transparent;
   background: transparent;
@@ -528,12 +581,19 @@ mark.sc-anchor.is-active {
   border-color: var(--teal);
 }
 .sc-pill-tab {
-  padding: 3px 6px 3px 8px;
+  display: block;
+  height: 100%;
+  max-width: 11em;
+  padding: 0 6px 0 8px;
+  box-sizing: border-box;
   border: 0;
   background: transparent;
   color: var(--muted);
   font-size: 11px;
+  line-height: 26px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
 }
 .sc-pill-wrap:hover .sc-pill-tab {
@@ -547,12 +607,19 @@ mark.sc-anchor.is-active {
   color: var(--teal);
 }
 .sc-pill-del {
-  padding: 3px 6px 3px 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  flex: none;
+  box-sizing: border-box;
+  padding: 0 6px 0 2px;
   border: 0;
   background: transparent;
   color: var(--muted);
   font-size: 11px;
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
 }
 .sc-pill-del:hover,
@@ -565,6 +632,7 @@ mark.sc-anchor.is-active {
 .sc-list-view {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
@@ -575,9 +643,12 @@ mark.sc-anchor.is-active {
   gap: 8px;
   border-bottom: 1px solid var(--line);
   flex: none;
+  min-width: 0;
 }
 .sc-search {
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 6px 9px;
   border-radius: 7px;
   border: 1px solid var(--line);
@@ -589,20 +660,32 @@ mark.sc-anchor.is-active {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: nowrap;
   gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
 }
 .sc-filter-group {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  flex-wrap: nowrap;
   gap: 4px;
+  flex: none;
+  min-width: 0;
 }
 .sc-filter-btn {
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  box-sizing: border-box;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--surface);
   color: var(--muted);
   font-size: 11px;
+  white-space: nowrap;
+  flex: none;
   cursor: pointer;
 }
 .sc-filter-btn.is-active {
@@ -612,16 +695,23 @@ mark.sc-anchor.is-active {
   font-weight: 600;
 }
 .sc-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 4px;
+  box-sizing: border-box;
   border: 0;
   background: transparent;
   color: var(--muted);
   font-size: 11px;
   cursor: pointer;
   white-space: nowrap;
+  flex: none;
 }
 .sc-list-items {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   padding: 10px;
   display: flex;
@@ -636,6 +726,7 @@ mark.sc-anchor.is-active {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
   cursor: pointer;
   transition: border-color 0.15s ease;
 }
@@ -648,11 +739,17 @@ mark.sc-anchor.is-active {
 }
 .sc-card-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 6px;
+  min-width: 0;
 }
 .sc-card-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
   color: var(--ink);
@@ -660,6 +757,7 @@ mark.sc-anchor.is-active {
 }
 .sc-status-tag {
   flex: none;
+  white-space: nowrap;
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 10px;
@@ -697,16 +795,52 @@ mark.sc-anchor.is-active {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
   font-size: 11px;
   color: var(--muted);
 }
+.sc-card-foot > span {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .sc-card-ops {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  flex: none;
+  min-width: max-content;
+  margin-left: auto;
+  overflow-x: auto;
+}
+.sc-card-ops .secondary {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
 }
 .sc-mini-btn {
-  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  flex: none;
   border-radius: 4px;
   border: 1px solid var(--line);
   background: var(--bg);
@@ -746,6 +880,7 @@ mark.sc-anchor.is-active {
 .sc-thread-view {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
@@ -757,31 +892,46 @@ mark.sc-anchor.is-active {
   flex-direction: column;
   gap: 6px;
   flex: none;
+  min-width: 0;
 }
 .sc-anchor-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  flex-wrap: nowrap;
   gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
 }
 .sc-anchor-meta-row {
   display: flex;
   align-items: center;
-  gap: 5px;
+  flex-wrap: nowrap;
+  gap: 4px;
+  flex: none;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 .sc-type-badge {
-  padding: 1px 6px;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 6px;
+  box-sizing: border-box;
   border-radius: 4px;
   font-size: 10px;
   font-weight: 600;
   background: var(--accent-soft);
   color: var(--accent);
+  white-space: nowrap;
   flex: none;
 }
 .sc-origin-meta {
   font-size: 11px;
   color: var(--muted);
+  flex: 0 1 auto;
+  min-width: 2em;
+  max-width: 9em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -789,11 +939,18 @@ mark.sc-anchor.is-active {
 .sc-anchor-ops {
   display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 4px;
   flex: none;
 }
 .sc-op-btn {
-  padding: 2px 7px;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 7px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  flex: none;
   border-radius: 5px;
   border: 1px solid var(--line);
   background: var(--bg);
@@ -824,8 +981,12 @@ mark.sc-anchor.is-active {
 .sc-pinned-ops {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  flex-wrap: nowrap;
+  gap: 4px;
   flex: none;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
 }
 .sc-anchor-quote {
   font-size: 12px;
@@ -842,7 +1003,10 @@ mark.sc-anchor.is-active {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: nowrap;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
   padding: 5px 8px;
   border-radius: 6px;
   background: var(--teal-soft);
@@ -850,11 +1014,17 @@ mark.sc-anchor.is-active {
   font-size: 11px;
   line-height: 1.45;
 }
+.sc-pinned-box > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 /* Sub-messages */
 .sc-messages {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   padding: 10px;
   display: flex;
@@ -889,6 +1059,7 @@ mark.sc-anchor.is-active {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 .sc-msg-bot.is-error {
   border-color: var(--danger-line, var(--danger));
@@ -936,15 +1107,30 @@ mark.sc-anchor.is-active {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: nowrap;
   gap: 6px;
+  min-width: 0;
   padding-top: 4px;
   border-top: 1px dashed var(--line);
   font-size: 10px;
   color: var(--muted);
 }
+.sc-msg-foot > span {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .sc-msg-ops {
-  display: inline-flex;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
   gap: 4px;
+  flex: none;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
 }
 
 /* Composer */
@@ -956,15 +1142,23 @@ mark.sc-anchor.is-active {
   flex-direction: column;
   gap: 6px;
   flex: none;
+  min-width: 0;
 }
 .sc-micro-row {
   display: flex;
   align-items: center;
-  gap: 5px;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-width: 0;
   overflow-x: auto;
 }
 .sc-micro-btn {
-  padding: 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  flex: none;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--bg);
@@ -1035,30 +1229,23 @@ mark.sc-anchor.is-active {
   font-size: 10px;
   font-weight: 600;
 }
-.review-tabs {
-  flex-wrap: wrap;
-}
-.review-tab {
-  white-space: nowrap;
-}
-@media (max-width: 430px) {
-  .sc-header-label {
-    display: none;
-  }
-  .sc-header-btn {
-    padding: 0 6px;
-  }
-}
 .review-sidechats-toolbar {
   display: flex;
   flex-direction: column;
   gap: 8px;
   margin-bottom: 10px;
+  min-width: 0;
+}
+.review-sidechats-toolbar .sc-filter-group {
+  overflow-x: auto;
+  min-width: 0;
+  max-width: 100%;
 }
 .review-sc-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
 }
 .review-sc-card {
   padding: 10px 12px;
@@ -1068,12 +1255,14 @@ mark.sc-anchor.is-active {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 .review-sc-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
 }
 .review-sc-meta {
   font-size: 11px;

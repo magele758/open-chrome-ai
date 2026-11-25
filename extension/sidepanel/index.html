@@ -158,12 +158,12 @@
         <div id="sg-status" class="status sg-status" role="status" aria-live="polite"></div>
         <div id="sg-list" class="sg-list" aria-label="已保存标签组列表"></div>
         <dialog id="sg-dialog" aria-labelledby="sg-dialog-message">
-          <form id="sg-dialog-form">
+          <form id="sg-dialog-form" method="dialog">
             <p id="sg-dialog-message"></p>
             <input id="sg-dialog-name" type="text" aria-label="新的标签组名称" maxlength="64" hidden />
             <div class="row-btns">
               <button type="button" class="secondary mini" id="sg-dialog-cancel">取消</button>
-              <button type="submit" class="mini" id="sg-dialog-accept"></button>
+              <button type="submit" class="mini" id="sg-dialog-accept" value="accept"></button>
             </div>
           </form>
         </dialog>

@@ -153,15 +153,16 @@ const markerUrl = "data:text/html;charset=utf-8,marker";
     windows: {
       create: async (opts) => {
         order.push(["create", opts.focused, opts.url]);
-        return { id: 9, tabs: [{ id: 41, windowId: 9 }] };
+        return { id: 9, tabs: [{ id: 41, windowId: 9, title: "", status: "loading" }] };
       },
       update: async (id, patch) => { order.push(["focus", id, patch.focused]); },
       remove: async () => { throw new Error("should not remove"); },
     },
     tabs: {
-      update: async (id, patch) => {
-        order.push(["tab", id, patch.url.startsWith("data:text/html"), patch.active]);
-        return { id, windowId: 9, url: patch.url, active: true, title: markerTitle };
+      update: async () => { throw new Error("tabs.update must not retarget data:"); },
+      get: async (id) => {
+        order.push(["get", id]);
+        return { id, windowId: 9, url: markerUrl, title: markerTitle, status: "complete" };
       },
     },
   };
@@ -170,13 +171,14 @@ const markerUrl = "data:text/html;charset=utf-8,marker";
     { chromeApi },
   );
   assert.deepEqual(order, [
-    ["create", false, "about:blank"],
-    ["tab", 41, true, true],
+    ["create", false, markerUrl],
+    ["get", 41],
     ["focus", 3, true],
   ]);
   assert.equal(response.ok, true);
   assert.equal(response.tab.id, 41);
   assert.equal(response.tab.windowId, 9);
+  assert.equal(response.tab.title, markerTitle);
   assert.equal(response.tab.url, markerUrl);
 }
 
@@ -187,15 +189,14 @@ const markerUrl = "data:text/html;charset=utf-8,marker";
     {
       chromeApi: {
         windows: {
-          create: async () => { order.push("create"); return { id: 9, tabs: [{ id: 41, windowId: 9 }] }; },
-          update: async (id) => { order.push(["focus", id]); },
+          create: async () => { order.push("create"); throw new Error("navigate failed"); },
+          update: async (id, patch) => { order.push(["focus", id, patch.focused]); },
           remove: async (id) => { order.push(["remove", id]); },
         },
-        tabs: { update: async () => { order.push("tab"); throw new Error("navigate failed"); } },
       },
     },
   );
-  assert.deepEqual(order, ["create", "tab", ["remove", 9], ["focus", 3]]);
+  assert.deepEqual(order, ["create", ["focus", 3, true]]);
   assert.equal(response.ok, false);
   assert.equal(response.code, "WINDOW_NOT_FOUND");
   assert.match(response.error, /navigate failed/);
@@ -284,6 +285,68 @@ const markerUrl = "data:text/html;charset=utf-8,marker";
   assert.equal(result.ok, false);
   assert.equal(result.code, "WINDOW_NOT_FOUND");
   assert.match(result.error, /sw down/);
+}
+
+{
+  const order = [];
+  let reads = 0;
+  const response = await createTemporaryMarkerWindow(
+    { title: markerTitle, url: markerUrl, panelWindowId: 3 },
+    {
+      chromeApi: {
+        windows: {
+          create: async (opts) => {
+            order.push(["create", opts.focused, opts.url]);
+            return { id: 9, tabs: [{ id: 41, windowId: 9, url: markerUrl, title: markerTitle }] };
+          },
+          update: async (id, patch) => { order.push(["focus", id, patch.focused]); },
+          remove: async () => { order.push("remove"); },
+        },
+        tabs: {
+          update: async () => { throw new Error("tabs.update must not retarget data:"); },
+          get: async (id) => {
+            reads += 1;
+            order.push(["get", id]);
+            return { id, windowId: 9, url: markerUrl, title: markerTitle };
+          },
+        },
+      },
+    },
+  );
+  assert.equal(reads, 0);
+  assert.deepEqual(order, [["create", false, markerUrl], ["focus", 3, true]]);
+  assert.equal(response.ok, true);
+  assert.equal(response.tab.title, markerTitle);
+  assert.equal(response.tab.windowId, 9);
+}
+
+{
+  const order = [];
+  const response = await createTemporaryMarkerWindow(
+    { title: markerTitle, url: markerUrl, panelWindowId: 3 },
+    {
+      chromeApi: {
+        windows: {
+          create: async (opts) => {
+            order.push(["create", opts.url]);
+            return { id: 9, tabs: [{ id: 41, windowId: 9, title: "" }] };
+          },
+          update: async (id, patch) => { order.push(["focus", id, patch.focused]); },
+          remove: async (id) => { order.push(["remove", id]); },
+        },
+        tabs: {
+          get: async () => ({ id: 41, windowId: 9, title: "about:blank" }),
+        },
+      },
+    },
+  );
+  assert.equal(response.ok, false);
+  assert.equal(response.code, "WINDOW_NOT_FOUND");
+  assert.match(response.error, /无法识别本次操作所属的 Chrome 窗口/);
+  assert.deepEqual(order[0], ["create", markerUrl]);
+  assert.ok(!order.some((entry) => Array.isArray(entry) && entry[0] === "focus" && entry[1] === 9));
+  assert.deepEqual(order.at(-2), ["remove", 9]);
+  assert.deepEqual(order.at(-1), ["focus", 3, true]);
 }
 
 console.log("PASS saved group focus open");

@@ -97,9 +97,29 @@ export function bindSavedGroupsPanel({
     nameInput.value = currentName || "";
     dialog.returnValue = "";
     const result = new Promise((resolve) => {
-      dialog.addEventListener("close", () => {
-        resolve(dialog.returnValue === "accept" ? (renaming ? nameInput.value : true) : null);
-      }, { once: true });
+      let settled = false;
+      const form = $("sg-dialog-form");
+      const onClose = () => {
+        const accepted = dialog.returnValue === "accept";
+        dialog.returnValue = "";
+        finish(accepted ? (renaming ? nameInput.value : true) : null);
+      };
+      // Chrome can close method=dialog and leave returnValue set without a close
+      // event. Settle from submit, but do not preventDefault or call close().
+      const onSubmit = (event) => {
+        if (event.submitter?.value !== "accept") return;
+        finish(renaming ? nameInput.value : true);
+      };
+      function finish(value) {
+        if (settled) return;
+        settled = true;
+        dialog.removeEventListener("close", onClose);
+        form.removeEventListener("submit", onSubmit);
+        resolve(value);
+      }
+      // Read returnValue here. Esc sets none, and a stale value must not leak.
+      dialog.addEventListener("close", onClose);
+      form.addEventListener("submit", onSubmit);
     });
     dialog.showModal();
     if (renaming) {
@@ -111,10 +131,6 @@ export function bindSavedGroupsPanel({
     return result;
   }
 
-  $("sg-dialog-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    dialog.close("accept");
-  });
   $("sg-dialog-cancel").addEventListener("click", () => dialog.close("cancel"));
 
   async function actOnItem(name, item, args, allowNativeOpen) {
@@ -202,6 +218,8 @@ export function bindSavedGroupsPanel({
   function updateAxBanner(explicit = false) {
     const show = explicit || manualTask || hasClosedNative() || useHelper.checked || (axState && !axState.trusted);
     $("sg-ax-banner").classList.toggle("hidden", !show);
+    // A busy render sets this. Hiding the banner must still clear it, or the next click is a no-op.
+    useHelper.disabled = busy;
     if (!show) return;
     const helperError = axState && !axState.trusted;
     $("sg-ax-banner").classList.toggle("sg-helper-error", Boolean(helperError));
@@ -215,7 +233,6 @@ export function bindSavedGroupsPanel({
     $("btn-sg-manual-refresh").disabled = busy;
     $("btn-sg-manual-cancel").classList.toggle("hidden", !manualTask);
     $("sg-manual-target").classList.toggle("hidden", !manualTask);
-    useHelper.disabled = busy;
   }
 
   function checkAxStatus() {
