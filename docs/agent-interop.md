@@ -181,7 +181,7 @@ Agent  → 再调一次相同调用                           ← CONFIRMATION_R
 
 - `tab_claim {tabId}`：独占标签（token 需持有 `page:act` / `page:js` / `tabs:manage` / `upload` 之一，标签须在 origin 范围内）。之后其他会话（以及旧的 CDP / runtime 入口）在该标签上调用会改动页面的工具（scope 为 `page:act` `page:js` `tabs:manage` `upload` 的带 `tabId` 工具）得到 `TAB_LEASED`；只读工具不受影响。
 - `tab_release {tabId?}`：释放一个或（省略时）本会话全部租约。
-- 会话 `open_tab` / `create_window` 打开的标签自动归该会话，并放进一个名为 `Agent: <名称>` 的标签组（`chrome.tabGroups`）。
+- 会话 `open_tab` / `create_window` 新开的标签自动取得该会话的租约。同一窗口有多个新开的工作页时，可建立 `Agent: <名称>` 临时组。释放租约或断开会话时，尝试解散仍属于该任务组的标签，网页保留。
 - socket 断开（broker 发 `bridge.session.closed`）、Chrome 端口断开或标签关闭时租约自动释放。租约只在内存里：SW 重启会断开 Native port，所有会话随之结束。
 - 委托运行（`run_agent_task`）里的内部动作同样受租约约束：非只读工具作用的标签被其他会话占用时，该步记为 `blocked`（`TAB_LEASED`）并告知内部 Agent；委托方自己的会话持有或无人持有时放行。
 - 独占队列按标签分：不同标签上的可信输入可以并行，同一标签串行；碰剪贴板的工具（`clipboard_write` `copy_selection_trusted` `paste_rich_trusted`）额外占全局剪贴板锁，`activate:true` / 抢焦点的工具占全局焦点锁。
@@ -264,7 +264,7 @@ const { result, artifacts } = await pl.call("list_tabs");
 |---|---|
 | `id` | 必填，≤128 字符，调用方生成（幂等键） |
 | `tool` / `args` | 工具名与参数对象 |
-| `timeoutMs` | 默认 30000，上限 120000。打开、更新或删除 Chrome 原生保存组默认 120000，包含助手启动和回读。超时含排队时间。超时返回 `TIMEOUT`，**操作可能仍在执行** |
+| `timeoutMs` | 默认 30000，上限 120000。打开、更新或删除已经打开的 Chrome 原生保存组默认 120000，包含 GUID 回读。超时含排队时间。超时返回 `TIMEOUT`，**操作可能仍在执行** |
 | `async` | `true` 则立即返回 `{jobId, status:"running"}`，用 `job_status` 轮询 |
 
 成功响应：
@@ -363,11 +363,11 @@ const { result, artifacts } = await pl.call("list_tabs");
 | `update_tab_group {groupId, title?, color?, collapsed?, index?, windowId?}` | tabs:manage | 更新标签组标题、颜色、展开/折叠状态或调整位置 | 组内全部标签需在白名单内；传 `windowId` 未传 `index` 时默认移到目标窗口末尾（`-1`） |
 | `ungroup_tabs {tabIds? / groupId?}` | tabs:manage | 把指定标签移出分组，或解散整个标签组（不关闭网页） | `tabIds` 与 `groupId` 二选一 |
 | `close_tab_group {groupId}` | tabs:manage | 关闭并删除整个标签组及其中的全部标签 | 组内全部标签需在白名单内；命中不可逆删除清单 |
-| `list_saved_tab_groups {source?, query?, color?, closedOnly?, profile?, includeTabs?}` | tabs:read | 查询已保存标签组（含 Chrome 原生已关闭保存组与 PageLens 保存库） | Chrome 原生经 Native Host 只读解析 `Sync Data/LevelDB`；仅返回含白名单标签的组，白名单外标签计入 `hiddenTabs` |
-| `save_tab_group {groupId? / title+tabs, color?, closeAfterSave?, target?}` | tabs:manage | 快照保存已打开标签组或新建保存组 | `closeAfterSave:true` 命中不可逆删除清单；`target:"chrome_native"` 直接打开为 Chrome 原生保存组 |
-| `open_saved_tab_group {source?, id?, guid?, title?, mode?, collapsed?}` | tabs:manage | 打开已保存标签组 | 组内全部 URL 须在白名单内；原生关闭组支持 `mode:"native"`（macOS 辅助功能原生打开）与 `mode:"recreate"`（按 URL 重建） |
-| `update_saved_tab_group {source?, id?, guid?, matchTitle?, title?, color?, tabs?, addUrls?, removeUrls?}` | tabs:manage | 更新已保存标签组 | 已有及新增 URL 须在白名单内；原生关闭组会经辅助功能打开后更新并同步 |
-| `delete_saved_tab_group {source?, id?, guid?, title?, profile?}` | tabs:manage | 永久删除已保存标签组 | 组内全部 URL 须在白名单内，操作需通过删除授权。Chrome 原生关闭组先经 macOS 辅助功能在发起窗口打开，核对成员及租约后取消分组并关闭。仅在当前配置中回读确认原 GUID 消失后报告删除成功 |
+| `list_saved_tab_groups {source?, query?, color?, profile?, includeTabs?}` | tabs:read | 查询 Chrome 原生保存组（含未打开）与 PageLens 保存库 | Chrome 原生经 Native Host 只读解析 `Sync Data/LevelDB`，再与当前会话核对；未打开的原生组 `isOpen` 为 false。仅返回含白名单标签的组，白名单外标签计入 `hiddenTabs` |
+| `save_tab_group {groupId? / title+tabs, color?, closeAfterSave?, target?}` | tabs:manage | 快照保存已打开标签组或新建保存组 | `closeAfterSave:true` 命中不可逆删除清单；`target:"chrome_native"` 直接在 Chrome 新建并打开为原生保存组 |
+| `open_saved_tab_group {source?, id?, guid?, title?, mode?, collapsed?}` | tabs:manage | 打开 PageLens 保存库，或定位已经打开的 Chrome 原生保存组 | 组内全部 URL 须在白名单内。未打开的原生组返回需先在 Chrome 中打开，不会按 URL 重建 |
+| `update_saved_tab_group {source?, id?, guid?, matchTitle?, title?, color?, tabs?, addUrls?, removeUrls?}` | tabs:manage | 更新已保存标签组 | 已有及新增 URL 须在白名单内。Chrome 原生组必须已经打开 |
+| `delete_saved_tab_group {source?, id?, guid?, title?, profile?}` | tabs:manage | 永久删除已保存标签组 | 组内全部 URL 须在白名单内，操作需通过删除授权。已经打开的 Chrome 原生组先取消分组再关闭标签，并回读确认原 GUID 消失。未打开的原生组需先在 Chrome 中打开 |
 | `snapshot_controls {tabId, limit?, textLimit?, format?}` | page:read | 视口内可操作控件快照（含 shadow DOM、iframe），每项带 `ref` | `format:"text"` 额外给编号表；导航/翻页/弹窗后 ref 失效，需重新快照 |
 | `extract_page {tabId, maxChars?, format?}` | page:read | 干净正文 | 默认 20000 字；`format:"markdown"` 时正文在 artifact `page.md`；不拉取 PDF 文字层 |
 | `find_in_page {tabId, query, limit?}` / `get_links {tabId, limit?}` | page:read | 页内搜索 / 链接列表 | |

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { createKernelAgentLoop, LOOP_ENGINE_ID, resolveMaxTurns, MAX_TURNS } from "../lib/agent/loop-kernel.js";
 import { createAgentLoop } from "../lib/agent/loop.js";
+import { estimateTokens } from "../lib/openai.js";
 
 const events = [];
+const modelOutput = [];
+const toolOutput = [];
+let outputBeforeTools;
 const loop = createKernelAgentLoop({
   maxTurns: 4,
   systemPrompt: "test",
@@ -11,15 +15,22 @@ const loop = createKernelAgentLoop({
       name: "extract_page",
       description: "extract",
       parameters: { type: "object", properties: {} },
-      execute: async () => "PAGE_OK",
+      execute: async () => {
+        outputBeforeTools = modelOutput.length;
+        return "PAGE_OK";
+      },
     },
   ],
   model: {
-    async runTurn({ messages }) {
+    async runTurn({ messages, onToolCallOutput }) {
       const last = messages[messages.length - 1];
       if (last.role === "tool" || (last.role === "user" && String(last.content).includes("PAGE_OK"))) {
-        return { content: `FINAL:${String(last.content).includes("PAGE_OK") ? "PAGE_OK" : last.content}`, toolCalls: [], finishReason: "stop" };
+        return {
+          content: `FINAL:${String(last.content).includes("PAGE_OK") ? "PAGE_OK" : last.content}`,
+          toolCalls: [], finishReason: "stop", usage: { promptTokens: 99, completionTokens: 12 },
+        };
       }
+      onToolCallOutput?.(2);
       return {
         content: "",
         finishReason: "tool_calls",
@@ -31,12 +42,22 @@ const loop = createKernelAgentLoop({
 
 const out = await loop.run("总结此页", {
   onEvent: (ev) => events.push(ev.type + (ev.name ? `:${ev.name}` : "")),
+  onToolCallOutput: (tokens) => toolOutput.push(tokens),
+  onModelOutput: (sample) => modelOutput.push(sample),
 });
 
 assert.equal(out.engine, LOOP_ENGINE_ID);
 assert.equal(out.reason, "stop");
 assert.match(out.text, /FINAL:PAGE_OK/);
 assert.ok(events.includes("tools_done:extract_page"));
+assert.deepEqual(toolOutput, [2]);
+assert.equal(outputBeforeTools, 1, "a completed model sample is visible before the tool runs");
+assert.deepEqual(modelOutput.map(({ tokens, estimated }) => ({ tokens, estimated })), [
+  { tokens: estimateTokens("extract_page{}"), estimated: true },
+  { tokens: 12, estimated: false },
+]);
+assert.ok(modelOutput.every(({ durationMs }) => Number.isFinite(durationMs) && durationMs >= 0));
+assert.equal(out.metrics.outputTokens, 12, "live telemetry does not replace usage accounting");
 console.log("PASS kernel basic tool then answer", out.reason, events.filter((e) => e.startsWith("tools_")));
 
 const deltas = [];

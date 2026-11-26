@@ -115,6 +115,21 @@ const payload = { action: "open", guid: "g1" };
 }
 
 {
+  const order = [];
+  const chromeApi = {
+    windows: { update: async (id) => { order.push(["focus", id]); } },
+    runtime: { sendMessage: (msg) => focusOpenSavedGroup(msg, {
+      chromeApi,
+      nativeCall: async (request) => { order.push(["native", request.allowNewWindow]); return { ok: true }; },
+    }) },
+  };
+  const result = await requestFocusedNativeOpen(chromeApi, async () => assert.fail("use the worker"),
+    { ...payload, allowNewWindow: true }, 3, 3);
+  assert.equal(result.ok, true);
+  assert.deepEqual(order, [["focus", 3], ["native", true], ["focus", 3]]);
+}
+
+{
   let direct = 0;
   const result = await requestFocusedNativeOpen(
     {},

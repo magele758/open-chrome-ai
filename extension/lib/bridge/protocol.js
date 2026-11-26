@@ -5,8 +5,7 @@ export const DEFAULT_TIMEOUT_MS = 30000;
 export const MAX_TIMEOUT_MS = 120000;
 export const MAX_ID_LENGTH = 128;
 
-// A first native open may compile the macOS helper. Updates and deletes can
-// open the saved group first and then wait for Chrome to persist the result.
+// Deletes of an already-open native group ungroup, close tabs, then re-read the GUID.
 const NATIVE_GROUP_ACTIONS = new Set(["open_saved_tab_group", "update_saved_tab_group", "delete_saved_tab_group"]);
 
 export const ERROR_CODES = Object.freeze({

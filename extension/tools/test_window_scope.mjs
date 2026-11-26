@@ -55,7 +55,7 @@ assert.deepEqual(JSON.parse(await run("list_tabs", { currentWindow: false })).ta
 assert.deepEqual(queries.at(-1), { windowId: 10 });
 const { opened } = JSON.parse(await run("open_tab", { url: "https://a.example/new" }));
 assert.equal(opened.windowId, 10);
-assert.deepEqual(mutations.at(-1), ["group", { tabIds: [opened.id], createProperties: { windowId: 10 } }]);
+assert.deepEqual(mutations, [], "ordinary open does not create a group");
 await run("switch_tab", { tabId: opened.id });
 assert.deepEqual(mutations.at(-1), ["update", opened.id]);
 const search = JSON.parse(await run("web_search", { text: "new search" }));

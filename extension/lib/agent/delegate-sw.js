@@ -9,10 +9,10 @@ import { loadTabPack } from "../page-pack.js";
 import { streamTurn } from "../openai.js";
 import { systemPrompt } from "../prompts.js";
 import { isModelReady, loadSettings, resolveModel } from "../storage.js";
-import { createAgentTools, resolveActiveTools } from "./tools.js";
+import { createAgentTools, createTaskTabGroups, resolveActiveTools } from "./tools.js";
 import { describeCapsule } from "./trust/capsule.js";
 import { chromeStorageAdapter, createApprovalQueue } from "./trust/approval-queue.js";
-import { AGENT_TASK_EVENTS, TASK_STATUS, DelegateError, createDelegateManager, onAgentTaskEvent, sessionTaskStorage, setDelegateManager } from "./delegate.js";
+import { DelegateError, createDelegateManager, sessionTaskStorage, setDelegateManager } from "./delegate.js";
 
 // Window-to-window jobs receive browser tools that resolve their targets inside the recipient window.
 const WINDOW_TASK_TOOLS = new Set([
@@ -58,19 +58,11 @@ export async function createSwRun({ task, settings, signal }) {
   }
   // 没有调用方 windowId、也没有 tab 所在窗口时，不改写到焦点窗口，也不占侧栏那把锁。
   let refLabel = null;
-  let taskGroupId = null;
   const requestedDomains = new Set();
-
-  async function cleanupTaskGroup() {
-    if (taskGroupId == null || taskGroupId < 0 || typeof chrome.tabs?.ungroup !== "function") return;
-    const groupId = taskGroupId;
-    taskGroupId = null;
-    const query = { groupId, ...(windowId != null && { windowId }) };
-    const tabs = (await chrome.tabs.query(query)) || [];
-    const ids = tabs.filter((tab) => tab.groupId === groupId && (windowId == null || tab.windowId === windowId))
-      .map((tab) => tab.id).filter(Number.isInteger);
-    if (ids.length) await chrome.tabs.ungroup(ids);
-  }
+  const taskTabGroups = createTaskTabGroups({
+    getWindowId: () => windowId,
+    getTitle: () => `PL · 委托${task.agentName ? ` · ${task.agentName}` : ""}`.slice(0, 40),
+  });
 
   const tools = createAgentTools({
     getTabId: () => currentTabId,
@@ -79,12 +71,7 @@ export async function createSwRun({ task, settings, signal }) {
     capture: (tabId) => captureTab(tabId || task.tabId, windowId),
     setImage: () => {},
     onTabsMutated: async (id) => { if (id != null) currentTabId = id; },
-    getTaskGroupId: () => taskGroupId,
-    setTaskGroupId: (id) => {
-      taskGroupId = id;
-      if (signal.aborted) cleanupTaskGroup().catch(() => {});
-    },
-    getTaskGroupTitle: () => `PL · 委托${task.agentName ? ` · ${task.agentName}` : ""}`.slice(0, 40),
+    taskTabGroups,
     getAbortSignal: () => signal,
     getSessionId: () => task.id,
     setCaptions: () => {},
@@ -115,7 +102,7 @@ export async function createSwRun({ task, settings, signal }) {
       runTurn: ({ messages, tools: turnTools, signal: turnSignal, onTextDelta, onReasoningDelta }) =>
         streamTurn(model, { messages, tools: turnTools, signal: turnSignal, onReasoningDelta }, onTextDelta),
     },
-    cleanup: cleanupTaskGroup,
+    cleanup: taskTabGroups.cleanup,
   };
 }
 
@@ -135,16 +122,11 @@ let installed = null;
 
 export function installDelegate() {
   if (installed) return installed;
-  const cleanupByTask = new Map();
   installed = createDelegateManager({
     storage: sessionTaskStorage(chrome.storage.session),
     approvals: createApprovalQueue({ storage: chromeStorageAdapter(chrome.storage.local) }),
     loadSettings,
-    createRun: async (options) => {
-      const run = await createSwRun(options);
-      if (options.task.status === TASK_STATUS.RUNNING) cleanupByTask.set(options.task.id, run.cleanup);
-      return run;
-    },
+    createRun: createSwRun,
     onActivityChange: keepAlive,
     resolveTabWindow: async (tabId) => {
       try {
@@ -156,12 +138,6 @@ export function installDelegate() {
     },
   });
   setDelegateManager(installed);
-  onAgentTaskEvent(({ type, taskId }) => {
-    if (type !== AGENT_TASK_EVENTS.FINISHED) return;
-    const cleanup = cleanupByTask.get(taskId);
-    cleanupByTask.delete(taskId);
-    cleanup?.().catch(() => {});
-  });
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (sender?.id !== chrome.runtime.id) return false;
     if (msg?.type === "pl.delegate.list") {

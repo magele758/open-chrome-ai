@@ -3,6 +3,7 @@ import { tabInWindow, withWindowTask } from "../lib/window-scope.js";
 import { renderAttach } from "./composer.js";
 import { $ } from "./dom.js";
 import { flagInjection, ingestTaint, showHitlModal, updateHitlBadge } from "./hitl-ui.js";
+import { finishLiveModelTurn, noteLiveModelOutput, startLiveModelTurn } from "./live-status.js";
 import { renderContext } from "./media-chrome.js";
 import {
   createThinkingBox,
@@ -36,6 +37,7 @@ import { shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
 import {
   checkHitlRequirement,
   createAgentTools,
+  createTaskTabGroups,
   resolveActiveTools,
   resolveHitlTargetUrl,
   urlOrigin,
@@ -85,11 +87,12 @@ function afterLive(wrap) {
   return wrap.querySelector(":scope > .stream-live") || wrap.querySelector(":scope > .who");
 }
 
-function paintBot(botMsg) {
+function paintBot(botMsg, { liveOnly = false } = {}) {
   const bots = document.querySelectorAll("#msgs .msg.bot");
   const wrap = bots[bots.length - 1];
   if (!wrap) return;
   syncLiveStatus(wrap, botMsg, { streaming: state.busy && !botMsg.metrics && !botMsg.error });
+  if (liveOnly) return;
   const trace = Array.isArray(botMsg.trace) ? botMsg.trace : [];
   let traceEl = wrap.querySelector(".tool-trace") || wrap.querySelector(".trace");
   if (trace.length) {
@@ -194,6 +197,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
   let taskTabId = summaryPage?.id ?? (resume && state.run?.tabId != null ? state.run.tabId : state.tab?.id);
   let tools;
   let loop;
+  let taskTabGroups;
   try {
     const requestedDomains = new Set(state.activeToolDomains || []);
     const windowId = await resolveWindowId();
@@ -206,7 +210,16 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       }
       return;
     }
+    taskTabGroups = createTaskTabGroups({
+      getWindowId: () => windowId,
+      getTitle: () => {
+        const user = state.messages.findLast((m) => m.role === "user" && m.text);
+        const line = String(user?.text || "任务").split("\n")[0].trim().slice(0, 24);
+        return `PL · ${line || "任务"}`;
+      },
+    });
     tools = summaryPage ? [] : createAgentTools({
+      taskTabGroups,
       windowMailTools: windowMailTools(windowId, () => state.capsule, state.messages.findLast(m => m.role === "user")?.id),
       getTabId: () => taskTabId,
       getWindowId: () => windowId,
@@ -229,11 +242,6 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       getTaskGroupId: () => state.taskGroupId,
       setTaskGroupId: (id) => {
         state.taskGroupId = id;
-      },
-      getTaskGroupTitle: () => {
-        const user = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
-        const line = String(user?.text || "任务").split("\n")[0].trim().slice(0, 24);
-        return `PL · ${line || "任务"}`;
       },
       getAbortSignal: () => state.abort?.signal,
       getSessionId: () => state.sessionId,
@@ -419,7 +427,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         });
       },
       model: {
-        async runTurn({ messages, tools: turnTools, signal, onTextDelta, onReasoningDelta }) {
+        async runTurn({ messages, tools: turnTools, signal, onTextDelta, onReasoningDelta, onToolCallOutput }) {
           const visionReady = Boolean(state.image) && isModelReady(resolveModel(state.settings, "multimodal"));
           const active = visionReady ? resolveModel(state.settings, "multimodal") : model;
           let msgs = messages;
@@ -434,6 +442,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             tools: turnTools,
             signal,
             onReasoningDelta,
+            onToolCallOutput,
           }, onTextDelta);
         },
       },
@@ -461,6 +470,10 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
   state.busy = true;
   const controller = new AbortController();
   state.abort = controller;
+  const cleanupGroups = () => taskTabGroups.cleanup().catch((err) => {
+    console.warn("[pagelens] cleanup task tab groups", err);
+  });
+  controller.signal.addEventListener("abort", cleanupGroups, { once: true });
   const cancel = () => {
     if (state.abort === controller) state.stopIntent = "user";
     controller.abort();
@@ -477,6 +490,8 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     state.busy = false;
     state.abort = null;
     signal?.removeEventListener("abort", cancel);
+    controller.signal.removeEventListener("abort", cleanupGroups);
+    await cleanupGroups();
     throw err;
   }
   state.run = {
@@ -514,6 +529,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         if (!botMsg.thinking) botMsg.thinking = "";
         botMsg.thinking += delta;
         try {
+          noteLiveModelOutput(botMsg, "thinking", delta);
           paintBot(botMsg);
         } catch (err) {
           console.warn("[pagelens] paintBot", err);
@@ -523,9 +539,26 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         if (isPlaceholderBotText(botMsg.text)) botMsg.text = "";
         botMsg.text += delta;
         try {
+          noteLiveModelOutput(botMsg, "writing", delta);
           paintBot(botMsg);
         } catch (err) {
           console.warn("[pagelens] paintBot", err);
+        }
+      },
+      onToolCallOutput: (count) => {
+        try {
+          noteLiveModelOutput(botMsg, "calling", count);
+          paintBot(botMsg, { liveOnly: true });
+        } catch (err) {
+          console.warn("[pagelens] tool output status", err);
+        }
+      },
+      onModelOutput: (output) => {
+        try {
+          finishLiveModelTurn(botMsg, output);
+          paintBot(botMsg, { liveOnly: true });
+        } catch (err) {
+          console.warn("[pagelens] model output status", err);
         }
       },
       onEvent: (ev) => {
@@ -553,6 +586,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
               const label = ev.stage === "segment" ? "分段总结" : "合并分段要点";
               pushTraceItem(botMsg, { kind: "meta", name: label, ok: true });
             }
+            startLiveModelTurn(botMsg);
             if (botMsg.thinking && !botMsg.thinking.endsWith("\n\n")) {
               botMsg.thinking += "\n\n";
             }
@@ -654,6 +688,8 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     renderMessages();
   } finally {
     signal?.removeEventListener("abort", cancel);
+    controller.signal.removeEventListener("abort", cleanupGroups);
+    await cleanupGroups();
     const userStop = state.stopIntent === "user";
     const finished = ["stop", "max_turns", "empty_assistant"].includes(result?.reason);
     if (userStop || finished || failed) state.run = null;

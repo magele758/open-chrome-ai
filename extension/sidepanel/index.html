@@ -115,31 +115,13 @@
     <details id="saved-groups-panel">
       <summary>已保存标签组 <span id="saved-groups-badge" class="sg-badge"></span></summary>
       <div class="sg-body">
-        <div id="sg-ax-banner" class="sg-ax-banner hidden">
-          <div class="sg-ax-text" id="sg-ax-manual">从 Chrome 书签栏的分组菜单或右上角 ⋮ → 标签页分组打开原组。即使组在新窗口打开，也可以回到此侧栏改名或删除。</div>
-          <div class="sg-ax-text hidden" id="sg-manual-target" role="status"></div>
-          <div class="sg-ax-ops">
-            <button type="button" class="secondary mini" id="btn-sg-manual-refresh">刷新已打开的组</button>
-            <button type="button" class="secondary mini hidden" id="btn-sg-manual-cancel">取消</button>
-          </div>
-          <label class="sg-select-all"><input id="sg-use-helper" type="checkbox" />使用 PageLens Helper 自动打开已关闭的组（macOS）</label>
-          <div class="sg-ax-text hidden" id="sg-ax-text" role="status"></div>
-          <div class="sg-ax-text hidden" id="sg-ax-prepare">在系统终端进入 PageLens 项目根目录，执行 <code>node native/install-native-host.mjs --prepare-helper</code> 单独准备 Helper，再点「重新检测」。</div>
-          <div class="sg-ax-ops">
-            <button type="button" class="secondary mini hidden" id="btn-sg-ax-open">打开辅助功能设置</button>
-            <button type="button" class="secondary mini hidden" id="btn-sg-ax-reveal" title="在访达中定位 PageLens Helper.app，可直接拖入辅助功能列表">定位 Helper</button>
-            <button type="button" class="secondary mini hidden" id="btn-sg-ax-recheck">重新检测</button>
-          </div>
-        </div>
         <div class="sg-toolbar">
           <input id="sg-search" class="sg-search" type="search" placeholder="筛选标题或网址…" aria-label="筛选已保存标签组" />
           <button type="button" class="secondary mini" id="btn-sg-refresh" title="刷新已保存标签组列表">刷新</button>
-          <button type="button" class="secondary mini" id="btn-sg-ax-diagnose" title="启动 PageLens Helper，检测辅助功能权限与 Chrome 分组菜单">检测助手</button>
         </div>
         <div class="sg-filter-row">
           <div class="sg-filter-group" role="group" aria-label="标签组来源筛选">
             <button type="button" class="sg-filter-btn is-active" data-sg-filter="all" aria-pressed="true">全部</button>
-            <button type="button" class="sg-filter-btn" data-sg-filter="closed" aria-pressed="false">仅已关闭</button>
             <button type="button" class="sg-filter-btn" data-sg-filter="open" aria-pressed="false">已打开</button>
             <button type="button" class="sg-filter-btn" data-sg-filter="pagelens" aria-pressed="false">插件库</button>
           </div>
@@ -154,6 +136,7 @@
           <button type="button" class="secondary mini sg-danger-btn hidden" id="btn-sg-batch-delete">删除已选</button>
           <button type="button" class="secondary mini hidden" id="btn-sg-stop">停止</button>
         </div>
+        <div id="sg-selection-hint" class="status sg-status" role="status"></div>
         <div id="sg-load-error" class="status bad sg-status" role="status"></div>
         <div id="sg-status" class="status sg-status" role="status" aria-live="polite"></div>
         <div id="sg-list" class="sg-list" aria-label="已保存标签组列表"></div>

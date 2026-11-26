@@ -28,6 +28,7 @@ import {
   isHttpUrl,
   restrictedUrl,
   runJsInTab,
+  sleep,
   toToolText,
   waitForTabNavigation,
 } from "../chrome.js";
@@ -111,8 +112,9 @@ function formatPack(pack) {
     pack.selection ? `选区：${pack.selection}` : "",
   ].filter(Boolean);
   const body = (pack.text || "").slice(0, limit);
-  const err = !body && pack.pdfError ? `未能读取 PDF：${pack.pdfError}` : "";
-  return [...head, "", body || err].join("\n");
+  const unavailable = pack.domAvailable === false ? "只取得标签页标题和网址，未能读取页面正文。" : "";
+  const warning = pack.pdfError ? `未能读取 PDF：${pack.pdfError}` : unavailable;
+  return [...head, "", body || warning].join("\n");
 }
 
 async function extractOneTab(ctx, tabId, textLimit = 9000) {
@@ -164,6 +166,64 @@ async function resolveTabId(ctx, args) {
   return id;
 }
 
+const CHROME_DOM_BLOCKED = /cannot access (?:contents of (?:the page|url)|a chrome)|cannot be scripted|extensions gallery|frame with id .* is showing error page/i;
+const FRAME_UNAVAILABLE = /(?:no frame with id|no document with id|frame with (?:id|document id).*removed|frame was removed)/i;
+
+async function readPageInfo(tabId, windowId) {
+  let tab = await tabInWindow(tabId, windowId);
+  if (restrictedUrl(tab.url)) throw new Error(`受限页，无法注入：${tab.url || ""}`);
+  const origin = urlOrigin(tab.url);
+  let reason = "document_unavailable";
+  let detail = "";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const targetUrl = tab.url;
+    let info;
+    try {
+      info = await inject(tabId, getPageInfo, [], { windowId, expectedUrl: targetUrl, injectImmediately: true });
+      reason = info ? "document_changed" : "document_unavailable";
+      detail = "";
+    } catch (error) {
+      const message = error?.message || "";
+      if (error?.code === "PAGE_ACCESS_DENIED") {
+        reason = "site_access_required";
+        detail = message;
+      } else if (error?.code === "PAGE_CHANGED" || FRAME_UNAVAILABLE.test(message)) {
+        reason = "document_changed";
+      } else if (CHROME_DOM_BLOCKED.test(message)) {
+        reason = "chrome_blocked_document";
+      } else {
+        throw error;
+      }
+    }
+    tab = await tabInWindow(tabId, windowId);
+    if (info?.url && info.url === tab.url && urlOrigin(tab.url) === origin) {
+      return { ...info, source: "document", domAvailable: true };
+    }
+    // Chrome can replace the top frame during navigation. Retry once on the same site.
+    if (attempt || reason === "site_access_required" || !origin || urlOrigin(tab.url) !== origin ||
+        (tab.url === targetUrl && tab.status !== "loading" && reason !== "document_changed")) break;
+    await sleep(150);
+    tab = await tabInWindow(tabId, windowId);
+    if (urlOrigin(tab.url) !== origin || restrictedUrl(tab.url)) break;
+  }
+  if (urlOrigin(tab.url) !== origin || restrictedUrl(tab.url)) {
+    return {
+      source: "unavailable",
+      domAvailable: false,
+      reason: "document_changed",
+      note: "标签页已跳转到其他站点或浏览器受限页，本次未读取新页面。",
+    };
+  }
+  return {
+    title: tab.title || "",
+    url: tab.url || "",
+    source: "tab_metadata",
+    domAvailable: false,
+    reason,
+    note: `${detail ? `${detail} ` : ""}当前只取得标签页标题和网址，未读取页面的标题层级、选区、链接、图片及播放状态。`,
+  };
+}
+
 const BACKGROUND_SHOT_TIMEOUT_MS = 4000;
 
 // 非当前标签走调试器截图，不把它切到前台，并行窗口里用户正在看的标签不会被换掉。
@@ -200,18 +260,6 @@ async function defaultBookmarkParentId(parentId) {
   }
 }
 
-async function attachTabToTask(ctx, tabId) {
-  if (!tabId) return null;
-  const groupId = await ensureTaskGroup(tabId, {
-    windowId: ctx.getWindowId?.(),
-    groupId: ctx.getTaskGroupId?.(),
-    title: ctx.getTaskGroupTitle?.() || "PageLens",
-  });
-  if (ctx.getWindowId?.() != null) await tabInWindow(tabId, ctx.getWindowId());
-  if (groupId != null) ctx.setTaskGroupId?.(groupId);
-  return groupId;
-}
-
 async function loadNotes() {
   const data = await chrome.storage.local.get(NOTES_KEY);
   const notes = data?.[NOTES_KEY];
@@ -235,6 +283,85 @@ async function actInFrames(tabId, kind, spec) {
 }
 
 const MAX_JEV_HISTORY = 10;
+
+export function createTaskTabGroups({ getWindowId, getTitle } = {}) {
+  const windows = new Map();
+  const stop = new AbortController();
+  let queue = Promise.resolve();
+
+  function enqueue(action) {
+    const result = queue.then(action);
+    queue = result.catch(() => {});
+    return result;
+  }
+
+  async function tabsIn(windowId) {
+    return (await chrome.tabs.query({ windowId })).filter((tab) => tab.windowId === windowId);
+  }
+
+  function stillOwned(tab, owned) {
+    return owned.has(tab.id) && owned.get(tab.id) === tab.groupId;
+  }
+
+  function add(tab) {
+    if (stop.signal.aborted || !Number.isInteger(tab?.id) || !Number.isInteger(tab.windowId)) return Promise.resolve(null);
+    return enqueue(async () => {
+      const { id, windowId } = tab;
+      const taskWindowId = getWindowId?.();
+      if (stop.signal.aborted || (taskWindowId != null && taskWindowId !== windowId)) return null;
+      if (!windows.has(windowId)) windows.set(windowId, { pending: new Set(), owned: new Map(), groupId: null });
+      const entry = windows.get(windowId);
+      entry.pending.add(id);
+      if (entry.pending.size < 2 && entry.groupId == null) return null;
+
+      const live = await tabsIn(windowId);
+      const groupId = live.some((item) => item.groupId === entry.groupId && stillOwned(item, entry.owned))
+        ? entry.groupId : null;
+      const candidates = live.filter((item) => entry.pending.has(item.id) && !(item.groupId >= 0)).map((item) => item.id);
+      entry.pending = new Set(candidates);
+      entry.groupId = groupId;
+      if (stop.signal.aborted || candidates.length < (groupId == null ? 2 : 1)) return null;
+      const assigned = await ensureTaskGroup(candidates, { windowId, groupId, title: getTitle?.(), signal: stop.signal });
+      if (assigned == null) return null;
+      entry.groupId = assigned;
+      for (const tabId of candidates) {
+        entry.owned.set(tabId, assigned);
+        entry.pending.delete(tabId);
+      }
+      return entry.owned.get(id) ?? null;
+    });
+  }
+
+  async function release({ closeTabs }) {
+    let count = null;
+    for (const [windowId, entry] of windows) {
+      if (!entry.owned.size) continue;
+      count ??= 0;
+      try {
+        const live = await tabsIn(windowId);
+        const ids = live.filter((tab) => stillOwned(tab, entry.owned)).map((tab) => tab.id);
+        if (ids.length) {
+          await chrome.tabs.ungroup(ids);
+          if (closeTabs) await chrome.tabs.remove(ids);
+          count += ids.length;
+        }
+      } catch (err) {
+        if (closeTabs) throw err;
+        debugLog("browser.taskGroup.cleanup", { message: err?.message || String(err) });
+      }
+    }
+    windows.clear();
+    return count;
+  }
+
+  function cleanup() {
+    if (stop.signal.aborted) return queue;
+    stop.abort();
+    return enqueue(async () => { await release({ closeTabs: false }); });
+  }
+
+  return { add, close: () => enqueue(() => release({ closeTabs: true })), cleanup };
+}
 
 export function createAgentTools(ctx) {
   const cdp = ctx.cdp || (cdpAvailable() ? getCdp() : null);
@@ -330,10 +457,10 @@ export function createAgentTools(ctx) {
     },
     {
       name: "get_page_info",
-      description: "轻量页信息：标题、URL、标题层级、选区、链接/图片数、视频进度。不需要全文时优先用这个。",
+      description: "轻量页信息：标题、URL、标题层级、选区、链接/图片数、视频进度。Chrome 暂时无法读取页面时，只返回标签页标题和 URL，并标记 domAvailable=false。",
       parameters: obj({ tabId: tabIdProp() }),
       async execute(args) {
-        return toToolText(await inject(await resolveTabId(ctx, args), getPageInfo));
+        return toToolText(await readPageInfo(await resolveTabId(ctx, args), ctx.getWindowId?.()));
       },
     },
     {
@@ -455,7 +582,6 @@ export function createAgentTools(ctx) {
       }),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
-        await attachTabToTask(ctx, tabId);
         return toToolText(
           await actInFrames(tabId, "click", { selector: args.selector, text: args.text, nth: args.nth }),
         );
@@ -477,7 +603,6 @@ export function createAgentTools(ctx) {
       ),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
-        await attachTabToTask(ctx, tabId);
         return toToolText(
           await actInFrames(tabId, "fill", {
             selector: args.selector,
@@ -503,7 +628,6 @@ export function createAgentTools(ctx) {
       ),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
-        await attachTabToTask(ctx, tabId);
         return toToolText(
           await actInFrames(tabId, "select", { selector: args.selector, value: args.value, nth: args.nth }),
         );
@@ -522,7 +646,6 @@ export function createAgentTools(ctx) {
       ),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
-        await attachTabToTask(ctx, tabId);
         return toToolText(
           await injectMain(tabId, pageAct, [
             "press",
@@ -785,11 +908,12 @@ export function createAgentTools(ctx) {
     },
     {
       name: "open_tab",
-      description: "打开一个新标签。默认不抢焦点（active=false）。只接受 http(s)。",
+      description: "打开一个新标签。默认不抢焦点，也不分组。只接受 http(s)。",
       parameters: obj(
         {
           url: { type: "string", description: "http(s) URL" },
           active: { type: "boolean", description: "是否立即切过去，默认 false" },
+          taskGroup: { type: "boolean", description: "仅用于需要集中管理多个新任务页的批量浏览器自动化。对相关新页都传 true，第二个页面起才生成临时组，任务结束后解组。" },
         },
         ["url"],
       ),
@@ -799,9 +923,9 @@ export function createAgentTools(ctx) {
         const hostDenied = await requireHostUrl(url);
         if (hostDenied) return hostDenied;
         const tab = await chrome.tabs.create({ ...tabQuery(ctx.getWindowId?.(), false), url, active: Boolean(args.active) });
-        const groupId = await attachTabToTask(ctx, tab.id);
+        const groupId = args.taskGroup === true ? (await ctx.taskTabGroups?.add(tab).catch(() => null)) ?? null : null;
         await ctx.onTabsMutated?.(args.active ? tab.id : undefined);
-        return toToolText({ opened: compactTab(tab), groupId });
+        return toToolText({ opened: compactTab(groupId == null ? tab : { ...tab, groupId }), groupId });
       },
     },
     {
@@ -828,9 +952,14 @@ export function createAgentTools(ctx) {
     },
     {
       name: "close_task_group",
-      description: "关闭本轮 PageLens 任务分组里的全部标签。用户说「关掉这批」「结束任务」时用。",
+      description: "关闭 PageLens 任务分组里的标签页。仅在用户明确要求关闭这批标签时用。",
       parameters: obj({}),
       async execute() {
+        const closed = await ctx.taskTabGroups?.close();
+        if (closed != null) {
+          await ctx.onTabsMutated?.();
+          return `已关闭任务分组（${closed} 个标签）。`;
+        }
         const groupId = ctx.getTaskGroupId?.();
         if (groupId == null || groupId < 0) return "当前任务还没有标签分组。";
         const tabs = await chrome.tabs.query({ ...tabQuery(ctx.getWindowId?.(), false), groupId });
@@ -874,9 +1003,8 @@ export function createAgentTools(ctx) {
         if (hostDenied) return hostDenied;
         const tabId = await resolveTabId(ctx, args);
         const tab = await chrome.tabs.update(tabId, { url });
-        const groupId = await attachTabToTask(ctx, tabId);
         await ctx.onTabsMutated?.();
-        return toToolText({ navigated: compactTab(tab), groupId });
+        return toToolText({ navigated: compactTab(tab), groupId: tab.groupId >= 0 ? tab.groupId : null });
       },
     },
     {
@@ -1171,7 +1299,6 @@ export function createAgentTools(ctx) {
       }),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
-        await attachTabToTask(ctx, tabId);
         let text = args?.text;
         let html = args?.html;
         if (args?.fromClipboard) {
@@ -1586,7 +1713,6 @@ export function createAgentTools(ctx) {
       ),
       async execute(args) {
         const tabId = await resolveTabId(ctx, args);
-        await attachTabToTask(ctx, tabId);
         return toToolText(await injectMain(tabId, solveRiskControlPlayground, [{ mode: args.mode, only: args.only }]));
       },
     },
@@ -1598,7 +1724,6 @@ export function createAgentTools(ctx) {
       ...createCdpTools(ctx, {
         cdp,
         resolveTabId: resolveForGuard,
-        attachTabToTask: (tabId) => attachTabToTask(ctx, tabId),
         getRefItem: (tabId, index) => {
           const snap = snapshots.get(tabId);
           if (!snap) return { error: "还没有控件快照；用 selector / text / x,y 指定目标。" };
@@ -1653,7 +1778,6 @@ export function createAgentTools(ctx) {
         }),
         async execute(args) {
           const tabId = await resolveTabId(ctx, args);
-          await attachTabToTask(ctx, tabId);
           return formatSnapshot(await takeSnapshot(tabId, args));
         },
       },
@@ -1673,7 +1797,6 @@ export function createAgentTools(ctx) {
         ),
         async execute(args) {
           const tabId = await resolveTabId(ctx, args);
-          await attachTabToTask(ctx, tabId);
           const action = String(args.action);
           if (action === "scroll_down" || action === "scroll_up") {
             if (args.index == null) return toToolText(await perform(tabId, null, action));
@@ -1705,7 +1828,6 @@ export function createAgentTools(ctx) {
         ),
         async execute(args) {
           const tabId = await resolveTabId(ctx, args);
-          await attachTabToTask(ctx, tabId);
           const snap = await takeSnapshot(tabId, {});
           if (!snap) return "页面没有可读内容。";
           const history = jevHistory.get(tabId) || [];

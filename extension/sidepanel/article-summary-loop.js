@@ -1,5 +1,6 @@
 import { runArticleSummary } from "../lib/article-summary.js";
 import { resolveModelContext } from "../lib/model-context.js";
+import { modelOutputSample } from "../lib/agent/loop-kernel.js";
 import { streamTurn } from "../lib/openai.js";
 import { loadTabPack } from "../lib/page-pack.js";
 import { tabInWindow } from "../lib/window-scope.js";
@@ -72,6 +73,7 @@ export function createArticleSummaryLoop({ page, model, language, onSource }) {
                 usage, finishReason: result.finishReason, content: result.content,
                 toolCalls: result.toolCalls || [],
               });
+              options.onModelOutput(modelOutputSample(result, Date.now() - started));
               return result;
             } catch (err) {
               step.error = err.message;

@@ -239,12 +239,14 @@ mark.sc-anchor.is-active {
 /* Message-level / orphaned fork chips */
 .sc-msg-forks {
   display: flex;
+  align-items: safe center;
   flex-wrap: nowrap;
   gap: 6px;
   margin-top: 8px;
   min-width: 0;
   max-width: 100%;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 .sc-msg-fork-item {
   display: inline-flex;
@@ -439,7 +441,7 @@ mark.sc-anchor.is-active {
 
 .sc-pane-header {
   display: flex;
-  align-items: center;
+  align-items: safe center;
   justify-content: space-between;
   flex-wrap: nowrap;
   gap: 6px;
@@ -449,16 +451,16 @@ mark.sc-anchor.is-active {
   flex: none;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
   box-sizing: border-box;
 }
 .sc-pane-left {
   display: flex;
-  align-items: center;
+  align-items: safe center;
   flex-wrap: nowrap;
   gap: 6px;
   min-width: 0;
   flex: 1 1 auto;
-  overflow: hidden;
 }
 .sc-pane-right {
   display: flex;
@@ -497,13 +499,14 @@ mark.sc-anchor.is-active {
   font-weight: 600;
   text-align: left;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   height: 28px;
   padding: 0 4px;
   box-sizing: border-box;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  outline-offset: -2px;
   border-radius: 4px;
   cursor: pointer;
 }
@@ -548,11 +551,12 @@ mark.sc-anchor.is-active {
 /* Quick switch strip */
 .sc-quick-strip {
   display: flex;
-  align-items: center;
+  align-items: safe center;
   flex-wrap: nowrap;
   gap: 4px;
   padding: 6px 10px;
   overflow-x: auto;
+  overflow-y: hidden;
   min-width: 0;
   box-sizing: border-box;
   background: var(--subtle-bg, var(--surface));
@@ -658,16 +662,17 @@ mark.sc-anchor.is-active {
 }
 .sc-filter-row {
   display: flex;
-  align-items: center;
+  align-items: safe center;
   justify-content: space-between;
   flex-wrap: nowrap;
   gap: 6px;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 .sc-filter-group {
   display: flex;
-  align-items: center;
+  align-items: safe center;
   flex-wrap: nowrap;
   gap: 4px;
   flex: none;
@@ -793,12 +798,13 @@ mark.sc-anchor.is-active {
 }
 .sc-card-foot {
   display: flex;
-  align-items: center;
+  align-items: safe center;
   justify-content: space-between;
   flex-wrap: nowrap;
   gap: 6px;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
   font-size: 11px;
   color: var(--muted);
 }
@@ -811,13 +817,14 @@ mark.sc-anchor.is-active {
 }
 .sc-card-ops {
   display: flex;
-  align-items: center;
+  align-items: safe center;
   flex-wrap: nowrap;
   gap: 4px;
   flex: none;
   min-width: max-content;
   margin-left: auto;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 .sc-card-ops .secondary {
   display: inline-flex;
@@ -896,18 +903,19 @@ mark.sc-anchor.is-active {
 }
 .sc-anchor-top {
   display: flex;
-  align-items: center;
+  align-items: safe center;
   flex-wrap: nowrap;
   gap: 6px;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 .sc-anchor-meta-row {
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
   gap: 4px;
-  flex: none;
+  flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -980,13 +988,14 @@ mark.sc-anchor.is-active {
 }
 .sc-pinned-ops {
   display: inline-flex;
-  align-items: center;
+  align-items: safe center;
   flex-wrap: nowrap;
   gap: 4px;
   flex: none;
   max-width: 100%;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 .sc-anchor-quote {
   font-size: 12px;
@@ -1124,13 +1133,14 @@ mark.sc-anchor.is-active {
 }
 .sc-msg-ops {
   display: flex;
-  align-items: center;
+  align-items: safe center;
   flex-wrap: nowrap;
   gap: 4px;
   flex: none;
   max-width: 100%;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 /* Composer */
@@ -1146,11 +1156,12 @@ mark.sc-anchor.is-active {
 }
 .sc-micro-row {
   display: flex;
-  align-items: center;
+  align-items: safe center;
   flex-wrap: nowrap;
   gap: 4px;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 .sc-micro-btn {
   display: inline-flex;
@@ -1237,7 +1248,9 @@ mark.sc-anchor.is-active {
   min-width: 0;
 }
 .review-sidechats-toolbar .sc-filter-group {
+  align-items: safe center;
   overflow-x: auto;
+  overflow-y: hidden;
   min-width: 0;
   max-width: 100%;
 }

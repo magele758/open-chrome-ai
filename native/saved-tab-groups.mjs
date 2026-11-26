@@ -2,7 +2,7 @@
  * Chrome 原生「已保存标签组」（Saved Tab Groups）本机读/控模块：
  *  - 查：纯 JS 只读解析 Chrome profile 的 Sync Data/LevelDB（MANIFEST + .ldb/.sst Snappy + .log WAL + SavedTabGroupData Protobuf），
  *    不加锁、不写盘、零外部 npm 依赖。
- *  - 开 / 删（已关闭的原生保存组）：由 macOS AX Helper 在请求窗口里打开保存组。扩展重新核对打开的组后再执行删除并回读 GUID。
+ *  - 开：本机助手仍保留按配置、GUID 和窗口标记打开原组的动作。扩展侧栏和代理不调用它来操作未打开的组。
  */
 
 import { execFile, spawn } from "node:child_process";

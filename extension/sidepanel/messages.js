@@ -18,10 +18,9 @@ import { isModelReady, resolveModel } from "../lib/storage.js";
 import { applyAnchorsToBody } from "../lib/sidechat-anchor.js";
 import { messageEndedAtMs, replyEndText } from "../lib/reply-end.js";
 import { messageShowsActionRow } from "../lib/turn-end-actions.js";
-import { charsPerSecond, liveLines, noteLiveSample, runningToolName } from "./live-status.js";
+import { estimateLiveTokens, liveLines, liveModelOutput, runningToolName } from "./live-status.js";
 
 const thinkingScrolls = new WeakMap();
-const liveSamples = new WeakMap();
 const liveStarts = new WeakMap();
 let liveTick = 0;
 
@@ -625,27 +624,22 @@ function continuesAssistant(msg, prev) {
   return msg?.role === "bot" && !msg.error && prev?.role === "bot" && !prev.error;
 }
 
-function liveCharCount(msg) {
-  const { thinking, answer } = splitThinking(msg.text, msg.thinking);
-  return String(answer || "").length + String(thinking || "").length;
-}
-
 function describeLive(msg, now = Date.now()) {
   const toolName = runningToolName(msg.trace);
   const { thinking, answer, isStreamingThinking } = splitThinking(msg.text, msg.thinking);
-  const written = String(answer || "").trim() && answer !== "…";
-  const phase = toolName ? "tool" : written ? "writing" : ((thinking && String(thinking).trim()) || isStreamingThinking) ? "thinking" : "waiting";
-  const chars = liveCharCount(msg);
-  const samples = noteLiveSample(liveSamples.get(msg), chars, now);
-  liveSamples.set(msg, samples);
+  const output = liveModelOutput(msg, now);
+  const textPhase = answer && answer !== "…" ? "writing" : (thinking || isStreamingThinking) ? "thinking" : "waiting";
+  const modelPhase = output?.phase === "writing" && isStreamingThinking ? "thinking" : output?.phase;
+  const phase = toolName ? "tool" : modelPhase || textPhase;
+  const tokens = output?.tokens ?? estimateLiveTokens({ thinking, answer });
   if (!liveStarts.has(msg)) liveStarts.set(msg, state.run?.startedAt || now);
   return liveLines({
+    ...output,
     phase,
     toolName,
     elapsedMs: Math.max(0, now - liveStarts.get(msg)),
-    chars,
-    charsPerSec: charsPerSecond(samples, now),
-    showDots: phase === "waiting" && chars === 0,
+    tokens,
+    showDots: phase === "waiting" && tokens === 0,
   });
 }
 
@@ -661,11 +655,11 @@ function syncLiveStatus(wrap, msg, { streaming }) {
     el.className = "stream-live";
     const summary = document.createElement("summary");
     summary.className = "stream-live__summary";
-    summary.title = "点开查看已用时间、字数和速度";
+    summary.title = "生成速度按收到的模型输出估算，从首批输出后开始计速。整轮平均包含等待首批输出的时间。";
     summary.innerHTML = `<span class="stream-live__dots" aria-hidden="true"><span class="stream-live__dot">.</span><span class="stream-live__dot">.</span><span class="stream-live__dot">.</span></span><span class="stream-live__phase"></span><span class="stream-live__sep" aria-hidden="true">·</span><span class="stream-live__pace"></span>`;
     const detail = document.createElement("dl");
     detail.className = "stream-live__detail";
-    detail.innerHTML = `<dt>已用</dt><dd data-k="elapsed"></dd><dt>速度</dt><dd data-k="speed"></dd><dt>已写出</dt><dd data-k="chars"></dd><dt data-k="tool-label">正在做</dt><dd data-k="tool"></dd>`;
+    detail.innerHTML = `<dt>已用</dt><dd data-k="elapsed"></dd><dt>速度</dt><dd data-k="speed"></dd><dt>模型输出</dt><dd data-k="tokens"></dd><dt data-k="tool-label">正在做</dt><dd data-k="tool"></dd>`;
     el.append(summary, detail);
     const who = wrap.querySelector(":scope > .who");
     if (who) who.after(el);
@@ -682,8 +676,8 @@ function syncLiveStatus(wrap, msg, { streaming }) {
   if (elapsed) elapsed.textContent = lines.elapsed;
   const speed = el.querySelector('[data-k="speed"]');
   if (speed) speed.textContent = lines.speed;
-  const chars = el.querySelector('[data-k="chars"]');
-  if (chars) chars.textContent = lines.chars;
+  const tokens = el.querySelector('[data-k="tokens"]');
+  if (tokens) tokens.textContent = lines.tokens;
   const toolLabel = el.querySelector('[data-k="tool-label"]');
   const tool = el.querySelector('[data-k="tool"]');
   if (toolLabel) toolLabel.hidden = !lines.showTool;

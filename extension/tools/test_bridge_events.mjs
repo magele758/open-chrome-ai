@@ -210,14 +210,35 @@ const { token: readTok, record: reader } = await createTokenRecord({ name: "read
 // ---- leases (unit) ----
 {
   const grouped = [];
+  const ungrouped = [];
+  const tabs = new Map([
+    [1, { id: 1, windowId: 10, groupId: -1 }],
+    [3, { id: 3, windowId: 10, groupId: -1 }],
+    [4, { id: 4, windowId: 20, groupId: -1 }],
+    [5, { id: 5, windowId: 10, groupId: -1 }],
+    [6, { id: 6, windowId: 10, groupId: -1 }],
+    [7, { id: 7, windowId: 20, groupId: -1 }],
+    [8, { id: 8, windowId: 20, groupId: 88 }],
+    [9, { id: 9, windowId: 20, groupId: -1, pinned: true }],
+  ]);
+  let nextGroup = 70;
   const leases = createTabLeases({
     now: () => 100,
+    tabs: { get: async (id) => ({ ...tabs.get(id) }) },
     groups: {
-      group: async (tabIds, groupId) => {
-        grouped.push([tabIds, groupId ?? null]);
-        return groupId ?? 7;
+      group: async (tabIds, groupId, { strict, createProperties }) => {
+        assert.equal(strict, true);
+        assert.ok(tabIds.every((id) => tabs.get(id).windowId === createProperties.windowId));
+        grouped.push([tabIds, groupId ?? null, createProperties.windowId]);
+        const id = groupId ?? nextGroup++;
+        for (const tabId of tabIds) tabs.get(tabId).groupId = id;
+        return id;
       },
       update: async (groupId, props) => grouped.push(["title", groupId, props.title]),
+      ungroup: async (tabIds) => {
+        ungrouped.push(tabIds);
+        for (const tabId of tabIds) tabs.get(tabId).groupId = -1;
+      },
     },
   });
   const A = { sessionId: "A", agentId: "x", agentName: "cursor" };
@@ -230,14 +251,66 @@ const { token: readTok, record: reader } = await createTokenRecord({ name: "read
   leases.check(1, A);
   leases.check(2, B);
   assert.throws(() => leases.release(1, "B"), (e) => e.code === "TAB_LEASED");
-  await leases.adopt([3, 4], A);
-  await leases.adopt([5], A);
-  assert.deepEqual(grouped, [[[3, 4], null], ["title", 7, "Agent: cursor"], [[5], 7]], "one tab group per session, titled once");
-  assert.deepEqual(leases.owned("A"), [1, 3, 4, 5]);
+  await leases.adopt([3], A);
+  assert.equal(leases.holder(3).sessionId, "A", "a lone tab is leased without setting up a group");
+  await leases.adopt([4, 8, 9], A);
+  assert.deepEqual(grouped, [], "manual leases, other windows, pinned tabs and user groups do not count toward a batch");
+  await Promise.all([leases.adopt([5], A), leases.adopt([6], A)]);
+  await leases.adopt([7], A);
+  assert.deepEqual(grouped, [
+    [[3, 5, 6], null, 10], ["title", 70, "Agent: cursor"],
+    [[4, 7], null, 20], ["title", 71, "Agent: cursor"],
+  ], "concurrent opens group only once per window");
+  tabs.set(10, { id: 10, windowId: 10, groupId: -1 });
+  await leases.adopt([10], A);
+  assert.deepEqual(grouped.at(-1), [[10], 70, 10], "later tabs join the same batch group");
+  assert.deepEqual(leases.owned("A"), [1, 3, 4, 8, 9, 5, 6, 7, 10]);
   assert.ok(leases.release(1, "A"));
-  leases.dropTab(3);
-  assert.deepEqual(leases.releaseSession("A"), [4, 5]);
+  tabs.get(3).groupId = 88; // The user moved this tab into their own group.
+  tabs.get(10).windowId = 30; // The user moved the group to another window.
+  assert.equal(leases.isTaskGroupedTab(tabs.get(10)), false);
+  tabs.delete(5);
+  leases.dropTab(5);
+  assert.ok(leases.release(6, "A"));
+  await tick();
+  assert.deepEqual(ungrouped, [[6]]);
+  assert.deepEqual(leases.releaseSession("A"), [3, 4, 8, 9, 7, 10]);
+  await tick();
+  assert.deepEqual(ungrouped, [[6], [4, 7]], "cleanup reaches only tabs still in their original automation group and window");
+  assert.equal(tabs.get(3).groupId, 88);
+  assert.equal(tabs.get(8).groupId, 88);
+  assert.equal(tabs.get(10).groupId, 70);
   assert.equal(leases.size(), 0);
+}
+
+{
+  const started = Promise.withResolvers();
+  const complete = Promise.withResolvers();
+  const tabs = new Map([1, 2, 3].map((id) => [id, { id, groupId: -1, windowId: 11 }]));
+  const ungrouped = [];
+  const leases = createTabLeases({
+    tabs: { get: async (id) => ({ ...tabs.get(id) }) },
+    groups: {
+      group: async (ids) => {
+        started.resolve();
+        await complete.promise;
+        for (const id of ids) tabs.get(id).groupId = 70;
+        return 70;
+      },
+      update: async () => { throw Error("Chrome group update failed"); },
+      ungroup: async (ids) => ungrouped.push(ids),
+    },
+  });
+  const owner = { sessionId: "A" };
+  const adopting = leases.adopt([1, 2, 3], owner);
+  await started.promise;
+  assert.ok(leases.release(1, "A"));
+  complete.resolve();
+  await adopting;
+  assert.deepEqual(ungrouped, [[1]], "an individual release racing a group creation cleans up even if titling fails");
+  assert.deepEqual(leases.releaseSession("A"), [2, 3]);
+  await tick();
+  assert.deepEqual(ungrouped, [[1], [2, 3]]);
 }
 
 // ---- job store: persistence + interrupted on restart ----
@@ -290,7 +363,7 @@ function makeBridge({ sessionStorage = null, tabGroups = null, slowJs = null } =
       },
       query: async () => [...TABS.values()],
       create: async (props) => {
-        const tab = { id: nextId++, windowId: 1, url: props.url, title: "" };
+        const tab = { id: nextId++, windowId: 1, groupId: -1, url: props.url, title: "" };
         TABS.set(tab.id, tab);
         return tab;
       },
@@ -347,18 +420,21 @@ function makeBridge({ sessionStorage = null, tabGroups = null, slowJs = null } =
   assert.equal((await call(sA, "tab_claim", { tabId: 3 })).error.code, "ORIGIN_NOT_ALLOWED");
   assert.ok((await call(sB, "set_input_value", { tabId: 2, selector: "#q", value: "y" })).ok, "other tabs unaffected");
 
-  // tabs opened by a session become its lease + tab group
+  // tabs opened by a session are leased immediately, grouped only as a batch
   const opened = await call(sB, "open_tab", { url: "http://localhost:3000/new" });
   assert.ok(opened.ok);
-  assert.deepEqual(grouped, [[opened.result.tabId]]);
+  assert.deepEqual(grouped, []);
   assert.equal(bridge.leases.holder(opened.result.tabId).sessionId, "sess-B");
   assert.equal((await call(sA, "set_input_value", { tabId: opened.result.tabId, selector: "#q", value: "z" })).error.code, "TAB_LEASED");
+  const second = await call(sB, "open_tab", { url: "http://localhost:3000/second" });
+  assert.ok(second.ok);
+  assert.deepEqual(grouped, [[opened.result.tabId, second.result.tabId]]);
 
   // session close releases its leases
   bridge.closeSession("sess-A");
   assert.ok((await call(sB, "set_input_value", { tabId: 1, selector: "#q", value: "x" })).ok);
   const rel = await call(sB, "tab_release", {});
-  assert.deepEqual(rel.result.released, [opened.result.tabId]);
+  assert.deepEqual(rel.result.released, [opened.result.tabId, second.result.tabId]);
 
   // events through the bridge: per-session filtering + job events
   const pushed = [];

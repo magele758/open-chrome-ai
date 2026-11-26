@@ -18,6 +18,7 @@ import {
   parseTabIds,
 } from "../agent/tab-group-tools.js";
 import {
+  CLOSED_NATIVE_MESSAGE,
   deleteSingleNativeSavedGroup,
   matchOpenGroupForNative,
   openNativeSavedGroup,
@@ -698,22 +699,21 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
   add({
     name: "list_saved_tab_groups",
     description:
-      "查询已保存的标签组（含 Chrome 原生已关闭保存组与 PageLens 保存库），仅返回含白名单标签的组，白名单外标签计入 hiddenTabs。",
+      "查询 Chrome 原生保存组与 PageLens 保存库。未打开的原生组也会列出，isOpen 为 false。仅返回含白名单标签的组，白名单外标签计入 hiddenTabs。",
     parameters: obj({
       source: { type: "string", enum: ["all", "chrome_native", "pagelens"] },
       query: { type: "string" },
       color: { type: "string", enum: TAB_GROUP_COLORS },
-      closedOnly: { type: "boolean" },
       profile: { type: "string" },
       includeTabs: { type: "boolean" },
     }),
     scope: "tabs:read",
     async execute(args, ctx) {
+      if (args.closedOnly === true) throw new BridgeError(ERROR_CODES.BAD_ARGS, CLOSED_NATIVE_MESSAGE);
       const source = args.source || "all";
       const parsedColor = parseGroupColor(args.color);
       if (parsedColor.error) throw new BridgeError(ERROR_CODES.BAD_ARGS, parsedColor.error);
       const includeTabs = args.includeTabs !== false;
-      const closedOnly = args.closedOnly === true;
       const needle = String(args.query || "").trim().toLowerCase();
       const out = {};
       let total = 0;
@@ -724,6 +724,7 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
           out.chromeNative = { ok: false, error: res?.error || "无法读取 Chrome 原生保存组。", count: 0, groups: [] };
         } else {
           const open = await bridgeOpenSnapshot().catch(() => null);
+          const openStateUnknown = !open;
           const rows = [];
           for (const g of res.groups || []) {
             if (parsedColor.color && g.color !== parsedColor.color) continue;
@@ -734,24 +735,30 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
               const hay = `${g.title || ""} ${visibleTabs.map((t) => `${t.title || ""} ${t.url}`).join(" ")}`.toLowerCase();
               if (!hay.includes(needle)) continue;
             }
-            const matched = open && matchOpenGroupForNative(g, open.openGroups, open.byGroup, res.groups);
-            if (closedOnly && (!open || matched)) continue;
+            const matched = open
+              ? matchOpenGroupForNative(g, open.openGroups, open.byGroup, res.groups)
+              : null;
             rows.push({
               guid: g.guid,
               title: g.title,
               color: g.color,
               tabCount: rawTabs.length,
               hiddenTabs: rawTabs.length - visibleTabs.length,
-              isOpen: open ? Boolean(matched) : null,
+              isOpen: Boolean(matched),
               ...(matched ? { openGroupId: matched.id, openWindowId: matched.windowId } : {}),
+              ...(openStateUnknown ? { openState: "unknown" } : {}),
               ...(includeTabs ? { tabs: visibleTabs } : {}),
               source: "chrome_native",
             });
           }
           total += rows.length;
           out.chromeNative = {
-            ok: true, profile: res.profile, profiles: res.profiles, count: rows.length, groups: rows,
-            ...(!open ? { openStateError: "无法确认原生保存组的打开状态。" } : {}),
+            ok: true,
+            ...(openStateUnknown ? { openState: "unknown", warning: "无法核对当前窗口的打开状态。" } : {}),
+            profile: res.profile,
+            profiles: res.profiles,
+            count: rows.length,
+            groups: rows,
           };
         }
       }
@@ -855,7 +862,7 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
 
   add({
     name: "open_saved_tab_group",
-    description: "打开已保存的白名单标签组（组内所有 URL 都必须在白名单内）：支持 PageLens 保存库与 Chrome 原生保存组（mode=native/recreate）。",
+    description: "打开 PageLens 保存库中的白名单标签组，或定位已经打开的 Chrome 原生保存组。组内所有 URL 都必须在白名单内。未打开的原生组不会按 URL 重建。",
     parameters: obj({
       source: { type: "string", enum: ["auto", "chrome_native", "pagelens"] },
       id: { type: "string" },
@@ -881,10 +888,9 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
         const { openGroups, byGroup } = await bridgeOpenSnapshot();
         const existing = matchOpenGroupForNative(target, openGroups, byGroup, nativeList.groups);
         if (!existing) {
-          const opened = await bridgeCreateGroupFromUrls(
-            target.tabs, { title: target.title, color: target.color, collapsed: Boolean(args.collapsed) }, ctx,
-          );
-          return { source: "chrome_native", mode: "recreate", guid: target.guid, ...opened };
+          throw new BridgeError(ERROR_CODES.TOOL_FAILED, CLOSED_NATIVE_MESSAGE, {
+            details: { code: "OPEN_IN_CHROME_REQUIRED" },
+          });
         }
       }
       const opened = requireNativeAction(
@@ -903,7 +909,7 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
 
   add({
     name: "update_saved_tab_group",
-    description: "更新已保存的白名单标签组（标题、颜色、增删 URL）；组内全部已有与新增 URL 都须在白名单内。",
+    description: "更新已保存的白名单标签组（标题、颜色、增删 URL）。Chrome 原生组必须已经打开。组内全部已有与新增 URL 都须在白名单内。",
     parameters: obj({
       source: { type: "string", enum: ["auto", "chrome_native", "pagelens"] },
       id: { type: "string" },
@@ -1003,7 +1009,7 @@ export function createBrowserTools(env, { obj, TAB_ID, refs, trusted, wrapCdpToo
 
   add({
     name: "delete_saved_tab_group",
-    description: "永久删除已保存的白名单标签组（不可逆，组内所有 URL 必须在白名单内）。",
+    description: "永久删除已保存的白名单标签组（不可逆）。已经打开的 Chrome 原生组先取消分组再关闭标签，并回读 GUID。未打开的原生组需先在 Chrome 中打开。组内所有 URL 必须在白名单内。",
     parameters: obj({
       source: { type: "string", enum: ["auto", "chrome_native", "pagelens"] },
       id: { type: "string" },

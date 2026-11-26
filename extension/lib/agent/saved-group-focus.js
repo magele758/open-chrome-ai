@@ -15,7 +15,9 @@ export async function requestFocusedNativeOpen(chromeApi, callNative, payload, m
   const marker = finiteWindowId(markerWindowId);
   const panel = finiteWindowId(panelWindowId);
   const send = chromeApi?.runtime?.sendMessage;
-  if (marker && panel && marker !== panel && typeof send === "function") {
+  // Opening can focus a new Chrome window even when the marker is in the
+  // panel's own window. Let the worker return focus before replying there too.
+  if (marker && panel && (marker !== panel || payload.allowNewWindow === true) && typeof send === "function") {
     let response;
     try {
       response = await send({

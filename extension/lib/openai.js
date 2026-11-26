@@ -184,6 +184,14 @@ function finalizedToolCalls(bucket) {
     }));
 }
 
+export function estimateToolCallTokens(calls = []) {
+  return calls.reduce((total, call) => {
+    const args = call?.arguments;
+    const serialized = args == null || typeof args === "string" ? args || "" : JSON.stringify(args);
+    return total + estimateTokens((call?.name || "") + serialized);
+  }, 0);
+}
+
 function parseCompletionJson(raw) {
   const text = String(raw || "").trim();
   if (!text.startsWith("{")) return null;
@@ -462,7 +470,10 @@ export async function streamTurn(model, input, onTextDelta) {
       content += ev.content;
       onTextDelta?.(ev.content);
     }
-    if (ev.toolCalls?.length) mergeToolCallDeltas(toolBucket, ev.toolCalls);
+    if (ev.toolCalls?.length) {
+      mergeToolCallDeltas(toolBucket, ev.toolCalls);
+      input.onToolCallOutput?.(estimateToolCallTokens(toolBucket));
+    }
     if (ev.finishReason) finishReason = ev.finishReason;
     if (ev.usage) {
       if (ev.usage.promptTokens) turnUsage.promptTokens = ev.usage.promptTokens;
@@ -474,6 +485,7 @@ export async function streamTurn(model, input, onTextDelta) {
 
   const finish = () => {
     const toolCalls = finalizedToolCalls(toolBucket);
+    const outputTokensEstimated = !(turnUsage.completionTokens > 0);
     if (!content && reasoning) content = reasoning;
     if (!finishReason) finishReason = toolCalls.length ? "tool_calls" : "stop";
     // Gemini OpenAI compat often reports finish_reason=stop on streamed tool calls.
@@ -482,11 +494,7 @@ export async function streamTurn(model, input, onTextDelta) {
       turnUsage.promptTokens = estimateMessagesTokens(input.messages);
     }
     if (!turnUsage.completionTokens) {
-      let outTokens = estimateTokens(content) + estimateTokens(reasoning);
-      for (const tc of toolCalls) {
-        outTokens += estimateTokens(tc.name + (tc.arguments || ""));
-      }
-      turnUsage.completionTokens = outTokens;
+      turnUsage.completionTokens = estimateTokens(content) + estimateTokens(reasoning) + estimateToolCallTokens(toolCalls);
     }
     if (!turnUsage.totalTokens) {
       turnUsage.totalTokens = turnUsage.promptTokens + turnUsage.completionTokens;
@@ -497,7 +505,7 @@ export async function streamTurn(model, input, onTextDelta) {
       reasoningLen: reasoning.length,
       tools: toolCalls.map((c) => c.name).filter(Boolean),
     });
-    return { content, reasoning, toolCalls, finishReason, usage: turnUsage };
+    return { content, reasoning, toolCalls, finishReason, usage: turnUsage, outputTokensEstimated };
   };
 
   if (!response.body) {
@@ -517,6 +525,7 @@ export async function streamTurn(model, input, onTextDelta) {
       name: c.function?.name,
       arguments: c.function?.arguments || "{}",
     }));
+    if (calls.length) input.onToolCallOutput?.(estimateToolCallTokens(calls));
     const usage = json.usage ? {
       promptTokens: json.usage.prompt_tokens ?? json.usage.input_tokens ?? 0,
       completionTokens: json.usage.completion_tokens ?? json.usage.output_tokens ?? 0,
@@ -534,6 +543,7 @@ export async function streamTurn(model, input, onTextDelta) {
       toolCalls: calls,
       finishReason: choice.finish_reason || (calls.length ? "tool_calls" : "stop"),
       usage: finalUsage,
+      outputTokensEstimated: !(usage?.completionTokens > 0),
     };
   }
 
@@ -581,6 +591,7 @@ export async function streamTurn(model, input, onTextDelta) {
           ? c.function.arguments
           : JSON.stringify(c.function?.arguments || {}),
       })).filter((c) => c.name);
+      if (calls.length) input.onToolCallOutput?.(estimateToolCallTokens(calls));
       const usage = json.usage ? {
         promptTokens: json.usage.prompt_tokens ?? json.usage.input_tokens ?? 0,
         completionTokens: json.usage.completion_tokens ?? json.usage.output_tokens ?? 0,
@@ -597,6 +608,7 @@ export async function streamTurn(model, input, onTextDelta) {
         toolCalls: calls,
         finishReason: choice.finish_reason || (calls.length ? "tool_calls" : "stop"),
         usage,
+        outputTokensEstimated: !((json.usage?.completion_tokens ?? json.usage?.output_tokens) > 0),
       };
     }
   }

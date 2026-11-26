@@ -174,7 +174,6 @@ export function createBridgeTools(env) {
     {
       cdp: env.cdp,
       resolveTabId: async (args) => Number(args.tabId),
-      attachTabToTask: async () => null,
       getRefItem: (tabId, index) => refs.get(tabId, index),
     },
   );

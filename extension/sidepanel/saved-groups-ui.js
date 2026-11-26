@@ -3,8 +3,6 @@ import { resolveWindowId } from "./session.js";
 import { isHttpUrl } from "../lib/chrome.js";
 import { nativeSavedTabGroups } from "../lib/native-host.js";
 import {
-  SAVED_GROUPS_USE_HELPER_KEY,
-  isSavedGroupsHelperEnabled,
   listSavedTabGroups,
   saveTabGroupRecord,
 } from "../lib/saved-tab-groups.js";
@@ -26,14 +24,6 @@ const COLOR_HEX = Object.freeze({
   cyan: "#06b6d4",
   orange: "#f97316",
 });
-const HELPER_ERRORS = new Set([
-  "ACCESSIBILITY_REQUIRED", "UNSUPPORTED_PLATFORM", "HELPER_LAUNCH_FAILED", "HELPER_TIMEOUT", "HELPER_BUSY",
-  "HELPER_GATEKEEPER_BLOCKED",
-]);
-const MANUAL_RETRY_ERRORS = new Set([
-  ...HELPER_ERRORS, "NOT_FOUND_IN_UI", "OPEN_UNVERIFIED", "OPENED_IN_OTHER_WINDOW", "OPEN_IN_CHROME_REQUIRED",
-  "OPEN_GROUP_CHANGED", "CANDIDATE_MISMATCH", "WINDOW_SCOPE", "ALREADY_OPEN", "AMBIGUOUS_TARGET",
-]);
 
 function defaultApi() {
   return globalThis.chrome;
@@ -71,22 +61,6 @@ export function bindSavedGroupsPanel({
   const resolveWin = getWindowId || resolveWindowId;
   const dialog = $("sg-dialog");
   const nameInput = $("sg-dialog-name");
-  const useHelper = $("sg-use-helper");
-  let manualTask = null;
-  let helperPreferenceChanged = false;
-  let preferenceWrite = Promise.resolve();
-
-  function saveHelperPreference() {
-    helperPreferenceChanged = true;
-    const enabled = useHelper.checked;
-    preferenceWrite = preferenceWrite.then(() => getStorage()?.set({ [SAVED_GROUPS_USE_HELPER_KEY]: enabled })).catch(() => {});
-  }
-
-  function disableHelper() {
-    if (!useHelper.checked) return;
-    useHelper.checked = false;
-    saveHelperPreference();
-  }
 
   function askInPanel(message, currentName) {
     if (dialog.open) return Promise.resolve(null);
@@ -133,16 +107,16 @@ export function bindSavedGroupsPanel({
 
   $("sg-dialog-cancel").addEventListener("click", () => dialog.close("cancel"));
 
-  async function actOnItem(name, item, args, allowNativeOpen) {
+  async function actOnItem(name, item, args) {
     const windowId = await resolveWin();
-    const ctx = { getWindowId: () => windowId, allowNativeOpen, detectOpenedInOtherWindow: true };
+    const ctx = { getWindowId: () => windowId, detectOpenedInOtherWindow: true };
     if (item.source === "chrome_native" && item.isOpen) {
       ctx.expectedOpenGroup = { profile: item.profile, guid: item.guid, id: item.openGroupId, windowId: item.openWindowId };
     }
     let result;
     if (name === "delete_saved_tab_group" && item.source === "chrome_native") {
       result = await deleteSingleNativeSavedGroup({
-        chromeApi: getApi(), callNative, ctx, target: item, profile: item.profile, closedOnly: args.closedOnly,
+        chromeApi: getApi(), callNative, ctx, target: item, profile: item.profile,
       });
     } else {
       const tools = createSavedTabGroupTools(ctx, { api: getApi(), storage: getStorage(), nativeCall: callNative });
@@ -153,13 +127,6 @@ export function bindSavedGroupsPanel({
       try { result = JSON.parse(text); } catch { throw new Error(text); }
     }
     if (!result?.ok) {
-      if (HELPER_ERRORS.has(result?.code)) {
-        setAxState(result);
-        const reason = result.error && !axState.hint.includes(result.error)
-          ? `${result.error} ${axState.hint}`
-          : axState.hint;
-        throw Object.assign(new Error(reason), { code: result.code });
-      }
       const hint = result.code === "WINDOW_SCOPE" ? "请回到此侧栏核对目标组及其所在窗口。" : result.hint;
       const message = [result.error || "操作失败。", hint].filter(Boolean).join(" ");
       throw Object.assign(new Error(message), { code: result.code });
@@ -168,11 +135,9 @@ export function bindSavedGroupsPanel({
   }
 
   let allItems = [];
-  let filterMode = "all"; // all | closed | open | pagelens
+  let filterMode = "all"; // all | open | pagelens
   let searchQuery = "";
   let selectedKeys = new Set();
-  let axState = null;
-  let pendingAxCheck = null;
   let loadedProfile = "";
   let panelWindowId;
   let busy = false;
@@ -188,70 +153,23 @@ export function bindSavedGroupsPanel({
     el.className = "status sg-status" + (ok === true ? " ok" : ok === false ? " bad" : "");
   }
 
-  function hasClosedNative() {
-    return allItems.some((item) => item.source === "chrome_native" && item.isOpen === false);
+  function isClosedNative(item) {
+    return item.source === "chrome_native" && item.openState === "closed";
   }
 
-  function setAxState(result) {
-    const permission = result?.code === "ACCESSIBILITY_REQUIRED" || (result?.ok && result.trusted === false);
-    const unsupported = result?.code === "UNSUPPORTED_PLATFORM";
-    const prepareHelper = result?.helperUnavailable === true;
-    let hint;
-    if (result?.code === "HELPER_GATEKEEPER_BLOCKED") {
-      hint = result.error || "macOS 阻止了 PageLens Helper。请从 Chrome 菜单打开目标组后继续。";
-    } else if (permission) {
-      hint = "请在 macOS「辅助功能」中允许「PageLens Helper」。若开关已开启仍提示未授权，点「定位 Helper」，将旧授权项替换为当前应用，再点「重新检测」。";
-    } else if (unsupported) {
-      hint = result.error;
-    } else if (!result?.ok) {
-      const reason = result?.error || "未能检测辅助功能权限。";
-      const recovery = result?.code === "HELPER_LAUNCH_FAILED"
-        ? "请稍后点「重新检测」。若仍提示找不到应用，点「定位 Helper」核对当前应用，并检查高级配置中的本机助手安装。"
-        : "请检查高级配置中的本机助手连接，修复后点「重新检测」。";
-      hint = [reason, result?.hint || recovery].join(" ");
-    }
-    axState = { trusted: result?.ok && result?.trusted === true, permission, unsupported, prepareHelper, hint };
-    if (!axState.trusted) disableHelper();
-    updateAxBanner();
+  function canDelete(item) {
+    return item.source === "pagelens" || (item.source === "chrome_native" && item.isOpen);
   }
 
-  function updateAxBanner(explicit = false) {
-    const show = explicit || manualTask || hasClosedNative() || useHelper.checked || (axState && !axState.trusted);
-    $("sg-ax-banner").classList.toggle("hidden", !show);
-    // A busy render sets this. Hiding the banner must still clear it, or the next click is a no-op.
-    useHelper.disabled = busy;
-    if (!show) return;
-    const helperError = axState && !axState.trusted;
-    $("sg-ax-banner").classList.toggle("sg-helper-error", Boolean(helperError));
-    $("sg-ax-text").textContent = axState?.hint || "";
-    $("sg-ax-text").classList.toggle("hidden", !helperError);
-    $("sg-ax-prepare").classList.toggle("hidden", !axState?.prepareHelper);
-    $("btn-sg-ax-open").classList.toggle("hidden", !axState?.permission);
-    $("btn-sg-ax-reveal").classList.toggle("hidden", !helperError || axState.unsupported);
-    $("btn-sg-ax-recheck").classList.toggle("hidden", !helperError);
-    $("btn-sg-manual-refresh").textContent = manualTask ? "我已打开，核对并继续" : "刷新已打开的组";
-    $("btn-sg-manual-refresh").disabled = busy;
-    $("btn-sg-manual-cancel").classList.toggle("hidden", !manualTask);
-    $("sg-manual-target").classList.toggle("hidden", !manualTask);
-  }
-
-  function checkAxStatus() {
-    if (pendingAxCheck) return pendingAxCheck;
-    const previous = axState;
-    pendingAxCheck = callNative({ action: "ax_status" })
-      .catch((err) => ({ ok: false, error: err?.message || String(err) }))
-      .then((result) => {
-        // A foreground action or diagnosis may have supplied newer evidence.
-        if (axState === previous) setAxState(result);
-      })
-      .finally(() => { pendingAxCheck = null; });
-    return pendingAxCheck;
+  function nativeBlockedMessage(item) {
+    if (item.source === "pagelens" || item.isOpen) return "";
+    if (item.openState === "unknown") return "无法确认该组是否已打开，请刷新后再试。";
+    return "请先在 Chrome 中打开该组。";
   }
 
   function filteredItems() {
     const q = String(searchQuery || "").trim().toLowerCase();
     return allItems.filter((item) => {
-      if (filterMode === "closed" && !(item.source === "chrome_native" && item.isOpen === false)) return false;
       if (filterMode === "open" && !item.isOpen) return false;
       if (filterMode === "pagelens" && item.source !== "pagelens") return false;
       if (q) {
@@ -267,27 +185,34 @@ export function bindSavedGroupsPanel({
   }
 
   function updateBatchControls(visibleItems) {
-    const selectedVisible = visibleItems.filter((i) => selectedKeys.has(i.key));
-    const totalSelected = selectedKeys.size;
+    const selected = visibleItems.filter((item) => selectedKeys.has(item.key));
+    const deletableCount = selected.filter(canDelete).length;
+    const unavailableCount = selected.length - deletableCount;
 
     const selectAll = $("sg-select-all");
     if (selectAll) {
       selectAll.disabled = busy || visibleItems.length === 0;
-      selectAll.checked = visibleItems.length > 0 && selectedVisible.length === visibleItems.length;
-      selectAll.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visibleItems.length;
+      selectAll.checked = visibleItems.length > 0 && selected.length === visibleItems.length;
+      selectAll.indeterminate = selected.length > 0 && selected.length < visibleItems.length;
     }
     const countEl = $("sg-selected-count");
     if (countEl) {
       countEl.title = loadedProfile ? `Chrome 配置：${loadedProfile}` : "";
       countEl.textContent = visibleItems.length
-        ? `显示 ${visibleItems.length} / 共 ${allItems.length} · 已选 ${totalSelected}`
+        ? `显示 ${visibleItems.length} / 共 ${allItems.length} · 已选 ${selected.length}`
         : `共 ${allItems.length} 个`;
     }
+    const closedCount = selected.filter(isClosedNative).length;
+    const unknownCount = unavailableCount - closedCount;
+    const hints = [];
+    if (closedCount) hints.push(`${closedCount} 个未打开的 Chrome 保存组需先在 Chrome 中打开。`);
+    if (unknownCount) hints.push(`${unknownCount} 个所选组的打开状态无法确认。请刷新列表。`);
+    $("sg-selection-hint").textContent = hints.join("");
     const delBtn = $("btn-sg-batch-delete");
     if (delBtn) {
-      delBtn.classList.toggle("hidden", totalSelected === 0);
-      delBtn.disabled = busy;
-      delBtn.textContent = `删除已选 (${totalSelected})`;
+      delBtn.classList.toggle("hidden", selected.length === 0);
+      delBtn.disabled = busy || deletableCount === 0;
+      delBtn.textContent = unavailableCount ? `删除 (${deletableCount})` : `删除已选 (${deletableCount})`;
     }
     const stopBtn = $("btn-sg-stop");
     if (stopBtn) {
@@ -304,13 +229,12 @@ export function bindSavedGroupsPanel({
     if (!root) return;
     const visible = filteredItems();
     updateBatchControls(visible);
-    updateAxBanner();
     root.replaceChildren();
 
     if (!visible.length) {
       const empty = document.createElement("p");
       empty.className = "hist-empty sg-empty";
-      empty.textContent = loadError ? "当前可读取的列表中没有匹配的标签组。" : allItems.length ? "没有符合筛选条件的标签组。" : "暂无已保存的标签组。";
+      empty.textContent = loadError ? "当前可读取的列表中没有匹配的标签组。" : allItems.length ? "没有符合筛选条件的标签组。" : "暂无已保存的标签组或插件库记录。";
       root.appendChild(empty);
       return;
     }
@@ -320,6 +244,8 @@ export function bindSavedGroupsPanel({
       row.className = "sg-item";
       row.dataset.sgKey = item.key;
 
+      const locked = item.source === "chrome_native" && !item.isOpen;
+      const unknown = locked && item.openState === "unknown";
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.className = "sg-check";
@@ -347,7 +273,13 @@ export function bindSavedGroupsPanel({
 
       const meta = document.createElement("div");
       meta.className = "sg-meta";
-      const tag = item.source === "pagelens" ? "插件库" : item.isOpen == null ? "Chrome · 打开状态未知" : item.isOpen ? "已打开" : "Chrome 已保存";
+      const tag = item.source === "pagelens"
+        ? "插件库"
+        : item.isOpen
+          ? "已打开"
+          : item.openState === "unknown"
+            ? "状态未知"
+            : "未打开";
       meta.textContent = `${tag} · ${item.tabCount || 0} 个标签`;
       info.append(titleLine, meta);
 
@@ -357,25 +289,31 @@ export function bindSavedGroupsPanel({
       const openBtn = document.createElement("button");
       openBtn.type = "button";
       openBtn.className = "mini";
-      openBtn.disabled = busy;
-      openBtn.textContent = item.isOpen ? "定位" : "打开";
-      openBtn.title = item.isOpen ? "展开并切换到该标签组" : "重新打开该标签组";
+      openBtn.disabled = busy || locked;
+      openBtn.textContent = item.isOpen ? "定位" : unknown ? "状态未知" : locked ? "未打开" : "打开";
+      openBtn.title = item.isOpen
+        ? "展开并切换到该标签组"
+        : unknown
+          ? "无法确认该组是否已打开，请刷新后再试。"
+          : locked
+            ? "请先在 Chrome 中打开该组"
+            : "重新打开该标签组";
       openBtn.addEventListener("click", () => { void openItem(item); });
 
       const renameBtn = document.createElement("button");
       renameBtn.type = "button";
       renameBtn.className = "mini";
-      renameBtn.disabled = busy;
+      renameBtn.disabled = busy || locked;
       renameBtn.textContent = "改名";
-      renameBtn.title = "重命名标签组";
+      renameBtn.title = locked ? openBtn.title : "重命名标签组";
       renameBtn.addEventListener("click", () => { void renameItem(item); });
 
       const delBtn = document.createElement("button");
       delBtn.type = "button";
       delBtn.className = "mini sg-del-btn";
-      delBtn.disabled = busy;
+      delBtn.disabled = busy || !canDelete(item);
       delBtn.textContent = "删";
-      delBtn.title = "永久删除该标签组";
+      delBtn.title = !canDelete(item) ? nativeBlockedMessage(item) : "永久删除该标签组";
       delBtn.addEventListener("click", () => { void deleteItems([item]); });
 
       ops.append(openBtn, renameBtn, delBtn);
@@ -402,7 +340,10 @@ export function bindSavedGroupsPanel({
     const items = [];
     if (nativeRes?.ok) {
       for (const g of nativeRes.groups || []) {
-        const matched = !openSnap.error && matchOpenGroupForNative(g, openSnap.openGroups, openSnap.byGroup, nativeRes.groups);
+        const matched = openSnap.error
+          ? null
+          : matchOpenGroupForNative(g, openSnap.openGroups, openSnap.byGroup, nativeRes.groups);
+        const openState = matched ? "open" : (openSnap.error ? "unknown" : "closed");
         items.push({
           key: `native:${g.guid}`,
           source: "chrome_native",
@@ -412,9 +353,9 @@ export function bindSavedGroupsPanel({
           color: g.color || "grey",
           tabCount: g.tabCount ?? (g.tabs || []).length,
           tabs: g.tabs || [],
-          isOpen: openSnap.error ? null : Boolean(matched),
-          openGroupId: matched?.id,
-          openWindowId: matched?.windowId,
+          isOpen: Boolean(matched),
+          openState,
+          ...(matched ? { openGroupId: matched.id, openWindowId: matched.windowId } : {}),
           updatedAt: g.updatedAt || g.createdAt || 0,
         });
       }
@@ -434,8 +375,7 @@ export function bindSavedGroupsPanel({
     }
 
     allItems = items;
-    const liveKeys = new Set(items.map((i) => i.key));
-    selectedKeys = new Set([...selectedKeys].filter((k) => liveKeys.has(k)));
+    keepVisibleSelection();
     loadError = [
       nativeRes?.ok ? "" : `Chrome 原生组读取失败：${nativeRes?.error || "Native Host 不可用"}`,
       plRes.error ? `插件库读取失败：${plRes.error}` : "",
@@ -447,47 +387,22 @@ export function bindSavedGroupsPanel({
     return true;
   }
 
-  function showManualTask(items, action, toOpen) {
-    manualTask = { items, action };
-    const shown = toOpen.length ? toOpen : items;
-    const names = shown.slice(0, 5).map((item) => `「${item.title || "未命名标签组"}」`).join("、");
-    const suffix = shown.length > 5 ? ` 等 ${shown.length} 个组` : "";
-    $("sg-manual-target").textContent = toOpen.length
-      ? `请在 Chrome 中打开 ${names}${suffix}，也可以在新窗口打开。回到这里核对后继续${action}。`
-      : `${names}${suffix} 已打开。请核对后继续${action}。`;
-    updateAxBanner();
-    $("btn-sg-manual-refresh").focus();
-  }
-
-  function guideClosed(items, action, allowNativeOpen) {
-    const closed = items.filter((item) => item.source === "chrome_native" && !item.isOpen);
-    manualTask = null;
-    if (allowNativeOpen || !closed.length) { updateAxBanner(); return false; }
-    setStatus("");
-    showManualTask(items, action, closed);
-    return true;
-  }
-
-  function guideRetry(items, action) {
-    const toOpen = items.filter((item) => !allItems.some((fresh) =>
-      fresh.key === item.key && fresh.profile === item.profile && fresh.isOpen));
-    showManualTask(items, action, toOpen);
-  }
-
   function otherWindowNote(items) {
     const windows = new Set(items.filter((item) => item.source === "chrome_native" && item.isOpen &&
       Number.isInteger(item.openWindowId) && item.openWindowId !== panelWindowId).map((item) => item.openWindowId));
     return windows.size ? `目标组位于${panelWindowId == null ? "Chrome 窗口" : "其他 Chrome 窗口"}（${[...windows].join("、")}）。` : "";
   }
 
-  async function openItem(item, allowNativeOpen = useHelper.checked) {
-    if (busy) return;
-    if (guideClosed([item], "定位", allowNativeOpen)) return;
+  async function openItem(item) {
+    const blocked = nativeBlockedMessage(item);
+    if (busy || blocked) {
+      if (blocked) setStatus(blocked, false);
+      return;
+    }
     busy = true;
     renderList();
-    let retry = false;
     try {
-      const result = await actOnItem("open_saved_tab_group", item, { collapsed: false }, allowNativeOpen);
+      const result = await actOnItem("open_saved_tab_group", item, { collapsed: false });
       if (result.group?.id != null) {
         const api = getApi();
         const tabs = await api.tabs.query({ groupId: result.group.id });
@@ -496,18 +411,19 @@ export function bindSavedGroupsPanel({
       }
       setStatus(`已打开「${item.title || "未命名标签组"}」`, true);
     } catch (err) {
-      retry = item.source === "chrome_native" && MANUAL_RETRY_ERRORS.has(err?.code);
       setStatus(`打开失败：${err?.message || err}`, false);
     } finally {
       busy = false;
       await refresh({ silent: true });
-      if (retry) guideRetry([item], "定位");
     }
   }
 
-  async function renameItem(item, allowNativeOpen = useHelper.checked) {
-    if (busy) return;
-    if (guideClosed([item], "改名", allowNativeOpen)) return;
+  async function renameItem(item) {
+    const blocked = nativeBlockedMessage(item);
+    if (busy || blocked) {
+      if (blocked) setStatus(blocked, false);
+      return;
+    }
     const raw = await askInPanel(`${otherWindowNote([item])}输入新的标签组名称`, item.title || "");
     if (raw == null || busy) return;
     const nextTitle = normalizeGroupTitle(raw);
@@ -517,30 +433,34 @@ export function bindSavedGroupsPanel({
     }
     busy = true;
     renderList();
-    let retry = false;
     try {
-      const result = await actOnItem("update_saved_tab_group", item, { title: nextTitle }, allowNativeOpen);
+      const result = await actOnItem("update_saved_tab_group", item, { title: nextTitle });
       setStatus(`已${result.openedForUpdate ? "打开并" : ""}重命名为「${nextTitle}」`, true);
     } catch (err) {
-      retry = item.source === "chrome_native" && MANUAL_RETRY_ERRORS.has(err?.code);
       setStatus(`改名失败：${err?.message || err}`, false);
     } finally {
       busy = false;
       await refresh({ silent: true });
-      if (retry) guideRetry([item], "改名");
     }
   }
 
-  async function deleteItems(targets, allowNativeOpen = useHelper.checked, closedOnly = filterMode === "closed") {
+  async function deleteItems(targets) {
     if (busy || !targets.length) return;
-    if (guideClosed(targets, "删除", allowNativeOpen)) return;
+    const actionable = targets.filter(canDelete);
+    if (!actionable.length) {
+      setStatus(nativeBlockedMessage(targets[0]), false);
+      return;
+    }
+    const unavailableCount = targets.length - actionable.length;
+    targets = actionable;
     const description = targets.length === 1
       ? `「${targets[0].title || "未命名标签组"}」`
       : `选中的 ${targets.length} 个标签组`;
     const warning = targets.some((item) => item.source === "chrome_native")
-      ? "Chrome 中已打开的目标组也会关闭。"
+      ? "目标组内的 Chrome 标签页也会关闭。"
       : "";
-    const confirmed = await askInPanel(`永久删除${description}？${otherWindowNote(targets)}${warning}此操作不可恢复。`);
+    const skipped = unavailableCount ? `另外 ${unavailableCount} 个所选组会保留。` : "";
+    const confirmed = await askInPanel(`永久删除${description}？${otherWindowNote(targets)}${warning}${skipped}此操作不可恢复。`);
     if (!confirmed || busy) return;
 
     busy = true;
@@ -551,42 +471,28 @@ export function bindSavedGroupsPanel({
     let failed = 0;
     let lastError = "";
     let closeError = "";
-    let helperBlocked = false;
-    let awaitingConfirmation = 0;
-    const retryItems = [];
     for (const [index, item] of targets.entries()) {
       if (stopRequested) break;
-      if (helperBlocked && item.source === "chrome_native" && item.isOpen === false) {
-        retryItems.push(item);
-        continue;
-      }
       setStatus(`正在删除 ${index + 1}/${targets.length}：${item.title || "未命名标签组"}…`);
       try {
-        const result = await actOnItem("delete_saved_tab_group", item, { closedOnly }, allowNativeOpen);
+        const result = await actOnItem("delete_saved_tab_group", item, {});
         deleted += 1;
         if (result.closeError) closeError = `部分标签页未关闭：${result.closeError}`;
         selectedKeys.delete(item.key);
       } catch (err) {
-        if (err?.code === "OPENED_IN_OTHER_WINDOW") awaitingConfirmation += 1;
-        else failed += 1;
+        failed += 1;
         lastError = err?.message || String(err);
-        if (item.source === "chrome_native" && MANUAL_RETRY_ERRORS.has(err?.code)) retryItems.push(item);
-        if (HELPER_ERRORS.has(err?.code)) {
-          helperBlocked = true;
-        }
       }
     }
 
-    const pending = targets.length - deleted - failed - awaitingConfirmation;
+    const pending = targets.length - deleted - failed;
     busy = false;
     deleting = false;
     await refresh({ silent: true });
-    if (retryItems.length) guideRetry(retryItems, "删除");
-    if (failed || pending || awaitingConfirmation || closeError) {
+    if (failed || pending || closeError) {
       const parts = [`已删除 ${deleted} 个`];
       if (failed) parts.push(`失败 ${failed} 个`);
       if (pending) parts.push(`未处理 ${pending} 个`);
-      if (awaitingConfirmation) parts.push(`待核对 ${awaitingConfirmation} 个`);
       setStatus([parts.join("，"), lastError, closeError].filter(Boolean).join("。"), false);
     } else {
       setStatus(`已永久删除 ${deleted} 个标签组`, true);
@@ -640,76 +546,6 @@ export function bindSavedGroupsPanel({
     void refresh();
   });
 
-  useHelper.addEventListener("change", () => {
-    manualTask = null;
-    saveHelperPreference();
-    updateAxBanner();
-  });
-  void isSavedGroupsHelperEnabled(getStorage()).then((enabled) => {
-    if (!helperPreferenceChanged) useHelper.checked = enabled;
-    updateAxBanner();
-  });
-  getApi()?.storage?.onChanged?.addListener((changes, areaName) => {
-    if (areaName !== "local" || !(SAVED_GROUPS_USE_HELPER_KEY in changes)) return;
-    helperPreferenceChanged = true;
-    useHelper.checked = changes[SAVED_GROUPS_USE_HELPER_KEY].newValue === true;
-    updateAxBanner();
-  });
-
-  $("btn-sg-manual-cancel").addEventListener("click", () => {
-    manualTask = null;
-    updateAxBanner();
-    setStatus("");
-  });
-
-  $("btn-sg-manual-refresh").addEventListener("click", async () => {
-    if (busy) return;
-    const task = manualTask;
-    if (!task) {
-      $("sg-search").value = "";
-      searchQuery = "";
-      document.querySelector('button[data-sg-filter="open"]').click();
-      await refresh();
-      return;
-    }
-    busy = true;
-    renderList();
-    const targets = [];
-    try {
-      const loaded = await refresh({ silent: true });
-      if (!loaded || manualTask !== task) return;
-      for (const prev of task.items) {
-        const fresh = allItems.find((item) => item.key === prev.key && item.profile === prev.profile);
-        if (!fresh) {
-          setStatus(loadError || "所选标签组已不在列表中，请重新选择。", false);
-          if (!loadError) manualTask = null;
-          return;
-        }
-        if (fresh.source === "chrome_native" && !fresh.isOpen) {
-          setStatus(`尚未核对到「${fresh.title || "未命名标签组"}」的已打开标签。请在 Chrome 中打开所选原组后再试。`, false);
-          return;
-        }
-        if (fresh.title !== prev.title) {
-          manualTask = null;
-          setStatus("所选标签组已改名，请核对最新名称后重新选择。", false);
-          return;
-        }
-        // Keep the originally selected snapshot for the final delete recheck.
-        targets.push({ ...prev, isOpen: fresh.isOpen, openGroupId: fresh.openGroupId, openWindowId: fresh.openWindowId });
-      }
-      manualTask = null;
-    } catch (err) {
-      setStatus(`核对失败：${err?.message || err}`, false);
-      return;
-    } finally {
-      busy = false;
-      renderList();
-    }
-    if (task.action === "删除") await deleteItems(targets, false, false);
-    else if (task.action === "改名") await renameItem(targets[0], false);
-    else await openItem(targets[0], false);
-  });
-
   document.querySelectorAll("button[data-sg-filter]").forEach((btn) => {
     btn.addEventListener("click", () => {
       filterMode = btn.dataset.sgFilter || "all";
@@ -733,7 +569,7 @@ export function bindSavedGroupsPanel({
   });
 
   $("btn-sg-batch-delete")?.addEventListener("click", () => {
-    const targets = allItems.filter((item) => selectedKeys.has(item.key));
+    const targets = filteredItems().filter((item) => selectedKeys.has(item.key));
     void deleteItems(targets);
   });
 
@@ -744,58 +580,6 @@ export function bindSavedGroupsPanel({
 
   $("btn-sg-stash-open")?.addEventListener("click", () => {
     void stashOpenGroups();
-  });
-
-  $("btn-sg-ax-open")?.addEventListener("click", async () => {
-    setStatus("正在准备 PageLens Helper 并打开 macOS 辅助功能设置…");
-    const res = await callNative({ action: "request_accessibility" }).catch((err) => ({ ok: false, error: err?.message || String(err) }));
-    setAxState(res);
-    if (axState.trusted) {
-      setStatus("PageLens Helper 已获得 macOS 辅助功能权限。", true);
-    } else if (res?.openedSettings) {
-      setStatus("已打开系统设置 → 辅助功能。授权后请点「重新检测」。", true);
-    } else {
-      setStatus(axState.hint, false);
-    }
-  });
-
-  $("btn-sg-ax-reveal")?.addEventListener("click", async () => {
-    setStatus("正在访达中定位 PageLens Helper.app…");
-    const res = await callNative({ action: "reveal_helper" }).catch((err) => ({ ok: false, error: err?.message || String(err) }));
-    if (res?.ok) {
-      setStatus(`已在访达定位 ${res.helperAppPath || "~/.pagelens/PageLens Helper.app"}，可直接拖入「系统设置 → 辅助功能」列表后点「重新检测」。`, true);
-    } else {
-      setStatus(`定位失败：${res?.error || "未知错误"}`, false);
-    }
-  });
-
-  $("btn-sg-ax-recheck")?.addEventListener("click", async () => {
-    setStatus("正在重新检测 PageLens Helper…");
-    await checkAxStatus();
-    setStatus(axState.trusted ? "检测通过：PageLens Helper 已获得 macOS 辅助功能权限。" : axState.hint, axState.trusted);
-  });
-
-  $("btn-sg-ax-diagnose")?.addEventListener("click", async () => {
-    setStatus("正在诊断 Chrome 标签页分组菜单…");
-    const diag = await callNative({ action: "diagnose" }).catch((err) => ({ ok: false, error: err?.message || String(err) }));
-    setAxState(diag);
-    if (!diag?.ok || !axState.trusted) {
-      updateAxBanner(true);
-      setStatus(`诊断结果：${axState.hint}`, false);
-      return;
-    }
-    if (diag.error) {
-      setStatus(`诊断结果：${diag.error}`, false);
-      return;
-    }
-    const tgCount = (diag.tabGroupsButtons || []).length;
-    const appCount = (diag.appMenuButtons || []).length;
-    const sample = tgCount === 0 && appCount === 0 && Array.isArray(diag.sampleChromeButtons) && diag.sampleChromeButtons.length
-      ? `（可见按钮样本：${diag.sampleChromeButtons.slice(0, 8).join(" / ")}）`
-      : "";
-    const found = tgCount > 0 || appCount > 0;
-    const status = found ? "已找到菜单入口" : "未找到标签组菜单入口";
-    setStatus(`${status}：窗口「${diag.standardWindowTitle || "Chrome"}」· 标签页分组按钮 ${tgCount} 个 · 应用菜单按钮 ${appCount} 个${sample}`, found);
   });
 
   return { refresh, deleteItems, openItem, renameItem };

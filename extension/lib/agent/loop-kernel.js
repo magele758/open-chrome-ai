@@ -9,6 +9,7 @@ import {
 } from "../../vendor/agent-loop-mini.mjs";
 import { cloneHistory, repairMessages } from "./context.js";
 import { debugLog } from "../debug-log.js";
+import { estimateTokens, estimateToolCallTokens } from "../openai.js";
 import { MAX_TURNS, resolveMaxTurns } from "./loop.js";
 import {
   chromeMessageToParts,
@@ -33,6 +34,17 @@ export const CHROME_LAST_TURN_FALLBACK =
 function mapEndReason(reason) {
   if (reason === "end") return "stop";
   return String(reason || "stop");
+}
+
+export function modelOutputSample(result, durationMs) {
+  const reported = Number(result?.usage?.completionTokens);
+  const estimated = result?.outputTokensEstimated === true || !Number.isFinite(reported) || reported <= 0;
+  const reasoning = result?.reasoning;
+  const content = result?.content === reasoning ? "" : result?.content;
+  const tokens = estimated
+    ? estimateTokens(content) + estimateTokens(reasoning) + estimateToolCallTokens(result?.toolCalls || [])
+    : reported;
+  return { tokens, durationMs, estimated };
 }
 
 function seedHistory(store, sessionId, history) {
@@ -226,9 +238,11 @@ async function runKernelLoop(host, userText, options) {
               onChunk?.({ type: "reasoning_delta", text: delta });
               options.onReasoningDelta?.(delta);
             },
+            onToolCallOutput: options.onToolCallOutput,
           });
           const mapped = fromChromeModelResult(result);
           const durationMs = Date.now() - modelStart;
+          options.onModelOutput?.(modelOutputSample(result, durationMs));
           if (mapped.usage) {
             totalInputTokens += mapped.usage.inputTokens;
             totalOutputTokens += mapped.usage.outputTokens;

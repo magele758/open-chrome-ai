@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chatCompletionsUrl, completeChat, expandChatTokens, listRemoteModels, messageText, streamChat, streamTurn, testConnection } from "../lib/openai.js";
+import { chatCompletionsUrl, completeChat, estimateTokens, expandChatTokens, listRemoteModels, messageText, streamChat, streamTurn, testConnection } from "../lib/openai.js";
 import { resetPermissionPrompter, setPermissionPrompter } from "../lib/optional-permissions.js";
 import { summarizeTranscript } from "../lib/summarize-transcript.js";
 
@@ -189,21 +189,30 @@ assert.equal(streamed.toolCalls.length, 0);
 assert.equal(tracked.readsAfterDone, 0, "must not reader.read() after [DONE]");
 
 const deltas = [];
+const toolCounts = [];
 globalThis.fetch = async () => sseResponse([
   `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ id: "c1", function: { name: "extract_page", arguments: "{" } }] } }] })}\n\n`,
-  `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ function: { arguments: "}" } }] } }] })}\n\n`,
+  `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ function: { arguments: '"tabId":123456}' } }] } }] })}\n\n`,
   `data: ${JSON.stringify({ choices: [{ finish_reason: "stop", delta: {} }] })}\n\n`,
+  `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 20, completion_tokens: 15, total_tokens: 35 } })}\n\n`,
   "data: [DONE]\n\n",
 ], { close: false });
 const tooled = await withTimeout(
-  streamTurn(model, { messages: [], tools: [{ type: "function", function: { name: "extract_page" } }] }, (d) => deltas.push(d)),
+  streamTurn(model, {
+    messages: [], tools: [{ type: "function", function: { name: "extract_page" } }],
+    onToolCallOutput: (tokens) => toolCounts.push(tokens),
+  }, (d) => deltas.push(d)),
   400,
   "streamTurn hung on Gemini tool SSE",
 );
 assert.equal(tooled.toolCalls.length, 1);
 assert.equal(tooled.toolCalls[0].name, "extract_page");
-assert.equal(tooled.toolCalls[0].arguments, "{}");
+assert.equal(tooled.toolCalls[0].arguments, '{"tabId":123456}');
 assert.equal(tooled.finishReason, "tool_calls");
+assert.deepEqual(deltas, [], "function args must not become answer text");
+assert.deepEqual(toolCounts, [estimateTokens("extract_page{"), estimateTokens('extract_page{"tabId":123456}')]);
+assert.equal(tooled.usage.completionTokens, 15);
+assert.equal(tooled.outputTokensEstimated, false);
 
 const thoughtDeltas = [];
 globalThis.fetch = async () => sseResponse([
@@ -215,6 +224,7 @@ globalThis.fetch = async () => sseResponse([
 const thought = await streamTurn(model, { messages: [] }, (d) => thoughtDeltas.push(d));
 assert.equal(thought.content, "先看标题");
 assert.deepEqual(thoughtDeltas, ["先看", "标题"]);
+assert.equal(thought.outputTokensEstimated, true);
 
 globalThis.fetch = async () => Response.json({
   choices: [{ message: { content: "非流式正文" }, finish_reason: "stop" }],

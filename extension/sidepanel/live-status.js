@@ -1,15 +1,18 @@
-/** What a generating reply is doing, and how fast visible text is arriving. */
+/** Generation phase and Token telemetry for the current model turn. */
 
-const SAMPLE_GAP_MS = 400;
+import { estimateTokens } from "../lib/openai.js";
+
 const RATE_WINDOW_MS = 2500;
-const MIN_RATE_SPAN_S = 0.25;
+const MIN_RATE_SPAN_MS = 250;
 const SHORT_ELAPSED_MS = 10_000;
 
 const PHASE_LABEL = {
   waiting: "等待模型",
   thinking: "正在思考",
   writing: "正在写",
+  calling: "正在生成工具调用",
 };
+const outputByMessage = new WeakMap();
 
 export function runningToolName(trace) {
   const list = Array.isArray(trace) ? trace : [];
@@ -21,31 +24,93 @@ export function runningToolName(trace) {
   return "";
 }
 
-export function noteLiveSample(samples, chars, nowMs) {
+export function estimateLiveTokens({ answer, thinking }) {
+  return estimateTokens(answer === "…" ? "" : answer) + estimateTokens(thinking);
+}
+
+export function startLiveModelTurn(msg) {
+  const output = outputByMessage.get(msg) || { tokens: 0, estimated: false, lastRate: null };
+  output.turn = { answer: "", thinking: "", callTokens: 0, tokens: 0, firstOutput: null, samples: [], phase: "waiting" };
+  outputByMessage.set(msg, output);
+}
+
+export function noteLiveModelOutput(msg, kind, delta, now = Date.now()) {
+  if (!outputByMessage.get(msg)?.turn) startLiveModelTurn(msg);
+  const turn = outputByMessage.get(msg).turn;
+  const previousTokens = turn.tokens;
+  if (kind === "calling") turn.callTokens = Math.max(0, Number(delta) || 0);
+  if (kind === "thinking") turn.thinking += delta;
+  if (kind === "writing") turn.answer += delta;
+  turn.phase = kind;
+  turn.tokens = estimateLiveTokens(turn) + turn.callTokens;
+  if (turn.tokens === previousTokens) return;
+  turn.samples = noteLiveSample(turn.samples, turn.tokens, now);
+  if (!turn.firstOutput || turn.tokens < previousTokens) {
+    turn.firstOutput = turn.samples.at(-1) ?? null;
+  }
+}
+
+export function finishLiveModelTurn(msg, { tokens, durationMs, estimated }) {
+  if (!outputByMessage.get(msg)?.turn) startLiveModelTurn(msg);
+  const output = outputByMessage.get(msg);
+  const { turn } = output;
+  const count = tokens > 0 ? tokens : turn.tokens;
+  const isEstimate = Boolean(estimated || !(tokens > 0));
+  if (count > 0) {
+    output.tokens += count;
+    output.estimated ||= isEstimate;
+    const rate = sampleRate(turn.firstOutput, turn.samples.at(-1));
+    if (rate != null) {
+      output.lastRate = { rate, estimated: true, includesWait: false };
+    } else if (durationMs > 0) {
+      output.lastRate = { rate: count * 1000 / durationMs, estimated: isEstimate, includesWait: true };
+    } else {
+      output.lastRate = null;
+    }
+  }
+  output.turn = null;
+}
+
+export function liveModelOutput(msg, now) {
+  const output = outputByMessage.get(msg);
+  if (!output) return null;
+  const { turn } = output;
+  return {
+    phase: turn?.phase || "waiting",
+    tokens: output.tokens + (turn?.tokens || 0),
+    estimated: output.estimated || Boolean(turn?.tokens),
+    tokensPerSec: tokensPerSecond(turn?.samples, now),
+    lastRate: output.lastRate,
+  };
+}
+
+export function noteLiveSample(samples, tokens, nowMs) {
   const list = Array.isArray(samples) ? samples : [];
-  const count = Math.max(0, Number(chars) || 0);
+  const count = Math.max(0, Number(tokens) || 0);
+  if (!count) return [];
   const now = Number(nowMs) || 0;
   const last = list[list.length - 1];
-  if (last && last.chars === count && now - last.at < SAMPLE_GAP_MS) return list;
-  const cutoff = now - 8000;
+  if (last && count < last.tokens) return [{ at: now, tokens: count }];
+  if (last && last.tokens === count) return list;
+  const cutoff = now - RATE_WINDOW_MS;
   const next = list.filter((sample) => sample.at >= cutoff);
-  next.push({ at: now, chars: count });
+  next.push({ at: now, tokens: count });
   return next;
 }
 
-export function charsPerSecond(samples, nowMs) {
+export function tokensPerSecond(samples, nowMs) {
   const list = Array.isArray(samples) ? samples : [];
   const now = Number(nowMs) || 0;
-  const recent = list.filter((sample) => now - sample.at <= RATE_WINDOW_MS);
-  const span = recent.length >= 2 ? recent : list;
-  if (span.length < 2) return null;
-  const first = span[0];
-  const last = span[span.length - 1];
-  const dt = (last.at - first.at) / 1000;
-  if (dt < MIN_RATE_SPAN_S) return null;
-  const rate = (last.chars - first.chars) / dt;
-  if (!Number.isFinite(rate) || rate < 0) return null;
-  return Math.round(rate);
+  const span = list.filter((sample) => now - sample.at <= RATE_WINDOW_MS);
+  return sampleRate(span[0], span.at(-1));
+}
+
+function sampleRate(first, last) {
+  if (!first || !last) return null;
+  const durationMs = last.at - first.at;
+  if (durationMs < MIN_RATE_SPAN_MS) return null;
+  const rate = (last.tokens - first.tokens) * 1000 / durationMs;
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
 }
 
 export function formatLiveElapsed(ms) {
@@ -59,17 +124,27 @@ export function formatLiveElapsed(ms) {
   return `${minutes}m ${seconds}s`;
 }
 
-export function liveLines({ phase, toolName, elapsedMs, chars, charsPerSec, showDots }) {
-  const key = phase === "tool" || phase === "thinking" || phase === "writing" ? phase : "waiting";
-  const rate = Number.isFinite(charsPerSec) ? charsPerSec : null;
-  const count = Math.max(0, Number(chars) || 0);
+function formatRate(rate, estimated) {
+  if (!Number.isFinite(rate) || rate <= 0) return "";
+  if (rate < 0.1) return "<0.1 Token/秒";
+  return `${estimated ? "≈" : ""}${Number(rate.toFixed(1))} Token/秒`;
+}
+
+export function liveLines({ phase, toolName, elapsedMs, tokens, tokensPerSec, lastRate, estimated = true, showDots }) {
+  const key = phase === "tool" || Object.hasOwn(PHASE_LABEL, phase) ? phase : "waiting";
+  const active = key === "thinking" || key === "writing" || key === "calling";
+  const speed = active ? formatRate(tokensPerSec, true) : "";
+  const rate = formatRate(lastRate?.rate, lastRate?.estimated);
+  const previousSpeed = rate ? `${lastRate.includesWait ? "上轮整轮平均" : "上轮生成"} ${rate}` : "";
+  const count = Math.max(0, Number(tokens) || 0);
+  const elapsed = formatLiveElapsed(elapsedMs);
   return {
     phaseKey: key,
     phase: key === "tool" ? `正在调用 ${toolName || "工具"}` : PHASE_LABEL[key],
-    pace: rate == null ? formatLiveElapsed(elapsedMs) : `${rate} 字/秒`,
-    elapsed: formatLiveElapsed(elapsedMs),
-    speed: rate == null ? "还没有输出" : `${rate} 字/秒`,
-    chars: `${count} 字`,
+    pace: speed || (previousSpeed ? `${elapsed} · ${previousSpeed}` : elapsed),
+    elapsed,
+    speed: speed || previousSpeed || (count ? "—" : "还没有输出"),
+    tokens: `${count && estimated ? "≈" : ""}${count} Token`,
     toolName: toolName || "",
     showTool: key === "tool",
     showDots: Boolean(showDots),

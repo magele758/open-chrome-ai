@@ -137,6 +137,7 @@ test("总结文章 sends the complete original article in one model round even w
     await until(() => document.querySelector("#msgs")?.textContent.includes("已打开链接。") && !document.querySelector(".stream-live"), "separate explicit browser request");
     assert.ok(offeredNames(requests[1]).includes("open_tab"), "explicit navigation should remain available on the next request");
     assert.deepEqual(created, [externalUrl], "only the explicitly requested tab should open");
+    assert.deepEqual(grouped, [], "opening one requested link should leave the tab ungrouped");
   } finally {
     window.close();
   }

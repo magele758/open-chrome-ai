@@ -19,7 +19,7 @@ import {
   saveTabGroupRecord,
   updateSavedTabGroupRecord,
 } from "../lib/saved-tab-groups.js";
-import { createSavedTabGroupTools } from "../lib/agent/saved-tab-group-tools.js";
+import { createSavedTabGroupTools, deleteSingleNativeSavedGroup } from "../lib/agent/saved-tab-group-tools.js";
 import { createAgentTools, resolveActiveTools } from "../lib/agent/tools.js";
 import { READ_ONLY_TOOLS, isToolPrivileged, toolCategory } from "../lib/agent/trust/tool-classes.js";
 import { matchIrreversible } from "../lib/agent/trust/irreversible.js";
@@ -406,6 +406,7 @@ function buildSstable(entries, { snappy = true } = {}) {
 
   const mockChrome = {
     windows: {
+      getAll: async () => [...new Set([...openTabs.values()].map((tab) => tab.windowId))].map((id) => ({ id })),
       create: async ({ url }) => {
         const marker = await mockChrome.tabs.create({ url, active: true, windowId: 444 });
         return { id: 444, tabs: [marker] };
@@ -521,18 +522,30 @@ function buildSstable(entries, { snappy = true } = {}) {
       assert.ok(req.candidateGroups.some((g) => g.guid === req.guid && Array.isArray(g.urls)));
       assert.equal(req.title, target.title);
       const requestWindow = [...openTabs.values()].find((t) => t.title === req.windowMarker).windowId;
-      const windowId = axMode === "restore-in-new-window" ? 19 : requestWindow;
+      const windowId = {
+        "restore-in-new-window": 19,
+        "restore-in-existing-window": 20,
+        "restore-in-unverified-window": 21,
+      }[axMode] ?? requestWindow;
+      if (windowId !== requestWindow) assert.equal(req.allowNewWindow, true);
+      if (axMode === "restore-in-new-window") {
+        await mockChrome.tabs.create({ windowId, url: "https://keep.example/new-window" });
+      }
       const gid = nextGroupId++;
       nativeGuidByOpenId.set(gid, target.guid);
       openGroups.set(gid, { id: gid, windowId, title: target.title, color: target.color, collapsed: false });
-      target.sessionTabIds = [];
+      const sessionTabIds = [];
       for (const tab of target.tabs) {
         const tid = nextTabId++;
-        openTabs.set(tid, { id: tid, windowId, title: tab.title, url: tab.url, groupId: gid });
-        target.sessionTabIds.push(tid);
+        const live = { id: tid, windowId, title: tab.title, url: tab.url, groupId: gid };
+        if (axMode === "pending-unbound") Object.assign(live, { url: "about:blank", pendingUrl: tab.url, status: "loading" });
+        if (axMode === "loading-bound" || axMode === "restore-in-new-window") Object.assign(live, { url: "", status: "loading" });
+        openTabs.set(tid, live);
+        sessionTabIds.push(tid);
       }
-      target.sessionWindowId = windowId;
-      target.sessionUpdatedAt = Date.now();
+      if (axMode !== "pending-unbound" && axMode !== "restore-in-unverified-window") {
+        Object.assign(target, { sessionTabIds, sessionWindowId: windowId, sessionUpdatedAt: Date.now() });
+      }
       if (axMode === "flaky-list") failNextList = true;
       return { ok: true, candidateOpened: req.allowCandidate, via: "everything_menu", guid: req.guid, profile: req.profile, windowMarker: req.windowMarker };
     }
@@ -542,14 +555,19 @@ function buildSstable(entries, { snappy = true } = {}) {
   const tools = createSavedTabGroupTools({ getWindowId: () => 1 }, { api: mockChrome, storage, nativeCall });
   const run = async (name, args = {}) => JSON.parse(await tools.find((t) => t.name === name).execute(args));
 
-  // List saved groups (closedOnly filters out open native group)
+  // List returns every saved native group. Closed rows stay read-only.
   const allSaved = await run("list_saved_tab_groups", {});
   assert.equal(allSaved.chromeNative.count, 3);
   assert.equal(allSaved.chromeNative.groups.find((g) => g.guid === "ng-open").isOpen, true);
-  assert.equal(allSaved.chromeNative.groups.find((g) => g.guid === "ng-closed").isOpen, false);
+  for (const guid of ["ng-closed", "ng-closed-2"]) {
+    const row = allSaved.chromeNative.groups.find((g) => g.guid === guid);
+    assert.equal(row.isOpen, false);
+    assert.equal(row.openGroupId, undefined);
+  }
 
   const closedOnly = await run("list_saved_tab_groups", { source: "chrome_native", closedOnly: true });
-  assert.deepEqual(closedOnly.chromeNative.groups.map((g) => g.guid), ["ng-closed", "ng-closed-2"]);
+  assert.equal(closedOnly.code, "OPEN_IN_CHROME_REQUIRED");
+  assert.equal(closedOnly.ok, false);
 
   // A panel showing a stale row must never reopen a group behind the user's back.
   let panelWindowId = 1;
@@ -673,210 +691,147 @@ function buildSstable(entries, { snappy = true } = {}) {
   assert.equal(restored.group.title, "已收纳");
   assert.equal(restored.group.collapsed, true);
 
-  // Open closed Chrome native group via mode="recreate" (zero AX calls!)
+  // Closed native groups are not opened, copied, or deleted.
+  const tabsBeforeClosed = nextTabId;
   const axBefore = axCalls.length;
   const recreated = await run("open_saved_tab_group", { guid: "ng-closed", mode: "recreate" });
-  assert.equal(recreated.ok, true);
-  assert.equal(recreated.mode, "recreate");
-  assert.equal(axCalls.length, axBefore, "recreate mode does not invoke macOS Accessibility");
+  assert.equal(recreated.code, "OPEN_IN_CHROME_REQUIRED");
+  assert.equal(nextTabId, tabsBeforeClosed);
+  assert.equal(axCalls.length, axBefore);
 
-  // Update closed Chrome native group ng-closed-2 -> opens via AX, renames + adds URL
   const updatedNative = await run("update_saved_tab_group", {
     guid: "ng-closed-2",
     title: "TikTok MX 已改名",
     color: "pink",
     addUrls: ["https://shop.example/extra"],
   });
-  assert.equal(updatedNative.ok, true);
-  assert.equal(updatedNative.openedForUpdate, true);
-  assert.equal(updatedNative.group.title, "TikTok MX 已改名");
-  assert.equal(updatedNative.group.color, "pink");
-  assert.equal(updatedNative.addedTabIds.length, 1);
+  assert.equal(updatedNative.code, "OPEN_IN_CHROME_REQUIRED");
+  assert.equal(nativeStore.find((g) => g.guid === "ng-closed-2").title, "TikTok MX 888888");
 
-  // Open a closed group by verified profile/GUID, then ungroup and re-read it.
   nativeStore.push({ guid: "ng-del-1", title: "待删原生组", color: "red", tabCount: 1, tabs: [{ guid: "td1", title: "T", url: "https://t.example/" }], source: "chrome_native" });
-  const deletedAx = await run("delete_saved_tab_group", { guid: "ng-del-1" });
-  assert.equal(deletedAx.ok, true);
-  assert.equal(deletedAx.via, "open_then_close_tabs");
-  assert.equal(deletedAx.verifiedRemoved, true);
-  assert.equal(axCalls.at(-1).allowNewWindow, undefined, "ordinary window-scoped callers do not request a new window");
+  const deletedClosed = await run("delete_saved_tab_group", { guid: "ng-del-1" });
+  assert.equal(deletedClosed.code, "OPEN_IN_CHROME_REQUIRED");
+  assert.ok(nativeStore.some((g) => g.guid === "ng-del-1"));
 
-  // Chrome can restore the original in another window. Even if the request
-  // was confirmed earlier, hand back control before ungrouping at that destination.
-  axMode = "restore-in-new-window";
-  for (const menuMiss of [false, true]) {
-    const guid = menuMiss ? "concurrent-open-after-menu-miss" : "opened-in-new-window";
-    const row = { guid, title: guid, color: "blue", tabCount: 1, tabs: [{ url: `https://example.com/#${guid}` }] };
-    nativeStore.push(row);
-    let attempted = false;
-    let evidenceReads = 0;
-    const nativeCallWithSessionDelay = async (req) => {
-      const result = await nativeCall(req);
-      if (req.action === "open") {
-        assert.equal(req.allowNewWindow, true);
-        attempted = true;
-        // In the menu miss case a concurrent browser action restored the
-        // group, but the Helper itself never clicked a group command.
-        if (menuMiss) return { ok: false, code: "NOT_FOUND_IN_UI", error: "没有找到目标" };
-      } else if (attempted && req.action === "list") {
-        evidenceReads++;
-        if (evidenceReads === 1) result.groups.find((g) => g.guid === guid).sessionTabIds = [];
-      }
-      return result;
-    };
-    const panelTools = createSavedTabGroupTools({ getWindowId: () => 1, detectOpenedInOtherWindow: true }, {
-      api: mockChrome, storage, nativeCall: nativeCallWithSessionDelay,
-    });
-    const del = panelTools.find((tool) => tool.name === "delete_saved_tab_group");
-    const result = JSON.parse(await del.execute({ guid }));
-    assert.equal(result.code, menuMiss ? "NOT_FOUND_IN_UI" : "OPENED_IN_OTHER_WINDOW");
-    assert.equal(evidenceReads, menuMiss ? 0 : 2, "only a delivered menu action can match a fresh cross-window session binding");
-    assert.ok(nativeStore.includes(row) && openGroups.get(openTabs.get(row.sessionTabIds[0]).groupId).windowId === 19);
-    if (!menuMiss) {
-      const clickCount = axCalls.length;
-      assert.equal(JSON.parse(await del.execute({ guid, closedOnly: true })).code, "OPENED_IN_OTHER_WINDOW",
-        "a stale closed selection is recoverable when Chrome opened it in another window before the next Helper call");
-      assert.equal(axCalls.length, clickCount);
-      assert.ok(openTabs.has(row.sessionTabIds[0]));
-    }
-  }
-  axMode = "ok";
+  const elsewhere = { guid: "ng-elsewhere", title: "别处打开", color: "cyan", tabCount: 1, tabs: [{ url: "https://elsewhere.example/" }] };
+  nativeStore.push(elsewhere);
+  const elsewhereId = nextGroupId++;
+  const elsewhereTab = nextTabId++;
+  openGroups.set(elsewhereId, { id: elsewhereId, windowId: 8, title: elsewhere.title, color: elsewhere.color, collapsed: false });
+  openTabs.set(elsewhereTab, { id: elsewhereTab, windowId: 8, groupId: elsewhereId, url: elsewhere.tabs[0].url, title: "别处" });
+  nativeGuidByOpenId.set(elsewhereId, elsewhere.guid);
+  const elsewhereTools = createSavedTabGroupTools({ getWindowId: () => 1, detectOpenedInOtherWindow: true }, { api: mockChrome, storage, nativeCall });
+  const elsewhereDelete = JSON.parse(await elsewhereTools.find((t) => t.name === "delete_saved_tab_group").execute({ guid: elsewhere.guid }));
+  assert.equal(elsewhereDelete.code, "OPENED_IN_OTHER_WINDOW");
+  assert.ok(openTabs.has(elsewhereTab));
 
-  // A same-name open group with unrelated URLs must survive.
+  const boundTools = createSavedTabGroupTools({
+    getWindowId: () => 1,
+    expectedOpenGroup: { profile: "Default", guid: elsewhere.guid, id: elsewhereId, windowId: 8 },
+  }, { api: mockChrome, storage, nativeCall });
+  const deletedOpen = JSON.parse(await boundTools.find((t) => t.name === "delete_saved_tab_group").execute({ guid: elsewhere.guid }));
+  assert.equal(deletedOpen.ok, true);
+  assert.equal(deletedOpen.via, "ungroup_and_close_open_tabs");
+  assert.equal(deletedOpen.verifiedRemoved, true);
+  assert.deepEqual(deletedOpen.closedTabIds, [elsewhereTab]);
+
   nativeStore.push({ guid: "ng-del-2", title: "回退删组", color: "red", tabCount: 1, tabs: [{ guid: "td2", title: "T2", url: "https://t2.example/" }], source: "chrome_native" });
   openGroups.set(99, { id: 99, windowId: 1, title: "回退删组", color: "red" });
   openTabs.set(99, { id: 99, windowId: 1, groupId: 99, url: "https://unrelated.example/" });
   const deletedFallback = await run("delete_saved_tab_group", { guid: "ng-del-2" });
-  assert.equal(deletedFallback.ok, true);
-  assert.equal(deletedFallback.via, "open_then_close_tabs");
-  assert.equal(deletedFallback.closedTabIds.length, 1);
+  assert.equal(deletedFallback.code, "OPEN_IN_CHROME_REQUIRED");
+  assert.ok(nativeStore.some((g) => g.guid === "ng-del-2"));
   assert.ok(openGroups.has(99) && openTabs.has(99));
 
-  // Same-title records cannot be selected by menu order, even when requested by GUID.
-  const collision = { guid: "duplicate-1", title: "同名", color: "red", tabs: [{ url: "https://same.example" }], tabCount: 1 };
-  nativeStore.push(collision, { ...collision, guid: "duplicate-2" });
-  axMode = "wrong-duplicate";
-  const ungroupCount = tabOpLog.filter((entry) => entry.op === "ungroup").length;
-  assert.equal((await run("delete_saved_tab_group", { guid: collision.guid })).code, "CANDIDATE_MISMATCH");
-  assert.equal(tabOpLog.filter((entry) => entry.op === "ungroup").length, ungroupCount);
-  assert.ok(nativeStore.some((g) => g.guid === "duplicate-2") && nativeStore.some((g) => g.guid === "duplicate-1"));
-  assert.ok(![...openGroups.values()].some((g) => g.windowId === 444));
-  axMode = "ok";
-  assert.equal((await run("delete_saved_tab_group", { guid: collision.guid })).verifiedRemoved, true);
-  assert.ok(nativeStore.some((g) => g.guid === "duplicate-2"));
-  assert.ok(![...openTabs.values()].some((t) => t.windowId === 444));
-
-  // A move that leaves the opened group in the temporary window must not close
-  // that window before ungroup. Closing it would re-save the group.
-  const stuck = { guid: "stuck-1", title: "卡住的同名", color: "cyan", tabs: [{ url: "https://stuck.example/a" }], tabCount: 1 };
-  nativeStore.push(stuck, { guid: "stuck-2", title: "卡住的同名", color: "cyan", tabs: [{ url: "https://stuck.example/b" }], tabCount: 1 });
-  axMode = "sticky-window";
-  const windowsBeforeStuck = removedWindows.length;
-  const stuckResult = await run("delete_saved_tab_group", { guid: "stuck-1" });
-  assert.equal(stuckResult.verifiedRemoved, true);
-  assert.equal(removedWindows.length, windowsBeforeStuck, "temporary window stays open until the group has been moved or ungrouped");
-  assert.ok(nativeStore.some((g) => g.guid === "stuck-2"));
-  assert.equal(nativeStore.some((g) => g.guid === "stuck-1"), false);
-  axMode = "ok";
-
-  // One failed list during the duplicate poll is retried until the deadline.
-  const flaky = { guid: "flaky-1", title: "闪断同名", color: "yellow", tabs: [{ url: "https://flaky.example/a" }], tabCount: 1 };
-  nativeStore.push(flaky, { guid: "flaky-2", title: "闪断同名", color: "yellow", tabs: [{ url: "https://flaky.example/b" }], tabCount: 1 });
-  axMode = "flaky-list";
-  const flakyResult = await run("delete_saved_tab_group", { guid: "flaky-1" });
-  assert.equal(flakyResult.verifiedRemoved, true);
-  assert.equal(failNextList, false);
-  assert.ok(nativeStore.some((g) => g.guid === "flaky-2"));
-  axMode = "ok";
-
-  // An ungroup rejection must not close the group's pages.
+  const keep = { guid: "ng-keep-open", title: "保持打开", color: "purple", tabCount: 1, tabs: [{ url: "https://keep.example/" }] };
+  nativeStore.push(keep);
+  const keepGid = nextGroupId++;
+  const keepTid = nextTabId++;
+  openGroups.set(keepGid, { id: keepGid, windowId: 1, title: keep.title, color: keep.color });
+  openTabs.set(keepTid, { id: keepTid, windowId: 1, groupId: keepGid, url: keep.tabs[0].url });
+  nativeGuidByOpenId.set(keepGid, keep.guid);
   const savedUngroup = mockChrome.tabs.ungroup;
   mockChrome.tabs.ungroup = async () => { throw new Error("tabs are being dragged"); };
-  const failure = await run("delete_saved_tab_group", { guid: "duplicate-2" });
+  const failure = await run("delete_saved_tab_group", { guid: keep.guid });
   assert.equal(failure.code, "UNGROUP_FAILED");
-  assert.ok(nativeStore.some((g) => g.guid === "duplicate-2"));
-  assert.ok([...openGroups.values()].some((g) => g.title === "同名"));
+  assert.ok(nativeStore.some((g) => g.guid === keep.guid));
+  assert.ok(openTabs.has(keepTid));
   mockChrome.tabs.ungroup = savedUngroup;
 
-  // A failed verification read or a still-present GUID never counts as a deletion.
   for (const mode of ["unreadable", "sticky"]) {
     axMode = mode;
-    nativeStore.push({ guid: mode, title: mode, color: "green", tabs: [{ url: "https://test.example/" }], tabCount: 1 });
+    const row = { guid: mode, title: mode, color: "green", tabs: [{ url: `https://test.example/${mode}` }], tabCount: 1 };
+    nativeStore.push(row);
+    const gid = nextGroupId++;
+    const tid = nextTabId++;
+    openGroups.set(gid, { id: gid, windowId: 1, title: row.title, color: row.color });
+    openTabs.set(tid, { id: tid, windowId: 1, groupId: gid, url: row.tabs[0].url });
+    nativeGuidByOpenId.set(gid, row.guid);
     const unverified = await run("delete_saved_tab_group", { guid: mode });
     assert.equal(unverified.ok, false);
     assert.equal(unverified.code, mode === "unreadable" ? "DELETE_UNVERIFIED" : "NOT_REMOVED_AFTER_UI_ACTION");
     verificationReadFailure = false;
+    axMode = "ok";
   }
 
-  // Accessibility denied returns structured hint
-  nativeStore.push({ guid: "ng-del-3", title: "无权限删组", color: "grey", tabCount: 1, tabs: [{ guid: "td3", title: "T3", url: "https://t3.example/" }], source: "chrome_native" });
-  axMode = "denied";
-  const deniedAx = await run("delete_saved_tab_group", { guid: "ng-del-3" });
-  assert.equal(deniedAx.ok, false);
-  assert.equal(deniedAx.code, "ACCESSIBILITY_REQUIRED");
-
-  // Verify ungroup is called BEFORE remove when closing/deleting groups (prevents Chrome ghost saved groups)
-  assert.ok(tabOpLog.length >= 2, "recorded ungroup + remove ops");
-  const finalUngroup = tabOpLog.map((entry) => entry.op).lastIndexOf("ungroup");
-  const lastPair = tabOpLog.slice(finalUngroup, finalUngroup + 2);
-  assert.equal(lastPair[0].op, "ungroup", "ungroups tabs before removing");
-  assert.equal(lastPair[1].op, "remove", "removes tabs after ungrouping");
-
-  // list_saved_tab_groups supports limit + checkAccessibility
-  const limited = await run("list_saved_tab_groups", { source: "chrome_native", limit: 1, checkAccessibility: true, includeTabs: false });
-  assert.equal(limited.chromeNative.count, 1);
-  assert.equal(limited.chromeNative.truncated, true);
+  const limited = await run("list_saved_tab_groups", { source: "chrome_native", limit: 1, includeTabs: false });
   assert.equal(limited.chromeNative.groups[0].tabs, undefined);
-  assert.equal(limited.accessibility.trusted, false);
+  assert.ok(limited.chromeNative.count >= 1);
+  const deniedProbe = await run("list_saved_tab_groups", { checkAccessibility: true });
+  assert.equal(deniedProbe.code, "OPEN_IN_CHROME_REQUIRED");
 
-  // A PageLens ID list with a native source must never expand into "all native groups".
   const beforeBadBatch = nativeStore.length;
   const badBatch = await run("delete_saved_tab_group", { source: "chrome_native", ids: ["stg_abc"] });
   assert.equal(badBatch.code, "INVALID_SELECTOR");
   assert.equal(nativeStore.length, beforeBadBatch);
 
-  // Batch deletion via query + closedOnly (and short-circuits cleanly on ACCESSIBILITY_REQUIRED)
-  axMode = "ok";
+  const closedOnlyBatch = await run("delete_saved_tab_group", { source: "chrome_native", query: "TikTok", closedOnly: true });
+  assert.equal(closedOnlyBatch.code, "OPEN_IN_CHROME_REQUIRED");
+
+  const batchOpen = { guid: "ng-batch-open", title: "Batch Open", color: "blue", tabCount: 1, tabs: [{ url: "https://batch-open.example/" }] };
   nativeStore.push(
-    { guid: "ng-batch-1", title: "PageLens · MX 100", color: "green", tabCount: 1, tabs: [{ guid: "b1", title: "B1", url: "https://b1.example/" }], source: "chrome_native" },
-    { guid: "ng-batch-2", title: "PageLens · MX 200", color: "green", tabCount: 1, tabs: [{ guid: "b2", title: "B2", url: "https://b2.example/" }], source: "chrome_native" },
+    batchOpen,
+    { guid: "ng-batch-closed", title: "Batch Closed", color: "grey", tabCount: 1, tabs: [{ url: "https://batch-closed.example/" }] },
   );
-  const batchRes = await run("delete_saved_tab_group", { source: "chrome_native", query: "PageLens · MX", closedOnly: true });
-  assert.equal(batchRes.ok, true);
+  const batchGid = nextGroupId++;
+  const batchTid = nextTabId++;
+  openGroups.set(batchGid, { id: batchGid, windowId: 1, title: batchOpen.title, color: batchOpen.color });
+  openTabs.set(batchTid, { id: batchTid, windowId: 1, groupId: batchGid, url: batchOpen.tabs[0].url });
+  nativeGuidByOpenId.set(batchGid, batchOpen.guid);
+  const batchRes = await run("delete_saved_tab_group", { guids: ["ng-batch-open", "ng-batch-closed"] });
   assert.equal(batchRes.batch, true);
-  assert.equal(batchRes.deletedCount, 2);
-  assert.equal(batchRes.failedCount, 0);
-  assert.ok(!nativeStore.some((g) => g.guid.startsWith("ng-batch-")), "batch targets deleted");
+  assert.equal(batchRes.deletedCount, 1);
+  assert.equal(batchRes.failedCount, 1);
+  assert.equal(batchRes.results.find((r) => r.guid === "ng-batch-closed").code, "OPEN_IN_CHROME_REQUIRED");
+  assert.ok(!nativeStore.some((g) => g.guid === "ng-batch-open"));
+  assert.ok(nativeStore.some((g) => g.guid === "ng-batch-closed"));
 
-  // Batch deletion short-circuits on ACCESSIBILITY_REQUIRED instead of repeating failures
-  nativeStore.push(
-    { guid: "ng-deny-1", title: "Deny Batch 1", color: "grey", tabCount: 1, tabs: [{ guid: "d1", title: "D1", url: "https://d1.example/" }], source: "chrome_native" },
-    { guid: "ng-deny-2", title: "Deny Batch 2", color: "grey", tabCount: 1, tabs: [{ guid: "d2", title: "D2", url: "https://d2.example/" }], source: "chrome_native" },
-  );
-  axMode = "denied";
-  const deniedBatch = await run("delete_saved_tab_group", { guids: ["ng-deny-1", "ng-deny-2"] });
-  assert.equal(deniedBatch.ok, false);
-  assert.equal(deniedBatch.code, "ACCESSIBILITY_REQUIRED");
-  assert.equal(deniedBatch.results.length, 1, "short-circuits batch on missing Accessibility");
-
-  // An existing chat sees changes made in the sidebar without recreating its tools.
   mockChrome.runtime = {
     id: "a".repeat(32),
     sendNativeMessage: async (_name, msg) => ({ ...await nativeCall(msg), profileMarker: msg.profileMarker }),
   };
   const chatTools = createAgentTools({ getWindowId: () => 1, getTabId: () => 1, settings: {} });
   const chat = async (name, args) => JSON.parse(await chatTools.find(t => t.name === name).execute(args));
-  const target = { guid: "ng-deny-1" };
-  const beforeChat = axCalls.length;
-  assert.equal((await chat("delete_saved_tab_group", target)).code, "OPEN_IN_CHROME_REQUIRED");
-  assert.equal(axCalls.length, beforeChat, "the default preference does not launch Helper");
-  await storage.set({ [SAVED_GROUPS_USE_HELPER_KEY]: true });
-  assert.equal((await chat("open_saved_tab_group", target)).code, "ACCESSIBILITY_REQUIRED");
-  assert.equal(axCalls.length, beforeChat + 1, "chat can use Helper after opt-in");
-  await storage.set({ [SAVED_GROUPS_USE_HELPER_KEY]: false });
-  assert.equal((await chat("update_saved_tab_group", { ...target, title: "Test" })).code, "OPEN_IN_CHROME_REQUIRED");
-  assert.equal((await chat("open_saved_tab_group", { ...target, mode: "recreate" })).mode, "recreate");
-  assert.equal(axCalls.length, beforeChat + 1, "explicitly rebuilding a copy does not need Helper");
+  assert.equal((await chat("delete_saved_tab_group", { guid: "ng-closed" })).code, "OPEN_IN_CHROME_REQUIRED");
+  assert.equal((await chat("open_saved_tab_group", { guid: "ng-closed" })).code, "OPEN_IN_CHROME_REQUIRED");
+  assert.equal((await chat("update_saved_tab_group", { guid: "ng-closed", title: "Test" })).code, "OPEN_IN_CHROME_REQUIRED");
+  assert.equal((await chat("open_saved_tab_group", { guid: "ng-closed", mode: "recreate" })).code, "OPEN_IN_CHROME_REQUIRED");
+  assert.equal(axCalls.length, axBefore);
+
+  const deleteClosed = (target) => deleteSingleNativeSavedGroup({
+    chromeApi: mockChrome, callNative: nativeCall, target: structuredClone(target), profile: "Default",
+    ctx: { getWindowId: () => 1 },
+  });
+  const closedRow = nativeStore.find((group) => group.guid === "ng-closed");
+  const beforeUngroup = tabOpLog.filter(({ op }) => op === "ungroup").length;
+  const refused = await deleteClosed(closedRow);
+  assert.equal(refused.code, "OPEN_IN_CHROME_REQUIRED");
+  assert.match(refused.error, /请先在 Chrome 中打开该组/);
+  assert.ok(nativeStore.includes(closedRow));
+  assert.equal(tabOpLog.filter(({ op }) => op === "ungroup").length, beforeUngroup);
+  assert.ok(![...openTabs.values()].some((tab) => String(tab.title || "").startsWith("PageLens-")));
+  assert.equal(axCalls.filter((call) => call.action === "open").length, 0);
+  assert.ok(openTabs.has(keepTid), "unrelated open groups are untouched");
 }
 
 // =========================================================================
@@ -1005,15 +960,24 @@ function buildSstable(entries, { snappy = true } = {}) {
   // Bridge list_saved_tab_groups hides both private native and private pagelens groups
   const listed = await call("list_saved_tab_groups", {}, asOp);
   assert.equal(listed.ok, true);
-  assert.deepEqual(listed.result.chromeNative.groups.map((g) => g.guid), ["nat_ok"]);
+  const natOk = listed.result.chromeNative.groups.find((g) => g.guid === "nat_ok");
+  assert.equal(natOk.isOpen, false, "a closed native group is listed read-only");
+  assert.equal(natOk.openGroupId, undefined);
+  assert.equal(listed.result.chromeNative.groups.find((g) => g.guid === "nat_priv"), undefined);
   assert.deepEqual(listed.result.pagelens.groups.map((g) => g.id), ["stg_ok"]);
   assert.ok(!JSON.stringify(listed.result).includes("bank.example"));
 
   const queryOpenGroups = env.tabGroups.query;
   env.tabGroups.query = async () => { throw new Error("Disconnected"); };
   const unknownOpen = await call("list_saved_tab_groups", { source: "chrome_native" }, asOp);
-  assert.equal(unknownOpen.result.chromeNative.groups[0].isOpen, null);
-  assert.equal((await call("list_saved_tab_groups", { source: "chrome_native", closedOnly: true }, asOp)).result.chromeNative.count, 0);
+  assert.equal(unknownOpen.result.chromeNative.ok, true);
+  assert.equal(unknownOpen.result.chromeNative.openState, "unknown");
+  assert.match(unknownOpen.result.chromeNative.warning, /无法核对/);
+  const unknownNat = unknownOpen.result.chromeNative.groups.find((g) => g.guid === "nat_ok");
+  assert.equal(unknownNat.isOpen, false);
+  assert.equal(unknownNat.openGroupId, undefined);
+  assert.ok(!JSON.stringify(unknownOpen.result).includes("bank.example"));
+  assert.equal((await call("list_saved_tab_groups", { source: "chrome_native", closedOnly: true }, asOp)).error.code, ERROR_CODES.BAD_ARGS);
   env.tabGroups.query = queryOpenGroups;
 
   // Cannot open or update private saved groups
@@ -1032,7 +996,8 @@ function buildSstable(entries, { snappy = true } = {}) {
   const privateHomonym = { ...nativeMockGroups[1], title: nativeMockGroups[0].title, guid: "private-homonym" };
   nativeMockGroups.push(privateHomonym);
   const unsafeOpen = await call("open_saved_tab_group", { guid: "nat_ok" }, asOp);
-  assert.equal(unsafeOpen.error.code, ERROR_CODES.ORIGIN_NOT_ALLOWED, "every possible AX candidate must be authorized before opening");
+  assert.equal(unsafeOpen.error.code, ERROR_CODES.TOOL_FAILED, "a closed native group is not opened");
+  assert.equal(unsafeOpen.error.details?.code, "OPEN_IN_CHROME_REQUIRED");
   assert.equal(TABS.size, 0);
   nativeMockGroups.pop();
 

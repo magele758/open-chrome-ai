@@ -1,10 +1,10 @@
 /**
  * 已保存标签组（Saved Tab Groups）增删改查工具：
  *  - Chrome 原生已保存标签组（source: "chrome_native"）：
- *      查：通过 Native Host 只读解析 Chrome profile 的 Sync Data/LevelDB（零写盘、不加锁）；
+ *      查：通过 Native Host 只读解析 Chrome profile 的 Sync Data/LevelDB（零写盘、不加锁），返回全部已保存组；未打开的组 isOpen 为 false；
  *      增：通过 Chrome 原生 tabs.group + tabGroups.update 创建（Chrome 自动保存）；
- *      开 / 改 / 删（已关闭的原生组）：通过 Native Host 调用 macOS 辅助功能操控 Chrome 原生「标签组」菜单，
- *      或对已打开的组直接走 chrome.tabGroups / chrome.tabs API。
+ *      改 / 删：通过 chrome.tabGroups / chrome.tabs 操作已打开的组。
+ *      未打开的组只列出，不打开、不改名、不删除。
  *  - PageLens 插件内保存组库（source: "pagelens"，chrome.storage.local）：
  *      零系统权限、跨会话持久化的完整增删改查 + 一键收纳（保存并关闭）/ 一键恢复为 Chrome 标签组。
  */
@@ -19,7 +19,6 @@ import {
   saveTabGroupRecord,
   updateSavedTabGroupRecord,
 } from "../saved-tab-groups.js";
-import { requestFocusedNativeOpen, requestTemporaryMarker } from "./saved-group-focus.js";
 import { groupInWindow } from "../window-scope.js";
 import {
   TAB_GROUP_COLORS,
@@ -114,6 +113,15 @@ function nativeFailure(code, error, hint) {
   return { ok: false, source: "chrome_native", code, error, ...(hint ? { hint } : {}) };
 }
 
+export const CLOSED_NATIVE_MESSAGE = "此操作需要已打开的 Chrome 保存组。请先在 Chrome 中打开该组。";
+
+function retiredSavedGroupRequest(args) {
+  if (args?.closedOnly === true || args?.checkAccessibility === true || args?.requestAccessibility === true || args?.diagnoseUi === true) {
+    return nativeFailure("OPEN_IN_CHROME_REQUIRED", CLOSED_NATIVE_MESSAGE);
+  }
+  return null;
+}
+
 async function createChromeGroupFromUrls(chromeApi, { urls, title, color, collapsed = false, windowId }) {
   const validUrls = [];
   for (const raw of urls) {
@@ -154,139 +162,12 @@ async function createChromeGroupFromUrls(chromeApi, { urls, title, color, collap
   return { group: compactTabGroup(group || { id: groupId, windowId: targetWin, ...props }), tabIds };
 }
 
-function menuNames(group) {
-  const title = (group.title || "").trim();
-  const n = group.tabCount;
-  return title ? [title] : [`${n} ${n === 1 ? "tab" : "tabs"}`, `${n} 个标签页`, `${n}个标签页`];
-}
-
-async function createMarker(chromeApi, windowId, temporary) {
-  const title = `PageLens-${crypto.randomUUID()}`;
-  const page = `<meta charset="utf-8"><title>${title}</title>PageLens 正在打开已保存的标签组…`;
-  const url = `data:text/html;charset=utf-8,${encodeURIComponent(page)}`;
-  if (temporary && typeof chromeApi.runtime?.sendMessage === "function") {
-    // windows.create from the side panel can hang before its callback, even when unfocused.
-    const created = await requestTemporaryMarker(chromeApi, { title, url, panelWindowId: windowId });
-    if (!created?.ok || created.tab?.id == null) {
-      return { tab: null, title, url, code: created?.code, error: created?.error };
-    }
-    return { tab: created.tab, title, url };
-  }
-  if (temporary) {
-    // Focusing another window from the side panel freezes the panel before the callback.
-    const canRetarget = typeof chromeApi.tabs?.update === "function";
-    const win = await chromeApi.windows.create({
-      type: "normal",
-      url: canRetarget ? "about:blank" : url,
-      focused: false,
-    });
-    try {
-      const tabs = win?.tabs?.length ? win.tabs : await chromeApi.tabs.query({ windowId: win.id });
-      let tab = canRetarget
-        ? tabs?.[0]
-        : tabs?.find((t) => t.url === url || t.pendingUrl === url || t.title === title);
-      if (canRetarget && tab?.id != null) {
-        const updated = await chromeApi.tabs.update(tab.id, { url, active: true });
-        tab = updated ? { ...tab, ...updated, windowId: updated.windowId ?? tab.windowId ?? win.id } : null;
-      }
-      if (!tab?.id) {
-        if (win?.id != null) await chromeApi.windows.remove(win.id);
-        return { tab: null, title, url };
-      }
-      if (tab.windowId == null) tab = { ...tab, windowId: win.id };
-      return { tab, title, url };
-    } catch (err) {
-      if (win?.id != null) await chromeApi.windows.remove(win.id).catch(() => {});
-      throw err;
-    }
-  }
-  const tab = await chromeApi.tabs.create({ active: true, url, ...(windowId != null ? { windowId } : {}) });
-  return { tab, title, url };
-}
-
 function openedInOtherWindow(target, windowId) {
   return nativeFailure("OPENED_IN_OTHER_WINDOW",
     `Chrome 已在窗口 ${windowId} 打开「${target.title || "未命名标签组"}」。请在侧栏核对后继续。`);
 }
 
-async function waitForNativeOpen({ chromeApi, callNative, target, nativeList, beforeIds, marker, peers, cleanupIds, detectOpenedInOtherWindow, panelWindowId }) {
-  let tab = marker.tab;
-  const windowId = tab.windowId;
-  const started = Date.now();
-  while (tab?.title !== marker.title && Date.now() - started < 4000) {
-    await sleep(100);
-    tab = await chromeApi.tabs.get(marker.tab.id);
-  }
-  if (tab?.title !== marker.title) return nativeFailure("WINDOW_NOT_FOUND", "无法识别本次操作所属的 Chrome 窗口。");
-  const duplicate = peers.length > 1;
-  const profile = nativeList.profile;
-  const result = await requestFocusedNativeOpen(chromeApi, callNative, {
-    action: "open", profile, guid: target.guid, title: target.title, tabCount: target.tabCount,
-    windowMarker: marker.title, allowCandidate: duplicate,
-    ...(detectOpenedInOtherWindow ? { allowNewWindow: true } : {}),
-    candidateGroups: peers.map((g) => ({ guid: g.guid, title: g.title, color: g.color, urls: g.tabs.map((t) => t.url).sort() })),
-  }, windowId, panelWindowId);
-  if (!result?.ok) return nativeFailure(result?.code || "OPEN_FAILED", result?.error || "未能打开 Chrome 原生保存组。", result?.hint);
-  if (result.guid !== target.guid || result.profile !== profile || result.windowMarker !== marker.title || (duplicate && !result.candidateOpened)) {
-    return nativeFailure("NATIVE_TARGET_UNVERIFIED", "本机助手未确认目标窗口和保存组，请更新本机助手后重试。");
-  }
-
-  const requestedSignature = groupSignature(target, target.tabs);
-  const deadline = Date.now() + (duplicate || detectOpenedInOtherWindow ? 8000 : 4000);
-  do {
-    const { openGroups, byGroup } = await fetchOpenGroupSnapshot(chromeApi);
-    const newGroups = openGroups.filter((g) => !beforeIds.has(g.id));
-    const candidates = newGroups.filter((g) => g.windowId === windowId);
-    // Chrome can dispatch a menu command from the marked window but restore
-    // the saved group elsewhere. A new group with the same contents alone
-    // cannot establish which GUID Chrome restored in another window.
-    const checkOtherWindow = detectOpenedInOtherWindow && requestedSignature && newGroups.some((g) =>
-      g.windowId !== windowId && groupSignature(g, byGroup.get(g.id) || []) === requestedSignature);
-    const needsLiveList = checkOtherWindow || (duplicate && candidates.length === 1);
-    const fresh = needsLiveList
-      ? await callNative({ action: "list", profile }).catch(() => null) : nativeList;
-    // A transient list failure is not evidence the GUID is gone. Keep waiting
-    // until the existing deadline. A successful list that lacks the GUID stops.
-    if (needsLiveList && (!fresh?.ok || fresh.profile !== profile)) {
-      if (Date.now() >= deadline) break;
-      await sleep(250);
-      continue;
-    }
-    const record = fresh?.ok && fresh.profile === profile && fresh.groups?.find((g) => g.guid === target.guid);
-    if (!record) return nativeFailure("NATIVE_READ_FAILED", fresh?.error || "无法核对当前 Chrome 配置中的保存组。");
-    const matched = matchOpenGroupForNative(record, openGroups, byGroup, fresh.groups);
-    if (checkOtherWindow && matched && matched.windowId !== windowId && !beforeIds.has(matched.id) &&
-        groupSignature(matched, byGroup.get(matched.id)) === requestedSignature && record.sessionUpdatedAt >= started &&
-        record.sessionWindowId === matched.windowId && sameMembers(record.sessionTabIds, byGroup.get(matched.id))) {
-      return openedInOtherWindow(target, matched.windowId);
-    }
-    if (candidates.length === 1) {
-      const candidate = candidates[0];
-      const members = byGroup.get(candidate.id) || [];
-      const signature = groupSignature(candidate, members);
-      if (duplicate && signature && cleanupIds.size === 1 && peers.some((p) => groupSignature(p, p.tabs) === signature)) {
-        for (const t of members) cleanupIds.add(t.id);
-      }
-      // Identical saved groups need the GUID-to-tab mapping that Chrome flushes
-      // into the current session after opening. No menu ordinal authorizes a write.
-      if (duplicate && fresh.groups.some((g) => g.guid !== target.guid && g.sessionUpdatedAt >= started &&
-          g.sessionWindowId === windowId && sameMembers(g.sessionTabIds, members))) {
-        return nativeFailure("CANDIDATE_MISMATCH", "Chrome 打开了另一个同名组，已停止操作。可先在 Chrome 中打开目标组再重试。");
-      }
-      const identical = fresh.groups.some((g) => g.guid !== target.guid && groupSignature(g, g.tabs || []) === groupSignature(target, target.tabs));
-      if (matched?.id === candidate.id && (!identical || record.sessionUpdatedAt >= started)) {
-        // These ids were added so a failed check can close the temporary window.
-        // On success they must stay open until ungroup; closing that window re-saves the group.
-        for (const t of members) cleanupIds.delete(t.id);
-        return { ok: true, group: matched, alreadyOpen: false, via: result.via, tabIds: members.map((t) => t.id) };
-      }
-    }
-    await sleep(250);
-  } while (Date.now() < deadline);
-  return nativeFailure("OPEN_UNVERIFIED", "未能核对所选 GUID 与打开的标签组。请在 Chrome 中打开目标组，刷新列表后重试。");
-}
-
-export async function openNativeSavedGroup({ chromeApi, callNative, target, nativeList, ctx = {}, closedOnly = false }) {
+export async function openNativeSavedGroup({ chromeApi, callNative, target, nativeList, ctx = {} }) {
   const snapshot = await fetchOpenGroupSnapshot(chromeApi);
   let windowId = ctx.getWindowId?.();
   const already = matchOpenGroupForNative(target, snapshot.openGroups, snapshot.byGroup, nativeList.groups);
@@ -333,58 +214,10 @@ export async function openNativeSavedGroup({ chromeApi, callNative, target, nati
         !conflictsWithSession(target, already, snapshot.byGroup.get(already.id))) {
       return openedInOtherWindow(target, already.windowId);
     }
-    if (closedOnly) return nativeFailure("ALREADY_OPEN", "该保存组已打开，已跳过仅限关闭组的操作。");
     if (!expected && windowId != null && already.windowId !== windowId) return nativeFailure("WINDOW_SCOPE", "标签组不在任务所属窗口。");
     return { ok: true, group: already, alreadyOpen: true };
   }
-  if (ctx.allowNativeOpen === false || (ctx.isHelperEnabled && !(await ctx.isHelperEnabled()))) {
-    return nativeFailure("OPEN_IN_CHROME_REQUIRED", "还未核对到已打开的目标组。请从 Chrome 的标签页分组菜单打开它，再点「刷新已打开的组」。");
-  }
-  if (nativeList.supportsBoundOpen !== true || !nativeList.profile) {
-    return nativeFailure("NATIVE_HOST_UPDATE_REQUIRED", "当前本机助手无法按窗口打开指定保存组，请重新安装或更新 PageLens 本机助手。");
-  }
-  const names = menuNames(target);
-  const peers = nativeList.groups.filter((g) => g.tabCount > 0 && menuNames(g).some((name) => names.includes(name)));
-  const temporary = peers.length > 1;
-  if (temporary) {
-    for (const peer of peers) await ctx.authorizeNativeCandidate?.(peer);
-    if (windowId == null) windowId = (await chromeApi.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.windowId;
-    if (windowId == null || !chromeApi.windows?.create || !chromeApi.windows?.remove || !chromeApi.tabGroups?.move) {
-      return nativeFailure("AMBIGUOUS_TARGET", "当前环境无法核对同名保存组。请先在 Chrome 中打开目标组后重试。");
-    }
-  }
-  const beforeIds = new Set(snapshot.openGroups.map((g) => g.id));
-  const marker = await createMarker(chromeApi, windowId, temporary);
-  if (!marker.tab) return nativeFailure(marker.code || "WINDOW_NOT_FOUND", marker.error || "未找到用于打开标签组的临时页。");
-  const cleanupIds = new Set([marker.tab.id]);
-  try {
-    if (!temporary && chromeApi.windows?.update) await chromeApi.windows.update(marker.tab.windowId, { focused: true });
-    const opened = await waitForNativeOpen({
-      chromeApi, callNative, target, nativeList, beforeIds, marker, peers, cleanupIds,
-      detectOpenedInOtherWindow: ctx.detectOpenedInOtherWindow === true,
-      panelWindowId: windowId,
-    });
-    if (opened.ok && temporary) {
-      opened.group = await chromeApi.tabGroups.move(opened.group.id, { windowId, index: -1 });
-    }
-    return opened;
-  } finally {
-    const markerTab = await chromeApi.tabs.get(marker.tab.id).catch(() => null);
-    const stillMarker = markerTab && (markerTab.pendingUrl || markerTab.url) === marker.url;
-    if (temporary) {
-      // Closing an isolated window keeps its groups saved. Never close unrelated
-      // tabs that appeared in that window while the menu action was running.
-      const tabs = (await chromeApi.tabs.query({ windowId: marker.tab.windowId }).catch(() => []))
-        .filter((t) => t.windowId === marker.tab.windowId);
-      if (stillMarker && tabs.length && tabs.every((t) => cleanupIds.has(t.id))) {
-        await chromeApi.windows.remove(marker.tab.windowId).catch(() => {});
-      } else if (stillMarker) {
-        await chromeApi.tabs.remove(marker.tab.id).catch(() => {});
-      }
-    } else if (stillMarker) {
-      await chromeApi.tabs.remove(marker.tab.id).catch(() => {});
-    }
-  }
+  return nativeFailure("OPEN_IN_CHROME_REQUIRED", CLOSED_NATIVE_MESSAGE);
 }
 
 async function verifySavedRecord(callNative, guid, profile, matches) {
@@ -409,7 +242,7 @@ export async function verifyNativeGroupUpdated(callNative, guid, profile, group,
   return verified.matched === true;
 }
 
-export async function deleteSingleNativeSavedGroup({ chromeApi, callNative, target, profile, closedOnly, ctx = {}, authorizeOpenGroup }) {
+export async function deleteSingleNativeSavedGroup({ chromeApi, callNative, target, profile, ctx = {}, authorizeOpenGroup }) {
   const list = () => callNative({ action: "list", profile }).catch(() => null);
   const nativeList = await list();
   if (!nativeList?.ok || !Array.isArray(nativeList.groups) || !nativeList.profile || (profile && profile !== nativeList.profile)) {
@@ -424,8 +257,8 @@ export async function deleteSingleNativeSavedGroup({ chromeApi, callNative, targ
   if (groupSignature(current, current.tabs) !== groupSignature(target, target.tabs || [])) {
     return nativeFailure("GROUP_CHANGED", "该保存组已发生变化，请刷新列表后重试。");
   }
-  const opened = await openNativeSavedGroup({ chromeApi, callNative, target: current, nativeList, ctx, closedOnly });
-  if (!opened.ok) return opened;
+  const opened = await openNativeSavedGroup({ chromeApi, callNative, target: current, nativeList, ctx });
+  if (!opened.ok) return { ...opened, guid: current.guid, title: current.title };
   const fresh = await list();
   if (!fresh?.ok || !Array.isArray(fresh.groups) || fresh.profile !== profile) {
     return nativeFailure("NATIVE_READ_FAILED", fresh?.error || "无法重新核对目标保存组。");
@@ -434,10 +267,9 @@ export async function deleteSingleNativeSavedGroup({ chromeApi, callNative, targ
   const { openGroups, byGroup } = await fetchOpenGroupSnapshot(chromeApi);
   const matched = openGroups.find((g) => g.id === opened.group.id && g.windowId === opened.group.windowId);
   const tabs = matched ? byGroup.get(matched.id) || [] : [];
-  const stillMatched = liveTarget && matched && (sameMembers(opened.tabIds, tabs) ||
-    matchOpenGroupForNative(liveTarget, openGroups, byGroup, fresh.groups)?.id === matched.id);
+  const stillMatched = liveTarget && matched &&
+    matchOpenGroupForNative(liveTarget, openGroups, byGroup, fresh.groups)?.id === matched.id;
   if (!stillMatched || (ctx.expectedOpenGroup && conflictsWithSession(liveTarget, matched, tabs)) ||
-      groupSignature(matched, tabs) !== groupSignature(current, current.tabs) ||
       groupSignature(liveTarget, liveTarget.tabs) !== groupSignature(current, current.tabs)) {
     return nativeFailure("GROUP_CHANGED", "标签组已变化，无法安全删除，请刷新列表后重试。");
   }
@@ -466,7 +298,7 @@ export async function deleteSingleNativeSavedGroup({ chromeApi, callNative, targ
   );
   return {
     ok: true, source: "chrome_native", guid: current.guid, title: current.title, verifiedRemoved: true,
-    via: opened.alreadyOpen ? "ungroup_and_close_open_tabs" : "open_then_close_tabs",
+    via: "ungroup_and_close_open_tabs",
     ...(closeError ? { closeError } : { closedTabIds: ids }),
   };
 }
@@ -493,43 +325,31 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
     {
       name: "list_saved_tab_groups",
       description:
-        "查询所有「已保存的标签组」（含已关闭未打开的组）：默认同时返回 Chrome 原生保存组（经 Native Host 只读解析 Sync Data/LevelDB，标明 isOpen）与 PageLens 插件内保存组库。适合查「有哪些保存但没打开的标签组」。",
+        "查询 Chrome 原生保存组和 PageLens 插件内保存组库。未打开的 Chrome 保存组也会列出，isOpen 为 false。Chrome 原生组经 Native Host 只读解析 Sync Data/LevelDB，再与当前会话中的打开组核对。",
       parameters: obj({
         source: {
           type: "string",
           enum: ["all", "chrome_native", "pagelens"],
-          description: "查询来源：all（默认，同时查原生和插件库）、chrome_native（仅 Chrome 原生保存组）、pagelens（仅插件内保存库）",
+          description: "查询来源：all（默认，同时查原生保存组和插件库）、chrome_native（Chrome 原生保存组，含未打开）、pagelens（仅插件内保存库）",
         },
         query: { type: "string", description: "按组标题或组内标签标题/URL 子串过滤" },
         color: { type: "string", enum: TAB_GROUP_COLORS, description: "按颜色过滤" },
-        closedOnly: { type: "boolean", description: "true 仅返回当前未打开（已关闭）的原生保存组" },
         profile: { type: "string", description: "可选：指定 Chrome profile 目录名（如 Default、Profile 1）；省略则自动识别当前扩展所在 profile" },
         includeTabs: { type: "boolean", description: "是否附带组内标签 URL 列表，默认 true；组数很多（>20）时建议传 false 先浏览标题与 guid" },
         limit: { type: "integer", minimum: 1, maximum: 200, description: "可选：每个来源最多返回的组数" },
-        checkAccessibility: { type: "boolean", description: "true 时附带检测 macOS 辅助功能权限状态（操控已关闭原生组所需）" },
-        requestAccessibility: { type: "boolean", description: "true 时在 macOS 上触发辅助功能授权提示并打开系统设置页面" },
-        diagnoseUi: { type: "boolean", description: "true 时执行只读 Chrome 菜单 UI 诊断（排查已关闭原生组打不开/删不掉原因）" },
       }),
       async execute(args = {}) {
+        const retired = retiredSavedGroupRequest(args);
+        if (retired) return toToolText(retired);
         const chromeApi = getApi();
         const source = args?.source || "all";
         const parsedColor = parseGroupColor(args?.color);
         if (parsedColor.error) return parsedColor.error;
         const includeTabs = args?.includeTabs !== false;
-        const closedOnly = args?.closedOnly === true;
         const limit = Number.isInteger(args?.limit) && args.limit > 0 ? Math.min(args.limit, 200) : null;
 
         const out = {};
         let total = 0;
-
-        if (args?.requestAccessibility === true) {
-          out.accessibility = await callNative({ action: "request_accessibility" });
-        } else if (args?.checkAccessibility === true) {
-          out.accessibility = await callNative({ action: "ax_status" });
-        }
-        if (args?.diagnoseUi === true) {
-          out.uiDiagnosis = await callNative({ action: "diagnose" });
-        }
 
         if (source === "all" || source === "chrome_native") {
           const nativeRes = await callNative({
@@ -542,34 +362,37 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
             out.chromeNative = { ok: false, error: nativeRes?.error || "无法读取 Chrome 原生保存标签组。", count: 0, groups: [] };
           } else {
             const snapshot = await fetchOpenGroupSnapshot(chromeApi).catch(() => null);
-            let rows = (nativeRes.groups || []).map((g) => {
-              const matched = snapshot && matchOpenGroupForNative(g, snapshot.openGroups, snapshot.byGroup, nativeRes.groups);
+            const openStateUnknown = !snapshot;
+            let rows = (nativeRes.groups || []).flatMap((g) => {
+              const matched = snapshot
+                ? matchOpenGroupForNative(g, snapshot.openGroups, snapshot.byGroup, nativeRes.groups)
+                : null;
               const item = {
                 guid: g.guid,
                 title: g.title,
                 color: g.color,
                 tabCount: g.tabCount,
-                isOpen: snapshot ? Boolean(matched) : null,
+                isOpen: Boolean(matched),
                 ...(matched ? { openGroupId: matched.id, openWindowId: matched.windowId } : {}),
+                ...(openStateUnknown ? { openState: "unknown" } : {}),
                 ...(g.createdAt != null ? { createdAt: g.createdAt } : {}),
                 ...(g.updatedAt != null ? { updatedAt: g.updatedAt } : {}),
                 source: "chrome_native",
               };
               if (includeTabs) item.tabs = g.tabs || [];
-              return item;
+              return [item];
             });
-            if (closedOnly) rows = rows.filter((g) => g.isOpen === false);
-            const matchedCount = rows.length;
+            const listedCount = rows.length;
             if (limit != null && rows.length > limit) rows = rows.slice(0, limit);
-            total += matchedCount;
+            total += listedCount;
             out.chromeNative = {
               ok: true,
+              ...(openStateUnknown ? { openState: "unknown", warning: "无法核对当前窗口的打开状态。" } : {}),
               profile: nativeRes.profile,
               profiles: nativeRes.profiles,
               count: rows.length,
-              ...(matchedCount !== rows.length ? { totalMatched: matchedCount, truncated: true } : {}),
+              ...(listedCount !== rows.length ? { totalMatched: listedCount, truncated: true } : {}),
               groups: rows,
-              ...(!snapshot ? { warning: "无法核对当前窗口的打开状态。" } : {}),
             };
           }
         }
@@ -715,7 +538,7 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
     {
       name: "open_saved_tab_group",
       description:
-        "把已保存但关闭的标签组重新打开为 Chrome 标签组：支持 PageLens 保存库（按 id/title）与 Chrome 原生保存组（按 guid/title；mode=native 经 macOS 辅助功能原生打开保留同步 GUID，mode=recreate 零系统权限按原 URL 重建打开）。",
+        "定位已经打开的 Chrome 原生保存组，或按 PageLens 保存库里的 URL 新建一个 Chrome 标签组。未打开的 Chrome 原生保存组不会被打开或重建，需先在 Chrome 中打开。",
       parameters: obj({
         source: { type: "string", enum: ["auto", "chrome_native", "pagelens"], description: "来源，默认 auto" },
         id: { type: "string", description: "PageLens 保存组 id（stg_...）" },
@@ -725,7 +548,7 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
         mode: {
           type: "string",
           enum: ["native", "recreate"],
-          description: "仅 chrome_native 有效：native（默认，经 macOS 辅助功能原生打开）或 recreate（按 LevelDB 中的 URL 重建新组，不需辅助功能权限）",
+          description: "仅 chrome_native 有效。native（默认）只定位已经打开的组。recreate 不再为未打开的原生组按 URL 新建副本。",
         },
         collapsed: { type: "boolean", description: "打开后是否保持折叠，默认 false" },
       }),
@@ -778,7 +601,7 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
         if (!hit) return `Chrome 原生保存组无唯一匹配，请使用列表中的 GUID（guid=${args?.guid || ""} title=${args?.title || ""}）。`;
 
         const mode = args?.mode || "native";
-        if (mode === "recreate" && ctx.allowNativeOpen !== false && !ctx.expectedOpenGroup) {
+        if (mode === "recreate" && !ctx.expectedOpenGroup) {
           const { openGroups, byGroup } = await fetchOpenGroupSnapshot(chromeApi);
           const already = matchOpenGroupForNative(hit.target, openGroups, byGroup, nativeList.groups);
           if (already) {
@@ -786,26 +609,7 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
             if (args?.collapsed !== undefined) await chromeApi.tabGroups.update(already.id, { collapsed: args.collapsed });
             return toToolText({ ok: true, source: "chrome_native", guid: hit.target.guid, alreadyOpen: true, group: compactTabGroup(already) });
           }
-          try {
-            const opened = await createChromeGroupFromUrls(chromeApi, {
-              urls: hit.target.tabs,
-              title: hit.target.title,
-              color: hit.target.color,
-              collapsed: Boolean(args?.collapsed),
-              windowId: ctx.getWindowId?.(),
-            });
-            await ctx.onTabsMutated?.();
-            return toToolText({
-              ok: true,
-              source: "chrome_native",
-              mode: "recreate",
-              guid: hit.target.guid,
-              ...opened,
-            });
-          } catch (err) {
-            if (isWindowScopeError(err)) throw err;
-            return `重建打开原生标签组失败：${err?.message || err}`;
-          }
+          return toToolText(nativeFailure("OPEN_IN_CHROME_REQUIRED", CLOSED_NATIVE_MESSAGE));
         }
 
         const opened = await openNativeSavedGroup({ chromeApi, callNative, target: hit.target, nativeList, ctx });
@@ -821,7 +625,7 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
     {
       name: "update_saved_tab_group",
       description:
-        "更新已保存标签组（改）：修改标题、颜色或增删 URL。PageLens 保存库直接改存储；Chrome 原生保存组若已打开则直接更新，若已关闭则通过 macOS 辅助功能原生打开后更新并同步回 Chrome。",
+        "更新已保存标签组（改）：修改标题、颜色或增删 URL。PageLens 保存库直接改存储。Chrome 原生保存组只更新已经打开的组；未打开的组需先在 Chrome 中打开。",
       parameters: obj({
         source: { type: "string", enum: ["auto", "chrome_native", "pagelens"], description: "来源，默认 auto" },
         id: { type: "string", description: "PageLens 保存组 id（stg_...）" },
@@ -955,7 +759,7 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
     {
       name: "delete_saved_tab_group",
       description:
-        "永久删除一个或多个已保存标签组（删，不可逆，只在用户明确要求时调用）：支持单个（id / guid / title）或批量（ids / guids / query）。PageLens 保存库直接删除记录；Chrome 原生保存组若已打开则先取消分组再关标签彻底删除，已关闭组通过 macOS 辅助功能打开并核对，删除后按 GUID 回读确认。",
+        "永久删除一个或多个已保存标签组（删，不可逆，只在用户明确要求时调用）：支持单个（id / guid / title）或批量（ids / guids / query）。PageLens 保存库直接删除记录。已经打开的 Chrome 原生保存组先取消分组再关闭标签，并按 GUID 回读确认。未打开的原生组不会被删除。",
       parameters: obj({
         source: { type: "string", enum: ["auto", "chrome_native", "pagelens"], description: "来源，默认 auto" },
         id: { type: "string", description: "单个删除：PageLens 保存组 id（stg_...）" },
@@ -965,11 +769,12 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
         title: { type: "string", description: "单个删除：要删除的标签组精确标题" },
         query: { type: "string", description: "批量删除：按标题/URL 子串匹配要删除的保存组" },
         color: { type: "string", enum: TAB_GROUP_COLORS, description: "批量删除时可选：按颜色进一步筛选" },
-        closedOnly: { type: "boolean", description: "批量删除时可选：true 仅删除当前未打开的 Chrome 原生保存组" },
         limit: { type: "integer", minimum: 1, maximum: 100, description: "批量删除上限，默认 50" },
         profile: { type: "string", description: "可选：Chrome profile 名称" },
       }),
       async execute(args = {}) {
+        const retired = retiredSavedGroupRequest(args);
+        if (retired) return toToolText(retired);
         const parsedColor = parseGroupColor(args?.color);
         if (parsedColor.error) return parsedColor.error;
 
@@ -994,7 +799,6 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
           const results = [];
           let deletedCount = 0;
           let failedCount = 0;
-          let abortedByPermission = null;
 
           // 1) PageLens batch deletion
           const wantPagelens = source === "pagelens" || (source === "auto" && (batchIds.length > 0 || Boolean(batchQuery)));
@@ -1050,26 +854,15 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
                 } else {
                   nativeTargets = batchQuery ? allNative : [];
                 }
-                if (args?.closedOnly === true) {
-                  const { openGroups, byGroup } = await fetchOpenGroupSnapshot(chromeApi);
-                  nativeTargets = nativeTargets.filter((g) => !matchOpenGroupForNative(g, openGroups, byGroup, allNative));
-                }
                 const remainingCap = Math.max(0, limit - results.length);
                 const queue = nativeTargets.slice(0, remainingCap);
                 for (const target of queue) {
                   const res = await deleteSingleNativeSavedGroup({
-                    chromeApi, callNative, target, profile: nativeList.profile, ctx, closedOnly: args.closedOnly,
+                    chromeApi, callNative, target, profile: nativeList.profile, ctx,
                   }).catch((err) => nativeFailure("DELETE_FAILED", String(err?.message || err)));
                   results.push(res);
-                  if (res.ok) {
-                    deletedCount += 1;
-                  } else {
-                    failedCount += 1;
-                    if (res.code === "ACCESSIBILITY_REQUIRED" || res.code === "UNSUPPORTED_PLATFORM") {
-                      abortedByPermission = res;
-                      break;
-                    }
-                  }
+                  if (res.ok) deletedCount += 1;
+                  else failedCount += 1;
                 }
               }
             }
@@ -1080,7 +873,6 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
             batch: true,
             deletedCount,
             failedCount,
-            ...(abortedByPermission ? { code: abortedByPermission.code, error: abortedByPermission.error, hint: abortedByPermission.hint } : {}),
             results,
           });
         }
@@ -1127,7 +919,6 @@ export function createSavedTabGroupTools(ctx = {}, { api, storage, nativeCall } 
           callNative,
           target: hit.target,
           profile: nativeList.profile,
-          closedOnly: args.closedOnly,
           ctx,
         });
         return toToolText(res);

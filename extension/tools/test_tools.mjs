@@ -1,6 +1,6 @@
 import "./fixtures/web-locks.mjs";
 import { createAgentLoop } from "../lib/agent/loop.js";
-import { checkHitlRequirement, createAgentTools, createPageTools, resolveHitlTargetUrl } from "../lib/agent/tools.js";
+import { checkHitlRequirement, createAgentTools, createPageTools, createTaskTabGroups, resolveHitlTargetUrl } from "../lib/agent/tools.js";
 import { resetPermissionPrompter, setPermissionPrompter } from "../lib/optional-permissions.js";
 import {
   CHROME_CALL_ALLOW,
@@ -14,6 +14,8 @@ import {
 import { runJs } from "../lib/agent/page-fns.js";
 
 const notes = {};
+const groupCalls = [];
+let nextTabId = 10;
 const tabs = [
   {
     id: 1,
@@ -44,6 +46,7 @@ globalThis.chrome = {
       let rows = tabs;
       if (q.currentWindow) rows = tabs.filter((t) => t.windowId === 10);
       if (q.active) rows = rows.filter((t) => t.active);
+      if (q.groupId != null) rows = rows.filter((t) => t.groupId === q.groupId);
       return rows;
     },
     get: async (id) => {
@@ -53,7 +56,7 @@ globalThis.chrome = {
     },
     create: async (opts) => {
       const tab = {
-        id: 3,
+        id: nextTabId++,
         windowId: 10,
         title: "New",
         url: opts.url,
@@ -72,10 +75,20 @@ globalThis.chrome = {
       addListener() {},
       removeListener() {},
     },
-    remove: async () => {},
+    remove: async (ids) => {
+      for (const id of ids) tabs.splice(tabs.findIndex((tab) => tab.id === id), 1);
+    },
     reload: async () => {},
     captureVisibleTab: async () => "data:image/jpeg;base64,xx",
-    group: async ({ groupId }) => (groupId == null ? 42 : groupId),
+    group: async ({ tabIds, groupId }) => {
+      groupCalls.push({ tabIds, groupId });
+      const id = groupId ?? 42;
+      for (const tab of tabs.filter((tab) => tabIds.includes(tab.id))) tab.groupId = id;
+      return id;
+    },
+    ungroup: async (tabIds) => {
+      for (const tab of tabs.filter((tab) => tabIds.includes(tab.id))) tab.groupId = -1;
+    },
   },
   tabGroups: {
     get: async (id) => ({ id, windowId: 10, title: "PL", color: "orange" }),
@@ -200,6 +213,7 @@ Object.defineProperty(globalThis.navigator, "clipboard", {
   },
 });
 
+const taskTabGroups = createTaskTabGroups({ getWindowId: () => 10, getTitle: () => "PL · 测试" });
 const ctx = {
   getTabId: () => 1,
   getWindowId: () => 10,
@@ -211,9 +225,7 @@ const ctx = {
   }),
   capture: async (id) => captureTab(id, 10),
   setImage: () => {},
-  getTaskGroupId: () => 42,
-  setTaskGroupId: () => {},
-  getTaskGroupTitle: () => "PL · 测试",
+  taskTabGroups,
   skills: [{ id: "summarize", name: "总结此页", body: "总结当前页。" }],
 };
 
@@ -318,6 +330,9 @@ const clicked = JSON.parse(await byName.click.execute({ text: "搜索" }));
 assert(clicked.ok && clicked.action === "click", "click");
 const filled = JSON.parse(await byName.fill.execute({ selector: "input", value: "hi" }));
 assert(filled.ok && filled.action === "fill", "fill");
+const navigated = JSON.parse(await byName.navigate_tab.execute({ url: "https://a.example/doc.pdf" }));
+assert(navigated.navigated.url.endsWith("doc.pdf"), "navigate_tab still navigates the existing tab");
+assert(navigated.groupId === null && groupCalls.length === 0, "read, click, fill and navigation preserve the current tab layout");
 
 const folder = JSON.parse(await byName.create_bookmark_folder.execute({ title: "今天研究" }));
 assert(folder.title === "今天研究" && folder.id, "create folder");
@@ -325,10 +340,64 @@ const batched = JSON.parse(await byName.bookmark_open_tabs.execute({ title: "这
 assert(batched.folder.title === "这批标签" && batched.added === 2, "bookmark open tabs");
 assert(batched.bookmarks.every((b) => b.url.startsWith("https://")), "only http(s)");
 
-const opened = JSON.parse(await byName.open_tab.execute({ url: "https://c.example/" }));
-assert(opened.opened.id === 3, "open_tab");
-assert(opened.groupId === 42, "open_tab grouped");
-tabs.splice(tabs.findIndex((t) => t.id === opened.opened.id), 1);
+const opened = JSON.parse(await byName.open_tab.execute({ url: "https://c.example/source.pdf" }));
+assert(opened.opened.url === "https://c.example/source.pdf", "open_tab");
+assert(opened.groupId === null && groupCalls.length === 0, "opening an individual source does not create a task group");
+
+const firstOptIn = JSON.parse(await byName.open_tab.execute({ url: "https://c.example/task/first", taskGroup: true }));
+assert(firstOptIn.groupId === null && groupCalls.length === 0, "the first opt-in alone never creates a group");
+const grouped = await Promise.all(["two", "three"].map(async (path) => JSON.parse(await byName.open_tab.execute({
+  url: `https://c.example/task/${path}`,
+  taskGroup: true,
+}))));
+assert(grouped.every((result) => result.groupId === 42 && result.opened.groupId === 42), "parallel opt-in opens share one group");
+assert(groupCalls.length === 2 && groupCalls[0].groupId == null && groupCalls[1].groupId === 42, "the group is created once and reused");
+assert(groupCalls[0].tabIds.length === 2 && groupCalls[0].tabIds.includes(firstOptIn.opened.id), "the first two tabs group together");
+const another = JSON.parse(await byName.open_tab.execute({ url: "https://c.example/ordinary", taskGroup: false }));
+assert(another.groupId === null && groupCalls.length === 2, "an existing task group does not absorb an ordinary open");
+await byName.click.execute({ text: "搜索", tabId: 1 });
+assert(tabs[0].groupId === -1 && groupCalls.length === 2, "operating an existing tab does not move it into an active task group");
+const taskTabIds = [firstOptIn, ...grouped].map(({ opened }) => opened.id);
+const movedByUser = await chrome.tabs.get(taskTabIds[2]);
+movedByUser.groupId = 77;
+tabs[1].groupId = 42; // The user added this existing tab to the temporary group.
+const beforeCleanup = tabs.map(({ id }) => id).join(",");
+await taskTabGroups.cleanup();
+assert(tabs.map(({ id }) => id).join(",") === beforeCleanup, "cleanup keeps all tabs open");
+assert((await chrome.tabs.get(taskTabIds[0])).groupId === -1 && (await chrome.tabs.get(taskTabIds[1])).groupId === -1, "cleanup detaches only the owned tabs still in the temporary group");
+assert(movedByUser.groupId === 77 && tabs[1].groupId === 42, "cleanup preserves manually changed memberships");
+assert(await taskTabGroups.add(movedByUser) === null, "cleanup blocks late attachments");
+tabs[1].groupId = -1;
+await chrome.tabs.remove([opened.opened.id, another.opened.id, ...taskTabIds]);
+
+const interruptedGroups = createTaskTabGroups({ getWindowId: () => 10 });
+const firstPending = await chrome.tabs.create({ url: "https://c.example/interrupted/first" });
+const secondPending = await chrome.tabs.create({ url: "https://c.example/interrupted/second" });
+assert(await interruptedGroups.add(firstPending) === null, "an incomplete batch remains ungrouped");
+const groupEntered = Promise.withResolvers();
+const groupAllowed = Promise.withResolvers();
+const realGroup = chrome.tabs.group;
+chrome.tabs.group = async (args) => {
+  groupEntered.resolve();
+  await groupAllowed.promise;
+  return realGroup(args);
+};
+try {
+  const grouping = interruptedGroups.add(secondPending);
+  await Promise.race([
+    groupEntered.promise,
+    grouping.then(() => { throw new Error("test grouping did not reach Chrome"); }),
+  ]);
+  const cleanup = interruptedGroups.cleanup();
+  groupAllowed.resolve();
+  await Promise.all([grouping, cleanup]);
+  assert(firstPending.groupId === -1 && secondPending.groupId === -1, "cleanup waits for the browser grouping call already in flight and then removes it");
+} finally {
+  chrome.tabs.group = realGroup;
+  groupAllowed.resolve();
+  await interruptedGroups.cleanup();
+  await chrome.tabs.remove([firstPending.id, secondPending.id]);
+}
 
 const blockedOpen = await byName.open_tab.execute({ url: "chrome://settings" });
 assert(/http/.test(blockedOpen), "open_tab block");

@@ -96,7 +96,7 @@ export async function cdpScreenshot(cdp, tabId, { fullPage = false, selector = "
   return { dataUrl: `data:image/jpeg;base64,${shot.data}`, clip };
 }
 
-export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRefItem }) {
+export function createCdpTools(ctx, { cdp, resolveTabId, getRefItem }) {
   const webNavigation = () => globalThis.chrome?.webNavigation;
 
   async function frameOffset(tabId, frameId) {
@@ -155,7 +155,6 @@ export function createCdpTools(ctx, { cdp, resolveTabId, attachTabToTask, getRef
 
   const prepare = async (args) => {
     const tabId = await resolveTabId(args);
-    await attachTabToTask(tabId);
     // 多窗口并行时目标窗口通常不在前台；模拟焦点让页面照常接收输入，不必抢系统焦点。
     // 附加失败由后续的输入命令报出。
     await cdp.send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});

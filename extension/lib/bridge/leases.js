@@ -61,8 +61,8 @@ export function openedTabIds(toolName, result) {
  */
 export function createTabLeases({ now = () => Date.now(), groups = null, tabs = null } = {}) {
   const leases = new Map();
-  const groupBySession = new Map();
   const groupedTabs = new Map();
+  const adoptionQueue = createKeyedQueue();
   let colorIdx = 0;
 
   const getGroups = () => typeof groups === "function" ? groups() : groups;
@@ -72,23 +72,26 @@ export function createTabLeases({ now = () => Date.now(), groups = null, tabs = 
   }
 
   function isTaskGroupedTab(tab) {
-    return tab?.groupId >= 0 && groupedTabs.get(tab.id)?.groupId === tab.groupId;
+    const group = groupedTabs.get(tab?.id);
+    return tab?.groupId >= 0 && group?.groupId === tab.groupId &&
+      (group.windowId == null || group.windowId === tab.windowId);
   }
 
   function takeAdoptedGroup(tabId, lease) {
     const group = groupedTabs.get(tabId);
     if (group?.lease !== lease) return null;
     groupedTabs.delete(tabId);
-    return [tabId, group.groupId];
+    return [tabId, group.groupId, group.windowId];
   }
 
   async function ungroupSafe(entries) {
     const tg = getGroups();
     if (!entries.length || typeof tg?.ungroup !== "function") return;
-    const ids = await Promise.all(entries.map(async ([id, groupId]) => {
+    const ids = await Promise.all(entries.map(async ([id, groupId, windowId]) => {
       if (!tabs?.get) return id;
       try {
-        return (await tabs.get(id))?.groupId === groupId ? id : null;
+        const tab = await tabs.get(id);
+        return tab?.groupId === groupId && tab.windowId === windowId ? id : null;
       } catch {
         return null;
       }
@@ -143,7 +146,6 @@ export function createTabLeases({ now = () => Date.now(), groups = null, tabs = 
         if (grouped) toUngroup.push(grouped);
       }
     }
-    groupBySession.delete(sessionId);
     ungroupSafe(toUngroup).catch(() => {});
     return freed;
   }
@@ -152,32 +154,60 @@ export function createTabLeases({ now = () => Date.now(), groups = null, tabs = 
     return [...leases].filter(([, l]) => l.sessionId === sessionId).map(([tabId]) => tabId);
   }
 
-  /** 会话新开的标签：归它所有，并放进它的标签组（有 tabGroups 时）。失败不影响调用结果。 */
+  /** 新开标签获得租约。同一窗口有多个会话新开的工作页时才建立任务组。 */
   async function adopt(tabIds, owner) {
     if (!owner?.sessionId || !tabIds.length) return;
-    for (const id of tabIds) claim(id, owner);
-    const tg = getGroups();
-    if (!tg) return;
-    const adopted = tabIds.map((id) => [id, leases.get(id)]);
-    try {
-      const known = groupBySession.get(owner.sessionId);
-      const groupId = await tg.group(tabIds, known ?? undefined);
-      if (groupId == null) return;
-      const orphaned = [];
-      for (const [id, lease] of adopted) {
-        if (leases.get(id) === lease) groupedTabs.set(id, { groupId, lease });
-        else orphaned.push([id, groupId]);
-      }
-      ungroupSafe(orphaned).catch(() => {});
-      if (orphaned.length === adopted.length) return;
-      if (groupId !== known) {
-        groupBySession.set(owner.sessionId, groupId);
-        const color = GROUP_COLORS[colorIdx++ % GROUP_COLORS.length];
-        await tg.update(groupId, { title: `Agent: ${owner.agentName || "agent"}`, color });
-      }
-    } catch {
-      groupBySession.delete(owner.sessionId);
+    for (const id of tabIds) {
+      claim(id, owner);
+      leases.get(id).opened = true;
     }
+    const requested = new Map(tabIds.map((id) => [id, leases.get(id)]));
+    await adoptionQueue.run([owner.sessionId], async () => {
+      const tg = getGroups();
+      if (!tg || typeof tabs?.get !== "function") return;
+      const opened = [...leases].filter(([, lease]) => lease.sessionId === owner.sessionId && lease.opened);
+      if (opened.length < 2) return;
+      const candidates = (await Promise.all(opened.map(async ([id, lease]) => {
+        try {
+          const tab = await tabs.get(id);
+          if (!Number.isInteger(tab?.windowId) || !Number.isInteger(tab.groupId) || tab.pinned) return null;
+          const record = groupedTabs.get(id);
+          if (record) {
+            if (record.lease !== lease || record.windowId !== tab.windowId || record.groupId !== tab.groupId) return null;
+          } else if (tab.groupId >= 0) return null;
+          return { id, lease, windowId: tab.windowId, groupId: record?.groupId };
+        } catch {
+          return null;
+        }
+      }))).filter(Boolean);
+
+      const windows = new Set(candidates.filter(({ id, lease }) => requested.get(id) === lease).map(({ windowId }) => windowId));
+      for (const windowId of windows) {
+        const members = candidates.filter(({ id, lease, windowId: win }) => win === windowId && leases.get(id) === lease);
+        if (!members.some(({ id, lease }) => requested.get(id) === lease)) continue;
+        const group = members.find(({ groupId }) => groupId != null);
+        const ungrouped = members.filter(({ groupId }) => groupId == null);
+        if (!ungrouped.length || (!group && ungrouped.length < 2)) continue;
+        try {
+          const groupId = await tg.group(ungrouped.map(({ id }) => id), group?.groupId, {
+            strict: true, createProperties: { windowId },
+          });
+          if (groupId == null) continue;
+          const orphaned = [];
+          for (const { id, lease } of ungrouped) {
+            if (leases.get(id) === lease) groupedTabs.set(id, { groupId, lease, windowId });
+            else orphaned.push([id, groupId, windowId]);
+          }
+          await ungroupSafe(orphaned).catch(() => {});
+          if (!group && orphaned.length !== ungrouped.length) {
+            const color = GROUP_COLORS[colorIdx++ % GROUP_COLORS.length];
+            await tg.update(groupId, { title: `Agent: ${owner.agentName || "agent"}`, color });
+          }
+        } catch {
+          // Tab grouping is optional. The tab leases still apply.
+        }
+      }
+    });
   }
 
   return {
@@ -197,7 +227,6 @@ export function createTabLeases({ now = () => Date.now(), groups = null, tabs = 
     clear: () => {
       const toUngroup = [...leases].map(([id, lease]) => takeAdoptedGroup(id, lease)).filter(Boolean);
       leases.clear();
-      groupBySession.clear();
       groupedTabs.clear();
       ungroupSafe(toUngroup).catch(() => {});
     },
