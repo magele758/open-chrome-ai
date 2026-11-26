@@ -1,6 +1,7 @@
 /** Injected into the page. Must stay self-contained (no module locals). */
-export async function extractPage() {
-  const MAX_CHARS = 9000;
+export async function extractPage({ fullArticle = false, summarySource = false } = {}) {
+  const ARTICLE_LIMIT = 60000;
+  const MAX_CHARS = summarySource ? Infinity : fullArticle ? ARTICLE_LIMIT : 9000;
   const title = document.title || "";
   const url = location.href;
   const hostname = location.hostname;
@@ -132,8 +133,8 @@ export async function extractPage() {
       copy.querySelectorAll('p, div, h1, h2, h3, h4, li, blockquote, pre, br').forEach(el => el.append('\n'));
       const text = clean(copy.textContent);
       return {
-        text: text.slice(0, 60000), kind: 'x', article: true,
-        textTruncated: text.length > 60000, textLength: text.length,
+        text: summarySource ? text : text.slice(0, ARTICLE_LIMIT), kind: 'x', article: true,
+        textTruncated: !summarySource && text.length > ARTICLE_LIMIT, textLength: text.length,
         quotes: [], videoIsPrimary: false,
       };
     }
@@ -155,7 +156,7 @@ export async function extractPage() {
       const fallback = /^(X|Twitter)$/i.test(metadata) ? '' : metadata;
       const login = Boolean(document.querySelector('a[href="/login"], [data-testid="loginButton"]'));
       return {
-        text:
+        text: summarySource ? "" :
           fallback ||
           (login
             ? "未能读取帖子正文。当前页面可能需要登录后才能看到内容。"
@@ -192,6 +193,7 @@ export async function extractPage() {
 
     return {
       text: text.slice(0, MAX_CHARS),
+      textTruncated: text.length > MAX_CHARS,
       quotes,
       kind: "x",
       videoIsPrimary: false,
@@ -199,7 +201,48 @@ export async function extractPage() {
     };
   }
 
+  // Read the rendered article, including short paragraphs, tables and div-based prose.
+  // Read each clean subtree in one pass. Only descend where a non-article element intervenes.
+  function summaryText() {
+    const article = document.querySelector('[itemprop="articleBody"], .post-content, .entry-content, .article-content')
+      || document.querySelector("article");
+    const root = article || document.querySelector('main, [role="main"]') || document.body;
+    if (!root) return "";
+    const excluded = new Set(root.querySelectorAll(
+      'nav, form, script, style, noscript, template, button, [hidden], [aria-hidden="true"], [role="navigation"]'
+        + (article ? "" : ', footer, aside, [role="complementary"], [role="banner"]'),
+    ));
+    const split = new Set();
+    for (const el of excluded) {
+      let parent = el.parentElement;
+      while (parent && !split.has(parent)) {
+        split.add(parent);
+        if (parent === root) break;
+        parent = parent.parentElement;
+      }
+    }
+    const parts = [];
+    const pending = [root];
+    while (pending.length) {
+      const node = pending.pop();
+      if (node.nodeType === Node.TEXT_NODE) {
+        parts.push(node.nodeValue);
+      } else if (node.nodeType === Node.ELEMENT_NODE && !excluded.has(node) && visible(node)) {
+        if (split.has(node)) {
+          for (let i = node.childNodes.length - 1; i >= 0; i--) pending.push(node.childNodes[i]);
+        } else {
+          const text = node.innerText;
+          if (text) parts.push(text);
+        }
+      }
+    }
+    return clean(parts.join("\n"));
+  }
+
   function extractGeneric() {
+    if (summarySource) {
+      return { text: summaryText(), quotes: [], kind: "generic", videoIsPrimary: false };
+    }
     const root =
       document.querySelector(
         '[itemprop="articleBody"], .post-content, .entry-content, .article-content, article, main, [role="main"]',
@@ -208,6 +251,7 @@ export async function extractPage() {
     const blocks = root.querySelectorAll("p, h1, h2, h3, h4, li, blockquote, pre, figcaption");
     const parts = [];
     const seen = new Set();
+    let length = 0;
 
     for (const el of blocks) {
       const nest = el.parentElement?.closest("p, li, blockquote, pre");
@@ -222,8 +266,9 @@ export async function extractPage() {
       const key = t.slice(0, 96);
       if (seen.has(key)) continue;
       seen.add(key);
+      length += t.length + (parts.length ? 1 : 0);
       parts.push(t);
-      if (parts.join("\n").length > MAX_CHARS) break;
+      if (length > MAX_CHARS) break;
     }
 
     let text = parts.join("\n");
@@ -238,7 +283,7 @@ export async function extractPage() {
       if (p.length >= 40 && p.length <= 400) quotes.push({ id: `q_${quotes.length + 1}`, text: p.slice(0, 280) });
     }
 
-    return { text: text.slice(0, MAX_CHARS), quotes, kind: "generic", videoIsPrimary: false };
+    return { text: text.slice(0, MAX_CHARS), textTruncated: text.length > MAX_CHARS, quotes, kind: "generic", videoIsPrimary: false };
   }
 
   function findPdfHints() {
@@ -301,7 +346,7 @@ export async function extractPage() {
   const hasXTweet = Boolean(document.querySelector('article[data-testid="tweet"]'));
 
   let extracted;
-  if (isXHost || hasXTweet) extracted = await extractX();
+  if (isXHost || (hasXTweet && !summarySource)) extracted = await extractX();
   else extracted = extractGeneric();
 
   const allVideos = [...document.querySelectorAll("video, audio")].filter((el) => {

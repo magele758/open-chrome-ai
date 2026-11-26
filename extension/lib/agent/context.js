@@ -3,9 +3,45 @@
  * Canonical history in the loop stays full; only the API payload is compacted.
  */
 
+import { extractCapsule } from "./trust/capsule.js";
+
 export const CHAR_BUDGET = 48000;
 export const KEEP_TAIL = 8;
 export const RUN_STALE_MS = 24 * 3600 * 1000;
+
+const SUMMARY_INTENT = /总结|摘要|概括|归纳|提炼|主要内容|核心观点|(?:讲|说|写)(?:了|的)?什么|\b(?:summari[sz]e|summary|tl;dr|key takeaways|what(?:'s| is) .+ about)\b/i;
+const CURRENT_DOCUMENT = /本文|本页|这页|(?:这[个篇份一]*|当前的?|本)\s*(?:网页|文章|页面|文档|论文|标签页|PDF)|\b(?:this|the|current) (?:current )?(?:web\s?page|page|article|document|(?:research )?paper|PDF|tab)\b/i;
+const SUMMARY_SHORTCUT = /^(?:请)?(?:总结|概括)(?:一下)?(?:文章|文档|网页|页面)[。！!]?$/;
+const BROADER_TASK = /新开|另开|新建|对比|比较|调研|查找|联网|另一|另外|其他|其它|[多两几]篇|\b(?:compare|comparison|other|another|look up|research (?!paper\b))\b/i;
+
+function linkedDocument(value) {
+  try {
+    const url = new URL(value);
+    // A heading shares its document. A hash-based route can identify a different article.
+    if (!/^#[!/]/.test(url.hash)) url.hash = "";
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
+/** Pass only the user's authored request, before attaching page contents or history. */
+export function isCurrentPageSummary(text, pageUrl = "") {
+  if (typeof text !== "string" || !SUMMARY_INTENT.test(text)) return false;
+  let request = text.trim();
+  for (const link of extractCapsule(request).urls) {
+    if (linkedDocument(link) !== linkedDocument(pageUrl)) return false;
+    request = request.replaceAll(link, "this page");
+  }
+  // These phrases describe which tab to read, without asking to navigate.
+  request = request.replace(/当前(?:已经?|正)?打开的/g, "当前").replace(/\bcurrently open\b/gi, "current")
+    .replace(/\bwrite(?= (?:a |the )?(?:short |brief |concise )?summary\b)/gi, "give")
+    .replace(/(?:不要|无需|不用)(?:另开|新开|打开新)的?(?:标签页?|窗口)/g, "");
+  const instruction = request.split(/[：:\n]/u, 1)[0].trim();
+  if (!SUMMARY_INTENT.test(instruction)) return false;
+  if (!CURRENT_DOCUMENT.test(instruction) && !SUMMARY_SHORTCUT.test(instruction)) return false;
+  return !BROADER_TASK.test(request) && extractCapsule(request).actions.length === 0;
+}
 
 export function stringifyContent(content) {
   if (content == null) return "";

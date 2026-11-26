@@ -4,7 +4,7 @@
 
 | 用户入口 | 用户可观察的行为 | 从哪里改 | 从哪里验证 |
 | --- | --- | --- | --- |
-| 对话框 → 发送 `#btn-send` | 当前网页或 PDF 可以作为提问上下文，切换标签会刷新当前页 | [当前标签](../extension/sidepanel/tab-context.js)、[页面内容包](../extension/lib/page-pack.js) | [PDF 提取与上下文](../extension/tools/test_pdf.mjs)；真实标签切换需加载扩展 |
+| 对话框 → 发送 `#btn-send` | 当前网页或 PDF 可以作为提问上下文，切换标签会刷新当前页。点击「总结文章」或要求总结当前页时，从发起时的原标签提取全文，并按当前模型上下文为指令、答案预留空间。容纳得下就一轮直送全文，超出预算才按原文顺序分段总结并合并。中途切换标签仍总结原文。明确要求打开外链时可另开标签。 | [当前标签](../extension/sidepanel/tab-context.js)、[页面内容包](../extension/lib/page-pack.js) | [PDF 提取与上下文](../extension/tools/test_pdf.mjs)、[总结文章快捷按钮](../extension/tools/test_current_article_summary.mjs)、[全文与分段总结](../extension/tools/test_article_summary.mjs)、[真实 Chrome 文章总结](../extension/tools/e2e_tab_groups.mjs) |
 | 历史会话 `#btn-history`、排序切换 `#btn-hist-sort-recent`／`#btn-hist-sort-domain` | 默认按时间倒序（最新在前），可切换按域名分组与网页关系图，排序偏好持久化；仅查看旧会话不改写其更新时间；重新打开会话可续聊，也可导出 Markdown | [历史界面](../extension/sidepanel/history.js)、[会话存储](../extension/lib/sessions.js) | [会话读写与导出](../extension/tools/test_sessions.mjs)、[历史排序与持久化](../extension/tools/test_history_sort.mjs)、[历史搜索、排序与折叠](../scripts/bombadil/panel.spec.js) |
 | 旁注分支 `#btn-sidechat-header` | 从一段回答继续追问，分支继承锚点之前的上下文，主线后续消息不进入分支 | [旁注界面](../extension/sidepanel/sidechat-ui.js)、[上下文组装](../extension/lib/sidechat-context.js) | [分支隔离、锚点与导出](../extension/tools/test_sidechat.mjs)、[跨会话草稿与侧栏导航](../scripts/bombadil/panel.spec.js) |
 | 视频 → 一键总结 `#btn-summarize-video`、只要文稿 `#btn-transcribe` | 提取文稿和生成摘要有独立入口，摘要可再引用到对话 | [视频操作](../extension/sidepanel/video-actions.js)、[全文摘要](../extension/lib/summarize-transcript.js) | [文稿](../extension/tools/test_full_transcript.mjs)、[摘要内容](../extension/tools/test_summary_content.mjs) |

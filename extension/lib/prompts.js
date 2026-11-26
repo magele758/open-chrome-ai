@@ -11,7 +11,7 @@ export function systemPrompt(settings, options = {}) {
     "你是 PageLens，运行在 Chrome 侧栏里的页面 Agent。可以读页面，也可以按用户要求操作页面（点击、填写、滚动、跳转）。",
     languageInstruction(settings.answerLanguage),
     "规则：",
-    "- 需要正文先 extract_page；PDF、arXiv、alphaXiv 等论文页会抽 PDF 文字层（扫描件可能没有文字）。只要标题结构/视频进度用 get_page_info；看图/报错/画面用 screenshot。",
+    "- 总结当前网页或文档时先用已有正文。需要更多内容时，在当前标签调用 extract_page。PDF、arXiv、alphaXiv 等论文页会提取 PDF 文字层（扫描件可能没有文字）。只要标题结构/视频进度用 get_page_info；看图/报错/画面用 screenshot。",
     "- 视频：先 get_captions。没有完整音频文稿且用户要总结/章节/原文时调用 transcribe_video（下载完整音轨并转写；需已配置 ASR 和本机媒体服务，不跟随播放）。不要编造台词。一键总结、同声传译是侧栏按钮，不要自己循环配音整段视频。",
     "- 配音是可选高级功能。用户要「用原视频的声音说中文」时：先 capture_voice_ref 截一段人声当音色，再用文本模型把一句译成中文，然后 tts_speak。整段边看边译应请用户点侧栏「同声传译」，不要调用未配置的独立翻译服务。",
     "- 文稿文件夹（用户在设置里选的本机目录，可直接是 Obsidian 库）只放笔记：library_info / list_library / read_library 读剪藏和对话笔记；save_session_note 把对话写入 PageLens/sessions/；write_library 只在用户明确要求保存笔记时用。下载的字幕和音频文稿在 ~/.cache/pagelens-docs，用 save_video_doc 落盘，不要写进 Obsidian。密钥不要写入。",
@@ -77,8 +77,9 @@ export function packToContext(pack) {
         ? `${pack.pdfPages ? `（${pack.pdfPages} 页` : "（PDF"}${pack.pdfTruncated ? "，已截断" : ""}）`
         : "";
     const src = pack.pdfUrl && pack.pdfUrl !== pack.url ? `\nPDF：${pack.pdfUrl}` : "";
+    const partial = pack.article && (pack.text.length > limit || pack.textTruncated || pack.pdfTruncated);
     chunks.push(
-      `${label}${extra}\n${pack.url}${src}\n${wrapUntrusted(`${pack.title ? `标题：${pack.title}\n\n` : ""}${pack.text.slice(0, limit)}`, pack.kind === "pdf" ? "pdf" : "page")}${pack.article && (pack.text.length > limit || pack.textTruncated) ? '\n【以上仅为文章部分内容。调用 extract_page 读取更多正文；不可声称已阅读全文。】' : ''}`,
+      `${label}${extra}\n${pack.url}${src}\n${wrapUntrusted(`${pack.title ? `标题：${pack.title}\n\n` : ""}${pack.text.slice(0, limit)}`, pack.kind === "pdf" ? "pdf" : "page")}${partial ? '\n【以上仅为文章部分内容。调用 extract_page 读取更多正文；不可声称已阅读全文。】' : ''}`,
     );
   } else if (pack.pdfError) {
     chunks.push(`【PDF】未能抽取：${pack.pdfError}`);

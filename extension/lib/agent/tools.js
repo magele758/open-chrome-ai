@@ -98,7 +98,8 @@ function formatPack(pack) {
   }
   const kind =
     pack.kind === "x" ? (pack.article ? "类型：X 长文章" : "类型：X 帖子") : pack.kind === "pdf" ? "类型：PDF" : "类型：网页";
-  const limit = pack.article ? 60000 : pack.kind === "pdf" ? Math.min(PDF_MAX_CHARS, 12000) : 9000;
+  const pdfLimit = pack.fullArticle ? PDF_MAX_CHARS : Math.min(PDF_MAX_CHARS, 12000);
+  const limit = pack.kind === "pdf" ? pdfLimit : pack.article || pack.fullArticle ? 60000 : 9000;
   const head = [
     kind,
     pack.title ? `标题：${pack.title}` : "",
@@ -106,7 +107,7 @@ function formatPack(pack) {
     pack.pdfUrl && pack.pdfUrl !== pack.url ? `PDF：${pack.pdfUrl}` : "",
     pack.pdfPages ? `页数：${pack.pdfPages}` : "",
     pack.pdfTruncated ? "正文已截断" : "",
-    pack.textTruncated ? "正文超过提取上限，仅包含部分内容，不可声称已阅读全文。" : "",
+    pack.kind !== "pdf" && pack.textTruncated ? "正文超过提取上限，仅包含部分内容，不可声称已阅读全文。" : "",
     pack.selection ? `选区：${pack.selection}` : "",
   ].filter(Boolean);
   const body = (pack.text || "").slice(0, limit);

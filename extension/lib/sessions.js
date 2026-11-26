@@ -142,6 +142,7 @@ export function normalizeRun(raw, now = Date.now()) {
   return {
     status: "running",
     ...(Number.isInteger(raw.tabId) ? { tabId: raw.tabId } : {}),
+    ...(Number.isInteger(raw.tabId) && typeof raw.summaryPageUrl === "string" && raw.summaryPageUrl ? { summaryPageUrl: raw.summaryPageUrl } : {}),
     ...(Number.isInteger(raw.windowId) ? { windowId: raw.windowId } : {}),
     // Browser-process token. Session storage drops it on quit; the run record must still carry it.
     ...(nonce.length >= 8 && nonce.length <= 80 && !/[\s\u0000-\u001f]/.test(nonce) ? { nonce } : {}),

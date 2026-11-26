@@ -161,11 +161,13 @@ export function shouldExtractPdf(pack) {
   return false;
 }
 
-export async function fetchPdfBytes(url, fetchImpl = fetch) {
+export async function fetchPdfBytes(url, fetchImpl = fetch, signal) {
+  signal?.throwIfAborted();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), PDF_FETCH_MS);
   try {
-    const res = await fetchImpl(url, { signal: ctrl.signal, redirect: "follow" });
+    const fetchSignal = signal ? AbortSignal.any([ctrl.signal, signal]) : ctrl.signal;
+    const res = await fetchImpl(url, { signal: fetchSignal, redirect: "follow" });
     if (!res.ok) throw new Error(`PDF HTTP ${res.status}`);
     const len = Number(res.headers.get("content-length") || 0);
     if (len > PDF_MAX_BYTES) throw new Error("PDF 太大");
@@ -174,6 +176,7 @@ export async function fetchPdfBytes(url, fetchImpl = fetch) {
     if (!isPdfMagic(buf)) throw new Error("not-pdf");
     return buf;
   } catch (err) {
+    signal?.throwIfAborted();
     if (err?.name === "AbortError") throw new Error("PDF 下载超时");
     throw err;
   } finally {
@@ -238,8 +241,9 @@ async function loadPdfjs() {
 }
 
 export async function pdfBytesToText(bytes, opts = {}) {
-  const maxChars = Number(opts.maxChars) > 0 ? Number(opts.maxChars) : PDF_MAX_CHARS;
-  const maxPages = Number(opts.maxPages) > 0 ? Number(opts.maxPages) : PDF_MAX_PAGES;
+  const maxChars = opts.summarySource ? Infinity : Number(opts.maxChars) > 0 ? Number(opts.maxChars) : PDF_MAX_CHARS;
+  const maxPages = opts.summarySource ? Infinity : Number(opts.maxPages) > 0 ? Number(opts.maxPages) : PDF_MAX_PAGES;
+  opts.signal?.throwIfAborted();
   const pdfjs = await loadPdfjs();
   const src = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const data = new Uint8Array(src);
@@ -264,20 +268,25 @@ export async function pdfBytesToText(bytes, opts = {}) {
   const pageCount = doc.numPages || 0;
   const used = Math.min(pageCount, maxPages);
   let truncated = pageCount > maxPages;
-  for (let i = 1; i <= used; i++) {
-    const page = await doc.getPage(i);
-    const content = await page.getTextContent();
-    const body = itemsToText(content.items);
-    parts.push(`--- 第 ${i} 页 ---\n${body}`.trim());
-    if (parts.join("\n\n").length >= maxChars) {
-      truncated = true;
-      break;
-    }
-  }
+  let length = 0;
   try {
-    await doc.destroy?.();
-  } catch {
-    /* ignore */
+    for (let i = 1; i <= used; i++) {
+      opts.signal?.throwIfAborted();
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      const body = itemsToText(content.items);
+      const part = `--- 第 ${i} 页 ---\n${body}`.trim();
+      length += part.length + (parts.length ? 2 : 0);
+      parts.push(part);
+      page.cleanup();
+      if (length >= maxChars && i < used) {
+        truncated = true;
+        break;
+      }
+    }
+    opts.signal?.throwIfAborted();
+  } finally {
+    await doc.destroy().catch(() => {});
   }
   let text = parts.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
   if (text.length > maxChars) {
@@ -287,7 +296,7 @@ export async function pdfBytesToText(bytes, opts = {}) {
   return {
     text,
     pages: pageCount,
-    usedPages: used,
+    usedPages: parts.length,
     truncated,
     quotes: quotesFromText(text),
   };
@@ -302,7 +311,7 @@ export async function enrichPackWithPdf(pack, opts = {}) {
   const fetchImpl = opts.fetchImpl || fetch;
   for (const url of urls) {
     try {
-      const bytes = await fetchPdfBytes(url, fetchImpl);
+      const bytes = await fetchPdfBytes(url, fetchImpl, opts.signal);
       const extracted = await pdfBytesToText(bytes, opts);
       if (!extracted.text || extracted.text.replace(/--- 第 \d+ 页 ---/g, "").trim().length < 40) {
         errors.push(`${url}: 没有文字层`);
@@ -320,6 +329,7 @@ export async function enrichPackWithPdf(pack, opts = {}) {
         videoIsPrimary: false,
       };
     } catch (err) {
+      opts.signal?.throwIfAborted();
       errors.push(`${url}: ${err?.message || err}`);
     }
   }

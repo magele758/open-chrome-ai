@@ -33,6 +33,11 @@ const nativeUi = process.argv.includes("--native-ui");
 const headed = nativeUi || keep || process.argv.includes("--headed");
 if (nativeUi && process.platform !== "darwin") throw new Error("--native-ui 需要 macOS");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const summaryPrompt = "帮我看看这个网页文章讲了什么，总结内容，重点解释核心观点、论据和结论";
+const articleFact = "研究人员在潮汐池观察了四十七只寄居蟹。";
+const articleSummary = "研究在潮汐池观察了四十七只寄居蟹。";
+const articleTail = "末尾的观测记录确认，降潮时它们会退回石缝。";
+const summaryRequests = [];
 
 function registerTempNativeHost(profile, extensionId, workDir) {
   const runner = join(workDir, "pagelens-host-e2e.sh");
@@ -56,7 +61,28 @@ function registerTempNativeHost(profile, extensionId, workDir) {
 }
 
 function startFixtureServer() {
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
+    if (req.method === "POST" && req.url === "/v1/chat/completions") {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      const request = JSON.parse(body);
+      summaryRequests.push(request);
+      const hasTail = request.messages.at(-1)?.content?.includes(articleTail);
+      const delta = { content: hasTail ? articleSummary : "正文末尾缺失。" };
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+      return;
+    }
+    if (req.url === "/v1/models") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "article-fixture", context_length: 65536 }] }));
+      return;
+    }
+    if (req.url === "/summary-article") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><meta charset="utf-8"><title>潮汐池观察</title><article><h1>潮汐池观察</h1><p>${articleFact}</p><p>${"Researchers recorded food, habitat and activity daily. ".repeat(210)}</p><p>${articleTail}</p></article>`);
+      return;
+    }
     const slug = (req.url || "/").replace(/[^a-z0-9/_-]/gi, "") || "/";
     res
       .writeHead(200, { "content-type": "text/html; charset=utf-8" })
@@ -810,6 +836,51 @@ try {
       assert.ok(remaining.groups.some(group => group.guid === twins.newer.guid), "较新的同名 GUID 必须保留");
     });
   }
+
+  await step("点击「总结文章」直接读取原文章，模型看不到开页工具，全程不增标签", async () => {
+    await bridge.evaluate(`chrome.storage.local.set({settings: ${JSON.stringify({
+      agentBridgeEnabled: true,
+      agentBridgeOrigins: ["http://127.0.0.1:*"],
+      text: { baseUrl: `${base}/v1`, model: "article-fixture" },
+      shortcuts: [{ id: "article-summary", label: "总结文章", prompt: summaryPrompt }],
+    })}})`);
+    await conn.send("Page.reload", {}, panelSession);
+    await waitFor(() => evalPanel(`document.documentElement.dataset.pagelensWired === "1" &&
+      [...document.querySelectorAll("#skills button")].some(button => button.textContent === "总结文章")`), 10000, "侧栏加载测试快捷按钮");
+    const panelWindowId = await evalPanel("chrome.tabs.getCurrent().then(tab => tab.windowId)");
+    const articleTabId = await bridge.evaluate(`chrome.tabs.create({windowId: ${panelWindowId}, url: ${JSON.stringify(`${base}/summary-article`)}, active: true}).then(tab => tab.id)`);
+    try {
+      await waitFor(() => evalPanel(`import("./state.js").then(({state}) =>
+        state.tab?.id === ${articleTabId} && state.pack?.text?.includes(${JSON.stringify(articleFact)}))`), 10000, "侧栏读取原文章");
+      const snapshot = () => evalPanel(`(async () => ({
+        tabs: (await chrome.tabs.query({currentWindow:true})).map(tab => tab.id).sort(),
+        groups: (await chrome.tabGroups.query({})).map(group => group.id).sort()
+      }))()`);
+      const before = await snapshot();
+      await evalPanel(`(() => {
+        window.summaryTabsCreated = [];
+        window.recordSummaryTab = tab => window.summaryTabsCreated.push(tab.id);
+        chrome.tabs.onCreated.addListener(window.recordSummaryTab);
+        const chip = [...document.querySelectorAll("#skills button")].find(el => el.textContent === "总结文章");
+        if (!chip) throw new Error("未渲染总结文章按钮");
+        chip.click();
+      })()`);
+      await waitFor(() => evalPanel(`document.querySelector("#msgs").textContent.includes(${JSON.stringify(articleSummary)})`),
+        20000, "显示从原文章得到的测试模型回复");
+      assert.equal(summaryRequests.length, 1);
+      const firstUser = summaryRequests[0].messages.filter(message => message.role === "user").at(-1);
+      assert.ok(firstUser.content.includes(summaryPrompt));
+      assert.ok(firstUser.content.includes(articleFact));
+      assert.ok(firstUser.content.includes(articleTail));
+      assert.ok(firstUser.content.includes(`${base}/summary-article`));
+      assert.deepEqual(summaryRequests[0].tools ?? [], []);
+      assert.deepEqual(await evalPanel("window.summaryTabsCreated"), []);
+      assert.deepEqual(await snapshot(), before);
+    } finally {
+      await evalPanel(`if (window.recordSummaryTab) chrome.tabs.onCreated.removeListener(window.recordSummaryTab)`);
+      await bridge.evaluate(`chrome.tabs.remove(${articleTabId})`);
+    }
+  });
 } finally {
   bridge?.close?.();
   conn?.close?.();

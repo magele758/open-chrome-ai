@@ -409,29 +409,27 @@ export async function streamTurn(model, input, onTextDelta) {
     messages: input.messages,
     stream_options: { include_usage: true },
   };
+  if (Number.isSafeInteger(input.maxTokens) && input.maxTokens > 0) body.max_tokens = input.maxTokens;
   if (input.tools?.length) {
     body.tools = input.tools;
     body.tool_choice = "auto";
   }
 
-  let response = await fetch(url, {
-    method: "POST",
-    headers: headersFor(model),
-    signal: input.signal,
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
+  let response;
+  for (;;) {
+    response = await fetch(url, {
+      method: "POST",
+      headers: headersFor(model),
+      signal: input.signal,
+      body: JSON.stringify(body),
+    });
+    if (response.ok) break;
     const errText = await readError(response);
-    if (/stream_options|extra_forbidden|unrecognized_field/i.test(errText)) {
+    if (body.max_tokens && /max_tokens/i.test(errText) && /max_completion_tokens/i.test(errText)) {
+      body.max_completion_tokens = body.max_tokens;
+      delete body.max_tokens;
+    } else if (body.stream_options && /stream_options|extra_forbidden|unrecognized_field/i.test(errText)) {
       delete body.stream_options;
-      response = await fetch(url, {
-        method: "POST",
-        headers: headersFor(model),
-        signal: input.signal,
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) throw new Error(await readError(response));
     } else {
       debugLog("model.error", { errorMessage: errText });
       throw new Error(errText);
