@@ -3,6 +3,7 @@ import { tabInWindow, withWindowTask } from "../lib/window-scope.js";
 import { renderAttach } from "./composer.js";
 import { $ } from "./dom.js";
 import { flagInjection, ingestTaint, showHitlModal, updateHitlBadge } from "./hitl-ui.js";
+import { finishLiveModelTurn, noteLiveModelOutput, startLiveModelTurn } from "./live-status.js";
 import { renderContext } from "./media-chrome.js";
 import {
   createThinkingBox,
@@ -22,12 +23,13 @@ import { ensureSessionId, persistSession, resolveWindowId, setView } from "./ses
 import { renderSettingsForm } from "./settings-form.js";
 import { ensureSkillsMeta } from "./slash-menu.js";
 import { state } from "./state.js";
-import { refreshTab } from "./tab-context.js";
+import { refreshTab, snapshotTab } from "./tab-context.js";
 import { applyUiTheme } from "./theme.js";
 import { approvalQueue, trustPanel } from "./trust-runtime.js";
 import { applyCaptions, captureTab } from "./video-actions.js";
 import { resolveClickElementText } from "../lib/agent/click-label.js";
-import { isResumableRun } from "../lib/agent/context.js";
+import { createArticleSummaryLoop } from "./article-summary-loop.js";
+import { isCurrentPageSummary, isResumableRun } from "../lib/agent/context.js";
 import { buildEgressPolicy } from "../lib/agent/egress.js";
 import { auditConfirmReason, auditToolCall } from "../lib/agent/guardrail.js";
 import { LOOP_ENGINE_ID, createKernelAgentLoop } from "../lib/agent/loop-kernel.js";
@@ -35,6 +37,7 @@ import { shortcutsAsSkills, skillCatalogText } from "../lib/agent/skills.js";
 import {
   checkHitlRequirement,
   createAgentTools,
+  createTaskTabGroups,
   resolveActiveTools,
   resolveHitlTargetUrl,
   urlOrigin,
@@ -84,11 +87,12 @@ function afterLive(wrap) {
   return wrap.querySelector(":scope > .stream-live") || wrap.querySelector(":scope > .who");
 }
 
-function paintBot(botMsg) {
+function paintBot(botMsg, { liveOnly = false } = {}) {
   const bots = document.querySelectorAll("#msgs .msg.bot");
   const wrap = bots[bots.length - 1];
   if (!wrap) return;
   syncLiveStatus(wrap, botMsg, { streaming: state.busy && !botMsg.metrics && !botMsg.error });
+  if (liveOnly) return;
   const trace = Array.isArray(botMsg.trace) ? botMsg.trace : [];
   let traceEl = wrap.querySelector(".tool-trace") || wrap.querySelector(".trace");
   if (trace.length) {
@@ -186,13 +190,14 @@ function createPageLensLoop(host) {
   return createKernelAgentLoop(host);
 }
 
-async function executeLoop({ userText, history, resume, turnsUsed, lastText, botMsg, model, clearImage, signal }) {
+async function executeLoop({ userText, history, resume, turnsUsed, lastText, botMsg, model, clearImage, signal, summaryPage }) {
   const skills = skillsOn() ? [...(state.skills || []), ...shortcutsAsSkills(state.settings)] : [];
-  const useSkills = skillsOn() && lastUserAskedForSkill(skills);
-  const hitlUserUrl = state.tab?.url || state.pack?.url || "";
-  let taskTabId = resume && state.run?.tabId != null ? state.run.tabId : state.tab?.id;
+  const useSkills = !summaryPage && skillsOn() && lastUserAskedForSkill(skills);
+  const hitlUserUrl = summaryPage?.url || state.tab?.url || state.pack?.url || "";
+  let taskTabId = summaryPage?.id ?? (resume && state.run?.tabId != null ? state.run.tabId : state.tab?.id);
   let tools;
   let loop;
+  let taskTabGroups;
   try {
     const requestedDomains = new Set(state.activeToolDomains || []);
     const windowId = await resolveWindowId();
@@ -205,7 +210,16 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       }
       return;
     }
-    tools = createAgentTools({
+    taskTabGroups = createTaskTabGroups({
+      getWindowId: () => windowId,
+      getTitle: () => {
+        const user = state.messages.findLast((m) => m.role === "user" && m.text);
+        const line = String(user?.text || "任务").split("\n")[0].trim().slice(0, 24);
+        return `PL · ${line || "任务"}`;
+      },
+    });
+    tools = summaryPage ? [] : createAgentTools({
+      taskTabGroups,
       windowMailTools: windowMailTools(windowId, () => state.capsule, state.messages.findLast(m => m.role === "user")?.id),
       getTabId: () => taskTabId,
       getWindowId: () => windowId,
@@ -228,11 +242,6 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       getTaskGroupId: () => state.taskGroupId,
       setTaskGroupId: (id) => {
         state.taskGroupId = id;
-      },
-      getTaskGroupTitle: () => {
-        const user = [...state.messages].reverse().find((m) => m.role === "user" && m.text);
-        const line = String(user?.text || "任务").split("\n")[0].trim().slice(0, 24);
-        return `PL · ${line || "任务"}`;
       },
       getAbortSignal: () => state.abort?.signal,
       getSessionId: () => state.sessionId,
@@ -282,7 +291,18 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       onIngest: ingestTaint,
     });
 
-    loop = createKernelAgentLoop({
+    loop = summaryPage ? createArticleSummaryLoop({
+      page: summaryPage,
+      model,
+      language: state.settings.answerLanguage,
+      onSource(pack) {
+        botMsg.sourceTitle = pack.title || summaryPage.title || "";
+        ingestTaint({ source: "page", tool: "context", origin: urlOrigin(pack.url) });
+        const hit = detectInjection(pack.text);
+        if (hit) flagInjection({ tool: "page", ...hit }, botMsg);
+        trustPanel.render();
+      },
+    }) : createKernelAgentLoop({
       maxTurns: 0,
       allTools: tools,
       systemPrompt: [systemPrompt(state.settings, { useSkills, windowMail: true }), useSkills ? skillCatalogText(skills) : ""].filter(Boolean).join("\n\n"),
@@ -407,7 +427,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         });
       },
       model: {
-        async runTurn({ messages, tools: turnTools, signal, onTextDelta, onReasoningDelta }) {
+        async runTurn({ messages, tools: turnTools, signal, onTextDelta, onReasoningDelta, onToolCallOutput }) {
           const visionReady = Boolean(state.image) && isModelReady(resolveModel(state.settings, "multimodal"));
           const active = visionReady ? resolveModel(state.settings, "multimodal") : model;
           let msgs = messages;
@@ -422,6 +442,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             tools: turnTools,
             signal,
             onReasoningDelta,
+            onToolCallOutput,
           }, onTextDelta);
         },
       },
@@ -442,13 +463,17 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
   console.info("[pagelens] executeLoop", {
     tools: tools.length,
     useSkills,
-    loopEngine: LOOP_ENGINE_ID,
+    loopEngine: summaryPage ? "article-summary" : LOOP_ENGINE_ID,
   });
 
   signal?.throwIfAborted();
   state.busy = true;
   const controller = new AbortController();
   state.abort = controller;
+  const cleanupGroups = () => taskTabGroups.cleanup().catch((err) => {
+    console.warn("[pagelens] cleanup task tab groups", err);
+  });
+  controller.signal.addEventListener("abort", cleanupGroups, { once: true });
   const cancel = () => {
     if (state.abort === controller) state.stopIntent = "user";
     controller.abort();
@@ -465,14 +490,17 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
     state.busy = false;
     state.abort = null;
     signal?.removeEventListener("abort", cancel);
+    controller.signal.removeEventListener("abort", cleanupGroups);
+    await cleanupGroups();
     throw err;
   }
   state.run = {
     status: "running",
     tabId: taskTabId,
+    ...(summaryPage ? { summaryPageUrl: summaryPage.url } : {}),
     windowId: state.windowId,
     nonce,
-    history: history || [],
+    history: summaryPage ? [{ role: "user", content: userText }] : history || [],
     lastText: lastText || "",
     turnsUsed: turnsUsed || 0,
     startedAt,
@@ -501,6 +529,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         if (!botMsg.thinking) botMsg.thinking = "";
         botMsg.thinking += delta;
         try {
+          noteLiveModelOutput(botMsg, "thinking", delta);
           paintBot(botMsg);
         } catch (err) {
           console.warn("[pagelens] paintBot", err);
@@ -510,9 +539,26 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
         if (isPlaceholderBotText(botMsg.text)) botMsg.text = "";
         botMsg.text += delta;
         try {
+          noteLiveModelOutput(botMsg, "writing", delta);
           paintBot(botMsg);
         } catch (err) {
           console.warn("[pagelens] paintBot", err);
+        }
+      },
+      onToolCallOutput: (count) => {
+        try {
+          noteLiveModelOutput(botMsg, "calling", count);
+          paintBot(botMsg, { liveOnly: true });
+        } catch (err) {
+          console.warn("[pagelens] tool output status", err);
+        }
+      },
+      onModelOutput: (output) => {
+        try {
+          finishLiveModelTurn(botMsg, output);
+          paintBot(botMsg, { liveOnly: true });
+        } catch (err) {
+          console.warn("[pagelens] model output status", err);
         }
       },
       onEvent: (ev) => {
@@ -521,6 +567,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             state.run = {
               status: "running",
               tabId: taskTabId,
+              ...(summaryPage ? { summaryPageUrl: summaryPage.url } : {}),
               windowId: state.windowId,
               nonce,
               history: ev.history,
@@ -535,6 +582,11 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
             paintBot(botMsg);
           }
           if (ev.type === "turn_prepared") {
+            if (ev.stage === "segment" || ev.stage === "reduce") {
+              const label = ev.stage === "segment" ? "分段总结" : "合并分段要点";
+              pushTraceItem(botMsg, { kind: "meta", name: label, ok: true });
+            }
+            startLiveModelTurn(botMsg);
             if (botMsg.thinking && !botMsg.thinking.endsWith("\n\n")) {
               botMsg.thinking += "\n\n";
             }
@@ -611,7 +663,7 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       botMsg.error = true;
       failed = true;
     }
-    botMsg.metrics = {
+    botMsg.metrics = err?.articleSummaryRun?.metrics || {
       durationMs: durMs,
       inputTokens: 0,
       outputTokens: 0,
@@ -629,13 +681,15 @@ async function executeLoop({ userText, history, resume, turnsUsed, lastText, bot
       userPrompt: userText || "",
       botResponse: botMsg.text || "",
       trace: botMsg.trace ? [...botMsg.trace] : [],
-      steps: [],
+      steps: err?.articleSummaryRun?.traceSteps || [],
       error: err?.message || String(err),
     };
     maybeUploadTraceToLangfuse(botMsg.traceLog);
     renderMessages();
   } finally {
     signal?.removeEventListener("abort", cancel);
+    controller.signal.removeEventListener("abort", cleanupGroups);
+    await cleanupGroups();
     const userStop = state.stopIntent === "user";
     const finished = ["stop", "max_turns", "empty_assistant"].includes(result?.reason);
     if (userStop || finished || failed) state.run = null;
@@ -692,10 +746,15 @@ async function sendPrompt(userText, options = {}) {
   if (state.busy) {
     throw Object.assign(new Error("此窗口已有任务运行，请在独立窗口开始另一项任务。"), { code: "WINDOW_BUSY" });
   }
-  return withWindowTask(await resolveWindowId(), () => sendWindowPrompt(text, userText, options));
+  // Bind the page displayed in the composer before waiting for the window lock.
+  const summarize = !state.chatRef && !options.image && !state.image && isCurrentPageSummary(text, state.tab?.url);
+  const summaryPage = summarize && state.share ? snapshotTab(state.tab) : null;
+  const windowId = await resolveWindowId();
+  if (summaryPage) summaryPage.windowId = windowId;
+  return withWindowTask(windowId, () => sendWindowPrompt(text, userText, options, { summarize, summaryPage }));
 }
 
-async function sendWindowPrompt(text, userText, options) {
+async function sendWindowPrompt(text, userText, options, { summarize, summaryPage }) {
   options.signal?.throwIfAborted();
   const image = options.image || state.image;
   messageScroll?.reset();
@@ -726,7 +785,8 @@ async function sendWindowPrompt(text, userText, options) {
 
   try {
     console.info("[pagelens] sendPrompt executeLoop");
-    if (state.share && state.tab) {
+    if (summarize && (!summaryPage?.id || !summaryPage.url)) throw new Error("请先在侧栏共享要总结的文章。");
+    if (!summarize && state.share && state.tab) {
       try {
         await withTimeout(refreshTab(), 8000, "读当前页超时，先用已缓存内容。");
       } catch (err) {
@@ -734,17 +794,16 @@ async function sendWindowPrompt(text, userText, options) {
         pushTraceItem(botMsg, { kind: "meta", name: "读页", ok: false });
       }
     }
-    const pack = state.share ? state.pack : null;
-    const context = state.chatRef?.context
-      || (pack ? packToContext(pack) : "（用户未分享页面）");
-    if (pack || state.chatRef?.context) {
-      ingestTaint({ source: state.chatRef?.context ? "reference" : "page", tool: "context", origin: urlOrigin(pack?.url) });
+    const pack = !summarize && state.share ? state.pack : null;
+    const reference = !summarize && state.chatRef;
+    const context = summarize ? "" : reference?.context || (pack ? packToContext(pack) : "（用户未分享页面）");
+    if (pack || reference?.context) {
+      ingestTaint({ source: reference?.context ? "reference" : "page", tool: "context", origin: urlOrigin(pack?.url) });
     }
     const contextHit = detectInjection(context);
     if (contextHit) flagInjection({ tool: pack ? "page" : "reference", ...contextHit }, botMsg);
     trustPanel.render();
-    botMsg.sourceTitle = state.chatRef?.title
-      || (state.share ? (state.pack?.title || state.tab?.title || "") : "");
+    botMsg.sourceTitle = reference?.title || pack?.title || summaryPage?.title || (state.share ? state.tab?.title : "") || "";
     const prior = [];
     for (const m of state.messages.slice(0, -2)) {
       if (m.error || (m.role === "bot" && !m.text)) continue;
@@ -779,6 +838,7 @@ async function sendWindowPrompt(text, userText, options) {
       model,
       clearImage: options.clearImage,
       signal: options.signal,
+      summaryPage,
     });
     console.info("[pagelens] sendPrompt ok");
   } catch (err) {
@@ -824,7 +884,8 @@ async function resumeInterruptedRun() {
     await persistSession();
     return;
   }
-  if (state.share && state.tab) await refreshTab();
+  const summaryPage = run.summaryPageUrl ? { id: run.tabId, url: run.summaryPageUrl, windowId: run.windowId } : null;
+  if (!summaryPage && state.share && state.tab) await refreshTab();
 
   let botMsg = state.messages[state.messages.length - 1];
   if (!botMsg || botMsg.role !== "bot") {
@@ -840,13 +901,14 @@ async function resumeInterruptedRun() {
   }
 
   await withWindowTask(await resolveWindowId(), () => executeLoop({
-    userText: "",
-    history: run.history,
+    userText: summaryPage ? (state.messages.findLast(m => m.role === "user")?.text || "") : "",
+    history: summaryPage ? [] : run.history,
     resume: true,
     turnsUsed: run.turnsUsed,
     lastText: run.lastText,
     botMsg,
     model,
+    summaryPage,
   }));
 }
 

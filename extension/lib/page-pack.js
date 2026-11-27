@@ -4,6 +4,7 @@ import { enrichPackWithPdf, hostnameOf } from "./pdf-text.js";
 
 function emptyPack(tab) {
   return {
+    tabId: tab?.id,
     title: tab?.title || "",
     url: tab?.url || "",
     hostname: hostnameOf(tab?.url || ""),
@@ -11,10 +12,12 @@ function emptyPack(tab) {
     quotes: [],
     kind: "generic",
     video: null,
+    domAvailable: false,
   };
 }
 
-export async function loadTabPack(tabId) {
+export async function loadTabPack(tabId, { fullArticle = false, summarySource = false, signal } = {}) {
+  signal?.throwIfAborted();
   if (!tabId) throw new Error("没有可操作的标签");
   const tab = await chrome.tabs.get(tabId);
   if (restrictedUrl(tab?.url)) {
@@ -22,11 +25,13 @@ export async function loadTabPack(tabId) {
   }
   let pack;
   try {
-    pack = await inject(tabId, extractPage);
+    pack = await inject(tabId, extractPage, [{ fullArticle, summarySource }]);
   } catch {
     pack = null;
   }
-  pack = pack && typeof pack === "object" ? { ...pack } : emptyPack(tab);
+  signal?.throwIfAborted();
+  pack = pack && typeof pack === "object" ? { ...pack, domAvailable: true } : emptyPack(tab);
+  pack.tabId = tabId;
   pack.title = pack.title || tab.title || "";
   pack.url = pack.url || tab.url || "";
   pack.hostname = pack.hostname || hostnameOf(pack.url);
@@ -34,9 +39,11 @@ export async function loadTabPack(tabId) {
   pack.quotes = Array.isArray(pack.quotes) ? pack.quotes : [];
   pack.kind = pack.kind || "generic";
   try {
-    pack = await enrichPackWithPdf(pack);
+    pack = await enrichPackWithPdf(pack, { summarySource, signal });
   } catch (err) {
+    signal?.throwIfAborted();
     pack.pdfError = err?.message || String(err);
   }
-  return pack;
+  signal?.throwIfAborted();
+  return fullArticle ? { ...pack, fullArticle: true } : pack;
 }

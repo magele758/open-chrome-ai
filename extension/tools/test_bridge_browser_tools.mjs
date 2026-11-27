@@ -105,7 +105,10 @@ const scopes = Object.fromEntries(bridge.tools.map((t) => [t.name, t.scope]));
 const EXPECTED = {
   navigate_tab: "tabs:manage", reload_tab: "tabs:manage", go_back: "tabs:manage", go_forward: "tabs:manage",
   close_tab: "tabs:manage", list_windows: "tabs:read", create_window: "tabs:manage", focus_window: "tabs:manage",
-  close_window: "tabs:manage", snapshot_controls: "page:read", extract_page: "page:read", find_in_page: "page:read",
+  close_window: "tabs:manage", list_tab_groups: "tabs:read", group_tabs: "tabs:manage", update_tab_group: "tabs:manage",
+  ungroup_tabs: "tabs:manage", close_tab_group: "tabs:manage", list_saved_tab_groups: "tabs:read",
+  save_tab_group: "tabs:manage", open_saved_tab_group: "tabs:manage", update_saved_tab_group: "tabs:manage",
+  delete_saved_tab_group: "tabs:manage", snapshot_controls: "page:read", extract_page: "page:read", find_in_page: "page:read",
   get_links: "page:read", act_element: "page:act", select_option: "page:act", scroll_page: "page:act",
   drag_drop: "page:act", handle_dialog: "page:act", download_file: "downloads", list_downloads: "downloads",
   upload_file: "upload", get_settings: "settings:read", update_settings: "settings:write",

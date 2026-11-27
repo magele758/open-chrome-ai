@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VerifyCenter 安全验证</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+      --accent: #4f46e5;
+      --accent-soft: #eef2ff;
+      --success: #059669;
+      --success-soft: #ecfdf5;
+      --danger: #dc2626;
+      --danger-soft: #fef2f2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      user-select: none;
+    }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .title {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0;
+    }
+    .subtitle {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 2px 0 0;
+    }
+    .badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      white-space: nowrap;
+    }
+    .badge.passed {
+      background: var(--success-soft);
+      color: var(--success);
+    }
+    .badge.failed {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+    .track {
+      position: relative;
+      height: 44px;
+      border-radius: 10px;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 10px;
+      touch-action: none;
+    }
+    .track-fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 0;
+      background: linear-gradient(90deg, rgba(79, 70, 229, 0.16), rgba(79, 70, 229, 0.28));
+      transition: background 0.2s ease;
+    }
+    .track.passed .track-fill {
+      background: linear-gradient(90deg, rgba(5, 150, 105, 0.16), rgba(5, 150, 105, 0.28));
+    }
+    .track-label {
+      position: relative;
+      z-index: 1;
+      font-size: 13px;
+      color: var(--muted);
+      pointer-events: none;
+    }
+    .track.passed .track-label {
+      color: var(--success);
+      font-weight: 600;
+    }
+    .handle {
+      position: absolute;
+      left: 3px;
+      top: 3px;
+      width: 44px;
+      height: 36px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: grab;
+      z-index: 2;
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+    }
+    .handle:active { cursor: grabbing; }
+    .track.passed .handle {
+      border-color: #6ee7b7;
+      color: var(--success);
+      cursor: default;
+    }
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .reset-btn {
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .reset-btn:hover { background: #f8fafc; }
+  </style>
+</head>
+<body data-iframe-challenge="verifycenter" data-status="idle">
+  <div class="panel" role="region" aria-label="VerifyCenter 安全验证框">
+    <div class="header">
+      <div>
+        <h2 class="title">请完成下列验证后继续</h2>
+        <p class="subtitle">Verify to continue · 独立 iframe 风控校验页</p>
+      </div>
+      <span class="badge" id="frame-badge">待验证</span>
+    </div>
+
+    <div class="track" id="frame-track">
+      <div class="track-fill" id="frame-fill"></div>
+      <span class="track-label" id="frame-label">按住滑块并拖动到最右侧</span>
+      <button type="button" class="handle" id="frame-handle" aria-label="拖动滑块完成 iframe 验证" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">→</button>
+    </div>
+
+    <div class="footer">
+      <span id="frame-hint">独立沙盒帧 · 通过 postMessage 通知父页面</span>
+      <button type="button" class="reset-btn" id="frame-reset">重置</button>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const track = document.getElementById('frame-track');
+      const fill = document.getElementById('frame-fill');
+      const label = document.getElementById('frame-label');
+      const handle = document.getElementById('frame-handle');
+      const badge = document.getElementById('frame-badge');
+      const hint = document.getElementById('frame-hint');
+      const resetBtn = document.getElementById('frame-reset');
+
+      let dragging = false;
+      let passed = false;
+      let startX = 0;
+      let startAt = 0;
+      let moveSamples = 0;
+      let currentOffset = 0;
+
+      function getMaxOffset() {
+        return Math.max(1, track.clientWidth - handle.offsetWidth - 6);
+      }
+
+      function notifyParent(status, detail) {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage(
+            {
+              source: 'pagelens-rc-iframe',
+              status: status,
+              detail: detail || ''
+            },
+            '*'
+          );
+        }
+      }
+
+      function updateTrack(offset) {
+        const max = getMaxOffset();
+        const clamped = Math.max(0, Math.min(max, offset));
+        currentOffset = clamped;
+        const pct = Math.round((clamped / max) * 100);
+        handle.style.left = (3 + clamped) + 'px';
+        fill.style.width = (clamped + handle.offsetWidth / 2) + 'px';
+        handle.setAttribute('aria-valuenow', String(pct));
+      }
+
+      function reset(silent) {
+        dragging = false;
+        passed = false;
+        moveSamples = 0;
+        currentOffset = 0;
+        document.body.dataset.status = 'idle';
+        track.classList.remove('passed');
+        badge.className = 'badge';
+        badge.textContent = '待验证';
+        label.textContent = '按住滑块并拖动到最右侧';
+        handle.textContent = '→';
+        hint.textContent = '独立沙盒帧 · 通过 postMessage 通知父页面';
+        updateTrack(0);
+        if (!silent) {
+          notifyParent('idle', 'iframe challenge reset');
+        }
+      }
+
+      handle.addEventListener('pointerdown', function (e) {
+        if (passed) return;
+        dragging = true;
+        startX = e.clientX;
+        startAt = Date.now();
+        moveSamples = 0;
+        document.body.dataset.status = 'verifying';
+        badge.className = 'badge';
+        badge.textContent = '验证中';
+        if (handle.setPointerCapture) {
+          try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+        }
+      });
+
+      window.addEventListener('pointermove', function (e) {
+        if (!dragging || passed) return;
+        moveSamples += 1;
+        updateTrack(e.clientX - startX);
+      });
+
+      window.addEventListener('pointerup', function () {
+        if (!dragging || passed) return;
+        dragging = false;
+        const max = getMaxOffset();
+        const elapsed = Date.now() - startAt;
+        if (currentOffset >= max - 6 && elapsed >= 120 && moveSamples >= 3) {
+          passed = true;
+          updateTrack(max);
+          document.body.dataset.status = 'passed';
+          track.classList.add('passed');
+          badge.className = 'badge passed';
+          badge.textContent = '已通过';
+          handle.textContent = '✓';
+          label.textContent = '验证通过 (' + (elapsed / 1000).toFixed(2) + 's)';
+          hint.textContent = '已向父页面回传验证通过事件';
+          notifyParent('passed', '耗时 ' + (elapsed / 1000).toFixed(2) + 's');
+        } else {
+          document.body.dataset.status = 'failed';
+          badge.className = 'badge failed';
+          badge.textContent = '未通过';
+          hint.textContent = currentOffset < max - 6 ? '请拖动到最右侧再松开' : '拖动过快，请重新手工拖动';
+          updateTrack(0);
+          notifyParent('failed', hint.textContent);
+        }
+      });
+
+      resetBtn.addEventListener('click', function () {
+        reset(false);
+      });
+
+      window.addEventListener('message', function (e) {
+        if (e.data && e.data.source === 'pagelens-rc-parent' && e.data.action === 'reset') {
+          reset(true);
+        }
+      });
+
+      reset(true);
+    })();
+  </script>
+</body>
+</html>

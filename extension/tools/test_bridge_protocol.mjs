@@ -30,6 +30,11 @@ assert.throws(() => validateRequest({ id: "1" }), (e) => e.code === ERROR_CODES.
 assert.throws(() => validateRequest({ id: "1", tool: "x", v: 2 }), (e) => e.code === ERROR_CODES.PROTOCOL_UNSUPPORTED);
 assert.throws(() => validateRequest({ id: "1", tool: "x", args: [] }), (e) => e.code === ERROR_CODES.BAD_REQUEST);
 assert.equal(validateRequest({ id: "1", tool: "x", timeoutMs: 9e9 }).timeoutMs, 120000, "timeout clamped");
+for (const tool of ["open_saved_tab_group", "update_saved_tab_group", "delete_saved_tab_group"]) {
+  assert.equal(validateRequest({ id: "1", tool, args: { guid: "g" } }).timeoutMs, 120000);
+  assert.equal(validateRequest({ id: "1", tool, args: { id: "stg" } }).timeoutMs, 30000);
+  assert.equal(validateRequest({ id: "1", tool, timeoutMs: 45000 }).timeoutMs, 45000);
+}
 assert.equal(toBridgeError(new Error("Another debugger is already attached to the tab")).code, ERROR_CODES.DEBUGGER_BUSY);
 assert.equal(toBridgeError(new Error("该标签已被 DevTools 或其他调试器占用，请先关闭它的开发者工具。")).retryable, true);
 assert.equal(toBridgeError(new Error("boom")).code, ERROR_CODES.TOOL_FAILED);

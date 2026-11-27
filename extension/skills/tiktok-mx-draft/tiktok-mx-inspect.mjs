@@ -6,12 +6,13 @@ export async function inspectDraftJob(job, bridge) {
   if (job.token != null || ![sourceId, draftId].every(id => typeof id === "string" && /^\d{12,22}$/.test(id)))
     throw Error("Expected a local inspection with numeric source and draft IDs");
   const url = "https://seller.tiktokshopglobalselling.com/product/edit-draft/" + draftId + "?shop_region=MX";
-  let step = 0, tabId, read;
+  let step = 0, tabId, windowId, read;
   const dispatch = (tool, args) => bridge.call({ id: job.id + "." + ++step, tool, args });
   async function browserRead() {
-    const opened = await dispatch("open_tab", { url, active: true, groupTitle: "PageLens · MX " + sourceId.slice(-6) });
+    const opened = await dispatch("open_tab", { url, active: false, groupTitle: "PageLens · MX " + sourceId.slice(-6), newWindow: true });
     if (!opened.ok) throw Error(opened.error?.message || "Draft did not open");
     tabId = opened.result.tabId;
+    windowId = Number.isInteger(opened.result.windowId) ? opened.result.windowId : null;
     return runMxDraftRead({ action: "read_mx_draft", url, tabId }, dispatch, async id => {
       const t = await chrome.tabs.get(id);
       return t.url || t.pendingUrl;
@@ -42,6 +43,23 @@ export async function inspectDraftJob(job, bridge) {
     if (tabId) {
       const closed = await dispatch("close_tab", { tabId });
       if (!closed.ok) throw Error(closed.error?.message || "Could not close inspection tab");
+    }
+    if (windowId != null) {
+      try {
+        const win = await chrome.windows?.get?.(windowId, { populate: true });
+        const tabs = win?.tabs || [];
+        const onlyAutomation = tabs.every(t => {
+          const u = String(t.url || t.pendingUrl || "");
+          return t.id === tabId || !u || u === "about:blank" || u.startsWith("chrome://newtab");
+        });
+        if (win && onlyAutomation) {
+          const groupedIds = tabs.filter(t => t.groupId != null && t.groupId >= 0).map(t => t.id);
+          if (groupedIds.length && typeof chrome.tabs?.ungroup === "function") {
+            await chrome.tabs.ungroup(groupedIds).catch(() => {});
+          }
+          await chrome.windows.remove(windowId).catch(() => {});
+        }
+      } catch {}
     }
   }
 }

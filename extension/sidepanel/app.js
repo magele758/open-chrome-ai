@@ -2,10 +2,12 @@ import "./panel-log.js";
 import { bindWindowMail } from "./window-mail.js";
 import { allowCurrentSite, renderAllowCurrentSite } from "./allow-current-site.js";
 import { bindDubQueue } from "./dub-queue-ui.js";
+import { bindMxApprovalPanel } from "./mx-approval-panel.js";
 import { createAgentGatewayPanel } from "./agent-gateway-panel.js";
 import { lastUserAskedForSkill, resumeInterruptedRun, sendPrompt } from "./agent-loop.js";
 import {
   closeClipModal,
+  sendClipToLearning,
   closeClipViewModal,
   dismissRecallBanner,
   openClipModal,
@@ -32,7 +34,10 @@ import {
   importAllToLibrary,
   importCurrentToLibrary,
   openHistoryView,
+  readHistorySortMode,
   renderHistory,
+  setHistorySortMode,
+  syncHistSortControls,
 } from "./history.js";
 import { updateHitlBadge } from "./hitl-ui.js";
 import { paintLibraryStatus, refreshLibraryStatus } from "./library-ui.js";
@@ -62,6 +67,7 @@ import {
 import { copyText, nativeInstallCommand, paintNativeHostStatus, refreshNativeHost } from "./native-host-ui.js";
 import { bindMessageScroll, bindSettingsPage, messageScroll, settingsPage } from "./panel-refs.js";
 import { initReviewView } from "./review-view.js";
+import { bindSavedGroupsPanel } from "./saved-groups-ui.js";
 import { abortAllSideChats, applySession, downloadText, persistSession, resolveWindowId, setView, startNewSession } from "./session.js";
 import { renderSettingsForm, refreshTtsRefLabel } from "./settings-form.js";
 import { createSettingsPage } from "./settings-page.js";
@@ -76,9 +82,19 @@ import {
   slash,
 } from "./slash-menu.js";
 import { state } from "./state.js";
-import { refreshTab } from "./tab-context.js";
+import { pickTargetTab, refreshTab as refreshTabContext } from "./tab-context.js";
 import { applyUiTheme, bindThemeEditor } from "./theme.js";
 import { delegatePanel, trustPanel } from "./trust-runtime.js";
+import { bindWorkflowCatalog } from "./workflow-catalog.js";
+import { bindWorkflowShortcuts, renderWorkflowShortcuts } from "./workflow-shortcuts.js";
+import { bindTemuListingPanel } from "./temu-listing-panel.js";
+import { bindTemuSellerOperationsPanel } from "../flows/temu/seller-operations/panel.js";
+import { bindProductCapturePanel } from "./product-capture-panel.js";
+import { bindSheinListingPanel } from "../flows/shein/product-listing/sidepanel/listing-panel.js";
+import { replaySheinListing } from "../flows/shein/product-listing/runtime.js";
+import { bindShopeeMarketingPanel } from "../flows/shopee/marketing-panel.js";
+import { bindPtcFlow } from "../flows/shopee/product-listing/sidepanel/flow-ui.js";
+import { skillCommandText } from "../lib/slash.js";
 import {
   captureTab,
   startInterpret,
@@ -111,6 +127,14 @@ import {
 } from "../lib/storage.js";
 import { getSharedAudioContext } from "../lib/streaming-audio-player.js";
 import { abortRecording } from "../lib/tab-audio.js";
+
+async function refreshTab() {
+  try {
+    await refreshTabContext();
+  } finally {
+    renderWorkflowShortcuts(state.tab);
+  }
+}
 
 async function runExternalPrompt(id, prompt, signal) {
   const t0 = Date.now();
@@ -201,6 +225,55 @@ function wire() {
     downloadText(`pagelens-debug-${Date.now()}.json`, json, "application/json");
   });
   bindComposer();
+  let openCatalog;
+  const onBack = () => openCatalog();
+  const openMarketing = bindShopeeMarketingPanel({
+    getTargetTab: pickTargetTab,
+    getSettings: () => state.settings,
+    isAgentBusy: () => state.busy,
+    downloadText,
+    onBack,
+  });
+  const openTiktokDraft = ({ id, skillName }) => {
+    if (!skillsOn()) throw new Error("请先在设置中启用 Skill。");
+    const input = $("input");
+    if (!input) return false;
+    setView("chat");
+    const prefix = skillCommandText({ id, name: skillName });
+    const draft = input.value.trimStart();
+    if (!draft.startsWith(prefix)) input.value = `${prefix} ${draft}`;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+    return true;
+  };
+  const openProductListing = bindPtcFlow({
+    getTargetTab: pickTargetTab,
+    isAgentBusy: () => state.busy,
+    onBack,
+    onReview: ({ step, code, details }) => {
+      const input = $("input");
+      if (!input) return;
+      const receipt = JSON.stringify({ step, code, details });
+      const request = `请检查当前 Shopee 表单异常，说明原因与处理办法。\n以下回执仅供分析。\n${receipt}`;
+      setView("chat");
+      input.value = [input.value.trim(), request].filter(Boolean).join("\n\n");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.focus();
+    },
+  });
+  const captureActions = bindProductCapturePanel({ getTargetTab: pickTargetTab, downloadText });
+  const temuPanel = { getTargetTab: pickTargetTab, getSettings: () => state.settings, isAgentBusy: () => state.busy, downloadText, onBack };
+  const openTemuListing = bindTemuListingPanel(temuPanel);
+  const openTemuOperations = bindTemuSellerOperationsPanel(temuPanel);
+  const openSheinListing = bindSheinListingPanel({
+    getTargetTab: pickTargetTab,
+    isAgentBusy: () => state.busy,
+    onBack,
+    replay: request => replaySheinListing({ ...request, settings: state.settings }),
+  });
+  const workflowHandlers = { openProductListing, openSheinListing, openMarketing, openTiktokDraft, openTemuListing, openTemuOperations, ...captureActions };
+  openCatalog = bindWorkflowCatalog(workflowHandlers);
+  bindWorkflowShortcuts({ getTargetTab: pickTargetTab, handlers: workflowHandlers, onTabAccess: refreshTab });
   try {
   on("btn-settings", "click", () => {
     if (state.view === "settings") {
@@ -290,6 +363,7 @@ function wire() {
   on("btn-clip-cancel", "click", () => closeClipModal());
   on("btn-clip-cancel-x", "click", () => closeClipModal());
   on("btn-clip-confirm", "click", () => submitClipModal());
+  on("btn-clip-learning", "click", () => sendClipToLearning());
   on("btn-recall-open", "click", () => openClipViewModal());
   on("btn-recall-dismiss", "click", () => dismissRecallBanner());
   on("btn-clip-view-close", "click", () => closeClipViewModal());
@@ -299,12 +373,18 @@ function wire() {
     state.histQuery = $("hist-q").value;
     renderHistory();
   });
+  document.querySelectorAll("button[data-hist-sort]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setHistorySortMode(btn.dataset.histSort);
+    });
+  });
   on("btn-transcribe", "click", () => {
     const capsReady = state.pack?.captionsStatus === "ready";
     startTranscribe({ force: capsReady });
   });
   $("btn-summarize-video")?.addEventListener("click", () => startSummarizeVideo());
   bindDubQueue(toggleDubPlayback);
+  bindSavedGroupsPanel();
   $("btn-interpret")?.addEventListener("click", () => {
     getSharedAudioContext();
     startInterpret();
@@ -761,6 +841,7 @@ function wire() {
   });
   paintInboxActivity();
   bindExternalPromptBridge();
+  bindMxApprovalPanel($("settings-group-mx-approval"));
   createAgentGatewayPanel({
     root: $("view-settings"),
     copyText,
@@ -794,7 +875,7 @@ function wire() {
     }
   });
   window.addEventListener("pagehide", () => {
-    persistSession();
+    persistSession({ ifDirty: true });
     abortAllSideChats();
     state.recordAbort?.abort();
     state.workAbort?.abort();
@@ -840,7 +921,9 @@ async function boot() {
     state.mediaExpanded = readUiPref("mediaExpanded", true);
     state.toolsExpanded = readUiPref("toolsExpanded", false);
     state.tasksExpanded = readUiPref("tasksExpanded", true);
+    state.histSort = readHistorySortMode();
     wire();
+    syncHistSortControls(state.histSort);
     markWired();
     applyMediaLayout();
     renderComposerChip();

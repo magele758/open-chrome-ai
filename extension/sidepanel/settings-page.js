@@ -173,7 +173,7 @@ export function createSettingsPage({ root, getSettings, onModelChange }) {
     } finally { button.disabled = false; }
   });
   root.addEventListener("input", (event) => {
-    if (!event.target.matches("[data-theme-color]")) {
+    if (!event.target.matches("[data-theme-color], #mx-approval-enabled")) {
       setText("save-status", "有未保存的更改");
       find("save-status").className = "status";
     }

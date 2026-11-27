@@ -21,7 +21,7 @@ import {
 import { isModelReady, resolveModel } from "../lib/storage.js";
 
 async function openReviewView() {
-  await persistSession();
+  await persistSession({ ifDirty: true });
   setView("review");
 }
 

@@ -8,17 +8,33 @@ export function withWindowTask(windowId, run) {
 }
 
 // Window-bound browser operations always use the window captured by the caller.
-export async function tabInWindow(tabId, windowId) {
-  const tab = await chrome.tabs.get(tabId);
+export async function tabInWindow(tabId, windowId, api = globalThis.chrome) {
+  const tab = await api.tabs.get(tabId);
   if (windowId != null && tab?.windowId !== windowId) {
-    throw new Error("标签页不在任务所属窗口，已停止操作该页。");
+    throw Object.assign(new Error("标签页不在任务所属窗口，已停止操作该页。"), { code: "WINDOW_SCOPE" });
   }
   return tab;
+}
+
+export async function groupInWindow(groupId, windowId, api = globalThis.chrome) {
+  const group = await api.tabGroups.get(groupId);
+  if (windowId != null && group?.windowId !== windowId) {
+    throw Object.assign(new Error("标签组不在任务所属窗口，已停止操作该标签组。"), { code: "WINDOW_SCOPE" });
+  }
+  return group;
 }
 
 export function tabQuery(windowId, currentWindow = true) {
   if (windowId != null) return { windowId };
   return currentWindow ? { currentWindow: true } : {};
+}
+
+export function tabGroupQuery(windowId, currentWindow = true, api = globalThis.chrome) {
+  if (windowId != null) return { windowId };
+  if (currentWindow && api?.windows?.WINDOW_ID_CURRENT != null) {
+    return { windowId: api.windows.WINDOW_ID_CURRENT };
+  }
+  return {};
 }
 
 function requireWindow(requested, windowId) {

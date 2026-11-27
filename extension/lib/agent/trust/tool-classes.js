@@ -16,6 +16,8 @@ export const READ_ONLY_TOOLS = new Set([
   "wait_for_navigation",
   "scroll_page",
   "list_tabs",
+  "list_tab_groups",
+  "list_saved_tab_groups",
   "list_task_windows",
   "read_window_inbox",
   "get_captions",
@@ -56,6 +58,7 @@ export const TAB_TARGET_TOOLS = new Set([
   "act_element",
   "hover",
   "drag_drop",
+  "solve_risk_control",
   "upload_file",
   "handle_dialog",
   "switch_tab",
@@ -105,6 +108,7 @@ const TOOL_CATEGORY = {
   trusted_type: "input",
   hover: "input",
   drag_drop: "input",
+  solve_risk_control: "input",
   paste_into_page: "input",
   handle_dialog: "input",
   run_js: "input",
@@ -120,9 +124,17 @@ const TOOL_CATEGORY = {
   add_bookmark: "write",
   create_bookmark_folder: "write",
   bookmark_open_tabs: "write",
+  group_tabs: "write",
+  update_tab_group: "write",
+  ungroup_tabs: "write",
+  save_tab_group: "write",
+  open_saved_tab_group: "navigate",
+  update_saved_tab_group: "write",
+  delete_saved_tab_group: "delete",
   clipboard_write: "clipboard",
   copy_selection: "clipboard",
   close_tab: "close",
+  close_tab_group: "close",
   close_task_group: "close",
   update_settings: "settings",
   automa_execute: "automation",
@@ -131,6 +143,7 @@ const TOOL_CATEGORY = {
 /** 工具对应的动作类别；只读工具返回 "read"，未知工具返回 "" */
 export function toolCategory(toolName, args = {}) {
   if (READ_ONLY_TOOLS.has(toolName)) return "read";
+  if (toolName === "save_tab_group" && args?.closeAfterSave === true) return "close";
   if (toolName === "chrome_call") {
     return /remove|delete|clear/i.test(String(args?.method || "")) ? "delete" : /update|create|move/i.test(String(args?.method || "")) ? "write" : "read";
   }
@@ -177,7 +190,8 @@ export function isToolPrivileged(toolName, args = {}, origin = {}) {
   if (toolName === "run_parallel_tasks" || toolName === "delegate_window_task" || toolName === "send_window_message") return true;
   if (toolName === "run_shell") return true;
   if (toolName === "cose_publish") return true;
-  if (toolName === "close_tab" || toolName === "close_task_group") return true;
+  if (toolName === "close_tab" || toolName === "close_task_group" || toolName === "close_tab_group" || toolName === "delete_saved_tab_group") return true;
+  if (toolName === "save_tab_group" && args?.closeAfterSave === true) return true;
   if (toolName === "write_library") return true;
   if (toolName === "automa_execute") return true;
   if (toolName === "download_file" || toolName === "upload_file") return true;

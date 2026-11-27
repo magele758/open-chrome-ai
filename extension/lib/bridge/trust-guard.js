@@ -34,6 +34,8 @@ const IRREVERSIBLE_ALIASES = Object.freeze({
 /** P4 清单里没有、bridge 才有的删除类工具 */
 const DELETE_TOOLS = Object.freeze({
   close_tab: "关闭标签",
+  close_tab_group: "关闭整个标签组",
+  delete_saved_tab_group: "永久删除已保存的标签组",
   close_window: "关闭整个窗口",
 });
 
@@ -58,6 +60,10 @@ export function matchTokenIrreversible(toolName, args = {}, settings = {}, { tar
     if (!normalizeIrreversibleActions(settings?.irreversibleActions).delete) return null;
     const { id, label } = IRREVERSIBLE_ITEMS.find((i) => i.id === "delete");
     return { id, label, reason: DELETE_TOOLS[toolName] };
+  }
+  if (toolName === "flow_size_chart_action" && args.action === "open") {
+    if (!normalizeIrreversibleActions(settings?.irreversibleActions).publish_send) return null;
+    return { id: "publish_send", label: "保存 Shopee 店铺尺码表", reason: "新建并保存 Shopee 店铺尺码表" };
   }
   const name = IRREVERSIBLE_ALIASES[toolName] || toolName;
   return matchIrreversible(name, args, settings, { targetUrl, elementText });

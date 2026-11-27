@@ -40,7 +40,23 @@ export function modelsUrl(baseUrl) {
   const raw = String(baseUrl || "").trim().replace(/\/+$/, "");
   if (!raw) throw new Error("缺少 base_url");
   if (/\/models$/i.test(raw)) return raw;
-  return `${raw}/models`;
+  return `${raw.replace(/\/chat\/completions$/i, "")}/models`;
+}
+
+// OpenAI-compatible gateways use several names for their model limits.
+// Keep input-only limits separate from windows shared by input and output.
+export function modelLimits(raw) {
+  const positive = (...values) => values.map(Number).find(n => Number.isSafeInteger(n) && n > 0);
+  const contextWindowTokens = positive(raw?.contextWindowTokens, raw?.top_provider?.context_length,
+    raw?.context_length, raw?.context_window, raw?.max_model_len, raw?.max_context_length);
+  const maxInputTokens = positive(raw?.maxInputTokens, raw?.max_input_tokens, raw?.inputTokenLimit);
+  const maxOutputTokens = positive(raw?.maxOutputTokens, raw?.max_output_tokens,
+    raw?.top_provider?.max_completion_tokens, raw?.outputTokenLimit);
+  return {
+    ...(contextWindowTokens ? { contextWindowTokens } : {}),
+    ...(maxInputTokens ? { maxInputTokens } : {}),
+    ...(maxOutputTokens ? { maxOutputTokens } : {}),
+  };
 }
 
 export function parseRemoteModelList(payload) {
@@ -65,7 +81,7 @@ export function parseRemoteModelList(payload) {
     if (!id || seen.has(id)) continue;
     seen.add(id);
     const ownedBy = String(item.owned_by || item.display_name || item.ownedBy || "").trim();
-    out.push(ownedBy ? { id, ownedBy } : { id });
+    out.push({ id, ...(ownedBy ? { ownedBy } : {}), ...modelLimits(item) });
   }
   return out;
 }
@@ -83,6 +99,7 @@ export function normalizeCatalogModel(raw) {
     id,
     enabled: raw.enabled !== false,
     ...(ownedBy ? { ownedBy } : {}),
+    ...modelLimits(raw),
   };
 }
 
@@ -125,6 +142,8 @@ export function mergeScannedModels(existing, scanned) {
       id,
       enabled: prev ? prev.enabled : true,
       ...(ownedBy ? { ownedBy } : {}),
+      ...modelLimits(prev),
+      ...modelLimits(item),
     });
   }
   for (const prev of existing || []) {
@@ -143,7 +162,7 @@ export function providerFromLegacyText(text) {
     preset: text?.preset || "custom",
     baseUrl: text?.baseUrl || "",
     apiKey: text?.apiKey || "",
-    models: model ? [{ id: model, enabled: true }] : [],
+    models: model ? [{ id: model, enabled: true, ...modelLimits(text) }] : [],
   });
 }
 
@@ -173,12 +192,17 @@ export function pickDefaultRef(providers, preferred) {
 
 export function textSlotFromRef(providers, ref, prevText = {}) {
   const provider = (providers || []).find((p) => p.id === ref?.providerId);
+  const selected = provider?.models?.find(m => m.id === ref?.modelId);
   return {
     ...prevText,
     preset: provider?.preset || prevText.preset || "custom",
     baseUrl: provider?.baseUrl || "",
     apiKey: provider ? provider.apiKey : "",
     model: ref?.modelId || "",
+    // An edit or model switch must clear limits belonging to the previous selection.
+    contextWindowTokens: selected?.contextWindowTokens ?? null,
+    maxInputTokens: selected?.maxInputTokens ?? null,
+    maxOutputTokens: selected?.maxOutputTokens ?? null,
   };
 }
 

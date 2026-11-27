@@ -66,8 +66,8 @@ token 也可用环境变量 `PAGELENS_TOKEN` 给出；`--agent-name` / `PAGELENS
 
 | scope | 工具 |
 |---|---|
-| `tabs:read` | `list_tabs` `list_windows` |
-| `tabs:manage` | `open_tab` `activate_tab` `navigate_tab` `reload_tab` `go_back` `go_forward` `close_tab` `create_window` `focus_window` `close_window` |
+| `tabs:read` | `list_tabs` `list_windows` `list_tab_groups` `list_saved_tab_groups` |
+| `tabs:manage` | `open_tab` `activate_tab` `navigate_tab` `reload_tab` `go_back` `go_forward` `close_tab` `create_window` `focus_window` `close_window` `group_tabs` `update_tab_group` `ungroup_tabs` `close_tab_group` `save_tab_group` `open_saved_tab_group` `update_saved_tab_group` `delete_saved_tab_group` |
 | `page:read` | `wait_for` `query_dom` `read_rendered_html` `screenshot` `pick_rich_editor` `wechat_pick_body_editor` `verify_editor_content` `snapshot_controls` `extract_page` `find_in_page` `get_links` |
 | `page:act` | `set_input_value` `trusted_click` `trusted_type` `press_keys` `hover` `paste_rich_trusted` `act_element` `select_option` `scroll_page` `drag_drop` `handle_dialog` |
 | `page:js` | `run_js` |
@@ -126,7 +126,7 @@ inbox job 可带 `"token":"plk_…"`：校验通过且 scope 足够时**跳过�
    | 清单项 | bridge 调用 |
    |---|---|
    | 发布 / 发送 | `act_element click` / `trusted_click` 目标文字是「发布 / 发表 / 发送 / 提交订单 / Publish / Send …」（文字取自 `text` 参数或 `snapshot_controls` 的 ref 名称）；inbox `cose_publish` |
-   | 删除 | `close_tab`、`close_window`；点击「删除 / 清空 / Delete …」类按钮 |
+   | 删除 | `close_tab`、`close_tab_group`、`delete_saved_tab_group`、`save_tab_group {closeAfterSave:true}`、`close_window`；点击「删除 / 清空 / Delete …」类按钮 |
    | 下载可执行文件 | `download_file` 的 URL 或 `filename` 是 exe / dmg / pkg / sh 等 |
    | 上传本机文件 | `upload_file` |
    | 修改设置 | `update_settings` |
@@ -181,7 +181,7 @@ Agent  → 再调一次相同调用                           ← CONFIRMATION_R
 
 - `tab_claim {tabId}`：独占标签（token 需持有 `page:act` / `page:js` / `tabs:manage` / `upload` 之一，标签须在 origin 范围内）。之后其他会话（以及旧的 CDP / runtime 入口）在该标签上调用会改动页面的工具（scope 为 `page:act` `page:js` `tabs:manage` `upload` 的带 `tabId` 工具）得到 `TAB_LEASED`；只读工具不受影响。
 - `tab_release {tabId?}`：释放一个或（省略时）本会话全部租约。
-- 会话 `open_tab` / `create_window` 打开的标签自动归该会话，并放进一个名为 `Agent: <名称>` 的标签组（`chrome.tabGroups`）。
+- 会话 `open_tab` / `create_window` 新开的标签自动取得该会话的租约。同一窗口有多个新开的工作页时，可建立 `Agent: <名称>` 临时组。释放租约或断开会话时，尝试解散仍属于该任务组的标签，网页保留。
 - socket 断开（broker 发 `bridge.session.closed`）、Chrome 端口断开或标签关闭时租约自动释放。租约只在内存里：SW 重启会断开 Native port，所有会话随之结束。
 - 委托运行（`run_agent_task`）里的内部动作同样受租约约束：非只读工具作用的标签被其他会话占用时，该步记为 `blocked`（`TAB_LEASED`）并告知内部 Agent；委托方自己的会话持有或无人持有时放行。
 - 独占队列按标签分：不同标签上的可信输入可以并行，同一标签串行；碰剪贴板的工具（`clipboard_write` `copy_selection_trusted` `paste_rich_trusted`）额外占全局剪贴板锁，`activate:true` / 抢焦点的工具占全局焦点锁。
@@ -197,7 +197,7 @@ Agent  → 再调一次相同调用                           ← CONFIRMATION_R
 | origin 白名单 | `settings.agentBridgeOrigins`，默认 `localhost:*`、`127.0.0.1:*`、`mp.weixin.qq.com`、知乎专栏、B 站创作中心、小红书创作、抖音创作。白名单之外的标签：`list_tabs` 看不到，任何带 `tabId` 的工具返回 `ORIGIN_NOT_ALLOWED`；`open_tab` 也校验 URL。`chrome://` 等受限页返回 `TAB_RESTRICTED` |
 | 每次调用都鉴权 | 每次调用重新读开关与白名单、重新取标签当前 URL（导航后 origin 变了立即失效）；关掉开关即时生效 |
 | 按 scope 分级 | 每个工具带 `scope`（`tabs:read` `tabs:manage` `page:read` `page:act` `page:js` `clipboard` `downloads` `upload` `settings:read` `settings:write` `agent:delegate`），见 §10。`run_js` 只在白名单 origin 的标签里可用；不提供 `run_shell` |
-| URL 目标 | `open_tab` / `navigate_tab` / `create_window` / `download_file` 的目标 URL 都要在白名单内（`ORIGIN_NOT_ALLOWED`）；`close_window` 要求窗口内**全部**标签在白名单内 |
+| URL 目标 | `open_tab` / `navigate_tab` / `create_window` / `download_file` 的目标 URL 都要在白名单内（`ORIGIN_NOT_ALLOWED`）；`close_window` 以及整组标签组变更（`update_tab_group` / `ungroup_tabs {groupId}` / `close_tab_group`）要求窗口或组内**全部**标签在白名单内 |
 | 上传硬拒绝 | `upload_file` 对密钥/凭据类路径（`.ssh`、`.aws`、`.gnupg`、`.kube`、`.env*`、`*.pem/*.key/*.p12`、`id_*`、`credentials`、浏览器 `Login Data`/`Cookies`、含 `..` 的路径等）一律返回 `PATH_NOT_ALLOWED`，与 scope 无关 |
 | 设置保护 | `get_settings` 不返回敏感项（密钥、服务地址、`hitlMode`、`nativeShell`、`cdpInput`、`agentBridge*`、`agentInbox*` 等，只在 `protected` 列出键名）；`update_settings` 含任一敏感键即整批拒绝（`SETTING_PROTECTED`） |
 | 无外部消息通道 | manifest **没有** `externally_connectable`，网页和其他扩展不能直接调用；入口只有下面三种 |
@@ -264,7 +264,7 @@ const { result, artifacts } = await pl.call("list_tabs");
 |---|---|
 | `id` | 必填，≤128 字符，调用方生成（幂等键） |
 | `tool` / `args` | 工具名与参数对象 |
-| `timeoutMs` | 默认 30000，上限 120000；含排队时间；超时返回 `TIMEOUT`，**操作可能仍在执行** |
+| `timeoutMs` | 默认 30000，上限 120000。打开、更新或删除已经打开的 Chrome 原生保存组默认 120000，包含 GUID 回读。超时含排队时间。超时返回 `TIMEOUT`，**操作可能仍在执行** |
 | `async` | `true` 则立即返回 `{jobId, status:"running"}`，用 `job_status` 轮询 |
 
 成功响应：
@@ -358,6 +358,16 @@ const { result, artifacts } = await pl.call("list_tabs");
 | `create_window {url, focused?, state?, width?, height?}` | tabs:manage | 新窗口 | URL 需在白名单；默认不抢焦点（`state:"maximized"` 时 Chrome 要求聚焦） |
 | `focus_window {windowId}` | tabs:manage | 窗口切前台 | 窗口里需至少一个白名单标签 |
 | `close_window {windowId}` | tabs:manage | 关窗口 | 窗口内全部标签都要在白名单内 |
+| `list_tab_groups {query?, color?, collapsed?, windowId?, includeTabs?}` | tabs:read | 列出已打开（含已折叠）且含白名单标签的 Chrome 标签组 | 仅返回含白名单标签的组；组内白名单外标签只给 `hiddenTabs` 计数。Chrome 扩展 API 看不到书签栏里已保存但关闭的原生标签组 |
+| `group_tabs {tabIds, groupId?, title?, color?, collapsed?}` | tabs:manage | 新建标签组或把标签加入已有标签组 | 目标标签（及已有目标组内全部标签）都需在白名单内且未被其他会话租用 |
+| `update_tab_group {groupId, title?, color?, collapsed?, index?, windowId?}` | tabs:manage | 更新标签组标题、颜色、展开/折叠状态或调整位置 | 组内全部标签需在白名单内；传 `windowId` 未传 `index` 时默认移到目标窗口末尾（`-1`） |
+| `ungroup_tabs {tabIds? / groupId?}` | tabs:manage | 把指定标签移出分组，或解散整个标签组（不关闭网页） | `tabIds` 与 `groupId` 二选一 |
+| `close_tab_group {groupId}` | tabs:manage | 关闭并删除整个标签组及其中的全部标签 | 组内全部标签需在白名单内；命中不可逆删除清单 |
+| `list_saved_tab_groups {source?, query?, color?, profile?, includeTabs?}` | tabs:read | 查询 Chrome 原生保存组（含未打开）与 PageLens 保存库 | Chrome 原生经 Native Host 只读解析 `Sync Data/LevelDB`，再与当前会话核对；未打开的原生组 `isOpen` 为 false。仅返回含白名单标签的组，白名单外标签计入 `hiddenTabs` |
+| `save_tab_group {groupId? / title+tabs, color?, closeAfterSave?, target?}` | tabs:manage | 快照保存已打开标签组或新建保存组 | `closeAfterSave:true` 命中不可逆删除清单；`target:"chrome_native"` 直接在 Chrome 新建并打开为原生保存组 |
+| `open_saved_tab_group {source?, id?, guid?, title?, mode?, collapsed?}` | tabs:manage | 打开 PageLens 保存库，或定位已经打开的 Chrome 原生保存组 | 组内全部 URL 须在白名单内。未打开的原生组返回需先在 Chrome 中打开，不会按 URL 重建 |
+| `update_saved_tab_group {source?, id?, guid?, matchTitle?, title?, color?, tabs?, addUrls?, removeUrls?}` | tabs:manage | 更新已保存标签组 | 已有及新增 URL 须在白名单内。Chrome 原生组必须已经打开 |
+| `delete_saved_tab_group {source?, id?, guid?, title?, profile?}` | tabs:manage | 永久删除已保存标签组 | 组内全部 URL 须在白名单内，操作需通过删除授权。已经打开的 Chrome 原生组先取消分组再关闭标签，并回读确认原 GUID 消失。未打开的原生组需先在 Chrome 中打开 |
 | `snapshot_controls {tabId, limit?, textLimit?, format?}` | page:read | 视口内可操作控件快照（含 shadow DOM、iframe），每项带 `ref` | `format:"text"` 额外给编号表；导航/翻页/弹窗后 ref 失效，需重新快照 |
 | `extract_page {tabId, maxChars?, format?}` | page:read | 干净正文 | 默认 20000 字；`format:"markdown"` 时正文在 artifact `page.md`；不拉取 PDF 文字层 |
 | `find_in_page {tabId, query, limit?}` / `get_links {tabId, limit?}` | page:read | 页内搜索 / 链接列表 | |

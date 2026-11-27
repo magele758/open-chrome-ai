@@ -8,6 +8,8 @@
  *                 [--runtime auto|panel|headless] [--capsule-json '{"actions":["publish"],"platforms":["zhihu"]}'] [--max-steps 20]
  *   node tools/agent-inbox.mjs cancel [<promptId>] [--all]   # stop running agent_prompt / drop queued ones
  *   node tools/agent-inbox.mjs enqueue --action paste_html --html-file ./a.html --token-file ~/.pagelens/agents/cli.token
+ *   node tools/agent-inbox.mjs enqueue --extension-id <id> --action dev_status
+ *   node tools/agent-inbox.mjs enqueue --extension-id <id> --action dev_reload --revision <commit>
  *   node tools/agent-inbox.mjs wait <id>
  *   node tools/agent-inbox.mjs status
  */
@@ -16,16 +18,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { japaneseSourceId } from "../extension/skills/tiktok-mx-draft/tiktok-mx-native.mjs";
+import { japaneseSourceId, repairDraftRequest } from "../extension/skills/tiktok-mx-draft/tiktok-mx-native.mjs";
+import { mxSellerRequest } from "../extension/skills/tiktok-mx-draft/tiktok-mx-seller-request.mjs";
 
-const HOME = os.homedir();
-const INBOX = path.join(HOME, ".pagelens", "agent-inbox");
-const OUTBOX = path.join(HOME, ".pagelens", "agent-outbox");
-const PROCESSED = path.join(INBOX, "processed");
-const PAYLOADS = path.join(HOME, ".pagelens", "agent-payloads");
+const home = process.env.PAGELENS_HOME || path.join(os.homedir(), ".pagelens");
+const sharedInbox = path.join(home, "agent-inbox");
+const OUTBOX = path.join(home, "agent-outbox");
+const PAYLOADS = path.join(home, "agent-payloads");
+let INBOX = sharedInbox;
+let PROCESSED = path.join(INBOX, "processed");
+let extensionId;
 
 function ensureDirs() {
-  for (const d of [INBOX, OUTBOX, PROCESSED, PAYLOADS]) fs.mkdirSync(d, { recursive: true });
+  for (const d of [INBOX, OUTBOX, PROCESSED, PAYLOADS]) fs.mkdirSync(d, { recursive: true, mode: 0o700 });
 }
 
 function parseArgs(argv) {
@@ -50,11 +55,27 @@ function readMaybeFile(p) {
   return fs.readFileSync(path.resolve(String(p)), "utf8");
 }
 
+function jobId(value) {
+  if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(value)) throw new Error("Invalid inbox job ID");
+  return value;
+}
+
 function enqueue(opts) {
-  ensureDirs();
-  const id = String(opts.id || crypto.randomUUID());
+  const id = jobId(opts.id || crypto.randomUUID());
   const action = String(opts.action || "").trim();
   if (!action) throw new Error("--action required");
+  if (extensionId && ["agent_prompt", "agent_cancel"].includes(action))
+    throw new Error("Agent prompts and cancellations use the shared inbox");
+  const development = action === "dev_status" || action === "dev_reload";
+  const repairing = action === "ptc_repair_mx_draft";
+  const sellerAction = action === "ptc_mx_seller_action";
+  const localOnly = development || repairing || sellerAction;
+  if (localOnly && !extensionId) throw new Error(`${action} requires --extension-id`);
+  if (localOnly && opts["token-file"]) throw new Error(`${action} does not accept a token`);
+  if (!repairing && (opts.repair !== undefined || opts["queries-json"] !== undefined))
+    throw new Error("--repair and --queries-json are only used with ptc_repair_mx_draft");
+  if (opts.revision !== undefined && action !== "dev_reload")
+    throw new Error("--revision is only used with dev_reload");
 
   const job = {
     id,
@@ -62,6 +83,17 @@ function enqueue(opts) {
     action,
   };
 
+  if (sellerAction) {
+    if (typeof opts["request-json"] !== "string") throw new Error("ptc_mx_seller_action requires --request-json");
+    job.request = mxSellerRequest(JSON.parse(opts["request-json"]));
+  }
+
+  if (action === "dev_reload") {
+    if (typeof opts.revision !== "string" || !/^[0-9a-f]{40}$/.test(opts.revision))
+      throw new Error("dev_reload requires a full 40-hex --revision");
+    job.expectedRevision = opts.revision;
+  }
+  ensureDirs();
   if (action === "ptc_create_mx_draft") {
     if (typeof opts["source-url"] !== "string" || typeof opts.rate !== "string" ||
         !Number.isFinite(Number(opts.rate)) || Number(opts.rate) <= 0)
@@ -75,10 +107,14 @@ function enqueue(opts) {
       job[key] = String(opts[flag]);
     }
   }
+  if (repairing) {
+    const queries = opts["queries-json"] === undefined ? undefined : JSON.parse(String(opts["queries-json"]));
+    Object.assign(job, repairDraftRequest({ sourceId: opts["source-id"], draftId: opts["draft-id"], repair: opts.repair, queries }));
+  }
   if (opts["tab-url-includes"] || opts.tabUrlIncludes) {
     job.tabUrlIncludes = String(opts["tab-url-includes"] || opts.tabUrlIncludes);
   }
-  if (opts["request-json"]) job.request = JSON.parse(String(opts["request-json"]));
+  if (!sellerAction && opts["request-json"]) job.request = JSON.parse(String(opts["request-json"]));
   if (opts.prompt && opts.prompt !== true) job.prompt = String(opts.prompt);
   if (opts["prompt-file"]) job.prompt = readMaybeFile(opts["prompt-file"]);
   if (action === "agent_prompt" && !String(job.prompt || "").trim()) {
@@ -121,7 +157,9 @@ function enqueue(opts) {
     job.allowInsertHtmlFallback = true;
   }
   if (opts.replace === true || opts.replace === "true") job.replace = true;
-  const token = opts["token-file"] ? readMaybeFile(opts["token-file"]).trim() : process.env.PAGELENS_TOKEN?.trim();
+  if (opts["follow-up"] === true || opts["follow-up"] === "true") job.followUp = true;
+  const token = localOnly ? undefined : opts["token-file"]
+    ? readMaybeFile(opts["token-file"]).trim() : process.env.PAGELENS_TOKEN?.trim();
   if (token) job.token = token;
 
   let html = opts.html ? String(opts.html) : "";
@@ -140,18 +178,25 @@ function enqueue(opts) {
   }
 
   const jobPath = path.join(INBOX, `${id}.json`);
-  fs.writeFileSync(jobPath, JSON.stringify(job, null, 2), { encoding: "utf8", mode: 0o600 });
+  const pending = `${jobPath}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(pending, JSON.stringify(job, null, 2), { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(pending, jobPath);
   console.log(JSON.stringify({ ok: true, id, jobPath, outboxPath: path.join(OUTBOX, `${id}.json`) }, null, 2));
   return id;
 }
 
 function readOutbox(id) {
-  const p = path.join(OUTBOX, `${id}.json`);
+  const p = path.join(OUTBOX, `${jobId(id)}.json`);
   if (!fs.existsSync(p)) return null;
-  return JSON.parse(fs.readFileSync(p, "utf8"));
+  let reply;
+  try { reply = JSON.parse(fs.readFileSync(p, "utf8")); }
+  catch (error) { if (error instanceof SyntaxError || error.code === "ENOENT") return null; throw error; }
+  if (extensionId && reply.consumerExtensionId !== extensionId)
+    throw new Error(`Job ${id} was handled by a different extension`);
+  return reply;
 }
 
-async function waitId(id, { timeoutMs = 60000, intervalMs = 1000 } = {}) {
+async function waitId(id, { timeoutMs = 60000, intervalMs = 150 } = {}) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const res = readOutbox(id);
@@ -189,7 +234,7 @@ function status() {
 }
 
 function dropPending(id, reason) {
-  const jobPath = path.join(INBOX, `${id}.json`);
+  const jobPath = path.join(INBOX, `${jobId(id)}.json`);
   if (!fs.existsSync(jobPath)) return false;
   fs.renameSync(jobPath, path.join(PROCESSED, `${id}.json`));
   fs.writeFileSync(
@@ -242,6 +287,13 @@ function cancel(args) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0] || "status";
+  extensionId = args["extension-id"] || process.env.PAGELENS_EXTENSION_ID;
+  if (extensionId) {
+    if (!/^[a-p]{32}$/.test(extensionId)) throw new Error("Expected a Chrome extension ID for --extension-id");
+    if (cmd === "cancel") throw new Error("Agent cancellations use the shared inbox");
+    INBOX = path.join(sharedInbox, extensionId);
+    PROCESSED = path.join(INBOX, "processed");
+  }
   if (cmd === "enqueue") {
     enqueue(args);
     return;

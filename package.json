@@ -12,7 +12,8 @@
     "test:quick": "node scripts/bundle-agent-loop.mjs && node scripts/run-tests.mjs --quick",
     "test:interpret": "node scripts/run-tests.mjs --interpret",
     "test:interpret:live": "node extension/tools/test_interpret_functional.mjs --live",
-    "eval:interpret": "node extension/tools/eval_interpret_quality.mjs"
+    "eval:interpret": "node extension/tools/eval_interpret_quality.mjs",
+    "playground:risk-control": "node tools/risk-control-playground/server.mjs"
   },
   "dependencies": {
     "@mage-ai-lab/agent-loop": "0.1.3"

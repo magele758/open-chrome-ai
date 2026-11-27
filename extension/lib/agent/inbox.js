@@ -11,7 +11,7 @@ import { inject, injectMain, restrictedUrl } from "../chrome.js";
 import { pasteIntoPage } from "./page-fns.js";
 import { cosePublish } from "./companions.js";
 import { loadSettings } from "../storage.js";
-import { runNativeDraft } from "../../skills/tiktok-mx-draft/tiktok-mx-native.mjs";
+import { japaneseSourceId, runNativeDraft } from "../../skills/tiktok-mx-draft/tiktok-mx-native.mjs";
 import { inspectDraftJob } from "../../skills/tiktok-mx-draft/tiktok-mx-inspect.mjs";
 import { runMxDraftJob, runMxDraftRead } from "../../skills/tiktok-mx-draft/tiktok-mx-editor.mjs";
 import { getBridge } from "../bridge/index.js";
@@ -32,7 +32,12 @@ import { auditEntry, getAuditLog, originOfUrl } from "../bridge/audit.js";
 import { enforceTokenGuards } from "../bridge/trust-guard.js";
 import { chromeStorageAdapter, createApprovalQueue } from "./trust/approval-queue.js";
 import { offscreenDoc } from "../offscreen-doc.js";
-import { markJobStarted, recordJobFinished } from "./inbox-activity.js";
+import { requireOptionalFeature } from "../optional-permissions.js";
+import { markJobStarted, recordJobFinished as writeJobActivity } from "./inbox-activity.js";
+import { createMxApprovalWatcher } from "./mx-approval-watch.js";
+import { readOpenMxApprovalStatus } from "./mx-approval-read.js";
+import { mxManageUrl } from "../../skills/tiktok-mx-draft/tiktok-mx-seller-request.mjs";
+import { developmentInboxJob } from "./inbox-development.js";
 import { cancelAgentPrompt, settleHeadless, startAgentPrompt, takeCompletion, takeExpired } from "./inbox-agent.js";
 
 export const INBOX_ROOT = "~/.pagelens/agent-inbox";
@@ -42,6 +47,52 @@ export const ALARM_NAME = "pagelens-agent-inbox";
 
 const cdp = getCdp();
 const gate = createPollGate();
+const MAX_PARALLEL_MX_CREATES = 3;
+let mxApprovalWatcher;
+let activityWrites = Promise.resolve();
+
+function recordJobFinished(job, result, startedAt) {
+  const write = activityWrites.then(() => writeJobActivity(job, result, startedAt));
+  activityWrites = write.catch(() => {});
+  return write;
+}
+
+function getMxApprovalWatcher() {
+  mxApprovalWatcher ??= createMxApprovalWatcher({
+    async notify({ mode, productId, title, jobId, intentAt }) {
+      const caption = mode === "optimize_listing" ? "TikTok Shop 商品更新审核通过" : "TikTok Shop 商品上架审核通过";
+      const message = `${String(title || "").trim().slice(0, 160) || "墨西哥店铺商品"} · ID ${productId}`;
+      const id = `mx-approval:${mode}:${productId}:${intentAt || jobId || ""}`;
+      await recordJobFinished({ id, action: `${caption} · ${message}` }, { ok: true }, Date.now());
+      try {
+        if (chrome.notifications?.create && !await requireOptionalFeature("notifications", { interactive: false })) {
+          await chrome.notifications.create(id, {
+            type: "basic", iconUrl: chrome.runtime.getURL("icons/icon48.png"), title: caption, message,
+          });
+        }
+      } catch {
+        // The Inbox activity is available when desktop notifications are disabled.
+      }
+    },
+  });
+  return mxApprovalWatcher;
+}
+
+export async function manageMxApproval(message) {
+  const watcher = getMxApprovalWatcher();
+  switch (message.type) {
+    case "pl.mxApproval.get":
+      return watcher.getState();
+    case "pl.mxApproval.setEnabled":
+      if (typeof message.enabled !== "boolean") throw Error("审核跟踪开关需要布尔值");
+      return watcher.setEnabled(message.enabled);
+    case "pl.mxApproval.cancel":
+      if (typeof message.key !== "string" || !message.key) throw Error("请选择要停止的审核跟踪");
+      return watcher.cancel(message.key);
+    default:
+      throw Error("未知的审核跟踪操作");
+  }
+}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -57,17 +108,30 @@ async function ensureDirs() {
 }
 
 async function listInboxJobs() {
-  const res = await nativeFs({ action: "readdir", root: INBOX_ROOT, rel: "" });
+  const id = chrome.runtime?.id;
+  const inboxId = /^[a-p]{32}$/.test(id || "") ? id : undefined;
+  const res = await nativeFs({ action: "readdir", root: INBOX_ROOT, rel: "", inboxId });
   if (!res?.ok) throw new Error(res?.error || "list inbox failed");
-  return (res.entries || [])
-    .filter((e) => e.kind === "file" && String(e.name).toLowerCase().endsWith(".json"))
-    .map((e) => e.name)
-    .sort();
+  const pending = (items, root) => (items || [])
+    .filter(entry => entry.kind === "file" && String(entry.name).toLowerCase().endsWith(".json"))
+    .map(entry => entry.name)
+    .sort()
+    .map(name => ({ root, name }));
+  return [
+    ...pending(inboxId ? res.directedEntries : [], `${INBOX_ROOT}/${inboxId}`),
+    ...pending(res.entries, INBOX_ROOT),
+  ];
+}
+
+async function claimInboxFile(root, name) {
+  const claim = await nativeFs({ action: "claimInboxJob", root, rel: name });
+  if (!claim?.ok) throw new Error(claim?.error || "Could not claim the inbox job");
+  return claim.claimed ? claim.rel : null;
 }
 
 async function readJson(root, rel) {
   const res = await nativeFs({ action: "readText", root, rel });
-  if (!res?.ok) throw new Error(res?.error || `read failed: ${rel}`);
+  if (!res?.ok) throw Object.assign(new Error(res?.error || `read failed: ${rel}`), { code: res?.code });
   if (res.truncated) throw new Error(`job too large (truncated): ${rel}`);
   return JSON.parse(res.text);
 }
@@ -84,7 +148,7 @@ async function deleteRel(root, rel) {
 }
 
 /** Move job to processed/ then write outbox result. */
-async function finishJob(jobName, job, result) {
+async function finishJob(root, jobName, job, result, claimedRel) {
   const id = String(job?.id || jobName.replace(/\.json$/i, ""));
   const out = {
     id,
@@ -92,14 +156,12 @@ async function finishJob(jobName, job, result) {
     finishedAt: new Date().toISOString(),
     action: job?.action || null,
     ...result,
+    consumerExtensionId: chrome.runtime?.id,
   };
-  await writeJson(INBOX_ROOT, `${PROCESSED_REL}/${jobName}`, redactJobToken(job));
-  try {
-    await deleteRel(INBOX_ROOT, jobName);
-  } catch {
-    /* already gone */
-  }
+  await writeJson(root, `${PROCESSED_REL}/${jobName}`, redactJobToken(job));
+  if (!claimedRel) await deleteRel(root, jobName).catch(() => {});
   await writeJson(OUTBOX_ROOT, `${id}.json`, out);
+  if (claimedRel) await deleteRel(root, claimedRel);
   return out;
 }
 
@@ -607,19 +669,28 @@ export async function executeJob(
     now = () => Date.now(),
     auditLog = getAuditLog(),
     approvals = null,
+    directed = false,
   } = {},
 ) {
   const action = String(job?.action || "").trim();
+  const repairing = action === "ptc_repair_mx_draft";
+  if (repairing && (!directed || job.token != null))
+    return { ok: false, error: "TikTok draft repair requires a directed inbox request without a token" };
+  const sellerAction = action === "ptc_mx_seller_action";
+  if (sellerAction && (!directed || job.token != null))
+    return { ok: false, error: "TikTok MX seller action requires a directed inbox request without a token" };
   let auth = null;
   if (job?.token != null && action !== "bridge_call") {
     const res = await authorizeJobToken(job, action, loadTokens, now);
     if (res.error) return res.error;
     auth = res.record;
   }
-  if (action === "ptc_inspect_mx_draft" || action === "ptc_create_mx_draft") {
+  if (repairing || sellerAction || action === "ptc_inspect_mx_draft" || action === "ptc_create_mx_draft") {
+    if (typeof job.id !== "string" || !job.id.trim())
+      return { ok: false, error: "TikTok MX tasks require a job ID" };
     const bridge = getBridge();
     if (!bridge) return { ok: false, error: "PageLens bridge unavailable" };
-    const run = action === "ptc_create_mx_draft" ? runNativeDraft : inspectDraftJob;
+    const run = action === "ptc_inspect_mx_draft" ? inspectDraftJob : runNativeDraft;
     return { ok: true, result: await run(job, bridge) };
   }
   if (action === "clipboard_write") return runClipboardWrite(job);
@@ -711,18 +782,26 @@ export async function executeJob(
   return { ok: false, error: `unknown action: ${action || "(empty)"}` };
 }
 
+const FOLLOW_UP_ACTIONS = new Set([
+  "bridge_call", "fill_mx_draft", "read_mx_draft", "refresh_mx_draft_list",
+  "dev_status", "ptc_create_mx_draft", "ptc_inspect_mx_draft", "ptc_repair_mx_draft", "ptc_mx_seller_action",
+]);
+
 let polling = false;
 let followUpTimer;
 function pollForNextStep() {
   clearTimeout(followUpTimer);
-  const until = Date.now() + 1800;
+  const until = Date.now() + 2800;
   const next = async () => {
     followUpTimer = null;
     const result = await pollAgentInboxOnce().catch(() => null);
-    if (!followUpTimer && result?.ok && !result.processed && Date.now() < until)
-      followUpTimer = setTimeout(next, 220);
+    if (!followUpTimer && result?.ok && !result.processed && Date.now() < until) {
+      followUpTimer = setTimeout(next, 200);
+      followUpTimer?.unref?.();
+    }
   };
-  followUpTimer = setTimeout(next, 130);
+  followUpTimer = setTimeout(next, 120);
+  followUpTimer?.unref?.();
 }
 
 async function claimJob(jobName, job) {
@@ -804,17 +883,75 @@ async function expireAgentPrompt() {
   if (out) await writeAgentPromptOutput(out);
 }
 
+function parallelDraftSource(job, directed) {
+  if (!directed || String(job?.action || "").trim() !== "ptc_create_mx_draft" || job.token != null ||
+      !Number.isFinite(job.rate) || job.rate <= 0) return null;
+  try {
+    const source = job.sourceUrl ? japaneseSourceId(job.sourceUrl) : job.sourceId;
+    if (typeof source === "string" && /^\d{12,22}$/.test(source) &&
+        (job.sourceId == null || job.sourceId === source)) return source;
+  } catch {
+    // Malformed requests follow the original serial path for an error receipt.
+  }
+  return null;
+}
+
+async function runInboxJob(job, { directed, queued, settings, deps }) {
+  const startedAt = Date.now();
+  markJobStarted();
+  let result;
+  const development = ["dev_status", "dev_reload"].includes(job?.action);
+  try {
+    if (directed && ["agent_prompt", "agent_cancel"].includes(job?.action))
+      throw new Error("Agent prompts and cancellations use the shared inbox");
+    result = development
+      ? { ok: true, result: await developmentInboxJob(job, { directed, queued }) }
+      : await executeJob(job, { ...deps, settings, directed });
+  } catch (err) {
+    result = { ok: false, error: err?.message || String(err) };
+    if (development && err?.code === "DEVELOPMENT_BUSY") result.errorCode = err.code;
+  }
+  return { result, startedAt };
+}
+
 /**
- * 每轮只调一次 Native Host（readdir）；目录在首次成功后不再重复创建。
+ * 每轮检查共享 inbox。有本扩展的子目录时，也检查定向 inbox。
  * Host 不可用时指数退避（1 分钟起、最长 30 分钟），期间轮询直接跳过、不拉起进程。
  */
 export async function pollAgentInboxOnce(deps = {}) {
   if (polling) return { skipped: true, reason: "busy" };
   polling = true;
+  const active = new Map();
+  const results = [];
+  let receiptError;
+  let reloadAccepted = false;
+  let scheduleFollowUp = false;
+  let checkApprovals = false;
+
+  // Only execution overlaps. Outbox and activity writes are applied here, one at a time.
+  async function finishNextDraft() {
+    const { source, root, name, claimedRel, job, index, result, startedAt } = await Promise.race(active.values());
+    active.delete(source);
+    try {
+      await recordJobFinished(job, result, startedAt);
+      results[index] = await finishJob(root, name, job, result, claimedRel);
+      if (result?.ok && job?.followUp === true && FOLLOW_UP_ACTIONS.has(job.action)) scheduleFollowUp = true;
+    } catch (error) {
+      receiptError ??= error;
+    }
+    if (active.size) markJobStarted();
+  }
+
+  async function drainDrafts() {
+    while (active.size) await finishNextDraft();
+    if (receiptError) throw receiptError;
+  }
+
   try {
     await expireAgentPrompt();
     const settings = await loadSettings();
     if (settings.agentInboxEnabled !== true) return { skipped: true, reason: "disabled" };
+    checkApprovals = true;
     if (!gate.canPoll()) return { skipped: true, reason: "backoff", retryInMs: gate.retryInMs() };
 
     let names;
@@ -832,39 +969,82 @@ export async function pollAgentInboxOnce(deps = {}) {
       };
     }
 
-    const results = [];
-    for (const name of names) {
+    for (const { root, name } of names) {
+      if (active.size === MAX_PARALLEL_MX_CREATES) await finishNextDraft();
+      if (receiptError) throw receiptError;
+      const directed = root !== INBOX_ROOT;
+      const filenameId = name.replace(/\.json$/i, "");
+      if (directed && !/^[a-zA-Z0-9_-]{1,128}$/.test(filenameId)) continue;
+      let claimedRel;
+      if (directed) {
+        claimedRel = await claimInboxFile(root, name);
+        if (!claimedRel) continue;
+      }
       let job;
       try {
-        job = await readJson(INBOX_ROOT, name);
+        job = await readJson(root, claimedRel || name);
+        if (directed && job?.id !== filenameId) throw new Error("Directed inbox ID must match its filename");
       } catch (err) {
-        await finishJob(name, { id: name.replace(/\.json$/i, "") }, {
+        if (err.code === "ENOENT") continue;
+        await drainDrafts();
+        await finishJob(root, name, { id: filenameId }, {
           ok: false,
           error: `invalid job json: ${err?.message || err}`,
-        }).catch(() => {});
+        }, claimedRel).catch(() => {});
         continue;
       }
-      if (job?.action === "agent_prompt") {
+      const options = { directed, queued: names.length > 1, settings, deps };
+      const source = parallelDraftSource(job, directed);
+      if (source) {
+        while (active.has(source)) await finishNextDraft();
+        if (receiptError) throw receiptError;
+        const index = results.length;
+        results.push(null);
+        active.set(source, runInboxJob(job, options).then(outcome =>
+          ({ source, root, name, claimedRel, job, index, ...outcome })));
+        continue;
+      }
+      await drainDrafts();
+      if (!directed && job?.action === "agent_prompt") {
         const outcome = await dispatchAgentPrompt(name, job);
         if (outcome) results.push(outcome);
         continue;
       }
-      const startedAt = Date.now();
-      markJobStarted();
-      let result;
-      try {
-        result = await executeJob(job, { ...deps, settings });
-      } catch (err) {
-        result = { ok: false, error: err?.message || String(err) };
+      if (!directed && ["ptc_create_mx_draft", "ptc_inspect_mx_draft"].includes(job?.action)) {
+        claimedRel = await claimInboxFile(root, name);
+        if (!claimedRel) continue;
       }
+      const { result, startedAt } = await runInboxJob(job, options);
       await recordJobFinished(job, result, startedAt);
-      results.push(await finishJob(name, job, result));
-      if (result.ok && job.followUp === true && ["bridge_call", "fill_mx_draft", "read_mx_draft", "refresh_mx_draft_list"].includes(job.action))
-        pollForNextStep();
+      results.push(await finishJob(root, name, job, result, claimedRel));
+      if (directed && job.action === "ptc_mx_seller_action")
+        await getMxApprovalWatcher().record(job, result).catch(() => {});
+      if (result.ok && job.action === "dev_reload") {
+        // Persist the accepted receipt before Chrome destroys the worker.
+        reloadAccepted = true;
+        chrome.runtime.reload();
+        break;
+      }
+      if (result.ok && job.followUp === true && FOLLOW_UP_ACTIONS.has(job.action))
+        scheduleFollowUp = true;
     }
+    await drainDrafts();
     return { ok: true, processed: results.length, results };
   } finally {
-    polling = false;
+    try { await drainDrafts(); }
+    finally {
+      polling = false;
+      if (scheduleFollowUp && !reloadAccepted) pollForNextStep();
+    }
+    // A suspended seller tab must never hold the Inbox lock or delay a queued job.
+    if (checkApprovals && !reloadAccepted) {
+      await getMxApprovalWatcher().poll(async (productId, startedAt) => {
+        const settings = await loadSettings();
+        if (!settings.agentInboxEnabled || !settings.agentBridgeEnabled || !isUrlAllowed(mxManageUrl, settings.agentBridgeOrigins))
+          return { productId, status: "access_disabled", verified: false };
+        return readOpenMxApprovalStatus(productId, chrome, startedAt);
+      }).catch(() => {});
+    }
   }
 }
 

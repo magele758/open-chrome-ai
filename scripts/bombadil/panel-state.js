@@ -19,12 +19,26 @@ export function readPanel({ document }) {
   const draft = get('sc-input').value;
   const query = get('hist-q').value.toLowerCase();
   const rows = [...document.querySelectorAll('.hist-main .t')];
+  const histList = get('hist-list');
+  const histSort = histList?.dataset.sortMode || 'recent';
+  const sortButtons = [...document.querySelectorAll('button[data-hist-sort]')];
+  const sortControlsAgree = sortButtons.length === 2 && sortButtons.every(el =>
+    el.getAttribute('aria-pressed') === String(el.dataset.histSort === histSort));
+  const itemTimes = [...document.querySelectorAll('#hist-list .hist-item')].map(el => Number(el.dataset.updatedAt || 0));
+  const timeDescending = itemTimes.every((t, i) => i === 0 || itemTimes[i - 1] >= t);
+  const toggles = [...document.querySelectorAll('.lab-toggle')];
   // The explorer uses names or an explicit no-match query on the two seeded conversations.
   const expected = ['Alpha', 'Beta'].filter(name => ('Question ' + name).toLowerCase().includes(query));
-  const historyMatches = views[0] !== 'history' || (rows.length === expected.length &&
+  const layoutMatches = expected.length === 0
+    ? toggles.length === 0
+    : histSort === 'domain'
+      ? toggles.length > 0 && toggles.every(el =>
+          el.getAttribute('aria-expanded') === String(!get(el.getAttribute('aria-controls')).hidden))
+      : toggles.length === 0 && timeDescending;
+  const historyMatches = views[0] !== 'history' || (sortControlsAgree &&
+    rows.length === expected.length &&
     expected.every(name => rows.some(el => el.textContent.includes('Question ' + name))) &&
-    [...document.querySelectorAll('.lab-toggle')].every(el =>
-      el.getAttribute('aria-expanded') === String(!get(el.getAttribute('aria-controls')).hidden)));
+    layoutMatches);
   return {
     ready, owner, view: views[0], open, thread, draft,
     resolved: get('btn-sc-resolve').classList.contains('is-resolved'),

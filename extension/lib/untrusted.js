@@ -22,6 +22,8 @@ export const PAGE_CONTENT_TOOLS = new Set([
   "clipboard_read",
   "get_cookies",
   "list_tabs",
+  "list_tab_groups",
+  "list_saved_tab_groups",
   "read_window_inbox",
   "delegate_window_task",
   "run_parallel_tasks",

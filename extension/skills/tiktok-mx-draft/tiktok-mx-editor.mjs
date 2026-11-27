@@ -2,8 +2,11 @@ import { sellerAttributes, checkAttributes, matchAttributeValue } from "./tiktok
 export { checkAttributes, matchAttributeValue };
 export { checkDraftAttributes } from "./tiktok-mx-attributes.mjs";
 import { draftListCode, sellerVerification } from "./tiktok-mx-list.mjs";
+import { SELLER_LOGIN_ERROR, isSellerLoginUrl } from "./tiktok-mx-seller-request.mjs";
 export * from "./tiktok-mx-list.mjs";
-import { commercialDifferences, commerceScript, locateSkuInput, sellerRead, sellerVariants, sellerNumbers } from "./tiktok-mx-commerce.mjs";
+import {
+  commercialDifferences, commerceScript, locateSkuInput, sellerBrand, sellerNumbers, sellerRead, sellerVariantAxis, sellerVariants,
+} from "./tiktok-mx-commerce.mjs";
 
 export const titleSelector = '[data-id="product.publish.product_name"]';
 const localDesc = '[data-id="product.publish.description.local_lang"]';
@@ -50,7 +53,7 @@ export function formState() {
     category:
       document
         .querySelector("#product-cascader-select-view")
-        ?.innerText.trim() || "",
+        ?.innerText.split("\n")[0].trim() || "",
     hasCategoryAttributes: [...document.querySelectorAll('[role="combobox"][aria-haspopup="listbox"]')]
       .some(e => e.getClientRects().length && !e.closest('[data-id],table,[role="row"]')),
     singleSku: document.body.innerText.includes("价格和库存"),
@@ -96,7 +99,9 @@ export async function runMxDraftRead({ action, tabId, url, title, waitForMatch =
       !validPage || page.searchParams.get("shop_region") !== "MX")
     throw Error("Expected a saved MX draft");
   async function call(tool, args) {
-    if (await tabUrl(tabId) !== url) throw Error("Draft URL changed during readback");
+    const liveUrl = await tabUrl(tabId);
+    if (isSellerLoginUrl(liveUrl)) throw Error(SELLER_LOGIN_ERROR);
+    if (liveUrl !== url) throw Error("Draft URL changed during readback");
     const reply = await dispatch(tool, { tabId, ...args });
     if (!reply.ok || reply.result?.ok === false) throw Error(JSON.stringify(reply.error || reply.result?.error));
     return reply.result;
@@ -113,12 +118,199 @@ export function attributeCode(url, plan = null) {
     JSON.stringify(url) + "," + JSON.stringify(plan) + ")";
 }
 
+function repairCategoryInput(control) {
+  const selector = "input.core-cascader-view-input";
+  const usable = input => input && input.getClientRects().length && !input.disabled && !input.readOnly;
+  const own = control.querySelector(selector);
+  if (usable(own)) return { input: own, selector: `#product-cascader-select-view ${selector}` };
+  const inputs = [...document.querySelectorAll(selector)].filter(usable);
+  const region = control.closest("[data-id]") || control.parentElement;
+  if (inputs.length === 1 && (region?.contains(inputs[0]) || document.activeElement === inputs[0]))
+    return { input: inputs[0], selector };
+  return null;
+}
+
+function categoryRepairCode(url, operation, value = null, allowCreate = false) {
+  const page = new URL(url);
+  const editor = /^\/product\/edit-draft\/\d{12,22}$/.test(page.pathname) ||
+    (allowCreate && page.pathname === "/product/create");
+  if (page.origin !== "https://seller.tiktokshopglobalselling.com" ||
+      page.username || page.password || page.searchParams.get("shop_region") !== "MX" || !editor)
+    throw Error(allowCreate ? "Expected an MX product editor" : "Expected an existing MX product draft");
+  return sellerVerification.toString() + "\n" + repairCategoryInput.toString() +
+    `\nconst guard = () => { if (location.href !== ${JSON.stringify(url)} || sellerVerification()) throw Error("Draft changed or seller verification is open"); };` +
+    "\nreturn await (" + operation.toString() + ")(" + JSON.stringify(value) + ")";
+}
+
+async function categorySearchOperation() {
+    guard();
+    const control = document.querySelector("#product-cascader-select-view");
+    if (!control?.getClientRects().length) throw Error("Draft category selector unavailable");
+    const current = control.innerText.trim();
+    control.scrollIntoView?.({ block: "nearest" });
+    if (!repairCategoryInput(control)) control.click();
+    for (let i = 0; i < 25; i++) {
+      guard();
+      const field = repairCategoryInput(control);
+      if (field) {
+        field.input.focus({ preventScroll: true });
+        if (document.activeElement === field.input) {
+          if (field.input.value) field.input.setSelectionRange?.(0, field.input.value.length);
+          document.querySelectorAll("[data-pagelens-category-search]").forEach(node => node.removeAttribute("data-pagelens-category-search"));
+          field.input.setAttribute("data-pagelens-category-search", "1");
+          return { selector: '[data-pagelens-category-search="1"]', current };
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 80));
+    }
+    throw Error("Draft category search did not open");
+}
+
+export function repairCategorySearchCode(url) {
+  return categoryRepairCode(url, categorySearchOperation);
+}
+
+export function sellerCategorySearchCode(url) {
+  return categoryRepairCode(url, categorySearchOperation, null, true);
+}
+
+async function categoryOptionsOperation(wanted) {
+    const normalize = text => String(text || "").trim().replace(/\s+/g, " ").replace(/\s*>\s*|\s+[-/]\s+/g, "/");
+    const fullPath = text => normalize(text).split("/").filter(Boolean).length >= 3;
+    const shown = node => node?.getClientRects().length && getComputedStyle(node).visibility !== "hidden";
+    const label = row => [row.title, row.getAttribute("aria-label"), row.innerText]
+      .find(text => fullPath(text))?.trim();
+    const disabled = row => row.closest('[aria-disabled="true"],[disabled]') ||
+      [...row.classList].some(name => name === "disabled" || name.endsWith("-disabled"));
+    const search = () => {
+      guard();
+      const control = document.querySelector("#product-cascader-select-view");
+      const field = control && repairCategoryInput(control);
+      if (!field?.input.value.trim())
+        throw Error("Search the current draft category before reading choices");
+      const owner = field.input.closest('[role="combobox"]');
+      const controlId = field.input.getAttribute("aria-controls") || owner?.getAttribute("aria-controls");
+      const panel = (controlId && document.getElementById(controlId)) ||
+        [...document.querySelectorAll(".core-cascader-panel,.arco-cascader-list")].find(shown);
+      const entries = [...(panel || document).querySelectorAll(".core-cascader-list-search-item")]
+        .filter(shown).map(row => ({ row, label: label(row), disabled: Boolean(disabled(row)) }))
+        .filter(entry => entry.label);
+      const empty = Boolean(panel && /暂无数据|无匹配|No results|Sin resultados/i.test(panel.innerText || ""));
+      return { entries, empty };
+    };
+    if (wanted !== null && !fullPath(wanted)) throw Error("Expected a full category path");
+    let entries = [];
+    const pause = () => new Promise(resolve => setTimeout(resolve, 80));
+    for (let i = 0; i < 50; i++) {
+      const scan = search();
+      entries = scan.entries;
+      if (wanted === null ? (entries.length || (i >= 12 && scan.empty)) : entries.some(entry => normalize(entry.label) === normalize(wanted))) break;
+      await pause();
+    }
+    const choices = [...new Set(entries.filter(entry => !entry.disabled).map(entry => entry.label))];
+    if (wanted === null) return { choices, choice: null };
+    const matches = entries.filter(entry => normalize(entry.label) === normalize(wanted));
+    if (!matches.length) throw Error("Exact category is unavailable: " + wanted);
+    if (matches.length !== 1) throw Error("Exact category is ambiguous: " + wanted);
+    const [match] = matches;
+    if (match.disabled) throw Error("Exact category is disabled: " + wanted);
+    guard();
+    match.row.click();
+    let confirmed = false;
+    for (let i = 0; i < 50; i++) {
+      guard();
+      const dialog = [...document.querySelectorAll('[role="dialog"]')].find(node =>
+        shown(node) && node.innerText.includes("更改商品类目") && node.innerText.includes("属性信息将被清除"));
+      if (dialog && !confirmed) {
+        const proceed = [...dialog.querySelectorAll("button")].filter(button =>
+          shown(button) && !button.disabled && button.innerText.trim() === "继续");
+        if (proceed.length === 1) { proceed[0].click(); confirmed = true; }
+      }
+      const current = (document.querySelector("#product-cascader-select-view")?.innerText || "").split("\n")[0];
+      if (!dialog && normalize(current) === normalize(match.label)) return { choices, choice: match.label };
+      await pause();
+    }
+    throw Error("Exact category did not settle: " + wanted);
+}
+
+export function repairCategoryOptionsCode(url, exactLabel = null) {
+  return categoryRepairCode(url, categoryOptionsOperation, exactLabel);
+}
+
+export function sellerCategoryOptionsCode(url, exactLabel = null) {
+  return categoryRepairCode(url, categoryOptionsOperation, exactLabel, true);
+}
+
+export function shopAllowedCategoriesCode(expectedUrl = null) {
+  const read = url => {
+    if (url && location.href !== url) throw Error("Wrong draft document");
+    const el = document.querySelector("#product-cascader-select-view");
+    if (!el) return { roots: [], leaves: [] };
+    const fk = Object.keys(el).find(k => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$"));
+    let opts = null;
+    for (let f = fk && el[fk], d = 0; f && d < 14; f = f.return, d++) {
+      if (Array.isArray(f.memoizedProps?.options) && f.memoizedProps.options.length > 3) {
+        opts = f.memoizedProps.options;
+        break;
+      }
+    }
+    if (!opts) return { roots: [], leaves: [] };
+    const ok = o => o && !o.disabled && !o.showDisabledStyle && !o.disabledReason && !o.category?.unauthorized;
+    const roots = [];
+    const leaves = [];
+    const walk = (nodes, prefix) => {
+      for (const n of nodes || []) {
+        if (!ok(n)) continue;
+        const next = [...prefix, String(n.label || "").trim()].filter(Boolean);
+        if (prefix.length === 0 && next[0]) roots.push(next[0]);
+        if (n.isLeaf || !n.children?.length) {
+          if (next.length >= 2) leaves.push(next.join(" / "));
+        } else walk(n.children, next);
+      }
+    };
+    walk(opts, []);
+    return { roots: [...new Set(roots)], leaves: [...new Set(leaves)] };
+  };
+  return "return (" + read.toString() + ")(" + JSON.stringify(expectedUrl) + ")";
+}
+
+export function saveDraftCode(expectedUrl = null) {
+  const click = async (url) => {
+    if (url && location.href !== url) throw Error("Draft editor changed before saving");
+    const button = [...document.querySelectorAll("button")].find(e => e.textContent.trim() === "另存为草稿");
+    if (!button || button.disabled) throw Error("Draft save control not available");
+    let message = "", savedLink = "";
+    const observer = new MutationObserver(() => {
+      for (const e of document.querySelectorAll("[class*=message-content],[role=alert]")) {
+        if (/提交失败|保存失败|草稿保存成功/.test(e.innerText)) {
+          message = e.innerText.trim();
+          savedLink = message.includes("草稿保存成功") ? e.querySelector('a[href*="/product/edit-draft/"]')?.href || "" : "";
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    try {
+      button.click();
+      for (let i = 0; i < 45 && !message; i++)
+        await new Promise(resolve => setTimeout(resolve, 60));
+      if (message.includes("草稿保存成功")) {
+        for (let i = 0; i < 6 && !savedLink && !/^\/product\/edit-draft\/\d+$/.test(location.pathname); i++)
+          await new Promise(resolve => setTimeout(resolve, 60));
+      }
+      return { message, url: savedLink || location.href };
+    } finally {
+      observer.disconnect();
+    }
+  };
+  return "return await (" + click.toString() + ")(" + JSON.stringify(expectedUrl) + ")";
+}
+
 export async function readFreshDocument(url, call, snapshot = snapshotCode(true, true, true)) {
   const guard = "if(location.href!==" + JSON.stringify(url) + ")throw Error('Wrong draft document');";
   const initial = await call("run_js", { code: guard + "return performance.timeOrigin" });
   if (!Number.isFinite(initial?.result)) throw Error("Draft document unavailable before reload");
   await call("reload_tab", {});
-  const code = guard + "if(performance.timeOrigin===" + initial.result + ")return null;" + snapshot;
+  const code = "if(location.href==='about:blank')return null;" + guard + "if(performance.timeOrigin===" + initial.result + ")return null;" + snapshot;
   const deadline = Date.now() + 20000;
   do {
     try {
@@ -127,7 +319,7 @@ export async function readFreshDocument(url, call, snapshot = snapshotCode(true,
     } catch (error) {
       if (!/frame (?:was removed|with ID 0 (?:was removed|does not exist))|execution context was destroyed|document unloaded/i.test(error.message)) throw error;
     }
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await new Promise(resolve => setTimeout(resolve, 75));
   } while (Date.now() < deadline);
   throw Error("Fresh draft document did not load");
 }
@@ -173,37 +365,50 @@ export function mxEditor(bridge, runCode, skuWrites) {
         if (!control)
           return { selected: false, reason: "Category selector unavailable" };
         const norm = (s) => s.replace(/\s*[-/>]\s*/g, "/").trim();
-        const selected = () => document.querySelector("#product-cascader-select-view")?.innerText.trim() || "";
+        const selected = () => (document.querySelector("#product-cascader-select-view")?.innerText || "").split("\n")[0].trim();
         const changeDialog = () => [...document.querySelectorAll('[role="dialog"]')].find(e =>
           e.getClientRects().length && e.innerText.includes("更改商品类目") && e.innerText.includes("属性信息将被清除"));
         if (changeDialog()) throw Error("A prior category change is awaiting confirmation");
+        const scopeBlocked = () => {
+          const wrap = document.querySelector('[data-id="product.publish.category"]')?.parentElement?.parentElement?.parentElement?.parentElement;
+          return wrap ? /非店铺允许经营|不在允许经营|超出.*经营范围|不支持销售|无销售权限|定邀类目|限售类目|禁售类目|无法在此类目/.test(wrap.innerText || "") : false;
+        };
         const readSelection = async () => {
           let confirmed = false;
-          for (let i = 0; i < 24; i++) {
+          for (let i = 0; i < 40; i++) {
             const dialog = changeDialog();
             if (dialog) {
               const confirm = [...dialog.querySelectorAll("button")].find(b => !b.disabled && b.innerText.trim() === "继续");
               if (confirm && !confirmed) { confirm.click(); confirmed = true; }
             }
-            if (norm(selected()) === norm(label) && !dialog) return { selected: true, label, shown: selected() };
-            await pause(200);
+            if (norm(selected()) === norm(label) && !dialog) {
+              if (document.querySelector('[data-id="product.publish.category"]')) await pause(120);
+              if (scopeBlocked()) return { selected: false, reason: "Category outside shop business scope", label, shown: selected() };
+              return { selected: true, label, shown: selected() };
+            }
+            await pause(80);
           }
           const shown = selected();
           return { selected: false, label, shown };
         };
         if (norm(selected()) === norm(label)) return readSelection();
         const recommendation = [...document.querySelectorAll("button")].find(
-          (b) =>
-            b.innerText.trim() === "应用" &&
-            norm(b.parentElement.parentElement.innerText.replace("应用", "")) ===
-              norm(label),
+          (b) => {
+            if (b.innerText.trim() !== "应用" || b.disabled) return false;
+            for (let el = b.parentElement, d = 0; el && d < 4; el = el.parentElement, d++) {
+              if (el.querySelectorAll("button").length > 1) break;
+              const text = el.innerText.replace(/\s*应用\s*$/g, "").trim();
+              if (norm(text) === norm(label)) return true;
+            }
+            return false;
+          },
         );
         if (recommendation && !recommendation.disabled) {
           recommendation.click();
           return readSelection();
         }
         control.click();
-        await pause(300);
+        await pause(120);
         const input = document.querySelector("input.core-cascader-view-input");
         if (!input)
           return { selected: false, reason: "Category search unavailable" };
@@ -229,6 +434,25 @@ export function mxEditor(bridge, runCode, skuWrites) {
           }
           option.click();
           return readSelection();
+        }
+        // Fallback: click L1 -> L2 -> L3 directly in cascader columns if search input missed
+        const segs = norm(label).split("/").map(s => s.trim()).filter(Boolean);
+        if (segs.length >= 2) {
+          control.click();
+          await pause(100);
+          control.click();
+          await pause(150);
+          let matchedAll = true;
+          for (const seg of segs) {
+            const colItem = [...document.querySelectorAll(".core-cascader-list-item")].find(
+              e => e.getClientRects().length && e.getAttribute("aria-disabled") !== "true" &&
+                !e.className.includes("disabled") && e.innerText.trim() === seg,
+            );
+            if (!colItem) { matchedAll = false; break; }
+            colItem.click();
+            await pause(140);
+          }
+          if (matchedAll) return readSelection();
         }
         control.click();
         return { selected: false, reason: "Exact category not offered", label };
@@ -435,6 +659,15 @@ export function mxEditor(bridge, runCode, skuWrites) {
     return runCode(tab, "for(let i=0;i<50;i++){const s=(" + formState.toString() +
       ")(); if(s.detailImages >= " + details.length + ") return s; await new Promise(r=>setTimeout(r,200))} throw Error('Detail images did not finish uploading')");
   }
+  async function typeSkuValue(tab, option, field, value, force) {
+    const selector = await runCode(tab, commerceScript(locateSkuInput, option, field, value, force));
+    if (!selector) return;
+    const typed = await bridge("trusted_type", { tabId: tab, selector, clear: true, value: String(value) });
+    if (typed?.ok === false) throw Error("Trusted SKU input failed");
+    const committed = await bridge("press_keys", { tabId: tab, keys: ["Tab"] });
+    if (committed?.ok === false) throw Error("SKU input could not commit");
+  }
+
   async function commercialState(
     tab,
     plan,
@@ -457,14 +690,17 @@ export function mxEditor(bridge, runCode, skuWrites) {
         (d) => d === "brand" || d === "SKU count" || d.startsWith("variant "),
       );
       if (structureChanged) {
+        if (differences.includes("brand")) await runCode(tab, commerceScript(sellerBrand, plan.brand));
+        await runCode(tab, commerceScript(sellerVariantAxis, plan.axis));
         for (const { option } of plan.skus) {
           await runCode(tab, commerceScript(sellerVariants, {
             axis: plan.axis, brand: plan.brand, skus: [{ option }],
           }));
           await runCode(tab, commerceScript(async (ui, label) => {
             await ui.wait(() => {
-              const tags = ui.options().map(ui.optionLabels).filter(parts => parts.includes(label));
-              return tags.length === 1 && ui.rows().filter(row => tags[0].includes(row.label)).length === 1;
+              const tags = ui.options().map(ui.optionLabels).filter(parts => parts.some(p => ui.norm(p) === ui.norm(label)));
+              const normTags = tags[0]?.map(ui.norm) || [];
+              return tags.length === 1 && ui.rows().filter(row => normTags.includes(ui.norm(row.label))).length === 1;
             }, "SKU row " + label);
             return true;
           }, option));
@@ -476,29 +712,36 @@ export function mxEditor(bridge, runCode, skuWrites) {
         const attempts = [];
         for (let attempt = 0; attempt < 2; attempt++) {
           if (creating && !force && attempt === 0) {
-            await runCode(tab, commerceScript((ui, sku) => {
-              const labels = ui.options().map(ui.optionLabels).filter(aliases => aliases.includes(sku.option));
+            await runCode(tab, commerceScript(async (ui, sku) => {
+              const labels = ui.options().map(ui.optionLabels).filter(aliases => aliases.some(a => ui.norm(a) === ui.norm(sku.option)));
               if (labels.length !== 1) throw Error("Ambiguous option " + sku.option);
+              const normAliases = labels[0].map(ui.norm);
+              const touched = [];
               for (const [field, value] of [["stock", sku.stock], ["price", sku.priceMXN]]) {
-                const rows = ui.rows().filter(r => labels[0].includes(r.label));
+                const rows = ui.rows().filter(r => normAliases.includes(ui.norm(r.label)));
                 if (rows.length !== 1) throw Error("Cannot identify SKU row " + sku.option);
-                if (ui.numeric(rows[0][field]) !== value) ui.set(rows[0][field], value);
+                if (ui.numeric(rows[0][field]) !== value) {
+                  ui.set(rows[0][field], value);
+                  touched.push(rows[0][field]);
+                }
+              }
+              if (touched.length) {
+                await ui.sleep(45);
+                for (const el of touched) if (el?.isConnected) {
+                  el.focus();
+                  el.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true }));
+                  el.dispatchEvent(new Event("change", { bubbles: true }));
+                  el.blur();
+                }
               }
               return true;
             }, { option: sku.option, stock: sku.stock, priceMXN: sku.priceMXN }));
-          } else for (const key of keys) {
-            const selector = await runCode(tab, commerceScript(locateSkuInput, sku.option, key, sku[key], force));
-            if (!selector) continue;
-            const typed = await bridge("trusted_type", {
-              tabId: tab, selector, clear: true, value: String(sku[key]),
-            });
-            if (typed?.ok === false) throw Error("Trusted SKU input failed");
-            await bridge("press_keys", { tabId: tab, keys: ["Tab"] });
-          }
+          } else for (const key of keys) await typeSkuValue(tab, sku.option, key, sku[key], force);
           const observed = await runCode(tab, commerceScript(async (ui, sku, force) => {
             const observe = () => {
-              const tags = ui.options().map(ui.optionLabels).filter(labels => labels.includes(sku.option));
-              const rows = ui.rows().filter(row => tags.length === 1 && tags[0].includes(row.label));
+              const tags = ui.options().map(ui.optionLabels).map(labels => labels.map(ui.norm))
+                .filter(labels => labels.includes(ui.norm(sku.option)));
+              const rows = ui.rows().filter(row => tags.length === 1 && tags[0].includes(ui.norm(row.label)));
               if (rows.length !== 1) throw Error("Cannot identify SKU row " + sku.option);
               const receipts = Object.values(JSON.parse(document.body.dataset.plSkuWrites || "{}"))
                 .filter(r => r.option === sku.option);
@@ -577,8 +820,6 @@ export function mxEditor(bridge, runCode, skuWrites) {
       if (bilingualMedia) {
         if (written.captcha || written.enTitle !== enTitle || !sameText(written.enDescription || "", enDescription))
           throw Error("Source-language copy changed before uploading images");
-        await uploadDetails(tab, copy, details);
-        phases.uploadsSubmitted = Date.now();
       } else checkCopy(written, copy);
       phases.copyRead = Date.now();
       const finishGallery = async () => {
@@ -591,15 +832,19 @@ export function mxEditor(bridge, runCode, skuWrites) {
         }
         phases.gallerySubmitted = Date.now();
       };
-      let detailsSubmitted = bilingualMedia;
+      let detailsSubmitted = !details.length;
       const submitDetails = async () => {
+        if (bilingualMedia) {
+          const live = await js(tab, formState);
+          if (live.captcha || live.enTitle !== enTitle || !sameText(live.enDescription || "", enDescription))
+            throw Error("Source-language copy changed before uploading images");
+        }
         await uploadDetails(tab, copy, details);
         detailsSubmitted = true;
         phases.uploadsSubmitted = Date.now();
       };
-      // Both widgets can upload the same asset. Finish the gallery queue before
-      // handing those files to the description widget.
-      if (!detailsSubmitted && (!details.some(file => gallery.includes(file)) || (await js(tab, formState)).gallery === gallery.length))
+      // Keep the gallery queue independent of description uploads.
+      if (!detailsSubmitted && (await js(tab, formState)).gallery === gallery.length)
         await submitDetails();
       const fillSales = async selected => {
         const categoryPath = value => (value || "").replace(/\s*[-/>]\s*/g, "/");
@@ -697,7 +942,10 @@ export async function runMxDraftJob(job, dispatch, tabUrl) {
   const skuWrites = [];
   const steps = [];
   async function call(tool, args) {
-    if (args.tabId !== tabId || await tabUrl(tabId) !== url)
+    if (args.tabId !== tabId) throw Error("Draft editor changed during filling");
+    const liveUrl = await tabUrl(tabId);
+    if (isSellerLoginUrl(liveUrl)) throw Error(SELLER_LOGIN_ERROR);
+    if (liveUrl !== url)
       throw Error("Draft editor changed during filling");
     const start = Date.now();
     const reply = await dispatch(tool, args);

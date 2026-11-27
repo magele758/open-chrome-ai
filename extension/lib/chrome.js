@@ -90,7 +90,6 @@ export const CHROME_CALL_ALLOW = [
 
 export function restrictedUrl(url) {
   if (!url) return true;
-  if (/chrome\.google\.com\/webstore|chromewebstore\.google\.com/i.test(url)) return true;
   try {
     const parsed = new URL(url);
     const protocol = parsed.protocol;
@@ -103,7 +102,8 @@ export function restrictedUrl(url) {
     ) {
       return true;
     }
-    if (parsed.hostname === "newtab") return true;
+    if (parsed.hostname === "chromewebstore.google.com") return true;
+    if (parsed.hostname === "chrome.google.com" && /^\/webstore(?:\/|$)/i.test(parsed.pathname)) return true;
   } catch {
     return true;
   }
@@ -245,21 +245,25 @@ export function toToolText(value) {
   }
 }
 
-async function assertInjectable(tabId) {
+async function assertInjectable(tabId, { windowId, expectedUrl } = {}) {
   if (!tabId) throw new Error("没有可操作的标签");
   const tabsDenied = await requireOptionalFeature("tabs");
-  if (tabsDenied) throw new Error(tabsDenied);
-  const tab = await chrome.tabs.get(tabId);
+  if (tabsDenied) throw Object.assign(new Error(tabsDenied), { code: "PAGE_ACCESS_DENIED" });
+  const tab = await tabInWindow(tabId, windowId);
+  if (expectedUrl && tab.url !== expectedUrl) {
+    throw Object.assign(new Error("标签页已导航。"), { code: "PAGE_CHANGED" });
+  }
   if (restrictedUrl(tab?.url)) throw new Error(`受限页，无法注入：${tab?.url || ""}`);
-  const hostDenied = await requireHostUrl(tab?.url || "");
-  if (hostDenied) throw new Error(hostDenied);
+  const hostDenied = await requireHostUrl(tab.url, { tabId });
+  if (hostDenied) throw Object.assign(new Error(hostDenied), { code: "PAGE_ACCESS_DENIED" });
 }
 
-export async function inject(tabId, func, args = [], { world, frameId } = {}) {
-  await assertInjectable(tabId);
+export async function inject(tabId, func, args = [], { world, frameId, windowId, expectedUrl, injectImmediately } = {}) {
+  await assertInjectable(tabId, { windowId, expectedUrl });
   const target = Number.isInteger(frameId) && frameId > 0 ? { tabId, frameIds: [frameId] } : { tabId };
   const opts = { target, func, args };
   if (world) opts.world = world;
+  if (injectImmediately) opts.injectImmediately = true;
   const [entry] = await chrome.scripting.executeScript(opts);
   return entry?.result;
 }
@@ -345,33 +349,25 @@ export async function injectMain(tabId, func, args = []) {
 
 const GROUP_COLORS = ["orange", "blue", "cyan", "green", "purple", "pink", "yellow", "red"];
 
-export async function ensureTaskGroup(tabId, { groupId, title, color, windowId } = {}) {
-  if (!tabId || typeof chrome.tabs?.group !== "function") return null;
-  const denied = await requireOptionalFeature("tabGroups");
+export async function ensureTaskGroup(tabIds, { groupId, title, windowId, signal } = {}) {
+  if (!tabIds.length || typeof chrome.tabs?.group !== "function") return null;
+  const denied = await requireOptionalFeature("tabGroups", { interactive: false });
   if (denied) return null;
-  const tab = await tabInWindow(tabId, windowId);
   try {
-    let id = Number.isInteger(groupId) && groupId >= 0 ? groupId : null;
-    if (id != null) {
-      try {
-        const group = await chrome.tabGroups.get(id);
-        if (windowId != null && group.windowId !== windowId) throw new Error("标签组已移出任务窗口");
-        await chrome.tabs.group({ tabIds: [tabId], groupId: id });
-        return id;
-      } catch {
-        id = null;
-      }
+    const tabs = await Promise.all(tabIds.map((id) => tabInWindow(id, windowId)));
+    if (signal?.aborted || tabs.some((tab) => tab.groupId >= 0)) return null;
+    if (groupId != null) {
+      const group = await chrome.tabGroups.get(groupId);
+      if (signal?.aborted || group.windowId !== windowId) return null;
+      return await chrome.tabs.group({ tabIds, groupId });
     }
-    const created = await chrome.tabs.group({
-      tabIds: [tabId],
-      createProperties: tab.windowId != null ? { windowId: tab.windowId } : undefined,
-    });
+    const created = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
     if (chrome.tabGroups?.update) {
       const label = String(title || "PageLens").replace(/\s+/g, " ").trim().slice(0, 40);
       await chrome.tabGroups.update(created, {
         title: label || "PageLens",
-        color: color || GROUP_COLORS[created % GROUP_COLORS.length] || "orange",
-      });
+        color: GROUP_COLORS[created % GROUP_COLORS.length] || "orange",
+      }).catch(() => {});
     }
     return created;
   } catch {

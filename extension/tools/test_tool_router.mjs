@@ -26,6 +26,7 @@ assert(readerNames.includes("request_toolsets"), "has request_toolsets meta-tool
 assert(readerNames.includes("extract_pages"), "has extract_pages");
 assert(readerNames.includes("clipboard_read"), "has clipboard_read");
 assert(!readerNames.includes("click"), "does not have click");
+assert(!readerNames.includes("solve_risk_control"), "reader does not have solve_risk_control");
 assert(!readerNames.includes("open_tab"), "does not have open_tab");
 assert(!readerNames.includes("run_shell"), "does not have run_shell");
 assert(readerTools.length <= 13, "reader tools count <= 13 (actual: " + readerTools.length + ")");
@@ -42,6 +43,16 @@ assert(domNames.includes("fill"), "has fill");
 assert(domNames.includes("list_controls"), "has list_controls");
 assert(domNames.includes("wait_for_navigation"), "has wait_for_navigation");
 assert(!domNames.includes("open_tab"), "does not have open_tab");
+
+// 2b. Risk-control playground intent stays on dom_interact
+const rcTools = resolveActiveTools({
+  userText: "把风控沙盒的验证码和拼图自动做完",
+  tools: allTools,
+  hasVideo: false,
+});
+const rcNames = rcTools.map((t) => t.name);
+assert(rcNames.includes("solve_risk_control"), "has solve_risk_control");
+assert(!rcNames.includes("open_tab"), "risk-control intent does not open tabs");
 
 // 3. Browser management intent
 const tabTools = resolveActiveTools({

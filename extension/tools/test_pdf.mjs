@@ -16,15 +16,22 @@ function assert(cond, msg) {
 }
 
 function makePdf(text) {
-  const escaped = String(text).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
-  const stream = `BT /F1 12 Tf 72 720 Td (${escaped}) Tj ET\n`;
+  const pages = Array.isArray(text) ? text : [text];
+  const kids = pages.map((_, i) => `${4 + i * 2} 0 R`).join(" ");
   const objs = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`,
+    `<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
   ];
+  for (const page of pages) {
+    const escaped = String(page).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+    const lines = escaped.split("\n").join(") Tj T* (");
+    const stream = `BT /F1 12 Tf 16 TL 72 720 Td (${lines}) Tj ET\n`;
+    objs.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${objs.length + 2} 0 R /Resources << /Font << /F1 3 0 R >> >> >>`,
+      `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`,
+    );
+  }
   let body = "%PDF-1.4\n";
   const offsets = [0];
   for (let i = 0; i < objs.length; i++) {
@@ -116,6 +123,17 @@ const extracted = await pdfBytesToText(fixture, { disableWorker: true });
 assert(/Hello PageLens/.test(extracted.text), "pdf text: " + extracted.text);
 assert(extracted.pages === 1, "one page");
 assert(/第 1 页/.test(extracted.text), "page marker");
+
+const longPdf = makePdf(Array.from({ length: 43 }, (_, i) =>
+  "Page data measured from a calibrated field instrument.\n".repeat(15) + `Result for page ${i + 1}.`));
+const preview = await pdfBytesToText(longPdf, { disableWorker: true });
+assert(preview.truncated && preview.text.length <= 24000, "ordinary PDF previews keep their budget");
+const whole = await enrichPackWithPdf({ url: "https://example.org/report.pdf" }, {
+  summarySource: true, disableWorker: true, fetchImpl: async () => okPdfResponse(longPdf),
+});
+assert(whole.kind === "pdf" && whole.pdfPages === 43, "full summary reads the source PDF");
+assert(!whole.pdfTruncated && whole.text.length > 24000 && whole.text.endsWith("Result for page 43."),
+  "full summary retains the last page beyond the preview's character and page caps");
 
 const htmlBytes = new Uint8Array(new TextEncoder().encode("<html>nope</html>"));
 let threw = false;

@@ -222,6 +222,47 @@ const toolMessages = (seen) => seen.flatMap((s) => s.messages.filter((m) => m.ro
   console.log("PASS cancel");
 }
 
+// Temporary tab groups are cleaned before the final status and window unlock.
+for (const status of [TASK_STATUS.DONE, TASK_STATUS.FAILED, TASK_STATUS.CANCELLED]) {
+  const running = Promise.withResolvers();
+  const cleaning = Promise.withResolvers();
+  const finishCleanup = Promise.withResolvers();
+  let cleanupCalls = 0;
+  const manager = createDelegateManager({
+    loadSettings: async () => ({}),
+    createRun: async () => ({
+      cleanup: async () => {
+        cleanupCalls++;
+        cleaning.resolve();
+        await finishCleanup.promise;
+      },
+    }),
+    createLoop: () => ({
+      async run(_prompt, { signal }) {
+        running.resolve();
+        if (status === TASK_STATUS.FAILED) throw new Error("Fixture failure");
+        if (status === TASK_STATUS.CANCELLED) {
+          await new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
+          return { reason: "abort" };
+        }
+        return { reason: "stop", text: "Finished" };
+      },
+    }),
+  });
+  const { id } = await manager.start({ prompt: "批量操作测试", windowId: 710 });
+  await running.promise;
+  const terminal = status === TASK_STATUS.CANCELLED ? manager.cancel(id) : manager.wait(id);
+  try {
+    await cleaning.promise;
+    assert.equal((await manager.status(id)).status, TASK_STATUS.RUNNING, "terminal status follows task group cleanup");
+    await assert.rejects(manager.start({ prompt: "same window", windowId: 710 }), { code: "BUSY" });
+  } finally {
+    finishCleanup.resolve();
+  }
+  assert.equal((await terminal).status, status);
+  assert.equal(cleanupCalls, 1);
+}
+
 // 6. 状态持久化（SW 重启后可查；运行中的任务标为中断）
 {
   const storage = memoryTaskStorage();

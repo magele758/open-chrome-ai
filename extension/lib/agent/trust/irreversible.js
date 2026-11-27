@@ -98,6 +98,9 @@ export function matchIrreversible(toolName, args = {}, settings = {}, ctx = {}) 
   if (isClick && buttonText && PUBLISH_TEXT_RE.test(buttonText)) hits.push(item("publish_send", `点击「${buttonText.slice(0, 40)}」`));
 
   if (toolName === "close_task_group") hits.push(item("delete", "批量关闭任务分组标签"));
+  if (toolName === "close_tab_group") hits.push(item("delete", "关闭整个标签组及其中的标签"));
+  if (toolName === "delete_saved_tab_group") hits.push(item("delete", "永久删除已保存的标签组"));
+  if (toolName === "save_tab_group" && args?.closeAfterSave === true) hits.push(item("delete", "保存并关闭标签组里的全部标签"));
   if (toolName === "remove_cookie") hits.push(item("delete", "删除 cookie"));
   if (toolName === "chrome_call" && /remove|delete|clear/i.test(String(args?.method || ""))) {
     hits.push(item("delete", `chrome_call ${args.method}`));

@@ -5,6 +5,9 @@ export const DEFAULT_TIMEOUT_MS = 30000;
 export const MAX_TIMEOUT_MS = 120000;
 export const MAX_ID_LENGTH = 128;
 
+// Deletes of an already-open native group ungroup, close tabs, then re-read the GUID.
+const NATIVE_GROUP_ACTIONS = new Set(["open_saved_tab_group", "update_saved_tab_group", "delete_saved_tab_group"]);
+
 export const ERROR_CODES = Object.freeze({
   DISABLED: "DISABLED",
   PROTOCOL_UNSUPPORTED: "PROTOCOL_UNSUPPORTED",
@@ -82,7 +85,9 @@ export function validateRequest(req) {
   if (typeof args !== "object" || Array.isArray(args)) {
     throw new BridgeError(ERROR_CODES.BAD_REQUEST, "args 必须是对象。");
   }
-  const rawTimeout = req.timeoutMs == null ? DEFAULT_TIMEOUT_MS : Number(req.timeoutMs);
+  const mayOpenNativeGroup = NATIVE_GROUP_ACTIONS.has(tool) && args.source !== "pagelens" && !args.id;
+  const defaultTimeout = mayOpenNativeGroup ? MAX_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+  const rawTimeout = req.timeoutMs == null ? defaultTimeout : Number(req.timeoutMs);
   if (!Number.isFinite(rawTimeout) || rawTimeout <= 0) {
     throw new BridgeError(ERROR_CODES.BAD_REQUEST, "timeoutMs 必须是正数。");
   }

@@ -7,14 +7,18 @@ import {
   syncAgentInboxAlarm,
   wireAgentInboxAlarm,
   pollAgentInboxOnce,
+  manageMxApproval,
   completeAgentPrompt,
   completeHeadlessAgentPrompt,
 } from "./lib/agent/inbox.js";
 import { installInboxConfirm } from "./lib/agent/inbox-confirm.js";
+import { confirmDevelopmentUpdate } from "./lib/agent/inbox-development.js";
 import { AGENT_TASK_EVENTS, onAgentTaskEvent } from "./lib/agent/delegate.js";
 import { installWindowMail } from "./lib/window-mail.js";
 import { installDelegate } from "./lib/agent/delegate-sw.js";
 import { installAgentGateway } from "./lib/bridge/gateway.js";
+import { createTemporaryMarkerWindow, focusOpenSavedGroup } from "./lib/agent/saved-group-focus.js";
+import { chooseNativeProductDirectory, nativeSend } from "./lib/native-host.js";
 
 applyOptionalLocalSettings().catch(() => {});
 installWindowMail(installDelegate());
@@ -35,7 +39,8 @@ setTimeout(() => {
   pollAgentInboxOnce().catch(() => {});
 }, 1500);
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
+  confirmDevelopmentUpdate(details).catch(() => {});
   applyOptionalLocalSettings().catch(() => {});
   syncAgentInboxAlarm().catch(() => {});
   interpretSync.syncWithPeer({ reason: "installed" }).catch(() => {});
@@ -62,6 +67,29 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (typeof msg?.type === "string" && msg.type.startsWith("pl.mxApproval.")) {
+    if (_sender?.id !== chrome.runtime.id || _sender?.url !== chrome.runtime.getURL("sidepanel/index.html")) return false;
+    manageMxApproval(msg)
+      .then(state => sendResponse({ ok: true, state }))
+      .catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+  if (msg?.type === "pl.ptc.chooseDirectory") {
+    if (_sender?.id !== chrome.runtime.id || _sender?.url !== chrome.runtime.getURL("sidepanel/index.html")) return false;
+    chooseNativeProductDirectory().then(sendResponse, error => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (msg?.type === "pl.ptc.readDirectory" || msg?.type === "pl.ptc.readSizeChartChunk") {
+    if (_sender?.id !== chrome.runtime.id || _sender?.url !== chrome.runtime.getURL("sidepanel/index.html")) return false;
+    const { path, root, folder, expectedPath, offset, revision, asset } = msg;
+    const request = msg.type === "pl.ptc.readDirectory"
+      ? { op: "fs", action: "loadProductDirectory", path }
+      : { op: "fs", action: "readProductSizeChartChunk", root, folder, expectedPath, offset, revision, asset };
+    nativeSend(request, { interactive: false })
+      .then(sendResponse)
+      .catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
   if (msg?.type === "pl.agentInbox.poll") {
     pollAgentInboxOnce()
       .then(sendResponse)
@@ -73,6 +101,28 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     completeAgentPrompt(msg)
       .then(sendResponse)
       .catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
+    return true;
+  }
+  if (msg?.type === "pl.savedGroups.createMarker") {
+    if (_sender?.id !== chrome.runtime.id) return false;
+    (async () => {
+      try {
+        sendResponse(await createTemporaryMarkerWindow(msg));
+      } catch (err) {
+        sendResponse({ ok: false, code: "WINDOW_NOT_FOUND", error: err?.message || String(err) });
+      }
+    })();
+    return true;
+  }
+  if (msg?.type === "pl.savedGroups.focusOpen") {
+    if (_sender?.id !== chrome.runtime.id) return false;
+    (async () => {
+      try {
+        sendResponse(await focusOpenSavedGroup(msg));
+      } catch (err) {
+        sendResponse({ ok: false, code: "OPEN_FAILED", error: err?.message || String(err) });
+      }
+    })();
     return true;
   }
   if (!msg?.type?.startsWith("pl.audio.")) return;

@@ -26,6 +26,8 @@ const SOURCE_BY_TOOL = {
   transcribe_video: "subtitle",
   clipboard_read: "clipboard",
   list_tabs: "tabs",
+  list_tab_groups: "tabs",
+  list_saved_tab_groups: "tabs",
   search_history: "history",
   search_bookmarks: "bookmarks",
   read_file: "local_file",

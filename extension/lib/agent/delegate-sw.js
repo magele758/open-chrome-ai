@@ -9,7 +9,7 @@ import { loadTabPack } from "../page-pack.js";
 import { streamTurn } from "../openai.js";
 import { systemPrompt } from "../prompts.js";
 import { isModelReady, loadSettings, resolveModel } from "../storage.js";
-import { createAgentTools, resolveActiveTools } from "./tools.js";
+import { createAgentTools, createTaskTabGroups, resolveActiveTools } from "./tools.js";
 import { describeCapsule } from "./trust/capsule.js";
 import { chromeStorageAdapter, createApprovalQueue } from "./trust/approval-queue.js";
 import { DelegateError, createDelegateManager, sessionTaskStorage, setDelegateManager } from "./delegate.js";
@@ -19,7 +19,7 @@ const WINDOW_TASK_TOOLS = new Set([
   "extract_page", "extract_pages", "get_page_info", "get_selection", "get_links", "get_captions",
   "find_in_page", "query_dom", "list_controls", "snapshot_controls", "scroll_page", "act_element",
   "click", "fill", "select_option", "press_key", "wait_for", "wait_for_navigation",
-  "list_tabs", "open_tab", "switch_tab", "navigate_tab", "reload_tab", "close_tab", "web_search",
+  "list_tabs", "list_tab_groups", "group_tabs", "update_tab_group", "ungroup_tabs", "close_tab_group", "list_saved_tab_groups", "save_tab_group", "open_saved_tab_group", "update_saved_tab_group", "delete_saved_tab_group", "open_tab", "switch_tab", "navigate_tab", "reload_tab", "close_tab", "web_search",
   "read_tool_page", "search_tool_artifact", "request_toolsets",
 ]);
 
@@ -58,8 +58,12 @@ export async function createSwRun({ task, settings, signal }) {
   }
   // 没有调用方 windowId、也没有 tab 所在窗口时，不改写到焦点窗口，也不占侧栏那把锁。
   let refLabel = null;
-  let taskGroupId = null;
   const requestedDomains = new Set();
+  const taskTabGroups = createTaskTabGroups({
+    getWindowId: () => windowId,
+    getTitle: () => `PL · 委托${task.agentName ? ` · ${task.agentName}` : ""}`.slice(0, 40),
+  });
+
   const tools = createAgentTools({
     getTabId: () => currentTabId,
     getWindowId: () => windowId,
@@ -67,11 +71,7 @@ export async function createSwRun({ task, settings, signal }) {
     capture: (tabId) => captureTab(tabId || task.tabId, windowId),
     setImage: () => {},
     onTabsMutated: async (id) => { if (id != null) currentTabId = id; },
-    getTaskGroupId: () => taskGroupId,
-    setTaskGroupId: (id) => {
-      taskGroupId = id;
-    },
-    getTaskGroupTitle: () => `PL · 委托${task.agentName ? ` · ${task.agentName}` : ""}`.slice(0, 40),
+    taskTabGroups,
     getAbortSignal: () => signal,
     getSessionId: () => task.id,
     setCaptions: () => {},
@@ -102,6 +102,7 @@ export async function createSwRun({ task, settings, signal }) {
       runTurn: ({ messages, tools: turnTools, signal: turnSignal, onTextDelta, onReasoningDelta }) =>
         streamTurn(model, { messages, tools: turnTools, signal: turnSignal, onReasoningDelta }, onTextDelta),
     },
+    cleanup: taskTabGroups.cleanup,
   };
 }
 

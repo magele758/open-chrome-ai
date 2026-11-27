@@ -13,16 +13,21 @@
 .queue-meta, #queue-status {font-size: .88em; color: var(--muted)}
 .queue-meta {margin: 2px 0 4px}
 [data-status="running"] .queue-meta {color: var(--accent)}
-.queue-actions {display: flex; flex-wrap: wrap; gap: 3px}
-.queue-actions button, .queue-actions a {box-sizing: border-box; display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer}
+/* one line that scrolls itself; 4px inline padding holds the focus ring, negative inline margin keeps the baseline flush edge */
+.queue-actions {display: flex; flex-wrap: nowrap; align-items: center; gap: 5px; min-width: 0; padding: 4px; margin: 0 -4px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; scroll-padding-inline: 4px}
+.queue-actions button, .queue-actions a {box-sizing: border-box; display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer}
 .queue-actions :is(button, a):is(:hover, :focus-visible) {background: var(--accent-soft); color: var(--accent)}
 .queue-actions button[data-action="remove"]:hover {color: var(--danger); background: var(--danger-bg)}
 .queue-actions button:disabled {opacity: .32; cursor: default}
 .queue-actions :focus-visible {outline: 2px solid var(--accent)}
+#queue-status {min-width: 0; overflow-wrap: anywhere}
 #queue-player {max-width: 100%}
 
-.queue-toolbar {display: flex; align-items: center; gap: 6px}
-.queue-toolbar #queue-add {min-width: 0; flex: 1; text-align: left}
-#queue-folder {flex: none; display: grid; place-items: center; width: 30px; height: 28px}
-#queue-folder svg {width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round}
-.queue-actions button:is([data-action="up"], [data-action="down"]) {display: inline-flex; gap: 2px; width: auto; padding: 0 4px; font-size: 11px}
+/* 4px padding keeps focus rings inside the new scroll container; the negative margin cancels it in layout */
+.queue-toolbar {display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; padding: 4px; margin: -4px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scroll-padding-inline: 4px; scrollbar-width: thin}
+.queue-toolbar #queue-add {flex: 1; min-width: 0; height: 28px; padding: 0 10px; border-radius: 6px; text-align: left}
+.queue-toolbar #queue-add:disabled {cursor: default; opacity: .55}
+.queue-toolbar #queue-folder {flex: none; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border-radius: 6px}
+.queue-toolbar #queue-folder svg {width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round}
+.queue-toolbar button:focus-visible {outline: 2px solid var(--accent); outline-offset: 1px}
+.queue-actions button:is([data-action="up"], [data-action="down"]) {display: inline-flex; gap: 2px; width: auto; min-width: 28px; height: 28px; padding: 0 4px; font-size: 11px; white-space: nowrap}

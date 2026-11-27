@@ -29,15 +29,8 @@
     "sidePanel",
     "storage",
     "scripting",
-    "debugger",
-    "contextMenus",
-    "unlimitedStorage",
-    "offscreen",
-    "tts",
-    "alarms"
-  ],
-  "optional_permissions": [
     "userScripts",
+    "debugger",
     "downloads",
     "cookies",
     "sessions",
@@ -45,17 +38,22 @@
     "pageCapture",
     "tabs",
     "tabGroups",
+    "contextMenus",
     "bookmarks",
     "history",
     "notifications",
     "clipboardWrite",
     "clipboardRead",
+    "unlimitedStorage",
     "tabCapture",
+    "offscreen",
     "nativeMessaging",
+    "tts",
+    "alarms",
     "webNavigation",
     "favicon"
   ],
-  "optional_host_permissions": [
+  "host_permissions": [
     "<all_urls>",
     "http://*/*",
     "https://*/*",
@@ -68,6 +66,10 @@
         "skills/*"
       ],
       "matches": ["<all_urls>"]
+    },
+    {
+      "resources": ["audiobook-connect.html"],
+      "matches": ["http://127.0.0.1/*", "http://localhost/*"]
     }
   ],
   "commands": {

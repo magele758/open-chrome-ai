@@ -335,10 +335,13 @@ async function handleTextProviderAction(action, id, modelId, enabled) {
     if (!provider) return;
     const baseUrl = root.querySelector(`[data-tp-edit=baseUrl][data-id="${CSS.escape(id)}"]`)?.value.trim() || provider.baseUrl;
     const apiKeyRaw = root.querySelector(`[data-tp-edit=apiKey][data-id="${CSS.escape(id)}"]`)?.value || "";
+    const apiKey = apiKeyRaw.trim() ? apiKeyRaw : provider.apiKey;
+    const sameEndpoint = baseUrl === provider.baseUrl && apiKey === provider.apiKey;
     replaceProvider({
       ...provider,
       baseUrl,
-      apiKey: apiKeyRaw.trim() ? apiKeyRaw : provider.apiKey,
+      apiKey,
+      models: sameEndpoint ? provider.models : provider.models.map(({ id, enabled }) => ({ id, enabled })),
       name: provider.name || suggestProviderName(baseUrl, provider.preset),
     });
     ui.editingId = "";

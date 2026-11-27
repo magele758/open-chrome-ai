@@ -74,6 +74,7 @@ const inflight = new Map();
 const grantedKeys = new Set();
 const deniedKeys = new Set();
 const watchedApis = new WeakSet();
+const pendingPrompts = new WeakMap();
 let prompterOverride = null;
 let promptTail = Promise.resolve();
 let promptPending = 0;
@@ -121,13 +122,20 @@ export function resetPermissionPrompter() {
 export function ensureOptionalAccess(opts = {}) {
   const prepared = prepare(opts);
   if (prepared.immediate) return Promise.resolve(prepared.result);
-  const existing = inflight.get(prepared.key);
+  const direct = opts.userGesture && opts.interactive !== false;
+  const directKey = JSON.stringify([prepared.key, "direct"]);
+  const key = direct ? directKey : JSON.stringify([
+    prepared.key,
+    opts.interactive === false ? "silent" : "prompt",
+    prepared.query.origins ? opts.tabId : null,
+  ]);
+  const existing = inflight.get(key) || (opts.interactive !== false && inflight.get(directKey));
   if (existing) return existing;
   const pending = runAccess(prepared, opts);
-  inflight.set(prepared.key, pending);
   const finished = pending.finally(() => {
-    if (inflight.get(prepared.key) === pending) inflight.delete(prepared.key);
+    if (inflight.get(key) === finished) inflight.delete(key);
   });
+  inflight.set(key, finished);
   return finished;
 }
 
@@ -145,6 +153,18 @@ export async function requireHostUrl(url, deps = {}) {
   return result.message || "未授予权限。";
 }
 
+export async function requestTabHostAccess(tabId, { interactive = true } = {}) {
+  const api = globalThis.chrome?.permissions;
+  if (interactive && Number.isInteger(tabId) && typeof api?.addHostAccessRequest === "function") {
+    try {
+      await api.addHostAccessRequest({ tabId });
+    } catch {
+      // 用户也可直接在扩展菜单修改当前站点的访问范围。
+    }
+  }
+  return "无法读取当前标签地址。请在 Chrome 工具栏允许 PageLens 访问当前网站后重试。";
+}
+
 export async function ensureToolPermissions(permissions, deps = {}) {
   for (const permission of permissions) {
     const denied = await requireOptionalFeature(permission, deps);
@@ -154,26 +174,36 @@ export async function ensureToolPermissions(permissions, deps = {}) {
 }
 
 export function mountPermissionPrompt(doc, spec) {
-  if (promptPending === 0) {
-    promptPending += 1;
-    const pending = openPermissionPrompt(doc, spec);
-    promptTail = pending.finally(() => {
-      promptPending -= 1;
-    });
-    return pending;
+  if (!doc?.body) return Promise.resolve(false);
+  let pending = pendingPrompts.get(doc);
+  if (!pending) {
+    pending = new Map();
+    pendingPrompts.set(doc, pending);
   }
+  const key = JSON.stringify(spec.query);
+  const existing = pending.get(key);
+  if (existing) return existing;
+  const open = () => {
+    const check = async () => {
+      if (await containsPermission(spec.permissionsApi, spec.query)) return true;
+      return openPermissionPrompt(doc, spec);
+    };
+    if (!spec.permissionsApi?.contains) return openPermissionPrompt(doc, spec);
+    const locks = doc.defaultView?.navigator?.locks;
+    return locks ? locks.request(`pagelens:permission:${key}`, check) : check();
+  };
+  const queued = promptPending ? promptTail.then(open, open) : open();
   promptPending += 1;
-  const queued = promptTail.then(
-    () => openPermissionPrompt(doc, spec),
-    () => openPermissionPrompt(doc, spec),
-  );
-  promptTail = queued.finally(() => {
+  const finished = queued.finally(() => {
     promptPending -= 1;
+    pending.delete(key);
   });
-  return queued;
+  pending.set(key, finished);
+  promptTail = finished.catch(() => {});
+  return finished;
 }
 
-function openPermissionPrompt(doc, { title = TITLE, reason = "", query, request }) {
+function openPermissionPrompt(doc, { title = TITLE, reason = "", query, request, permissionsApi }) {
   return new Promise((resolve, reject) => {
     if (!doc?.body || typeof request !== "function") {
       resolve(false);
@@ -205,9 +235,16 @@ function openPermissionPrompt(doc, { title = TITLE, reason = "", query, request 
     grant.type = "button";
     grant.dataset.plPermissionGrant = "true";
     grant.textContent = "授权";
+    let closed = false;
     const close = (settle) => {
+      if (closed) return;
+      closed = true;
+      permissionsApi?.onAdded?.removeListener?.(onAdded);
       overlay.remove();
       settle();
+    };
+    const onAdded = async () => {
+      if (await containsPermission(permissionsApi, query)) close(() => resolve(true));
     };
     deny.addEventListener("click", () => close(() => resolve(false)));
     grant.addEventListener("click", () => {
@@ -228,6 +265,8 @@ function openPermissionPrompt(doc, { title = TITLE, reason = "", query, request 
     card.append(heading, body, note, actions);
     overlay.append(card);
     doc.body.append(overlay);
+    permissionsApi?.onAdded?.addListener?.(onAdded);
+    if (permissionsApi?.contains) void onAdded();
   });
 }
 
@@ -248,6 +287,7 @@ export function installPermissionPromptListener(chromeRef = globalThis.chrome, d
       title: msg.title || TITLE,
       reason: String(msg.reason || ""),
       query: msg.query,
+      permissionsApi: chromeRef.permissions,
       request: (query) => chromeRef.permissions.request(query),
     }).then(
       (granted) => sendResponse({ granted: Boolean(granted) }),
@@ -280,11 +320,13 @@ function prepare(opts) {
   const query = {};
   if (permission) query.permissions = [permission];
   if (originPattern) query.origins = [originPattern];
+  if (!isAllowedPermissionQuery(query)) {
+    return { immediate: true, result: { granted: false, message: "只允许申请单个声明的权限或指定网站的访问权限。" } };
+  }
   const reason = permission ? REASONS[permission] : hostReason(opts.url, originPattern);
-  const mode = opts.interactive === false ? "silent" : "ask";
   return {
     immediate: false,
-    key: `${permission}|${originPattern}|${mode}`,
+    key: `${permission}|${originPattern}`,
     permission: permission || null,
     query,
     reason,
@@ -318,6 +360,14 @@ function failureMessage(prepared, err) {
   return `${denialMessage(prepared.reason)}${detail}`;
 }
 
+async function containsPermission(api, query) {
+  try {
+    return Boolean(await api?.contains?.(query));
+  } catch {
+    return false;
+  }
+}
+
 async function runAccess(prepared, opts) {
   const api = opts.permissionsApi || globalThis.chrome?.permissions;
   if (typeof api?.contains !== "function" || typeof api?.request !== "function") {
@@ -326,6 +376,24 @@ async function runAccess(prepared, opts) {
   watchRevokes(api);
   if (prepared.cacheable && grantedKeys.has(prepared.key)) {
     return { granted: true, already: true, reason: prepared.reason };
+  }
+  // The native request must start in the original control's click handler.
+  // Chrome resolves an existing grant without prompting again.
+  if (opts.userGesture && opts.interactive !== false && !opts.prompt && !prompterOverride &&
+      prepared.query.origins?.[0] !== "file://*/*") {
+    try {
+      if (await api.request(prepared.query)) {
+        if (prepared.cacheable) grantedKeys.add(prepared.key);
+        deniedKeys.delete(prepared.key);
+        return { granted: true, reason: prepared.reason };
+      }
+      deniedKeys.add(prepared.key);
+      return { granted: false, reason: prepared.reason, message: denialMessage(prepared.reason) };
+    } catch (error) {
+      if (!/user gesture|user activation/iu.test(error?.message || "")) {
+        return { granted: false, reason: prepared.reason, message: failureMessage(prepared, error) };
+      }
+    }
   }
   let has = false;
   try {
@@ -343,6 +411,19 @@ async function runAccess(prepared, opts) {
   }
   if (!opts.force && deniedKeys.has(prepared.key)) {
     return { granted: false, suppressed: true, reason: prepared.reason, message: denialMessage(prepared.reason) };
+  }
+  const pattern = prepared.query.origins?.[0];
+  if (!opts.prompt && !prompterOverride && /^https?:\/\//u.test(pattern || "") &&
+      Number.isInteger(opts.tabId) && typeof api.addHostAccessRequest === "function") {
+    try {
+      await api.addHostAccessRequest({ tabId: opts.tabId, pattern });
+      return {
+        granted: false, requestPending: true, reason: prepared.reason,
+        message: `${prepared.reason}请在 Chrome 工具栏允许 PageLens 访问此网站，然后重试。`,
+      };
+    } catch {
+      // Older or restricted browser configurations use the existing side panel prompt.
+    }
   }
 
   let didRequest = false;
@@ -404,7 +485,7 @@ function watchRevokes(api) {
 
 function isSpecificOrigin(origin) {
   if (origin === "file://*/*") return true;
-  return /^https?:\/\/[^/*]+\/\*$/.test(origin);
+  return /^https?:\/\/[^/*?#@]+\/\*$/u.test(origin) && originPatternFromUrl(origin) === origin;
 }
 
 function isUserVisibleDocument() {
@@ -420,6 +501,7 @@ async function defaultPrompt(info) {
       title: info.title,
       reason: info.reason,
       query: info.query,
+      permissionsApi: globalThis.chrome?.permissions,
       request: () => info.confirm(),
     });
     return { granted, requested: true };

@@ -4,6 +4,8 @@
  * Protocol: 4-byte native-endian length + UTF-8 JSON. Logs go to stderr only.
  */
 
+import { writeLearningClip } from "./learn-clip.mjs";
+import { handleSavedTabGroups } from "./saved-tab-groups.mjs";
 import { draftPort } from "./mx-draft-port.mjs";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -11,8 +13,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { SOCKET_PROTOCOL, connectGateway, createBroker, defaultSocketPath } from "./gateway.mjs";
+import { MAX_PORT_MESSAGE_BYTES, SOCKET_PROTOCOL, connectGateway, createBroker, defaultSocketPath } from "./gateway.mjs";
 import { shellPolicyBlock } from "../extension/lib/agent/shell-policy.js";
+import { loadProductDirectory, readProductSizeChartChunk } from "./product-directory.mjs";
+import { pickProductDirectory } from "./product-directory-picker.mjs";
 import {
   expandUserPath,
   fileExt,
@@ -290,11 +294,27 @@ function scanSkillTreeFromPath(root, { maxSkills = MAX_SKILL_COUNT, maxDepth = M
   return { files, truncated };
 }
 
+function productDirectoryResponse(directory) {
+  if (Buffer.byteLength(JSON.stringify(directory), "utf8") > MAX_PORT_MESSAGE_BYTES) {
+    return { ok: false, error: "商品目录资料超过 Chrome 单次读取上限，请分成较小的目录读取。" };
+  }
+  return directory;
+}
+
 export function handleFs(req) {
   const action = String(req?.action || "").trim();
   const agentScope = req?.scope === "agent";
   try {
-    if (agentScope && (action === "writeText" || action === "deleteFile" || action === "ensureDir")) {
+    if (action === "loadProductDirectory") {
+      if (agentScope) return { ok: false, op: "fs", action, error: "请在 PageLens 中手动选择商品目录。" };
+      return productDirectoryResponse(loadProductDirectory(resolveAbs(req.path)));
+    }
+    if (action === "readProductSizeChartChunk") {
+      if (agentScope) return { ok: false, op: "fs", action, error: "请在 PageLens 中手动选择商品目录。" };
+      const { folder, expectedPath, offset, revision, asset } = req;
+      return readProductSizeChartChunk({ root: resolveAbs(req.root), folder, expectedPath, offset, revision, asset });
+    }
+    if (agentScope && ["writeText", "deleteFile", "ensureDir", "claimInboxJob"].includes(action)) {
       return { ok: false, op: "fs", action, error: "已拦截：agent 不能通过此接口写文件。" };
     }
     if (action === "stat") {
@@ -333,16 +353,18 @@ export function handleFs(req) {
       if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
         return { ok: false, op: "fs", action, error: `不是目录：${abs}` };
       }
-      const names = fs.readdirSync(abs, { withFileTypes: true });
       const relParts = String(req.rel || "").trim() ? splitRelParts(req.rel) : [];
-      const entries = [];
-      for (const ent of names.slice(0, 200)) {
-        const kind = ent.isDirectory() ? "directory" : "file";
-        entries.push({
-          name: ent.name,
-          kind,
-          path: [...relParts, ent.name].join("/"),
-        });
+      const list = (directory, prefix) => sortEntries(fs.readdirSync(directory, { withFileTypes: true }).slice(0, 200).map(ent => ({
+        name: ent.name,
+        kind: ent.isDirectory() ? "directory" : "file",
+        path: [...prefix, ent.name].join("/"),
+      })));
+      const entries = list(abs, relParts);
+      let directedEntries;
+      if (!agentScope && /^[a-p]{32}$/.test(req.inboxId || "")) {
+        const directedDir = path.join(abs, req.inboxId);
+        try { directedEntries = list(directedDir, [req.inboxId]); }
+        catch (error) { if (error.code !== "ENOENT") throw error; }
       }
       return {
         ok: true,
@@ -351,7 +373,8 @@ export function handleFs(req) {
         folder: path.basename(abs),
         path: relParts.join("/"),
         count: entries.length,
-        entries: sortEntries(entries),
+        entries,
+        ...(directedEntries && { directedEntries }),
       };
     }
     if (action === "readText") {
@@ -363,7 +386,7 @@ export function handleFs(req) {
         if (denied) return { ok: false, op: "fs", action, error: denied };
       }
       if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
-        return { ok: false, op: "fs", action, error: `文件不存在：${abs}` };
+        return { ok: false, op: "fs", action, code: "ENOENT", error: `文件不存在：${abs}` };
       }
       const text = fs.readFileSync(abs, "utf8");
       if (text.length > MAX_FS_TEXT) {
@@ -396,6 +419,24 @@ export function handleFs(req) {
       fs.writeFileSync(abs, body, "utf8");
       return { ok: true, op: "fs", action, path: parts.join("/"), bytes: body.length };
     }
+    if (action === "claimInboxJob") {
+      const rel = String(req.rel || "");
+      if (!/^[^/\\]+\.json$/i.test(rel)) throw Error("Expected a flat JSON inbox filename");
+      const pending = safeJoinRoot(req.root, rel);
+      const claim = `processing/${rel}`;
+      const processing = safeJoinRoot(req.root, claim);
+      fs.mkdirSync(path.dirname(processing), { recursive: true, mode: 0o700 });
+      try {
+        // Reserve the name even if another producer submits it while the job is running.
+        if (!fs.lstatSync(pending).isFile()) throw Error("Expected a regular inbox file");
+        fs.linkSync(pending, processing);
+      } catch (error) {
+        if (error.code === "ENOENT" || error.code === "EEXIST") return { ok: true, claimed: false };
+        throw error;
+      }
+      fs.unlinkSync(pending);
+      return { ok: true, claimed: true, rel: claim };
+    }
     if (action === "deleteFile") {
       const rel = String(req.rel || "").trim();
       const parts = splitRelParts(rel);
@@ -427,12 +468,14 @@ export function handleFs(req) {
     }
     return { ok: false, op: "fs", action, error: `未知 fs action：${action || "(空)"}` };
   } catch (err) {
-    return { ok: false, op: "fs", action, error: err.message || String(err) };
+    return { ok: false, op: "fs", action, code: err.code, error: err.message || String(err) };
   }
 }
 
-export async function handleRequest(req) {
+export async function handleRequest(req, { pickDirectory = pickProductDirectory } = {}) {
   const op = String(req?.op || "").trim();
+  if (op === "learn_clip") return writeLearningClip(req.clip);
+  if (op === "saved_tab_groups") return handleSavedTabGroups(req);
   if (op === "ping") {
     return {
       ok: true,
@@ -454,6 +497,19 @@ export async function handleRequest(req) {
   }
   if (op === "fs") {
     return handleFs(req);
+  }
+  if (op === "chooseProductDirectory") {
+    if (req.scope === "agent") return { ok: false, error: "请在 PageLens 中手动选择商品目录。" };
+    try {
+      const selected = await pickDirectory();
+      if (selected === null) return { ok: true, cancelled: true };
+      if (typeof selected !== "string" || !path.isAbsolute(selected) || /[\0\r\n]/u.test(selected)) {
+        return { ok: false, error: "系统返回了无效的商品目录。" };
+      }
+      return productDirectoryResponse({ ...loadProductDirectory(selected), directoryName: path.basename(selected) });
+    } catch (error) {
+      return { ok: false, error: error?.code === "ENOENT" ? "所选目录已不存在，请重新选择。" : error.message };
+    }
   }
   if (op === "clipboard_write") {
     const textIn = String(req.text ?? "");
@@ -926,7 +982,7 @@ export function createHostMessageHandler({ write, socketPath = defaultSocketPath
 
   return {
     async onMessage(msg) {
-      if (msg?.type === "mx.create") {
+      if (msg?.type === "mx.create" || msg?.type === "mx.repair" || msg?.type === "mx.seller") {
         try { write({ type: "mx.done", ok: true, result: await draft.start(msg) }); }
         catch (e) { write({ type: "mx.done", ok: false, error: e.message }); }
         return;

@@ -57,11 +57,17 @@ for (const width of [400, 900]) {
     check('empty history');
     field(document, 'hist-q', name);
     await until(() => document.querySelector('.hist-main')?.textContent.includes('Question ' + name), 'matching history');
+    click('btn-hist-sort-domain');
+    await until(() => document.querySelector('.lab-toggle'), 'domain grouped history');
+    check('domain grouped history');
     const group = document.querySelector('.lab-toggle');
     group.click();
     assert.ok(document.getElementById(group.getAttribute('aria-controls')).hidden);
     check('collapsed history group');
     group.click();
+    click('btn-hist-sort-recent');
+    await until(() => document.getElementById('hist-list').dataset.sortMode === 'recent' && !document.querySelector('.lab-toggle'), 'recent history');
+    check('recent history');
     document.querySelector('.hist-main').click();
     await until(() => state().owner === name && state().view === 'chat', 'open ' + name);
     if (!state().open) click('btn-sidechat-header');

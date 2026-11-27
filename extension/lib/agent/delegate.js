@@ -211,6 +211,8 @@ export function createDelegateManager({
 } = {}) {
   const tasks = new Map();
   const controllers = new Map();
+  const runCleanups = new Map();
+  const finishing = new Map();
   const windowHeld = new Set();
   const windowLocks = new Map();
   let loaded = null;
@@ -286,20 +288,36 @@ export function createDelegateManager({
     slot.release?.();
   }
 
+  async function cleanupRun(cleanup) {
+    try {
+      await cleanup?.();
+    } catch (err) {
+      console.warn("[pagelens] delegate cleanup", err);
+    }
+  }
+
   function finish(task, status, { answer, error, endReason } = {}) {
+    const pending = finishing.get(task.id);
+    if (pending) return pending;
     if (task.status !== TASK_STATUS.RUNNING) return Promise.resolve();
-    releaseWindow(task.id);
-    Object.assign(task, {
-      status,
-      answer: answer != null ? String(answer) : task.answer,
-      error: error || null,
-      endReason: endReason || task.endReason || "",
-      finishedAt: now(),
-    });
-    controllers.delete(task.id);
-    onActivityChange(runningCount());
-    emit({ type: AGENT_TASK_EVENTS.FINISHED, taskId: task.id, at: now(), status, answer: task.answer, error: task.error });
-    return touch(task);
+    const finalization = (async () => {
+      await cleanupRun(runCleanups.get(task.id));
+      runCleanups.delete(task.id);
+      releaseWindow(task.id);
+      Object.assign(task, {
+        status,
+        answer: answer != null ? String(answer) : task.answer,
+        error: error || null,
+        endReason: endReason || task.endReason || "",
+        finishedAt: now(),
+      });
+      controllers.delete(task.id);
+      onActivityChange(runningCount());
+      emit({ type: AGENT_TASK_EVENTS.FINISHED, taskId: task.id, at: now(), status, answer: task.answer, error: task.error });
+      return touch(task);
+    })().finally(() => finishing.delete(task.id));
+    finishing.set(task.id, finalization);
+    return finalization;
   }
 
   function ownedBy(task, owner) {
@@ -399,6 +417,12 @@ export function createDelegateManager({
     try {
       const settings = await loadSettings();
       const run = await createRun({ task, settings, signal });
+      if (signal.aborted || task.status !== TASK_STATUS.RUNNING) {
+        await cleanupRun(run.cleanup);
+        await finish(task, TASK_STATUS.CANCELLED, { endReason: "abort" });
+        return;
+      }
+      if (typeof run.cleanup === "function") runCleanups.set(task.id, run.cleanup);
       const tools = withUntrustedOutput(run.tools || [], {
         onIngest: (info) => {
           taint = ingestData(taint, info);

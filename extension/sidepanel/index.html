@@ -7,6 +7,11 @@
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="dub-queue.css" />
   <link rel="stylesheet" href="themes.css" />
+  <link rel="stylesheet" href="workflow-catalog.css" />
+  <link rel="stylesheet" href="product-capture.css" />
+  <link rel="stylesheet" href="../flows/shein/product-listing/sidepanel/listing-panel.css" />
+  <link rel="stylesheet" href="temu-listing.css" />
+  <link rel="stylesheet" href="../flows/shopee/marketing-panel.css" />
   <link rel="stylesheet" href="sidechat.css" />
   <link rel="stylesheet" href="settings.css" />
   <link rel="stylesheet" href="../vendor/katex/katex.min.css" />
@@ -71,6 +76,9 @@
         <button type="button" id="btn-obsidian" class="icon-btn" aria-label="写入文稿文件夹" data-tooltip="写入文稿文件夹">
           <svg class="ico"><use href="#i-book"/></svg>
         </button>
+        <button type="button" id="btn-ptc-flow" class="icon-btn" aria-label="工作流" aria-haspopup="dialog" aria-controls="workflow-catalog-dialog" data-tooltip="工作流">
+          <svg class="ico"><use href="#i-activity"/></svg>
+        </button>
         <button type="button" id="btn-settings" class="icon-btn" aria-label="设置" data-tooltip="设置">
           <svg class="ico"><use href="#i-gear"/></svg>
         </button>
@@ -102,6 +110,47 @@
       <div id="queue-status" role="status"></div>
       <ol id="queue-items"></ol>
       <audio id="queue-player" controls hidden></audio>
+    </details>
+
+    <details id="saved-groups-panel">
+      <summary>已保存标签组 <span id="saved-groups-badge" class="sg-badge"></span></summary>
+      <div class="sg-body">
+        <div class="sg-toolbar">
+          <input id="sg-search" class="sg-search" type="search" placeholder="筛选标题或网址…" aria-label="筛选已保存标签组" />
+          <button type="button" class="secondary mini" id="btn-sg-refresh" title="刷新已保存标签组列表">刷新</button>
+        </div>
+        <div class="sg-filter-row">
+          <div class="sg-filter-group" role="group" aria-label="标签组来源筛选">
+            <button type="button" class="sg-filter-btn is-active" data-sg-filter="all" aria-pressed="true">全部</button>
+            <button type="button" class="sg-filter-btn" data-sg-filter="open" aria-pressed="false">已打开</button>
+            <button type="button" class="sg-filter-btn" data-sg-filter="pagelens" aria-pressed="false">插件库</button>
+          </div>
+          <button type="button" class="secondary mini" id="btn-sg-stash-open" title="把当前窗口已打开的 Chrome 标签组快照到插件库">收纳打开组</button>
+        </div>
+        <div class="sg-batch-bar">
+          <label class="sg-select-all">
+            <input type="checkbox" id="sg-select-all" />
+            <span>全选当前</span>
+          </label>
+          <span class="sg-selected-count" id="sg-selected-count"></span>
+          <button type="button" class="secondary mini sg-danger-btn hidden" id="btn-sg-batch-delete">删除已选</button>
+          <button type="button" class="secondary mini hidden" id="btn-sg-stop">停止</button>
+        </div>
+        <div id="sg-selection-hint" class="status sg-status" role="status"></div>
+        <div id="sg-load-error" class="status bad sg-status" role="status"></div>
+        <div id="sg-status" class="status sg-status" role="status" aria-live="polite"></div>
+        <div id="sg-list" class="sg-list" aria-label="已保存标签组列表"></div>
+        <dialog id="sg-dialog" aria-labelledby="sg-dialog-message">
+          <form id="sg-dialog-form" method="dialog">
+            <p id="sg-dialog-message"></p>
+            <input id="sg-dialog-name" type="text" aria-label="新的标签组名称" maxlength="64" hidden />
+            <div class="row-btns">
+              <button type="button" class="secondary mini" id="sg-dialog-cancel">取消</button>
+              <button type="submit" class="mini" id="sg-dialog-accept" value="accept"></button>
+            </div>
+          </form>
+        </dialog>
+      </div>
     </details>
 
     <section id="media-zone" class="media-zone hidden" aria-label="音视频工具">
@@ -290,8 +339,12 @@
                 <input type="text" id="clip-input-tags" placeholder="如：ai, 架构, 知识库" />
               </label>
               <div class="clip-preview-section">
-                <span class="field-label">AI 提炼内容预览</span>
+                <span class="field-label">剪藏内容预览</span>
                 <div class="clip-content-preview" id="clip-content-preview"></div>
+              </div>
+              <div class="clip-learning">
+                <button type="button" class="secondary" id="btn-clip-learning">保存到学习图谱</button>
+                <div id="clip-learning-status" role="status" aria-live="polite"></div>
               </div>
               <div class="clip-options">
                 <label class="check">
@@ -310,7 +363,7 @@
             </div>
             <div class="clip-actions">
               <button type="button" class="secondary" id="btn-clip-cancel">取消</button>
-              <button type="button" class="primary" id="btn-clip-confirm">确认保存</button>
+              <button type="button" class="primary" id="btn-clip-confirm">保存到所选位置</button>
             </div>
           </div>
         </div>
@@ -388,6 +441,11 @@
             <button type="button" id="btn-clear-attach">移除</button>
           </div>
           <div class="skills" id="skills"></div>
+          <section class="workflow-shortcuts" id="workflow-shortcuts" aria-label="当前页面工作流" hidden>
+            <span class="workflow-shortcut-site" id="workflow-shortcut-site"></span>
+            <div class="workflow-shortcut-items" id="workflow-shortcut-items"></div>
+            <p id="workflow-shortcut-status" role="status"></p>
+          </section>
           <div class="composer-input">
             <div class="slash-menu hidden" id="slash-menu" role="listbox" aria-label="快捷指令"></div>
             <div class="input-box">
@@ -798,6 +856,29 @@
               </div>
             </details>
 
+            <details class="accordion settings-group" id="settings-group-mx-approval">
+              <summary>
+                <span class="group-icon"><svg class="ico"><use href="#i-history"/></svg></span>
+                <span class="group-text"><strong>TikTok Shop 审核跟踪</strong></span>
+                <span class="state settings-state" id="mx-approval-summary">读取中…</span>
+                <span class="chev">›</span>
+              </summary>
+              <div class="inner">
+                <label class="check">
+                  <input type="checkbox" id="mx-approval-enabled" aria-describedby="mx-approval-hint" disabled />
+                  跟踪新提交的商品和标题审核
+                </label>
+                <p class="hint" id="mx-approval-hint">启用文件 Inbox 和外部 Agent 控制，并打开已获授权的「墨西哥商品管理 → 全部」列表，即可检查审核结果。每条最多跟踪 24 小时，关闭开关会结束当前跟踪。</p>
+                <p class="status bad" id="mx-approval-error" role="status"></p>
+                <p id="mx-approval-empty" hidden>暂无待跟踪商品</p>
+                <ul class="mx-approval-list" id="mx-approval-pending" aria-label="正在跟踪的审核"></ul>
+                <details class="plain-detail" id="mx-approval-history" hidden>
+                  <summary id="mx-approval-history-label">已结束的跟踪</summary>
+                  <ul class="mx-approval-list" id="mx-approval-finished" aria-labelledby="mx-approval-history-label"></ul>
+                </details>
+              </div>
+            </details>
+
             <details class="accordion settings-group" id="settings-group-agents">
               <summary>
                 <span class="group-icon">
@@ -988,7 +1069,14 @@
           <button class="secondary" type="button" id="btn-import-all-obsidian">全部入库</button>
           <span class="status" id="hist-status"></span>
         </div>
-        <div id="hist-list" aria-label="按网站分组的对话"></div>
+        <div class="hist-toolbar">
+          <div class="mode-seg hist-sort-seg" role="group" aria-label="历史排序方式">
+            <button type="button" class="hist-sort-btn" id="btn-hist-sort-recent" data-hist-sort="recent" aria-pressed="true" title="按最后更新时间倒序排列，最新对话排在最前面">按时间倒序</button>
+            <button type="button" class="hist-sort-btn" id="btn-hist-sort-domain" data-hist-sort="domain" aria-pressed="false" title="按来源域名分组展示，并显示网页关系图">按域名分组</button>
+          </div>
+          <span class="hist-count" id="hist-count" aria-live="polite"></span>
+        </div>
+        <div id="hist-list" data-sort-mode="recent" aria-label="按时间倒序排列的对话"></div>
       </section>
 
       <section id="view-review" class="settings hidden">
@@ -1071,6 +1159,171 @@
       </section>
     </div>
   </div>
+  <dialog id="workflow-catalog-dialog" aria-labelledby="workflow-catalog-title">
+    <header class="ptc-heading">
+      <h2 id="workflow-catalog-title">工作流</h2>
+      <div class="workflow-dialog-actions">
+        <button type="button" id="workflow-catalog-library" class="secondary mini">商品库</button>
+        <button type="button" id="workflow-catalog-close" class="icon-btn" aria-label="关闭工作流列表">×</button>
+      </div>
+    </header>
+    <fieldset class="workflow-platform-picker">
+      <legend>平台</legend>
+      <div id="workflow-platform" class="workflow-platform-chips"></div>
+    </fieldset>
+    <ul class="workflow-feature-list" id="workflow-feature-list" aria-label="可执行功能"></ul>
+    <p id="workflow-feature-empty" role="status" hidden></p>
+    <p id="workflow-catalog-status" role="status"></p>
+  </dialog>
+  <dialog id="shein-listing-dialog" aria-labelledby="shein-listing-title">
+    <header class="shein-listing-heading">
+      <button type="button" id="shein-listing-back" class="icon-btn" aria-label="返回工作流">
+        <svg class="ico" aria-hidden="true"><use href="#i-back"/></svg>
+      </button>
+      <h2 id="shein-listing-title"><img alt="" width="18" height="18" src="../flows/icons/shein.png" />SHEIN 商品上架</h2>
+      <button type="button" id="shein-listing-close" class="icon-btn" aria-label="关闭商品上架">×</button>
+    </header>
+    <p id="shein-listing-target" class="ptc-target" hidden></p>
+    <a id="shein-listing-link" href="https://sellerhub.shein.com/#/spmp/commdities/list" target="_blank" rel="noopener" hidden>打开 SHEIN 商品列表</a>
+    <fieldset id="shein-listing-source" class="shein-listing-source">
+      <legend>商品资料</legend>
+      <button type="button" class="secondary" id="shein-listing-pick">选择商品目录</button>
+      <p id="shein-listing-directory-status" class="shein-listing-hint" hidden></p>
+      <label class="shein-listing-product" id="shein-listing-product-row" hidden>
+        目录中的商品
+        <select id="shein-listing-product"></select>
+      </label>
+      <label class="shein-listing-product" id="shein-listing-default-sku-row" hidden>
+        当前类目仅支持一个 SKU，请选择要填写的 SKU
+        <select id="shein-listing-default-sku"></select>
+      </label>
+      <p class="shein-listing-hint" id="shein-listing-default-sku-upload" hidden>已保留上传选项。继续时会上传所选 SKU 的图片。</p>
+      <label class="shein-listing-product" for="shein-listing-description">
+        商品描述（选填）
+        <textarea id="shein-listing-description" rows="3" maxlength="1800" placeholder="例如，350 毫升白色陶瓷马克杯"></textarea>
+      </label>
+      <label class="shein-listing-upload" id="shein-listing-upload-row" hidden>
+        <input type="checkbox" id="shein-listing-upload" />上传所选商品图片到 SHEIN
+      </label>
+      <label class="shein-listing-upload">
+        <input type="checkbox" id="shein-listing-ai" />允许已配置的 AI 分析商品资料和图片
+      </label>
+    </fieldset>
+    <p id="shein-listing-category" class="shein-listing-category" hidden></p>
+    <div class="shein-listing-actions">
+      <button type="button" class="primary" id="shein-listing-run" disabled>开始上品</button>
+      <button type="button" class="secondary" id="shein-listing-stop" hidden>停止</button>
+    </div>
+    <p id="shein-listing-status" class="ptc-status" role="status" aria-atomic="true"></p>
+    <ul id="shein-listing-results" class="shein-listing-results" aria-label="待处理的问题" hidden></ul>
+  </dialog>
+  <dialog id="product-capture-dialog" aria-labelledby="product-capture-title">
+    <header class="ptc-heading">
+      <h2 id="product-capture-title">提取商品</h2>
+      <button type="button" id="product-capture-close" class="icon-btn" aria-label="关闭商品资料">×</button>
+    </header>
+    <p id="product-capture-status" role="status"></p>
+    <ul id="product-capture-library" aria-label="保存的商品" hidden></ul>
+    <section id="product-capture-preview" aria-labelledby="product-capture-name" hidden>
+      <h3 id="product-capture-name"></h3>
+      <p id="product-capture-summary"></p>
+      <dl id="product-capture-fields"></dl>
+      <details class="product-capture-data">
+        <summary>查看完整商品数据</summary>
+        <pre id="product-capture-json"></pre>
+      </details>
+      <div class="product-capture-actions">
+        <button type="button" id="product-capture-save" class="primary">保存到插件</button>
+        <button type="button" id="product-capture-download" class="secondary">下载 JSON</button>
+        <button type="button" id="product-capture-directory" class="secondary">保存到目录</button>
+        <button type="button" id="product-capture-back" class="secondary" hidden>返回商品库</button>
+      </div>
+    </section>
+  </dialog>
+  <dialog id="shopee-marketing-dialog" aria-labelledby="shopee-marketing-title">
+    <header class="ptc-heading">
+      <div>
+        <p class="ptc-site">Shopee</p>
+        <h2 id="shopee-marketing-title">活动与优惠券</h2>
+      </div>
+      <div class="workflow-dialog-actions">
+        <button type="button" id="shopee-marketing-back" class="secondary mini" hidden>返回工作流</button>
+        <button type="button" id="shopee-marketing-close" class="icon-btn" aria-label="关闭营销工作流">×</button>
+      </div>
+    </header>
+    <p class="ptc-target" id="shopee-marketing-target"></p>
+    <nav class="shopee-marketing-navigation" id="shopee-marketing-links" aria-label="Shopee 营销页面" hidden>
+      <div class="shopee-marketing-links">
+        <a data-marketing-path="/portal/marketing" target="_blank" rel="noopener">营销中心</a>
+        <a data-marketing-path="/portal/marketing/cmt-cb/list/campaign?source=3" target="_blank" rel="noopener">官方活动</a>
+        <a data-marketing-path="/portal/marketing/cmt-cb/list" target="_blank" rel="noopener">商品提报</a>
+        <a data-marketing-path="/portal/marketing/vouchers/list" target="_blank" rel="noopener">优惠券列表</a>
+      </div>
+      <details>
+        <summary>促销活动列表</summary>
+        <div class="shopee-marketing-links">
+          <a data-marketing-path="/portal/marketing/list/discount" target="_blank" rel="noopener">折扣活动</a>
+          <a data-marketing-path="/portal/marketing/global-discount/list" target="_blank" rel="noopener">全球商品折扣</a>
+          <a data-marketing-path="/portal/marketing/shop-flash-sale/list" target="_blank" rel="noopener">店铺限时抢购</a>
+        </div>
+      </details>
+      <details>
+        <summary>新增表单试填</summary>
+        <div class="shopee-marketing-links">
+          <a data-marketing-path="/portal/marketing/discount/create" target="_blank" rel="noopener">折扣活动</a>
+          <a data-marketing-path="/portal/marketing/global-discount/create" target="_blank" rel="noopener">全球商品折扣</a>
+          <a data-marketing-path="/portal/marketing/shop-flash-sale/create" target="_blank" rel="noopener">店铺限时抢购</a>
+          <a data-marketing-path="/portal/marketing/vouchers/new?usecase=1" target="_blank" rel="noopener">商店优惠券</a>
+        </div>
+      </details>
+    </nav>
+    <div class="shopee-marketing-actions">
+      <button type="button" class="primary" id="shopee-marketing-read">读取并整理</button>
+      <button type="button" class="secondary" id="shopee-marketing-inspect">探测试填表单</button>
+      <button type="button" class="secondary" id="shopee-marketing-stop" hidden>停止</button>
+    </div>
+    <div class="shopee-marketing-options">
+      <label class="shopee-marketing-checkbox">
+        <input id="shopee-marketing-translate" type="checkbox" checked />
+        翻译非中文活动名称和说明
+      </label>
+      <label class="shopee-marketing-checkbox">
+        <input id="shopee-marketing-all-pages" type="checkbox" checked />
+        读取当前筛选的各页（营销中心会汇总各列表）
+      </label>
+    </div>
+    <p id="shopee-marketing-status" class="ptc-status" role="status" aria-atomic="true"></p>
+    <ul id="shopee-marketing-warnings" class="shopee-marketing-warnings" hidden></ul>
+    <section id="shopee-marketing-report" class="shopee-marketing-section" aria-label="营销数据" hidden>
+      <div class="shopee-marketing-section-heading">
+        <h3 id="shopee-marketing-report-title">营销数据</h3>
+        <div class="shopee-marketing-actions">
+          <button type="button" class="secondary mini" id="shopee-marketing-json">下载 JSON</button>
+          <button type="button" class="secondary mini" id="shopee-marketing-csv">下载 CSV</button>
+        </div>
+      </div>
+      <div id="shopee-marketing-report-summary" class="shopee-marketing-report-summary" hidden></div>
+      <a id="shopee-marketing-source" target="_blank" rel="noopener" hidden>打开来源页</a>
+      <div id="shopee-marketing-rows" class="shopee-marketing-rows"></div>
+    </section>
+    <section id="shopee-marketing-preview" class="shopee-marketing-section" aria-labelledby="shopee-marketing-preview-title" hidden>
+      <div class="shopee-marketing-section-heading">
+        <h3 id="shopee-marketing-preview-title">表单试填</h3>
+        <button type="button" class="secondary mini" id="shopee-marketing-sample" hidden>载入演示数据</button>
+      </div>
+      <p class="shopee-marketing-hint">适用于新增表单，试填后停在当前页面。</p>
+      <form id="shopee-marketing-trial">
+        <div id="shopee-marketing-fields" class="shopee-marketing-fields"></div>
+        <details class="shopee-marketing-json-input">
+          <summary>以 JSON 覆盖本次试填值</summary>
+          <label for="shopee-marketing-trial-json">使用下方列出的字段名</label>
+          <textarea id="shopee-marketing-trial-json" rows="3" spellcheck="false" placeholder="{}"></textarea>
+        </details>
+        <button type="submit" class="primary" id="shopee-marketing-run">开始试填</button>
+      </form>
+      <div id="shopee-marketing-receipt" class="shopee-marketing-receipt" hidden></div>
+    </section>
+  </dialog>
   <script src="tooltip.js"></script>
   <script src="../vendor/marked.min.js"></script>
   <script src="../vendor/purify.min.js"></script>

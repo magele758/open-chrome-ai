@@ -27,6 +27,7 @@ let initialized = false;
 let streamPaintTimer = 0;
 let distillingId = "";
 let resizeObserver = null;
+let selectionBarResizeObserver = null;
 let armedDeleteTimer = 0;
 const composerDrafts = new Map();
 
@@ -112,6 +113,45 @@ function findExistingMatchingSideChat(parentMessageId, quoteText) {
   ) || null;
 }
 
+function placeSelectionBar(area, bar, selRect) {
+  const areaRect = area.getBoundingClientRect();
+  const clientWidth = area.clientWidth || 0;
+  const maxBarW = Math.max(0, clientWidth - 16);
+  bar.style.maxWidth = `${maxBarW}px`;
+  let barW = bar.offsetWidth;
+  if (!(barW > 0)) barW = Math.min(240, maxBarW);
+  if (barW > maxBarW) barW = maxBarW;
+  const barH = bar.offsetHeight || 34;
+
+  let top = selRect.top - areaRect.top - barH - 8;
+  if (top < 6) top = selRect.bottom - areaRect.top + 8;
+  top = Math.max(6, Math.min(top, areaRect.height - barH - 6));
+
+  let left = selRect.left - areaRect.left + (selRect.width - barW) / 2;
+  const maxLeft = clientWidth - 8 - barW;
+  left = maxLeft >= 8 ? clamp(left, 8, maxLeft) : 8;
+
+  bar.style.top = `${Math.round(top)}px`;
+  bar.style.left = `${Math.round(left)}px`;
+}
+
+function repositionOpenSelectionBar() {
+  const bar = $("sc-selection-bar");
+  if (!bar || bar.classList.contains("hidden")) return;
+  const area = document.querySelector(".messages-area");
+  if (!area) return;
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  let selRect;
+  try {
+    selRect = sel.getRangeAt(0).getBoundingClientRect();
+  } catch {
+    return;
+  }
+  if (!selRect || (selRect.width === 0 && selRect.height === 0)) return;
+  placeSelectionBar(area, bar, selRect);
+}
+
 function handleTextSelection() {
   if (state.view !== "chat") return;
   const sel = window.getSelection();
@@ -155,7 +195,6 @@ function handleTextSelection() {
   const bar = $("sc-selection-bar");
   if (!area || !bar) return;
 
-  const areaRect = area.getBoundingClientRect();
   const selRect = range.getBoundingClientRect();
   if (!selRect || (selRect.width === 0 && selRect.height === 0)) {
     hideSelectionPopover();
@@ -193,17 +232,7 @@ function handleTextSelection() {
   }
 
   bar.classList.remove("hidden");
-  const barW = bar.offsetWidth || 240;
-  const barH = bar.offsetHeight || 34;
-  let top = selRect.top - areaRect.top - barH - 8;
-  if (top < 6) top = selRect.bottom - areaRect.top + 8;
-  top = Math.max(6, Math.min(top, areaRect.height - barH - 6));
-
-  let left = selRect.left - areaRect.left + (selRect.width - barW) / 2;
-  left = Math.max(8, Math.min(left, Math.max(8, areaRect.width - barW - 8)));
-
-  bar.style.top = `${Math.round(top)}px`;
-  bar.style.left = `${Math.round(left)}px`;
+  placeSelectionBar(area, bar, selRect);
 }
 
 export function createSideChat({
@@ -944,6 +973,15 @@ function bindEvents() {
         openSideChatThread(scId);
       }
     });
+  }
+
+  const messagesArea = document.querySelector(".messages-area");
+  if (messagesArea && typeof ResizeObserver === "function") {
+    selectionBarResizeObserver?.disconnect?.();
+    selectionBarResizeObserver = new ResizeObserver(() => {
+      repositionOpenSelectionBar();
+    });
+    selectionBarResizeObserver.observe(messagesArea);
   }
 
   document.addEventListener("mousedown", (e) => {

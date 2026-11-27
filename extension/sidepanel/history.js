@@ -8,17 +8,24 @@ import { state } from "./state.js";
 import { deleteSessionArtifacts } from "../lib/agent/artifact-store.js";
 import { libraryStatus, pickLibraryFolder, writeSessionNote, writeSessionNotes } from "../lib/library.js";
 import {
+  DEFAULT_HISTORY_SORT,
   deleteSession,
   filterSessions,
   formatWhen,
+  groupSessionsByDomain,
   listSessions,
   loadAllSessions,
   loadSession,
+  normalizeHistorySortMode,
   openSessionInWindow,
+  primaryHost,
   sessionFilename,
+  sessionHosts,
+  sessionSortTime,
   sessionToMarkdown,
   sessionsToJSON,
   sessionsToMarkdown,
+  sortSessionsByRecent,
 } from "../lib/sessions.js";
 
 function histStatus(text, ok) {
@@ -39,16 +46,46 @@ function pageLines(pages, limit = 3) {
 }
 
 const HIST_DISCLOSURE_PREFIX = "pagelens.histGroupDisclosure.";
+const HIST_SORT_KEY = "pagelens.histSortMode";
 const RELATION_BOARD = 280;
 const RELATION_NODE_CAP = 8;
 const SVG_NS = "http://www.w3.org/2000/svg";
+let renderSeq = 0;
 
-function sessionHosts(item) {
-  return [...new Set((item.pages || []).map((page) => page.hostname).filter(Boolean))];
+function readHistorySortMode() {
+  try {
+    return normalizeHistorySortMode(localStorage.getItem(HIST_SORT_KEY));
+  } catch {
+    return DEFAULT_HISTORY_SORT;
+  }
 }
 
-function primaryHost(item) {
-  return sessionHosts(item)[0] || "未分享页面";
+function writeHistorySortMode(mode) {
+  const normalized = normalizeHistorySortMode(mode);
+  try {
+    localStorage.setItem(HIST_SORT_KEY, normalized);
+  } catch {
+    // 存储不可用时仅在当前会话生效。
+  }
+  return normalized;
+}
+
+function syncHistSortControls(mode = normalizeHistorySortMode(state.histSort)) {
+  const normalized = normalizeHistorySortMode(mode);
+  document.querySelectorAll("button[data-hist-sort]").forEach((btn) => {
+    btn.setAttribute("aria-pressed", String(btn.dataset.histSort === normalized));
+  });
+  const root = $("hist-list");
+  if (root) {
+    root.dataset.sortMode = normalized;
+    root.setAttribute("aria-label", normalized === "domain" ? "按域名分组的对话" : "按时间倒序排列的对话");
+  }
+}
+
+async function setHistorySortMode(mode) {
+  const normalized = writeHistorySortMode(mode);
+  state.histSort = normalized;
+  await renderHistory();
 }
 
 function histGroupOpen(name) {
@@ -117,20 +154,6 @@ function relationGraph(items) {
   return { ids, points: placeRelationNodes(ids), edges };
 }
 
-function groupSessions(items) {
-  const groups = new Map();
-  for (const item of items) {
-    const name = primaryHost(item);
-    if (!groups.has(name)) groups.set(name, []);
-    groups.get(name).push(item);
-  }
-  return [...groups.entries()].sort((a, b) => {
-    if (a[0] === "未分享页面") return 1;
-    if (b[0] === "未分享页面") return -1;
-    return b[1].length - a[1].length || a[0].localeCompare(b[0], "zh");
-  });
-}
-
 function groupForHost(host, items) {
   if (items.some((item) => primaryHost(item) === host)) return host;
   const related = items.find((item) => sessionHosts(item).includes(host));
@@ -145,9 +168,11 @@ function revealHistGroup(root, name) {
   section.scrollIntoView({ block: "nearest" });
 }
 
-function historyRow(item) {
+function historyRow(item, mode = DEFAULT_HISTORY_SORT) {
   const row = document.createElement("div");
   row.className = "hist-item" + (item.id === state.sessionId ? " active" : "");
+  row.dataset.sessionId = item.id;
+  row.dataset.updatedAt = String(sessionSortTime(item));
   const main = document.createElement("button");
   main.type = "button";
   main.className = "hist-main";
@@ -165,7 +190,12 @@ function historyRow(item) {
   }
   const meta = document.createElement("div");
   meta.className = "s";
-  meta.textContent = [hostLabel, formatWhen(item.updatedAt), `${item.messageCount || 0} 条`].filter(Boolean).join(" · ");
+  const when = formatWhen(sessionSortTime(item));
+  const countLabel = `${item.messageCount || 0} 条`;
+  meta.textContent = (mode === "recent"
+    ? [when, hostLabel, countLabel]
+    : [hostLabel, when, countLabel]
+  ).filter(Boolean).join(" · ");
   const pages = document.createElement("div");
   pages.className = "pages";
   pages.textContent = pageLines(item.pages);
@@ -234,7 +264,7 @@ function historyGroup(name, items, index) {
   body.id = `hist-group-${index}`;
   body.className = "lab-group-body";
   body.hidden = !open;
-  for (const item of items) body.append(historyRow(item));
+  for (const item of items) body.append(historyRow(item, "domain"));
   toggle.addEventListener("click", () => {
     const next = toggle.getAttribute("aria-expanded") !== "true";
     toggle.setAttribute("aria-expanded", String(next));
@@ -307,25 +337,44 @@ function relationBoard(items, root) {
 async function renderHistory() {
   const root = $("hist-list");
   if (!root) return;
-  const index = filterSessions(await listSessions(), state.histQuery);
+  const seq = ++renderSeq;
+  const mode = normalizeHistorySortMode(state.histSort);
+  const all = await listSessions();
+  if (seq !== renderSeq) return;
+  const filtered = filterSessions(all, state.histQuery);
+  const sorted = sortSessionsByRecent(filtered);
+  syncHistSortControls(mode);
+  const countEl = $("hist-count");
+  if (countEl) {
+    if (!all.length) countEl.textContent = "";
+    else if (String(state.histQuery || "").trim()) countEl.textContent = `${sorted.length} / ${all.length} 条`;
+    else countEl.textContent = `共 ${all.length} 条`;
+  }
   root.replaceChildren();
-  if (!index.length) {
+  if (!sorted.length) {
     const empty = document.createElement("p");
     empty.className = "hist-empty";
     empty.textContent = state.histQuery ? "没有匹配的对话。" : "还没有历史。问完就会自动保存，并记下当时的网页。";
     root.appendChild(empty);
     return;
   }
-  const board = relationBoard(index, root);
-  if (board) root.append(board);
-  groupSessions(index).forEach(([name, items], indexInList) => {
-    root.append(historyGroup(name, items, indexInList));
-  });
+  if (mode === "domain") {
+    const board = relationBoard(sorted, root);
+    if (board) root.append(board);
+    groupSessionsByDomain(sorted).forEach(([name, items], indexInList) => {
+      root.append(historyGroup(name, items, indexInList));
+    });
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "hist-flat-list";
+  for (const item of sorted) list.append(historyRow(item, "recent"));
+  root.append(list);
 }
 
 async function openHistoryItem(id) {
   await settleBusy();
-  await persistSession();
+  await persistSession({ ifDirty: true });
   const session = await openSessionInWindow(id, await resolveWindowId());
   if (!session) {
     histStatus("找不到这条对话", false);
@@ -336,7 +385,7 @@ async function openHistoryItem(id) {
 }
 
 async function exportOne(id) {
-  if (id === state.sessionId) await persistSession();
+  if (id === state.sessionId) await persistSession({ ifDirty: true });
   const data = await loadSession(id);
   if (!data) {
     histStatus("没有可导出的内容", false);
@@ -347,7 +396,7 @@ async function exportOne(id) {
 }
 
 async function exportAll(kind) {
-  await persistSession();
+  await persistSession({ ifDirty: true });
   const all = await loadAllSessions();
   if (!all.length) {
     histStatus("没有可导出的对话", false);
@@ -390,7 +439,7 @@ async function ensureLibraryForWrite() {
 }
 
 async function importOneToLibrary(id) {
-  if (id === state.sessionId) await persistSession();
+  if (id === state.sessionId) await persistSession({ ifDirty: true });
   const data = await loadSession(id);
   if (!data) {
     flashStatus("没有可导入的内容", false);
@@ -407,7 +456,7 @@ async function importOneToLibrary(id) {
 }
 
 async function importAllToLibrary() {
-  await persistSession();
+  await persistSession({ ifDirty: true });
   const all = await loadAllSessions();
   if (!all.length) {
     histStatus("没有可导入的对话", false);
@@ -424,7 +473,7 @@ async function importAllToLibrary() {
 }
 
 async function importCurrentToLibrary() {
-  await persistSession();
+  await persistSession({ ifDirty: true });
   if (!state.sessionId) {
     flashStatus("还没有可保存的对话", false);
     return;
@@ -461,8 +510,10 @@ async function removeHistoryItem(id) {
 }
 
 async function openHistoryView() {
-  await persistSession();
+  await persistSession({ ifDirty: true });
   $("hist-q").value = state.histQuery;
+  state.histSort = readHistorySortMode();
+  syncHistSortControls(state.histSort);
   histStatus("");
   await renderHistory();
   setView("history");
@@ -470,8 +521,12 @@ async function openHistoryView() {
 
 
 export {
+  HIST_SORT_KEY,
   histStatus,
   pageLines,
+  readHistorySortMode,
+  syncHistSortControls,
+  setHistorySortMode,
   renderHistory,
   openHistoryItem,
   exportOne,

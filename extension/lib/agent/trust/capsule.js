@@ -35,7 +35,7 @@ const ACTION_KEYWORDS = {
   download: /下载|保存到本地|\bdownload\b/i,
   upload: /上传|附件|\b(?:upload|attach)\b/i,
   shell: /运行|执行|终端|命令行|\b(?:run|execute|exec|shell|terminal|bash)\b/i,
-  write: /保存|存到|存成|写入|记下|记到|笔记|收藏|书签|入库|\b(?:save|write|note|bookmark|remember)\b/i,
+  write: /保存|存到|存成|写入|记下|记到|笔记|收藏|书签|入库|标签组|分组|归组|重命名|改名|折叠|展开|解散|\b(?:save|write|note|bookmark|remember|tab\s*group|ungroup|rename|collapse|expand)\b/i,
   clipboard: /复制|拷贝|剪贴板|\b(?:copy|clipboard)\b/i,
   close: /关闭|关掉|关了|\bclose\b/i,
   delete: /删除|删掉|清除|清空|移除|\b(?:delete|remove|clear|erase)\b/i,
@@ -280,6 +280,7 @@ export function capsuleCovers(capsule, { toolName, args = {}, targetUrl = "", so
       return { covered: true, why: "只读" };
     case "navigate": {
       if (toolName === "web_search") return { covered: has("navigate"), why: "搜索" };
+      if (toolName === "open_saved_tab_group") return { covered: has("navigate") || has("write"), why: "打开已保存标签组" };
       if (!target) return { covered: false, why: "目标未知" };
       if (capsule.urls.includes(target) || originInCapsule(capsule, target)) return { covered: true, why: `打开 ${urlHost(target)}` };
       if ((toolName === "switch_tab" || toolName === "reload_tab") && sameOrigin(target, sourceUrl)) return { covered: true, why: "当前任务页" };

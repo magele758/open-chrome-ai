@@ -5,6 +5,7 @@ import {
   formatExecResult,
   installHint,
   nativeFs,
+  nativeSavedTabGroups,
   nativeSend,
   pingNativeHost,
 } from "../lib/native-host.js";
@@ -50,6 +51,32 @@ assert(stat.ok && stat.kind === "directory", "native fs");
 
 const bad = await nativeSend({ op: "exec" });
 assert(bad.ok === false, "exec mocked fail");
+
+const local = {};
+chrome.storage = { local: {
+  get: async (key) => ({ [key]: local[key] }),
+  set: async (items) => Object.assign(local, items),
+} };
+const reads = [];
+chrome.runtime.sendNativeMessage = async (_, msg) => {
+  reads.push(msg);
+  return { ok: true, groups: [], profileMarker: msg.profileMarker };
+};
+assert((await nativeSavedTabGroups()).ok, "bound native saved group list");
+assert((await nativeSavedTabGroups({ profileMarker: "wrong" })).ok, "caller cannot override profile marker");
+assert(reads[0].profileMarker === reads[1].profileMarker && reads[0].profileMarker.length === 36, "stable local marker");
+let lookupAttempts = 0;
+chrome.runtime.sendNativeMessage = async (_, msg) => ++lookupAttempts === 1
+  ? { ok: false, code: "PROFILE_MARKER_MISMATCH" }
+  : { ok: true, groups: [], profileMarker: msg.profileMarker };
+assert((await nativeSavedTabGroups()).ok && lookupAttempts === 2, "first read waits for local storage flush");
+lookupAttempts = 0;
+assert(!(await nativeSavedTabGroups({ action: "open" })).ok && lookupAttempts === 1, "never retry native actions");
+chrome.runtime.sendNativeMessage = async () => ({ ok: true, groups: [] });
+assert((await nativeSavedTabGroups()).code === "HOST_UPDATE_REQUIRED", "reject unbound list from old host");
+chrome.extension = { inIncognitoContext: true };
+assert(!(await nativeSavedTabGroups()).ok, "incognito cannot read persistent groups");
+delete chrome.extension;
 
 const originalTimer = globalThis.setTimeout;
 const deadlines = [];
